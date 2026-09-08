@@ -1,0 +1,36 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "127.0.0.1:27017:27017"
+
+  backend:
+    build: ../backend
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    depends_on:
+      - mongo
+
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        REACT_APP_BACKEND_URL: ${PUBLIC_URL}
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      BASTION_DOMAIN: ${BASTION_DOMAIN}
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+
+volumes:
+  mongo_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,26 @@
+{
+  "summary": "Full backend + frontend regression for the new SSH Bastion Central feature batch (chained agents, per-device/per-agent passwords, device_type, agent installer scripts, bastion settings + authorized-keys sync, CSV import, default password, WS terminal over chain). 20/20 pytest cases green and 13/13 Playwright UI flows green. Live 2-hop chain (gw-minha-maquina -> jump-vpn -> local sshd:2222) validated end-to-end for /agents/{id}/test, /ping, /devices/{id}/ping, /batch/execute (echo CHAIN-OK), cisco shell-mode batch (echo SHELL-MODE-OK) and /api/ws/terminal (echo WS-OK / echo E2E-OK).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_bastion_features.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Agents.jsx uses the same data-testid='agent-form-port' for two distinct inputs (direct-mode port on line 231 and reverse-mode local port on line 236). Only one is rendered at a time so tests still work, but consider distinct ids (e.g. agent-form-local-port) for clarity.",
+    "server.py: /api/bastion/settings PUT does not validate ssh_port range or ssh_user shell-safety (they are echoed into the setup-script). Low risk (admin-only) but consider input sanitisation.",
+    "ssh_service._run_in_shell hardcodes a 10s post-connect idle read; slow banners on real network devices could still race. Not observed in tests.",
+    "server.py is 929 lines — consider splitting the agents/devices/bastion routers into separate modules to stay under the 700-line guideline."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_bastion_features.py (new pytest suite covering iteration-2 features)"
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "100% (13/13 flows)"},
+  "test_credentials": "admin@sshcentral.io / admin123 (admin); TEST_operator@sshcentral.io / operator123 (operator, created on-the-fly for 403 check)",
+  "seed_data_creation": "Tests create data prefixed TEST_ and clean up on teardown. UI test residuals (TEST_UI_*) manually purged from mongo after run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest suite at /app/backend/tests/test_bastion_features.py is reusable — run with `pytest backend/tests -v`. It depends on: (a) local sshd listening on 127.0.0.1:2222 (restart via `mkdir -p /run/sshd && /usr/sbin/sshd -f /app/sshd_test/sshd_config`), (b) the seeded reverse agent gw-minha-maquina (id 12243e1b-...), direct agent jump-vpn (id 044677e4-...) and device dev-2-hops (id 70495b4f-...), (c) the global SSH key in /api/ssh-key must not be overwritten. If deleting any of these, patch the test constants at the top of the file.",
+  "rca of the issue": "n/a — no defects surfaced"
+}

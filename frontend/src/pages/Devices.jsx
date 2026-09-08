@@ -10,9 +10,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
-import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap } from "lucide-react";
+import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, KeyRound } from "lucide-react";
+import { ImportDevicesDialog } from "@/components/ImportDevicesDialog";
 
-const emptyDevice = { name: "", host: "", port: 22, username: "", tags: "", agent_id: "", description: "" };
+export const DEVICE_TYPES = [
+  ["linux", "Linux / Unix"], ["mikrotik", "Mikrotik RouterOS"], ["cisco", "Cisco IOS/NX-OS"], ["huawei", "Huawei VRP"],
+  ["ubiquiti", "Ubiquiti"], ["datacom", "Datacom DmOS"], ["zte", "ZTE"], ["other", "Outro (legado)"],
+];
+const typeLabel = (t) => DEVICE_TYPES.find(x => x[0] === t)?.[1] || t || "linux";
+
+const emptyDevice = { name: "", host: "", port: 22, username: "", password: "", clear_password: false, device_type: "linux", tags: "", agent_id: "", description: "" };
 
 export default function Devices() {
   const [devices, setDevices] = useState([]);
@@ -22,6 +29,7 @@ export default function Devices() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyDevice);
+  const [importOpen, setImportOpen] = useState(false);
   const nav = useNavigate();
 
   const load = async () => {
@@ -33,7 +41,7 @@ export default function Devices() {
   const openNew = () => { setEditing(null); setForm(emptyDevice); setOpen(true); };
   const openEdit = (d) => {
     setEditing(d);
-    setForm({ ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "" });
+    setForm({ ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", password: "", clear_password: false, device_type: d.device_type || "linux" });
     setOpen(true);
   };
 
@@ -42,7 +50,10 @@ export default function Devices() {
       name: form.name.trim(),
       host: form.host.trim(),
       port: Number(form.port) || 22,
-      username: form.username.trim() || "root",
+      username: form.username.trim(),
+      password: form.password || null,
+      clear_password: !!form.clear_password,
+      device_type: form.device_type || "linux",
       tags: form.tags.split(",").map(t => t.trim()).filter(Boolean),
       agent_id: form.agent_id || null,
       description: form.description || "",
@@ -88,10 +99,17 @@ export default function Devices() {
           <h1 className="font-heading text-3xl sm:text-4xl font-bold text-slate-100 mt-1">Equipamentos</h1>
           <p className="text-slate-400 mt-2 text-sm">Cadastre hosts com porta SSH customizada e associe a um agente proxy.</p>
         </div>
-        <Button onClick={openNew} data-testid="add-device-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
-          <Plus className="w-4 h-4 mr-2" /> Novo Equipamento
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)} data-testid="import-devices-btn"
+                  className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">
+            <Upload className="w-4 h-4 mr-2" /> Importar CSV
+          </Button>
+          <Button onClick={openNew} data-testid="add-device-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
+            <Plus className="w-4 h-4 mr-2" /> Novo Equipamento
+          </Button>
+        </div>
       </div>
+      <ImportDevicesDialog open={importOpen} onOpenChange={setImportOpen} onDone={load} />
 
       <div className="flex gap-3 mb-4 flex-wrap">
         <div className="relative">
@@ -117,6 +135,7 @@ export default function Devices() {
                 <th className="text-left px-4 py-3">Status</th>
                 <th className="text-left px-4 py-3">Nome</th>
                 <th className="text-left px-4 py-3">Host:Porta</th>
+                <th className="text-left px-4 py-3">Tipo</th>
                 <th className="text-left px-4 py-3">Usuário</th>
                 <th className="text-left px-4 py-3">Agente</th>
                 <th className="text-left px-4 py-3">Tags</th>
@@ -126,7 +145,7 @@ export default function Devices() {
             </thead>
             <tbody className="divide-y divide-[#1E293B]">
               {filtered.length === 0 && (
-                <tr><td colSpan={8} className="text-center py-10 text-slate-500 font-mono">Nenhum equipamento encontrado</td></tr>
+                <tr><td colSpan={9} className="text-center py-10 text-slate-500 font-mono">Nenhum equipamento encontrado</td></tr>
               )}
               {filtered.map(d => (
                 <tr key={d.id} data-testid={`device-row-${d.id}`} className="hover:bg-slate-900/40">
@@ -141,7 +160,12 @@ export default function Devices() {
                   </td>
                   <td className="px-4 py-3 text-slate-100 font-medium">{d.name}</td>
                   <td className="px-4 py-3 font-mono text-slate-300">{d.host}:{d.port}</td>
-                  <td className="px-4 py-3 font-mono text-slate-400">{d.username}</td>
+                  <td className="px-4 py-3 text-xs text-slate-400" data-testid={`device-type-${d.id}`}>{typeLabel(d.device_type)}</td>
+                  <td className="px-4 py-3 font-mono text-slate-400">
+                    <span className="inline-flex items-center gap-1.5">{d.username || <span className="text-slate-600">padrão</span>}
+                      {d.has_password && <KeyRound className="w-3 h-3 text-amber-400" title="senha própria" />}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-slate-400 text-xs">{agentName(d.agent_id)}</td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
@@ -190,9 +214,31 @@ export default function Devices() {
                 <Input data-testid="device-form-port" type="number" value={form.port} onChange={e => setForm({ ...form, port: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Usuário SSH</Label>
+                <Input data-testid="device-form-username" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} placeholder="vazio = usuário padrão" className="bg-[#05070A] border-[#1E293B] font-mono" />
+              </div>
+              <div>
+                <Label>Senha (RADIUS/TACACS)</Label>
+                <Input data-testid="device-form-password" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })}
+                       placeholder={editing?.has_password ? "•••••••• (mantida)" : "vazio = senha padrão / chave"} className="bg-[#05070A] border-[#1E293B] font-mono" />
+                {editing?.has_password && (
+                  <label className="flex items-center gap-2 mt-1 text-[11px] text-slate-400 cursor-pointer">
+                    <input type="checkbox" data-testid="device-form-clear-password" checked={form.clear_password} onChange={e => setForm({ ...form, clear_password: e.target.checked })} /> remover senha própria
+                  </label>
+                )}
+              </div>
+            </div>
             <div>
-              <Label>Usuário SSH</Label>
-              <Input data-testid="device-form-username" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} placeholder="root" className="bg-[#05070A] border-[#1E293B] font-mono" />
+              <Label>Tipo de equipamento</Label>
+              <Select value={form.device_type || "linux"} onValueChange={(v) => setForm({ ...form, device_type: v })}>
+                <SelectTrigger data-testid="device-form-type" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
+                  {DEVICE_TYPES.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <div className="text-[11px] text-slate-500 mt-1 font-mono">Equipamentos de rede habilitam algoritmos SSH legados e execução via shell no batch.</div>
             </div>
             <div>
               <Label>Agente Proxy (opcional)</Label>

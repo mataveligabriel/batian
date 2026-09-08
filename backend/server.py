@@ -5,13 +5,14 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 import os
+import re
 import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -22,11 +23,14 @@ from auth import (
 from models import (
     UserCreate, UserOut, LoginPayload,
     AgentCreate, Agent,
-    DeviceCreate, Device,
+    DeviceCreate, Device, DEVICE_TYPES,
     ScriptCreate, Script,
-    Session, BatchExecPayload, BatchResultItem, SshKeyConfig,
+    Session, BatchExecPayload, BatchResultItem, SshKeyConfig, BastionSettings,
 )
-from ssh_service import SSHClientWrapper, tcp_ping
+from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES
+import vault
+
+TUNNEL_BIND_HOST = os.environ.get("TUNNEL_BIND_HOST", "127.0.0.1")
 
 # ---------- Mongo ----------
 mongo_url = os.environ['MONGO_URL']
@@ -69,6 +73,8 @@ async def seed_admin():
 
 
 async def seed_sample_data():
+    if os.environ.get("SEED_SAMPLE_DATA", "false").lower() != "true":
+        return
     if await db.agents.count_documents({}) == 0:
         agents = [
             {"id": "agent-sp-01", "name": "Agente-SP-DC01", "location": "São Paulo - DC01",
@@ -185,33 +191,223 @@ async def delete_user(user_id: str, current: dict = Depends(require_admin)):
     return {"deleted": res.deleted_count}
 
 
+# ---------- Secrets helpers ----------
+SECRET_FIELDS = ("password", "agent_private_key")
+
+
+def _public(doc: dict) -> dict:
+    doc = dict(doc)
+    doc["has_password"] = bool(doc.get("password"))
+    for f in SECRET_FIELDS:
+        doc.pop(f, None)
+    doc.pop("_id", None)
+    doc.pop("clear_password", None)
+    return doc
+
+
+def _apply_secret(payload: dict, existing: Optional[dict], field: str = "password") -> dict:
+    """Encrypt new secret, keep the existing one when blank, drop it when clear flag is set."""
+    clear = payload.pop("clear_password", False)
+    new_val = payload.pop(field, None)
+    if clear:
+        payload[field] = ""
+    elif new_val:
+        payload[field] = vault.encrypt(new_val)
+    elif existing is not None:
+        payload[field] = existing.get(field, "")
+    else:
+        payload[field] = ""
+    return payload
+
+
+# ---------- Bastion settings ----------
+async def _bastion_settings() -> dict:
+    doc = await db.config.find_one({"key": "bastion"}, {"_id": 0})
+    if not doc:
+        doc = {"key": "bastion", "public_host": "", "ssh_port": 22, "ssh_user": "bastion",
+               "sync_token": os.urandom(16).hex()}
+        await db.config.insert_one(dict(doc))
+    if not doc.get("sync_token"):
+        doc["sync_token"] = os.urandom(16).hex()
+        await db.config.update_one({"key": "bastion"}, {"$set": {"sync_token": doc["sync_token"]}})
+    return doc
+
+
+@api.get("/bastion/settings")
+async def get_bastion_settings(_: dict = Depends(get_current_user)):
+    s = await _bastion_settings()
+    return {"public_host": s.get("public_host", ""), "ssh_port": s.get("ssh_port", 22),
+            "ssh_user": s.get("ssh_user", "bastion"), "tunnel_bind_host": TUNNEL_BIND_HOST}
+
+
+@api.put("/bastion/settings")
+async def put_bastion_settings(payload: BastionSettings, _: dict = Depends(require_admin)):
+    await _bastion_settings()
+    await db.config.update_one({"key": "bastion"}, {"$set": payload.model_dump()})
+    return {"ok": True}
+
+
+@api.get("/bastion/authorized-keys")
+async def bastion_authorized_keys(token: str = Query(...)):
+    s = await _bastion_settings()
+    if token != s["sync_token"]:
+        raise HTTPException(status_code=403, detail="Token inválido")
+    agents = await db.agents.find({"mode": "reverse", "agent_public_key": {"$ne": ""}}, {"_id": 0}).to_list(1000)
+    lines = []
+    for a in agents:
+        opts = f'restrict,port-forwarding,permitlisten="{TUNNEL_BIND_HOST}:{a.get("tunnel_port")}"'
+        lines.append(f'{opts} {a["agent_public_key"].strip()} bastion-agent-{a["id"]}')
+    return PlainTextResponse("\n".join(lines) + "\n")
+
+
+@api.get("/bastion/setup-script")
+async def bastion_setup_script(api_url: str = Query(...), _: dict = Depends(require_admin)):
+    s = await _bastion_settings()
+    user = s.get("ssh_user", "bastion")
+    script = f"""#!/usr/bin/env bash
+# SSH Bastion Central — preparação do servidor (rode como root no VPS onde o backend está rodando)
+# Cria o usuário que recebe os túneis reversos dos agentes e sincroniza as chaves automaticamente.
+set -e
+BASTION_USER="{user}"
+API_URL="{api_url.rstrip('/')}"
+SYNC_TOKEN="{s['sync_token']}"
+
+id -u "$BASTION_USER" >/dev/null 2>&1 || useradd -m -s /usr/sbin/nologin "$BASTION_USER"
+install -d -m 700 -o "$BASTION_USER" -g "$BASTION_USER" "/home/$BASTION_USER/.ssh"
+
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/90-bastion-central.conf <<EOF
+Match User $BASTION_USER
+    AllowTcpForwarding remote
+    GatewayPorts no
+    X11Forwarding no
+    PermitTTY no
+    ClientAliveInterval 30
+    ClientAliveCountMax 3
+EOF
+
+cat > /usr/local/bin/bastion-sync-keys.sh <<EOF
+#!/usr/bin/env bash
+TMP=\\$(mktemp)
+if curl -fsS "$API_URL/api/bastion/authorized-keys?token=$SYNC_TOKEN" -o "\\$TMP"; then
+  install -m 600 -o $BASTION_USER -g $BASTION_USER "\\$TMP" /home/$BASTION_USER/.ssh/authorized_keys
+fi
+rm -f "\\$TMP"
+EOF
+chmod +x /usr/local/bin/bastion-sync-keys.sh
+echo "* * * * * root /usr/local/bin/bastion-sync-keys.sh" > /etc/cron.d/bastion-sync-keys
+/usr/local/bin/bastion-sync-keys.sh
+
+sshd -t && (systemctl reload sshd 2>/dev/null || systemctl reload ssh)
+echo "Bastion pronto. Usuário $BASTION_USER aceita túneis reversos; chaves sincronizadas a cada minuto."
+"""
+    return {"script": script}
+
+
 # ---------- Agents ----------
+async def _agent_chain(agent_id: str) -> List[dict]:
+    """Return agents from the root (closest to bastion) down to agent_id."""
+    chain, seen, cur = [], set(), agent_id
+    while cur and cur not in seen:
+        seen.add(cur)
+        ag = await db.agents.find_one({"id": cur}, {"_id": 0})
+        if not ag:
+            raise RuntimeError("Agente da cadeia não encontrado")
+        chain.append(ag)
+        cur = ag.get("parent_agent_id")
+    chain.reverse()
+    return chain
+
+
+def _agent_hop(ag: dict, priv: str) -> Hop:
+    if ag.get("mode") == "reverse":
+        host, port = TUNNEL_BIND_HOST, int(ag.get("tunnel_port") or 0)
+    else:
+        host, port = ag.get("host", ""), int(ag.get("port") or 22)
+    pw = vault.decrypt(ag.get("password", ""))
+    return Hop(host, port, ag.get("username") or "root", private_key=priv or None,
+               password=pw or None, legacy=False, label=f"agente {ag['name']}")
+
+
+async def _next_tunnel_port() -> int:
+    docs = await db.agents.find({"tunnel_port": {"$ne": None}}, {"tunnel_port": 1}).to_list(5000)
+    used = {int(d["tunnel_port"]) for d in docs if d.get("tunnel_port")}
+    p = 20001
+    while p in used:
+        p += 1
+    return p
+
+
+def _gen_agent_keypair():
+    import asyncssh
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    return key.export_private_key().decode(), key.export_public_key().decode()
+
+
 @api.get("/agents")
 async def list_agents(_: dict = Depends(get_current_user)):
-    return await db.agents.find({}, {"_id": 0}).to_list(500)
+    docs = await db.agents.find({}, {"_id": 0}).to_list(500)
+    return [_public(d) for d in docs]
 
 
 @api.post("/agents")
 async def create_agent(payload: AgentCreate, _: dict = Depends(require_admin)):
-    a = Agent(**payload.model_dump())
+    data = _apply_secret(payload.model_dump(), None)
+    if data.get("parent_agent_id") == "":
+        data["parent_agent_id"] = None
+    a = Agent(**data)
     doc = a.model_dump()
+    if doc["mode"] == "reverse":
+        doc["tunnel_port"] = int(doc.get("tunnel_port") or await _next_tunnel_port())
+        priv, pub = _gen_agent_keypair()
+        doc["agent_private_key"] = vault.encrypt(priv)
+        doc["agent_public_key"] = pub
+        doc["host"] = doc.get("host") or "localhost"
     await db.agents.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
+    return _public(doc)
 
 
 @api.put("/agents/{agent_id}")
 async def update_agent(agent_id: str, payload: AgentCreate, _: dict = Depends(require_admin)):
-    res = await db.agents.update_one({"id": agent_id}, {"$set": payload.model_dump()})
-    if res.matched_count == 0:
+    existing = await db.agents.find_one({"id": agent_id}, {"_id": 0})
+    if not existing:
         raise HTTPException(status_code=404, detail="Agente não encontrado")
-    return await db.agents.find_one({"id": agent_id}, {"_id": 0})
+    if payload.parent_agent_id == agent_id:
+        raise HTTPException(status_code=400, detail="Agente não pode ser pai de si mesmo")
+    data = _apply_secret(payload.model_dump(), existing)
+    if data.get("parent_agent_id") == "":
+        data["parent_agent_id"] = None
+    if data["mode"] == "reverse":
+        data["tunnel_port"] = int(data.get("tunnel_port") or existing.get("tunnel_port") or await _next_tunnel_port())
+        if not existing.get("agent_public_key"):
+            priv, pub = _gen_agent_keypair()
+            data["agent_private_key"] = vault.encrypt(priv)
+            data["agent_public_key"] = pub
+    await db.agents.update_one({"id": agent_id}, {"$set": data})
+    return _public(await db.agents.find_one({"id": agent_id}, {"_id": 0}))
 
 
 @api.delete("/agents/{agent_id}")
 async def delete_agent(agent_id: str, _: dict = Depends(require_admin)):
     r = await db.agents.delete_one({"id": agent_id})
+    await db.agents.update_many({"parent_agent_id": agent_id}, {"$set": {"parent_agent_id": None}})
     return {"deleted": r.deleted_count}
+
+
+async def _ping_agent(ag: dict) -> Optional[float]:
+    priv, _, _ = await _get_ssh_key()
+    chain = await _agent_chain(ag["id"])
+    target = _agent_hop(chain[-1], priv)
+    if len(chain) == 1:
+        return await tcp_ping(target.host, target.port)
+    w = SSHClientWrapper([_agent_hop(a, priv) for a in chain[:-1]])
+    try:
+        await w.connect()
+        return await w.tcp_check(target.host, target.port)
+    except Exception:
+        return None
+    finally:
+        await w.close()
 
 
 @api.post("/agents/{agent_id}/ping")
@@ -219,11 +415,29 @@ async def ping_agent(agent_id: str, _: dict = Depends(get_current_user)):
     a = await db.agents.find_one({"id": agent_id}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Agente não encontrado")
-    lat = await tcp_ping(a["host"], a.get("port", 22))
+    lat = await _ping_agent(a)
     status = "online" if lat is not None else "offline"
     now = datetime.now(timezone.utc).isoformat()
     await db.agents.update_one({"id": agent_id}, {"$set": {"status": status, "latency_ms": lat, "last_seen": now if lat else a.get("last_seen")}})
     return {"agent_id": agent_id, "status": status, "latency_ms": lat}
+
+
+@api.post("/agents/{agent_id}/test")
+async def test_agent(agent_id: str, _: dict = Depends(get_current_user)):
+    """Full SSH login through the chain up to this agent."""
+    a = await db.agents.find_one({"id": agent_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Agente não encontrado")
+    priv, _, _ = await _get_ssh_key()
+    try:
+        chain = await _agent_chain(agent_id)
+        w = SSHClientWrapper([_agent_hop(x, priv) for x in chain])
+        await w.connect()
+        res = await w.run_command("hostname || echo ok", timeout=15)
+        await w.close()
+        return {"ok": True, "hops": [x["name"] for x in chain], "output": (res.get("stdout") or "").strip()[:500]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @api.get("/agents/{agent_id}/install-script")
@@ -231,49 +445,166 @@ async def install_script(agent_id: str, _: dict = Depends(get_current_user)):
     a = await db.agents.find_one({"id": agent_id}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Agente não encontrado")
-    key = await db.config.find_one({"key": "ssh_key"}) or {}
-    script = f"""#!/usr/bin/env bash
-# SSH Bastion Central - Instalador do Agente Remoto ({a['name']})
-# Cria túnel reverso persistente até o Bastion Central
+    if a.get("mode") != "reverse":
+        return {"mode": "direct", "bash": "", "powershell": "",
+                "note": "Agente em modo direto: o Bastion conecta diretamente em "
+                        f"{a.get('host')}:{a.get('port', 22)} (ou através do agente pai). Nenhum instalador necessário — "
+                        "apenas garanta que a chave global (ou usuário/senha) esteja autorizada nesse host."}
+    s = await _bastion_settings()
+    host, sport, suser = s.get("public_host") or "SEU_VPS_IP", s.get("ssh_port", 22), s.get("ssh_user", "bastion")
+    tport, lport = a.get("tunnel_port"), a.get("port", 22)
+    priv = vault.decrypt(a.get("agent_private_key", ""))
+    ssh_opts = (f'-N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 '
+                f'-o StrictHostKeyChecking=no -R {TUNNEL_BIND_HOST}:{tport}:localhost:{lport} -p {sport} {suser}@{host}')
+    bash = f"""#!/usr/bin/env bash
+# SSH Bastion Central — Agente Gateway "{a['name']}" (Linux/macOS)
+# Abre um túnel SSH reverso persistente até o Bastion. Requisito: servidor SSH local ativo na porta {lport}
+# (Linux: sudo apt install openssh-server | macOS: Ajustes > Geral > Compartilhamento > Login Remoto)
 set -e
-BASTION_HOST="{os.environ.get('BASTION_HOST','bastion.example.com')}"
-BASTION_PORT={os.environ.get('BASTION_PORT','22')}
-BASTION_USER="{os.environ.get('BASTION_USER','bastion')}"
-AGENT_ID="{a['id']}"
-mkdir -p /etc/bastion-agent
-cat > /etc/bastion-agent/tunnel.sh <<'EOF'
+DIR="$HOME/.bastion-agent"
+mkdir -p "$DIR" && chmod 700 "$DIR"
+cat > "$DIR/agent_key" <<'KEY'
+{priv}KEY
+chmod 600 "$DIR/agent_key"
+cat > "$DIR/tunnel.sh" <<EOF
 #!/usr/bin/env bash
-autossh -M 0 -N -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" \\
-  -R 0.0.0.0:0:localhost:22 \\
-  $BASTION_USER@$BASTION_HOST -p $BASTION_PORT
+while true; do
+  ssh {ssh_opts} -o UserKnownHostsFile=/dev/null -i "$DIR/agent_key"
+  sleep 5
+done
 EOF
-chmod +x /etc/bastion-agent/tunnel.sh
-echo "Agente {a['name']} configurado. Rode /etc/bastion-agent/tunnel.sh como serviço."
+chmod +x "$DIR/tunnel.sh"
+if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+  mkdir -p "$HOME/.config/systemd/user"
+  cat > "$HOME/.config/systemd/user/bastion-agent.service" <<EOF
+[Unit]
+Description=SSH Bastion Central Agent ({a['name']})
+After=network-online.target
+[Service]
+ExecStart=$DIR/tunnel.sh
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=default.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable --now bastion-agent.service
+  loginctl enable-linger "$USER" 2>/dev/null || true
+  echo "Serviço bastion-agent ativo (systemctl --user status bastion-agent)."
+else
+  nohup "$DIR/tunnel.sh" >"$DIR/tunnel.log" 2>&1 &
+  echo "Túnel iniciado em segundo plano (log: $DIR/tunnel.log)."
+fi
+echo "Agente {a['name']} -> {suser}@{host}:{sport} (túnel {TUNNEL_BIND_HOST}:{tport} no Bastion)."
 """
-    return {"script": script}
+    powershell = f"""# SSH Bastion Central — Agente Gateway "{a['name']}" (Windows, PowerShell como Administrador)
+# Requisito: OpenSSH Server instalado e ativo (Configurações > Aplicativos > Recursos opcionais > "Servidor OpenSSH"):
+#   Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+#   Set-Service sshd -StartupType Automatic; Start-Service sshd
+$Dir = "$env:USERPROFILE\\.bastion-agent"
+New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+@"
+{priv}"@ | Set-Content -Path "$Dir\\agent_key" -Encoding ascii -NoNewline
+icacls "$Dir\\agent_key" /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
+@"
+while (`$true) {{
+  ssh {ssh_opts} -o UserKnownHostsFile=NUL -i "$Dir\\agent_key"
+  Start-Sleep -Seconds 5
+}}
+"@ | Set-Content -Path "$Dir\\tunnel.ps1"
+$Action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Dir\\tunnel.ps1`""
+$Trigger = New-ScheduledTaskTrigger -AtLogOn
+Register-ScheduledTask -TaskName "BastionAgent" -Action $Action -Trigger $Trigger -Force | Out-Null
+Start-ScheduledTask -TaskName "BastionAgent"
+Write-Host "Agente {a['name']} iniciado -> {suser}@{host}:{sport} (túnel {TUNNEL_BIND_HOST}:{tport}). Verifique o status no painel."
+"""
+    return {"mode": "reverse", "bash": bash, "powershell": powershell, "tunnel_port": tport,
+            "public_key": a.get("agent_public_key", ""),
+            "note": "" if s.get("public_host") else "Configure o host público do Bastion em 'Configurar Bastion' antes de instalar."}
 
 
 # ---------- Devices ----------
+def _normalize_device(data: dict) -> dict:
+    if data.get("agent_id") == "":
+        data["agent_id"] = None
+    if data.get("device_type") not in DEVICE_TYPES:
+        data["device_type"] = "other"
+    return data
+
+
 @api.get("/devices")
 async def list_devices(_: dict = Depends(get_current_user)):
-    return await db.devices.find({}, {"_id": 0}).to_list(1000)
+    docs = await db.devices.find({}, {"_id": 0}).to_list(5000)
+    return [_public(d) for d in docs]
 
 
 @api.post("/devices")
 async def create_device(payload: DeviceCreate, _: dict = Depends(get_current_user)):
-    d = Device(**payload.model_dump())
-    doc = d.model_dump()
+    data = _normalize_device(_apply_secret(payload.model_dump(), None))
+    doc = Device(**data).model_dump()
     await db.devices.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
+    return _public(doc)
+
+
+@api.post("/devices/import")
+async def import_devices(payload: dict, _: dict = Depends(get_current_user)):
+    """Bulk import. payload = {"rows": [{name, host, port, username, password, device_type, tags, agent, description}]}"""
+    rows = payload.get("rows") or []
+    agents = await db.agents.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(1000)
+    agent_by_name = {a["name"].strip().lower(): a["id"] for a in agents}
+    agent_ids = {a["id"] for a in agents}
+    existing = await db.devices.find({}, {"_id": 0, "name": 1, "host": 1, "port": 1}).to_list(10000)
+    seen = {(d["name"].strip().lower(), d["host"].strip(), int(d.get("port") or 22)) for d in existing}
+    created, skipped, errors = 0, 0, []
+    to_insert = []
+    for i, r in enumerate(rows, start=1):
+        name = str(r.get("name") or "").strip()
+        host = str(r.get("host") or r.get("ip") or "").strip()
+        if not name or not host:
+            errors.append(f"Linha {i}: nome e host são obrigatórios")
+            continue
+        try:
+            port = int(str(r.get("port") or 22).strip() or 22)
+        except ValueError:
+            errors.append(f"Linha {i}: porta inválida '{r.get('port')}'")
+            continue
+        key = (name.lower(), host, port)
+        if key in seen:
+            skipped += 1
+            continue
+        agent_ref = str(r.get("agent") or r.get("agent_id") or "").strip()
+        agent_id = None
+        if agent_ref:
+            agent_id = agent_ref if agent_ref in agent_ids else agent_by_name.get(agent_ref.lower())
+            if not agent_id:
+                errors.append(f"Linha {i}: agente '{agent_ref}' não encontrado (device importado sem agente)")
+        tags_raw = r.get("tags") or ""
+        tags = [t.strip() for t in re.split(r"[;|,]", str(tags_raw)) if t.strip()] if not isinstance(tags_raw, list) else tags_raw
+        dtype = str(r.get("device_type") or r.get("type") or "linux").strip().lower()
+        pw = str(r.get("password") or "").strip()
+        doc = Device(**_normalize_device({
+            "name": name, "host": host, "port": port,
+            "username": str(r.get("username") or r.get("user") or "").strip(),
+            "password": vault.encrypt(pw) if pw else "",
+            "device_type": dtype, "tags": tags, "agent_id": agent_id,
+            "description": str(r.get("description") or "").strip(),
+        })).model_dump()
+        to_insert.append(doc)
+        seen.add(key)
+        created += 1
+    if to_insert:
+        await db.devices.insert_many(to_insert)
+    return {"created": created, "skipped": skipped, "errors": errors}
 
 
 @api.put("/devices/{device_id}")
 async def update_device(device_id: str, payload: DeviceCreate, _: dict = Depends(get_current_user)):
-    res = await db.devices.update_one({"id": device_id}, {"$set": payload.model_dump()})
-    if res.matched_count == 0:
+    existing = await db.devices.find_one({"id": device_id}, {"_id": 0})
+    if not existing:
         raise HTTPException(status_code=404, detail="Equipamento não encontrado")
-    return await db.devices.find_one({"id": device_id}, {"_id": 0})
+    data = _normalize_device(_apply_secret(payload.model_dump(), existing))
+    await db.devices.update_one({"id": device_id}, {"$set": data})
+    return _public(await db.devices.find_one({"id": device_id}, {"_id": 0}))
 
 
 @api.delete("/devices/{device_id}")
@@ -282,12 +613,28 @@ async def delete_device(device_id: str, _: dict = Depends(get_current_user)):
     return {"deleted": r.deleted_count}
 
 
+async def _ping_device(dev: dict) -> Optional[float]:
+    host, port = dev["host"], int(dev.get("port") or 22)
+    if not dev.get("agent_id"):
+        return await tcp_ping(host, port)
+    try:
+        hops, _ = await _device_hops(dev)
+        w = SSHClientWrapper(hops[:-1])
+        try:
+            await w.connect()
+            return await w.tcp_check(host, port)
+        finally:
+            await w.close()
+    except Exception:
+        return None
+
+
 @api.post("/devices/{device_id}/ping")
 async def ping_device(device_id: str, _: dict = Depends(get_current_user)):
     d = await db.devices.find_one({"id": device_id}, {"_id": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Equipamento não encontrado")
-    lat = await tcp_ping(d["host"], d.get("port", 22))
+    lat = await _ping_device(d)
     status = "online" if lat is not None else "offline"
     now = datetime.now(timezone.utc).isoformat()
     await db.devices.update_one({"id": device_id}, {"$set": {"status": status, "latency_ms": lat, "last_seen": now if lat else d.get("last_seen")}})
@@ -296,10 +643,13 @@ async def ping_device(device_id: str, _: dict = Depends(get_current_user)):
 
 @api.post("/devices/ping-all")
 async def ping_all_devices(_: dict = Depends(get_current_user)):
-    devs = await db.devices.find({}, {"_id": 0}).to_list(1000)
+    devs = await db.devices.find({}, {"_id": 0}).to_list(5000)
     results = []
+    sem = asyncio.Semaphore(20)
+
     async def _one(dv):
-        lat = await tcp_ping(dv["host"], dv.get("port", 22))
+        async with sem:
+            lat = await _ping_device(dv)
         st = "online" if lat is not None else "offline"
         await db.devices.update_one({"id": dv["id"]}, {"$set": {"status": st, "latency_ms": lat}})
         results.append({"device_id": dv["id"], "status": st, "latency_ms": lat})
@@ -316,35 +666,26 @@ async def get_ssh_key(_: dict = Depends(get_current_user)):
         "public_key": doc.get("public_key", ""),
         "default_username": doc.get("default_username", "root"),
         "has_key": bool(doc.get("private_key")),
+        "has_default_password": bool(doc.get("default_password")),
     }
 
 
 @api.put("/ssh-key")
 async def set_ssh_key(payload: SshKeyConfig, _: dict = Depends(require_admin)):
-    await db.config.update_one(
-        {"key": "ssh_key"},
-        {"$set": {
-            "private_key": payload.private_key,
-            "public_key": payload.public_key,
-            "default_username": payload.default_username,
-        }},
-        upsert=True,
-    )
-    return {"ok": True, "has_key": bool(payload.private_key)}
-
-
-@api.post("/ssh-key/generate")
-async def generate_ssh_key(_: dict = Depends(require_admin)):
-    import asyncssh
-    key = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
-    priv = key.export_private_key().decode()
-    pub = key.export_public_key().decode()
-    await db.config.update_one(
-        {"key": "ssh_key"},
-        {"$set": {"private_key": priv, "public_key": pub}},
-        upsert=True,
-    )
-    return {"private_key": priv, "public_key": pub}
+    existing = await db.config.find_one({"key": "ssh_key"}) or {}
+    update = {
+        "private_key": payload.private_key,
+        "public_key": payload.public_key,
+        "default_username": payload.default_username,
+    }
+    if payload.clear_default_password:
+        update["default_password"] = ""
+    elif payload.default_password:
+        update["default_password"] = vault.encrypt(payload.default_password)
+    else:
+        update["default_password"] = existing.get("default_password", "")
+    await db.config.update_one({"key": "ssh_key"}, {"$set": update}, upsert=True)
+    return {"ok": True, "has_key": bool(payload.private_key), "has_default_password": bool(update["default_password"])}
 
 
 # ---------- Scripts ----------
@@ -406,24 +747,27 @@ async def stats(_: dict = Depends(get_current_user)):
 # ---------- Batch execution ----------
 async def _get_ssh_key():
     doc = await db.config.find_one({"key": "ssh_key"}) or {}
-    return doc.get("private_key", ""), doc.get("default_username", "root")
+    return doc.get("private_key", ""), doc.get("default_username", "root"), vault.decrypt(doc.get("default_password", ""))
+
+
+async def _device_hops(dev: dict):
+    priv, default_user, default_pw = await _get_ssh_key()
+    hops: List[Hop] = []
+    if dev.get("agent_id"):
+        for ag in await _agent_chain(dev["agent_id"]):
+            hops.append(_agent_hop(ag, priv))
+    dtype = dev.get("device_type") or "linux"
+    pw = vault.decrypt(dev.get("password", "")) or default_pw
+    use_key = priv and (dtype == "linux" or not pw)
+    hops.append(Hop(dev["host"], int(dev.get("port") or 22), dev.get("username") or default_user,
+                    private_key=priv if use_key else None, password=pw or None,
+                    legacy=dtype in LEGACY_TYPES, label=dev["name"]))
+    return hops, dtype
 
 
 async def _connect_device(dev: dict) -> SSHClientWrapper:
-    priv, default_user = await _get_ssh_key()
-    jump_host = jump_port = jump_user = None
-    if dev.get("agent_id"):
-        ag = await db.agents.find_one({"id": dev["agent_id"]}, {"_id": 0})
-        if ag:
-            jump_host = ag.get("host")
-            jump_port = ag.get("port", 22)
-            jump_user = ag.get("username", "bastion")
-    wrapper = SSHClientWrapper(
-        host=dev["host"], port=dev.get("port", 22),
-        username=dev.get("username") or default_user,
-        private_key=priv or None,
-        jump_host=jump_host, jump_port=jump_port or 22, jump_user=jump_user,
-    )
+    hops, dtype = await _device_hops(dev)
+    wrapper = SSHClientWrapper(hops, device_type=dtype)
     await wrapper.connect()
     return wrapper
 

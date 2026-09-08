@@ -12,6 +12,8 @@ import { useAuth } from "@/context/AuthContext";
 export default function SshKey() {
   const [config, setConfig] = useState({ private_key: "", public_key: "", default_username: "root", has_key: false });
   const [busy, setBusy] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [clearPw, setClearPw] = useState(false);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
@@ -24,7 +26,10 @@ export default function SshKey() {
       await api.put("/ssh-key", {
         private_key: config.private_key, public_key: config.public_key,
         default_username: config.default_username || "root",
+        default_password: newPassword || null,
+        clear_default_password: clearPw,
       });
+      setNewPassword(""); setClearPw(false);
       toast.success("Chave SSH salva");
       await load();
     } catch (e) { toast.error(formatApiError(e)); }
@@ -64,6 +69,17 @@ export default function SshKey() {
           <div>
             <Label>Usuário padrão</Label>
             <Input data-testid="ssh-default-user" value={config.default_username || "root"} onChange={e => setConfig({ ...config, default_username: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+          </div>
+          <div className="mt-3">
+            <Label>Senha padrão (RADIUS/TACACS)</Label>
+            <Input data-testid="ssh-default-password" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)}
+                   placeholder={config.has_default_password ? "•••••••• (mantida — digite para trocar)" : "opcional"} className="bg-[#05070A] border-[#1E293B] font-mono" />
+            <div className="text-[11px] text-slate-500 mt-1 font-mono">Usada em todo equipamento sem senha própria. Nunca é exibida.</div>
+            {config.has_default_password && (
+              <label className="flex items-center gap-2 mt-2 text-xs text-slate-400 cursor-pointer">
+                <input type="checkbox" data-testid="ssh-clear-default-password" checked={clearPw} onChange={e => setClearPw(e.target.checked)} /> remover senha padrão
+              </label>
+            )}
           </div>
           <div className="mt-4 text-xs font-mono text-slate-500">
             Status: {config.has_key

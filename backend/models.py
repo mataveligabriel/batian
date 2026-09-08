@@ -39,9 +39,14 @@ class LoginPayload(BaseModel):
 class AgentCreate(BaseModel):
     name: str
     location: str = ""
-    host: str  # host that agent is reachable from (bastion side)
+    mode: str = "direct"  # direct (bastion reaches host:port) | reverse (agent opens reverse tunnel to bastion)
+    host: str = ""  # direct mode: host reachable from bastion (or from parent agent)
     port: int = 22
+    tunnel_port: Optional[int] = None  # reverse mode: port on bastion bound by the reverse tunnel
     username: str = "root"
+    password: Optional[str] = None  # write-only; empty keeps existing
+    clear_password: bool = False
+    parent_agent_id: Optional[str] = None  # chain: this agent is only reachable through the parent
     description: str = ""
 
 
@@ -50,15 +55,23 @@ class Agent(AgentCreate):
     status: str = "unknown"  # online | offline | unknown
     last_seen: Optional[str] = None
     latency_ms: Optional[float] = None
+    agent_public_key: str = ""
+    agent_private_key: str = ""  # encrypted; only exposed inside the installer script
     created_at: str = Field(default_factory=_now_iso)
 
 
 # ---------- Devices ----------
+DEVICE_TYPES = ["linux", "mikrotik", "cisco", "huawei", "ubiquiti", "datacom", "zte", "other"]
+
+
 class DeviceCreate(BaseModel):
     name: str
     host: str
     port: int = 22
-    username: str = "root"
+    username: str = ""
+    password: Optional[str] = None  # write-only; empty keeps existing
+    clear_password: bool = False
+    device_type: str = "linux"
     tags: List[str] = []
     agent_id: Optional[str] = None  # reference to Agent for ProxyJump
     description: str = ""
@@ -121,3 +134,11 @@ class SshKeyConfig(BaseModel):
     private_key: str = ""
     public_key: str = ""
     default_username: str = "root"
+    default_password: Optional[str] = None  # write-only (RADIUS/TACACS shared credential)
+    clear_default_password: bool = False
+
+
+class BastionSettings(BaseModel):
+    public_host: str = ""
+    ssh_port: int = 22
+    ssh_user: str = "bastion"

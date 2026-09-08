@@ -49,3 +49,13 @@ Sistema para acessar via SSH centenas de equipamentos em redes distintas atravé
 - Permissões por device/tag por operador
 - Alertas quando agente cai (webhook/email)
 - Grafo topológico de agentes → devices
+
+## Implemented (Jun 2026) — Cadeia de saltos, senhas, tipos, CSV, deploy
+- Agentes com modo `direct`/`reverse` (túnel reverso com tunnel_port auto ≥20001 e par de chaves ed25519 por agente) e `parent_agent_id` (cadeia multi-hop montada em `_device_hops`/`_agent_chain`)
+- Senha por device/agente + senha padrão global (Fernet via `vault.py`, derivada de JWT_SECRET; API só retorna `has_password`)
+- `device_type` → algoritmos legados (`LEGACY_ALGS`) e execução em shell no batch (`SHELL_EXEC_TYPES`, desliga paginação)
+- Endpoints: `/api/bastion/settings`, `/api/bastion/setup-script`, `/api/bastion/authorized-keys?token=`, `/api/agents/{id}/test`, `/api/agents/{id}/install-script` (bash + powershell), `/api/devices/import`
+- Ping de devices/agentes atravessa a cadeia (`tcp_check` via open_connection no último hop)
+- UI: Agents.jsx reescrito (modo, pai, instalador com abas, Configurar Bastion), Devices.jsx (tipo, senha, Importar CSV via `ImportDevicesDialog.jsx`), SshKey.jsx (senha padrão)
+- Deploy: `/app/deploy/` (docker-compose host-network, Caddy HTTPS, .env.example, README pt-BR), Dockerfiles em backend/ e frontend/; `SEED_SAMPLE_DATA` controla seeds de exemplo
+- Testes: iteration_2.json 100% (20 backend + 13 UI); suite reutilizável em /app/backend/tests/test_bastion_features.py
