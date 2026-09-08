@@ -6,17 +6,28 @@ serverless/containers gerenciados não recebem SSH de entrada — use um VPS (Ub
 1 vCPU / 2 GB já atende centenas de devices).
 
 ## 1. Pré-requisitos no VPS
+**Ubuntu 22.04/24.04**
 ```bash
 apt update && apt install -y docker.io docker-compose-v2 git curl
 ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw enable
 ```
+**Debian 11/12**
+```bash
+apt update && apt install -y ca-certificates curl gnupg git ufw
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+apt update && apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw enable
+```
+No Debian 11, confira se `/etc/ssh/sshd_config` contém `Include /etc/ssh/sshd_config.d/*.conf` (o script de preparação do Bastion depende disso).
 - DNS: aponte `bastion.seudominio.com` (A) para o IP do VPS (HTTPS automático via Let's Encrypt).
 - Sem domínio? Use o IP em `BASTION_DOMAIN=http://IP_DO_VPS` e `PUBLIC_URL=http://IP_DO_VPS` (sem TLS).
 
 ## 2. Código e configuração
 ```bash
 git clone <SEU_REPO> /opt/bastion && cd /opt/bastion/deploy
-cp .env.example .env
+cp env.example .env
 nano .env        # PUBLIC_URL, BASTION_DOMAIN, JWT_SECRET, ADMIN_EMAIL, ADMIN_PASSWORD, CORS_ORIGINS
 ```
 Gere o segredo: `openssl rand -hex 32`.
