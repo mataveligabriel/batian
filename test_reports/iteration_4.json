@@ -1,0 +1,23 @@
+{
+  "summary": "Frontend-only regression for persistent SSH terminal sessions across navigation. All 8 requested flows passed. Terminal survives navigation (proven with shell state MARK=KEEP-1 -> echo STILL-KEEP-1 after nav-devices/agents/sessions and back). Sidebar badge tracks open sessions correctly (1 -> 2 -> 1 after close). /terminal/:deviceId redirects to /terminal without duplicating an existing tab (connect-ssh from Devices row works). Reconnect flow shows ERRO status and reconnect button for unreachable host (192.0.2.1); clicking it triggers a new attempt. Regression: /dashboard, /devices, /batch, /agents, /ssh-key, /sessions, /users all render inside Layout. Operator role is redirected away from /users to /dashboard and nav-users item is hidden. Zero page/console errors, no xterm 'dimensions' TypeError, no runtime error overlay.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_4.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "TerminalWorkspace picker only loads devices when the picker opens (fine), but there's no loading spinner/state; users may see empty picker briefly on slow networks - minor UX.",
+    "TerminalPane useEffect depends on [device.id, generation]; disposing and re-opening the terminal on reconnect is correct, but note the previous scrollback is lost on reconnect (acceptable, just a UX note).",
+    "In pages/Terminal.jsx, when deviceId doesn't match any device, the tab is not opened but user still lands on /terminal. That is acceptable given the toast error."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped)", "frontend": "100%"},
+  "test_credentials": "admin@sshcentral.io / admin123 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Created a temporary device 'TEST_unreach' (192.0.2.1) and a temporary operator user (test_operator@sshcentral.io) to validate the reconnect flow and operator role redirect; both were deleted at the end of the run. The lab devices dev-2-hops, lab-direto, lab-via-agente and agents gw-minha-maquina/jump-vpn were preserved.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Terminal persistence feature is stable. If testing further, remember Cloudflare returns 403 (error 1010) if a device is created via API POST with host '10.255.255.1'; use 192.0.2.1 (TEST-NET-1) instead. Local sshd runs at 127.0.0.1:2222; restart with `mkdir -p /run/sshd && /usr/sbin/sshd -f /app/sshd_test/sshd_config` if needed. Data-testids used: nav-terminal, nav-terminal-badge, terminal-page, terminal-pane-<id>, terminal-status-<id>, xterm-<id>, tab-<id>, close-tab-<id>, add-tab-btn, picker-device-<id>, reconnect-<id>, connect-ssh-<id>."
+}

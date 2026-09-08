@@ -59,3 +59,10 @@ Sistema para acessar via SSH centenas de equipamentos em redes distintas atravé
 - UI: Agents.jsx reescrito (modo, pai, instalador com abas, Configurar Bastion), Devices.jsx (tipo, senha, Importar CSV via `ImportDevicesDialog.jsx`), SshKey.jsx (senha padrão)
 - Deploy: `/app/deploy/` (docker-compose host-network, Caddy HTTPS, .env.example, README pt-BR), Dockerfiles em backend/ e frontend/; `SEED_SAMPLE_DATA` controla seeds de exemplo
 - Testes: iteration_2.json 100% (20 backend + 13 UI); suite reutilizável em /app/backend/tests/test_bastion_features.py
+
+## Implemented (Jun 2026) — Sessões de terminal persistentes + deploy fixes
+- Layout virou rota compartilhada (`<Route element={<ProtectedShell/>}>` + `Outlet`); `TerminalWorkspace` vive no Layout, sempre montado, oculto via visibility fora de `/terminal`
+- `TerminalContext` (tabs/active/openTab/closeTab); `pages/Terminal.jsx` é só rota fina (`/terminal/:deviceId` abre aba e redireciona para `/terminal`)
+- Badge de sessões abertas no menu, botão Reconectar por aba
+- Deploy: requirements.txt mínimo (sem pacotes internos), frontend Dockerfile sem exigir yarn.lock, `deploy/env.example` (não `.env.example` — gitignore), README com Debian
+- Testes: iteration_3 (deps/regressão backend 100%), iteration_4 (persistência UI 100%)

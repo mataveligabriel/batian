@@ -2,6 +2,7 @@ import React, { useEffect } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { TerminalProvider } from "@/context/TerminalContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Layout from "@/components/Layout";
 import Login from "@/pages/Login";
@@ -20,10 +21,12 @@ function RootRedirect() {
   return <Navigate to={user ? "/dashboard" : "/login"} replace />;
 }
 
-function ProtectedShell({ children, adminOnly }) {
+function ProtectedShell() {
   return (
-    <ProtectedRoute adminOnly={adminOnly}>
-      <Layout>{children}</Layout>
+    <ProtectedRoute>
+      <TerminalProvider>
+        <Layout />
+      </TerminalProvider>
     </ProtectedRoute>
   );
 }
@@ -35,15 +38,17 @@ function App() {
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route path="/login" element={<Login />} />
-          <Route path="/dashboard" element={<ProtectedShell><Dashboard /></ProtectedShell>} />
-          <Route path="/devices" element={<ProtectedShell><Devices /></ProtectedShell>} />
-          <Route path="/terminal" element={<ProtectedShell><Terminal /></ProtectedShell>} />
-          <Route path="/terminal/:deviceId" element={<ProtectedShell><Terminal /></ProtectedShell>} />
-          <Route path="/batch" element={<ProtectedShell><Batch /></ProtectedShell>} />
-          <Route path="/agents" element={<ProtectedShell><Agents /></ProtectedShell>} />
-          <Route path="/ssh-key" element={<ProtectedShell><SshKey /></ProtectedShell>} />
-          <Route path="/sessions" element={<ProtectedShell><Sessions /></ProtectedShell>} />
-          <Route path="/users" element={<ProtectedShell adminOnly><Users /></ProtectedShell>} />
+          <Route element={<ProtectedShell />}>
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/devices" element={<Devices />} />
+            <Route path="/terminal" element={<Terminal />} />
+            <Route path="/terminal/:deviceId" element={<Terminal />} />
+            <Route path="/batch" element={<Batch />} />
+            <Route path="/agents" element={<Agents />} />
+            <Route path="/ssh-key" element={<SshKey />} />
+            <Route path="/sessions" element={<Sessions />} />
+            <Route path="/users" element={<ProtectedRoute adminOnly><Users /></ProtectedRoute>} />
+          </Route>
         </Routes>
       </BrowserRouter>
     </AuthProvider>

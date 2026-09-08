@@ -1,7 +1,9 @@
 import React from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
+import { TerminalWorkspace } from "@/components/TerminalWorkspace";
+import { useTerminal } from "@/context/TerminalContext";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
   History, Users as UsersIcon, LogOut, ShieldCheck,
@@ -18,9 +20,11 @@ const NAV = [
   { to: "/users", icon: UsersIcon, label: "Usuários", adminOnly: true, testid: "nav-users" },
 ];
 
-export default function Layout({ children }) {
+export default function Layout() {
   const { user, logout } = useAuth();
-  const nav = useNavigate();
+  const { tabs } = useTerminal();
+  const { pathname } = useLocation();
+  const onTerminal = pathname.startsWith("/terminal");
 
   return (
     <div className="min-h-screen flex bg-[#090D14]">
@@ -52,6 +56,9 @@ export default function Layout({ children }) {
             >
               <item.icon className="w-4 h-4" />
               <span>{item.label}</span>
+              {item.to === "/terminal" && tabs.length > 0 && (
+                <span data-testid="nav-terminal-badge" className="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">{tabs.length}</span>
+              )}
             </NavLink>
           ))}
         </nav>
@@ -74,8 +81,11 @@ export default function Layout({ children }) {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 min-w-0 flex flex-col">
-        {children}
+      <main className="flex-1 min-w-0 flex flex-col relative">
+        <div className={`flex-1 min-h-0 flex flex-col ${onTerminal ? "hidden" : ""}`}>
+          <Outlet />
+        </div>
+        <TerminalWorkspace visible={onTerminal} />
       </main>
       <Toaster theme="dark" richColors position="top-right" />
     </div>
