@@ -1,0 +1,9 @@
+Port 2222
+ListenAddress 127.0.0.1
+HostKey /app/sshd_test/host_key
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitRootLogin yes
+AuthorizedKeysFile /root/.ssh/authorized_keys
+PidFile /app/sshd_test/sshd.pid
+UsePAM no

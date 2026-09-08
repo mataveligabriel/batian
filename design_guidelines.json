@@ -1,0 +1,157 @@
+{
+  "project_name": "SSH Bastion Central - Remoto NOC & Gestão de Equipamentos",
+  "language": "pt-BR",
+  "app_type": "dashboard",
+  "theme": "Dark IDE / Network Operations Center (NOC) Terminal Aesthetic",
+  "identity": {
+    "persona": "E1 Creative Designer - Tactical Network Operations Console",
+    "tone": "Profissional, conciso, ultra-denso em informações, estético e técnico como Warp / Terminus / TablePlus",
+    "archetype": "PERFORMANCE PRO & SWISS HIGH-CONTRAST (Obsidian Tech)"
+  },
+  "typography": {
+    "heading_font": "Outfit, system-ui, sans-serif",
+    "body_font": "DM Sans, system-ui, sans-serif",
+    "code_font": "JetBrains Mono, Fira Code, Menlo, monospace",
+    "hierarchy": {
+      "h1": "text-3xl sm:text-4xl font-bold tracking-tight text-slate-100",
+      "h2": "text-xl sm:text-2xl font-semibold tracking-tight text-slate-200",
+      "h3": "text-lg font-medium text-slate-300",
+      "h4_card_title": "text-sm font-semibold uppercase tracking-wider text-slate-400",
+      "body": "text-sm text-slate-300 leading-relaxed",
+      "small_code": "text-xs font-mono text-emerald-400"
+    }
+  },
+  "colors": {
+    "background_main": "#090D14",
+    "background_card": "#111722",
+    "background_panel": "#161E2D",
+    "background_terminal": "#05070A",
+    "border": "#1E293B",
+    "border_highlight": "#334155",
+    "primary": {
+      "default": "#007AFF",
+      "hover": "#0062CC",
+      "text": "#FFFFFF",
+      "glow": "rgba(0, 122, 255, 0.25)"
+    },
+    "terminal": {
+      "background": "#0A0E17",
+      "text": "#E2E8F0",
+      "prompt": "#10B981",
+      "command": "#60A5FA",
+      "error": "#F87171",
+      "selection": "rgba(0, 122, 255, 0.3)"
+    },
+    "status": {
+      "online": "#10B981",
+      "online_bg": "rgba(16, 185, 129, 0.12)",
+      "offline": "#EF4444",
+      "offline_bg": "rgba(239, 68, 68, 0.12)",
+      "warning_latency": "#F59E0B",
+      "warning_bg": "rgba(245, 158, 11, 0.12)",
+      "tunnel_active": "#8B5CF6",
+      "tunnel_bg": "rgba(139, 92, 246, 0.12)"
+    },
+    "text": {
+      "primary": "#F8FAFC",
+      "secondary": "#94A3B8",
+      "muted": "#64748B"
+    }
+  },
+  "spacing_and_layout": {
+    "philosophy": "Alta densidade visual (Mode B Dashboard), zero espaço desperdiçado, bordas de 1px definidas com padding interno generoso p-4/p-6 para evitar colisões.",
+    "grid_system": "grid grid-cols-1 md:grid-cols-4 lg:grid-cols-12 gap-4",
+    "cards_style": "bg-[#111722] border border-[#1E293B] rounded-lg shadow-sm hover:border-[#334155] transition-colors"
+  },
+  "key_functionalities": [
+    {
+      "id": "auth_login",
+      "name": "Tela de Autenticação JWT",
+      "description": "Login com Email, Senha e Seleção de Perfil (Admin / Operador) em português.",
+      "path": "/login"
+    },
+    {
+      "id": "dashboard_overview",
+      "name": "Painel Principal NOC (Dashboard)",
+      "description": "Status de pings em tempo real, total de equipamentos, túneis de agentes ativos, busca por tags e sessões recentes.",
+      "path": "/dashboard"
+    },
+    {
+      "id": "devices_inventory",
+      "name": "Gestão de Equipamentos (Devices)",
+      "description": "Tabela e cards detalhados com IP, porta SSH customizada, agente proxy associado, status de conexão, atalho para abrir terminal SSH e modal de edição/criação.",
+      "path": "/devices"
+    },
+    {
+      "id": "ssh_terminal_workspace",
+      "name": "Terminal SSH Interativo em Abas (xterm.js aesthetic)",
+      "description": "Workspace com suporte a múltiplos equipamentos conectados simultaneamente em abas, comandos rápidos, saída interativa simulada, atalhos de limpa/split/fullscreen.",
+      "path": "/terminal"
+    },
+    {
+      "id": "batch_script_runner",
+      "name": "Executador de Scripts em Lote",
+      "description": "Seleção múltipla de equipamentos por tag ou grupo, escolha/edição de script shell e execução paralela com logs de stdout/stderr por equipamento.",
+      "path": "/batch-execution"
+    },
+    {
+      "id": "agents_tunnels_manager",
+      "name": "Agentes Remotos & Túneis Reversos",
+      "description": "Gerenciamento dos proxies instalados nas redes remotas sem VPN. Mostra ping, porta do túnel reverso e script de instalação `curl -sSL ... | bash`.",
+      "path": "/agents"
+    },
+    {
+      "id": "ssh_keys_config",
+      "name": "Chaves SSH e Credenciais Globais",
+      "description": "Gerenciamento de chave privada/pública global SSH do Bastion, gerador de chaves e configuração de credenciais padrão.",
+      "path": "/ssh-keys"
+    },
+    {
+      "id": "tags_groups",
+      "name": "Tags e Grupos de Equipamentos",
+      "description": "Criação e gerenciamento de tags coloridas (ex: 'Roteadores-SP', 'Datacenter-RJ', 'Cisco-IOS', 'Filial-MG').",
+      "path": "/tags"
+    },
+    {
+      "id": "session_history_audit",
+      "name": "Histórico de Sessões & Auditoria",
+      "description": "Log completo de quem acessou qual equipamento, agente utilizado, data/hora e duração da sessão SSH.",
+      "path": "/history"
+    },
+    {
+      "id": "user_management",
+      "name": "Gestão de Usuários (Apenas Admin)",
+      "description": "Controle de operadores, concessão de permissões de acesso a equipamentos específicos e estatísticas por usuário.",
+      "path": "/users"
+    }
+  ],
+  "image_urls": [
+    {
+      "category": "datacenter_background",
+      "url": "https://images.unsplash.com/photo-1762267683517-6e9bc20675e9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjh8MHwxfHNlYXJjaHxfYXJ0c3RyZWFrc3x8ZW58MHx8fDE3ODg5MDEwNTR8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Data center dark tech light streak overlay for login background"
+    },
+    {
+      "category": "soundboard_tech",
+      "url": "https://images.unsplash.com/photo-1720962158924-6b1d12429ffd?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjh8MHwxfHNlYXJjaHw0fHxkYXRhY2VudGVyJTIwc2VydmVyJTIwcmFjayUyMG5ldHdvcmslMjBkYXJrJTIwdGVjaHxlbnwwfHx8fDE3ODg5MDEwNTR8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Control panel grid pattern representation"
+    }
+  ],
+  "instructions_to_main_agent": [
+    "Use standard React .js / .jsx file structure (not TypeScript .tsx).",
+    "Keep all text copy strictly in Brazilian Portuguese (PT-BR) as requested.",
+    "Implement the xterm.js look-and-feel for the Terminal component using crisp monospace typography, simulated WebSocket connection status indicator, colored SSH prompts (e.g., `root@router-sp01:~#`), and multi-tab management.",
+    "Ensure every interactive component has explicit `data-testid` attributes (e.g., `data-testid=\"connect-ssh-button-1\"`, `data-testid=\"execute-batch-script-btn\"`, `data-testid=\"device-tag-badge\"`).",
+    "Use Lucide-react or Radix icons for clear network/device iconography (Server, Terminal, Shield, Cpu, Activity, Network, Key, Layers, Users).",
+    "DO NOT use transparent header/dropdowns. Use semi-opaque dark solid panels with heavy border contrast (`bg-[#111722]` with `border-[#1E293B]`).",
+    "Provide interactive state feedback with toast notifications using `sonner` when connecting SSH, saving script, creating agent tunnel, or rotating keys.",
+    "Include sample seed data for remote agents (e.g., Agente-SP-DC01, Agente-RJ-Filial, Agente-MG-Telecom), network devices with custom SSH ports (22, 2222, 8022, 10022), tags, and script templates (e.g. Backup Config, Check Ping, Restart BGP, Syslog Pull)."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "Avoid generic centered layouts or plain light backgrounds. Maintain a dark, dense NOC engineer terminal theme.",
+    "Hover states must be explicit: `hover:bg-slate-800 hover:text-white transition-colors`.",
+    "Grid children must be direct children of grid containers.",
+    "Never use AI assistant emojis in icons or buttons. Use official SVG icon packages like lucide-react.",
+    "Ensure clean navigation header/sidebar with operational counts (e.g. '3 Equipamentos Conectados no Terminal')."
+  ]
+}

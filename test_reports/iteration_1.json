@@ -1,0 +1,33 @@
+{
+  "summary": "Backend smoke + functional tests for SSH Bastion Central MVP. Executed 33 checks across auth (JWT Bearer), devices CRUD + ping + ping-all, agents CRUD + install-script, ssh-key (get/generate/put), scripts CRUD, batch execute (resilient with fake hosts), sessions, stats, admin-only routes with operator 403 check, and WebSocket terminal (valid+invalid device_id, token auth). All checks passed. Fake seed hosts fail SSH gracefully via error messages, no 500s observed.",
+  "tested_scope": ["backend", "auth", "integration"],
+  "passed": [
+    "POST /api/auth/login (admin) returns token+user(role=admin)",
+    "POST /api/auth/login invalid -> 401",
+    "GET /api/auth/me with Bearer -> 200; without -> 401",
+    "GET /api/devices returns >=4 seeded devices",
+    "POST /api/devices with custom port 2222 + tags",
+    "PUT /api/devices/{id} updates port to 2223",
+    "POST /api/devices/{id}/ping returns 200 on fake host (offline, no 500)",
+    "POST /api/devices/ping-all returns list, no 500",
+    "DELETE /api/devices/{id} deleted=1",
+    "GET /api/agents returns >=3 seed",
+    "POST /api/agents (admin) creates agent",
+    "GET /api/agents/{id}/install-script contains agent name",
+    "GET /api/ssh-key returns config",
+    "POST /api/ssh-key/generate creates RSA pair; subsequent GET has_key=true",
+    "PUT /api/ssh-key saves custom keys",
+    "GET /api/scripts returns >=3 seed; POST + DELETE work",
+    "POST /api/batch/execute returns {results:[...]} with ok=false + error for offline devices, no 500",
+    "GET /api/sessions returns list (includes batch session logged after batch execute)",
+    "GET /api/stats returns all 7 required fields",
+    "GET /api/users admin -> 200; operator -> 403; POST /api/agents as operator -> 403; POST /api/ssh-key/generate as operator -> 403",
+    "WS /api/ws/terminal/{invalid_id}?token=... -> type=error msg + close, no server crash",
+    "WS /api/ws/terminal/{valid_id}?token=... -> first frame type=status, then type=error when SSH fails on fake host (server stays up)"
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only request)"},
+  "retest_needed": false,
+  "full_testing_deferred": true
+}
