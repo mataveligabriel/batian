@@ -26,9 +26,11 @@ from models import (
     DeviceCreate, Device, DEVICE_TYPES,
     ScriptCreate, Script,
     Session, BatchExecPayload, BatchResultItem, SshKeyConfig, BastionSettings,
+    AutomationSettings, BackupRunPayload,
 )
 from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES
 import vault
+import automation
 
 TUNNEL_BIND_HOST = os.environ.get("TUNNEL_BIND_HOST", "127.0.0.1")
 
@@ -52,6 +54,8 @@ async def startup():
     await db.agents.create_index("name")
     await seed_admin()
     await seed_sample_data()
+    await db.backups.create_index([("device_id", 1), ("created_at", -1)])
+    scheduler.start()
 
 
 async def seed_admin():
@@ -817,6 +821,165 @@ async def batch_execute(payload: BatchExecPayload, user: dict = Depends(get_curr
     return {"results": results}
 
 
+# ---------- Automation: settings, alerts, backups, scheduler ----------
+async def _ping_everything() -> List[dict]:
+    """Ping all agents then devices through their chains; return status transitions."""
+    transitions: List[dict] = []
+    now = datetime.now(timezone.utc).isoformat()
+    agents = await db.agents.find({}, {"_id": 0}).to_list(1000)
+    sem = asyncio.Semaphore(10)
+
+    async def _ag(a):
+        async with sem:
+            lat = await _ping_agent(a)
+        st = "online" if lat is not None else "offline"
+        await db.agents.update_one({"id": a["id"]}, {"$set": {"status": st, "latency_ms": lat, "last_seen": now if lat else a.get("last_seen")}})
+        if a.get("status") in ("online", "offline") and a.get("status") != st:
+            transitions.append({"kind": "agent", "name": a["name"], "status": st,
+                                "detail": f"{a.get('location', '')} · {'túnel reverso porta ' + str(a.get('tunnel_port')) if a.get('mode') == 'reverse' else a.get('host', '')}"})
+    await asyncio.gather(*[_ag(a) for a in agents])
+
+    devs = await db.devices.find({}, {"_id": 0}).to_list(5000)
+
+    async def _dv(d):
+        async with sem:
+            lat = await _ping_device(d)
+        st = "online" if lat is not None else "offline"
+        await db.devices.update_one({"id": d["id"]}, {"$set": {"status": st, "latency_ms": lat, "last_seen": now if lat else d.get("last_seen")}})
+        if d.get("status") in ("online", "offline") and d.get("status") != st:
+            transitions.append({"kind": "device", "name": d["name"], "status": st, "detail": f"{d['host']}:{d.get('port', 22)}"})
+    await asyncio.gather(*[_dv(d) for d in devs])
+    return transitions
+
+
+async def _backup_device(dev: dict) -> dict:
+    cmd = automation.backup_command_for(dev)
+    if not cmd:
+        return {"device_id": dev["id"], "device_name": dev["name"], "ok": False, "skipped": True,
+                "error": "Sem comando de backup para este tipo (defina em 'comando de backup')"}
+    try:
+        c = await _connect_device(dev)
+        try:
+            res = await c.run_command(cmd, timeout=180)
+        finally:
+            await c.close()
+        out = res["stdout"] if isinstance(res["stdout"], str) else res["stdout"].decode("utf-8", "replace")
+        if not res["ok"] or not out.strip():
+            err = (res.get("stderr") or "").strip() or "Saída vazia"
+            return await automation.store_backup(db, dev, "", False, err)
+        return await automation.store_backup(db, dev, out, True)
+    except Exception as e:
+        return await automation.store_backup(db, dev, "", False, str(e))
+
+
+async def _backup_many(device_ids: Optional[List[str]] = None) -> List[dict]:
+    q = {"id": {"$in": device_ids}} if device_ids else {"backup_enabled": {"$ne": False}}
+    devs = await db.devices.find(q, {"_id": 0}).to_list(5000)
+    if not device_ids:
+        devs = [d for d in devs if automation.backup_command_for(d)]
+    sem = asyncio.Semaphore(5)
+
+    async def _one(d):
+        async with sem:
+            return await _backup_device(d)
+    results = await asyncio.gather(*[_one(d) for d in devs])
+    return [{k: v for k, v in r.items() if k != "content"} for r in results]
+
+
+scheduler = automation.Scheduler(db, _ping_everything, _backup_many)
+
+
+@api.get("/automation/settings")
+async def get_automation_settings(_: dict = Depends(get_current_user)):
+    s = await automation.get_settings(db)
+    out = automation.public_settings(s)
+    out["last_ping"] = scheduler.last_ping.isoformat() if scheduler.last_ping else None
+    out["ping_running"] = scheduler.busy
+    return out
+
+
+@api.put("/automation/settings")
+async def put_automation_settings(payload: AutomationSettings, _: dict = Depends(require_admin)):
+    existing = await automation.get_settings(db)
+    data = payload.model_dump()
+    clear = data.pop("clear_telegram_token", False)
+    tok = data.pop("telegram_bot_token", None)
+    data["telegram_bot_token"] = "" if clear else (vault.encrypt(tok) if tok else existing.get("telegram_bot_token", ""))
+    data["ping_interval_min"] = max(1, int(data["ping_interval_min"]))
+    data["backup_hour"] = min(23, max(0, int(data["backup_hour"])))
+    await db.config.update_one({"key": "automation"}, {"$set": data}, upsert=True)
+    return automation.public_settings(await automation.get_settings(db))
+
+
+@api.post("/automation/test-alert")
+async def test_alert(_: dict = Depends(require_admin)):
+    res = await automation.send_alert(db, "✅ SSH Bastion Central", "Alerta de teste — canal de notificações funcionando.")
+    return res
+
+
+@api.post("/automation/ping-now")
+async def ping_now(_: dict = Depends(get_current_user)):
+    if scheduler.busy:
+        return {"started": False, "reason": "Ping já em andamento"}
+    asyncio.create_task(scheduler.tick(force_ping=True))
+    return {"started": True}
+
+
+@api.get("/alerts")
+async def list_alerts(_: dict = Depends(get_current_user), limit: int = 50):
+    return await db.alerts.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+
+
+@api.post("/backups/run")
+async def run_backups(payload: BackupRunPayload, user: dict = Depends(get_current_user)):
+    results = await _backup_many(payload.device_ids)
+    return {"results": results}
+
+
+@api.get("/backups")
+async def list_backups(_: dict = Depends(get_current_user), device_id: Optional[str] = None, limit: int = 200):
+    q = {"device_id": device_id} if device_id else {}
+    return await db.backups.find(q, {"_id": 0, "content": 0}).sort("created_at", -1).to_list(limit)
+
+
+@api.get("/backups/summary")
+async def backups_summary(_: dict = Depends(get_current_user)):
+    pipeline = [
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$device_id", "device_name": {"$first": "$device_name"}, "device_type": {"$first": "$device_type"},
+                    "last_at": {"$first": "$created_at"}, "last_ok": {"$first": "$ok"}, "last_error": {"$first": "$error"},
+                    "count": {"$sum": 1}, "ok_count": {"$sum": {"$cond": ["$ok", 1, 0]}}}},
+        {"$sort": {"device_name": 1}},
+    ]
+    rows = await db.backups.aggregate(pipeline).to_list(5000)
+    return [{"device_id": r["_id"], **{k: v for k, v in r.items() if k != "_id"}} for r in rows]
+
+
+@api.get("/backups/{backup_id}")
+async def get_backup(backup_id: str, _: dict = Depends(get_current_user)):
+    b = await db.backups.find_one({"id": backup_id}, {"_id": 0})
+    if not b:
+        raise HTTPException(status_code=404, detail="Backup não encontrado")
+    return b
+
+
+@api.get("/backups/{backup_id}/diff/{other_id}")
+async def diff_backups(backup_id: str, other_id: str, _: dict = Depends(get_current_user)):
+    a = await db.backups.find_one({"id": other_id}, {"_id": 0})
+    b = await db.backups.find_one({"id": backup_id}, {"_id": 0})
+    if not a or not b:
+        raise HTTPException(status_code=404, detail="Backup não encontrado")
+    diff = automation.unified_diff(a.get("content", ""), b.get("content", ""),
+                                   f"{a['device_name']} @ {a['created_at']}", f"{b['device_name']} @ {b['created_at']}")
+    return {"diff": diff, "identical": a.get("sha256") == b.get("sha256")}
+
+
+@api.delete("/backups/{backup_id}")
+async def delete_backup(backup_id: str, _: dict = Depends(require_admin)):
+    r = await db.backups.delete_one({"id": backup_id})
+    return {"deleted": r.deleted_count}
+
+
 # ---------- WebSocket Terminal ----------
 @app.websocket("/api/ws/terminal/{device_id}")
 async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
@@ -928,4 +1091,5 @@ app.add_middleware(
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    scheduler.stop()
     client.close()

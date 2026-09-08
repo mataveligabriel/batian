@@ -75,6 +75,8 @@ class DeviceCreate(BaseModel):
     tags: List[str] = []
     agent_id: Optional[str] = None  # reference to Agent for ProxyJump
     description: str = ""
+    backup_enabled: bool = True
+    backup_command: Optional[str] = None  # overrides the per-type default
 
 
 class Device(DeviceCreate):
@@ -90,6 +92,7 @@ class ScriptCreate(BaseModel):
     name: str
     description: str = ""
     content: str  # shell script
+    quick: bool = False  # show in terminal quick-command bar
 
 
 class Script(ScriptCreate):
@@ -142,3 +145,20 @@ class BastionSettings(BaseModel):
     public_host: str = ""
     ssh_port: int = 22
     ssh_user: str = "bastion"
+
+
+class AutomationSettings(BaseModel):
+    ping_enabled: bool = True
+    ping_interval_min: int = 5
+    backup_enabled: bool = True
+    backup_hour: int = 3  # local server hour (0-23)
+    notify_agents: bool = True
+    notify_devices: bool = False
+    telegram_bot_token: Optional[str] = None  # write-only; empty keeps existing
+    clear_telegram_token: bool = False
+    telegram_chat_id: str = ""
+    webhook_url: str = ""
+
+
+class BackupRunPayload(BaseModel):
+    device_ids: Optional[List[str]] = None
