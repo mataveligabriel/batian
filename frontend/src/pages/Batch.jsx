@@ -9,7 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Play, Loader2, Plus, Trash2 } from "lucide-react";
+import { Play, Loader2, Plus, Trash2, Pencil, Star } from "lucide-react";
 
 export default function Batch() {
   const [devices, setDevices] = useState([]);
@@ -20,7 +20,8 @@ export default function Batch() {
   const [timeout, setTimeoutVal] = useState(60);
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState([]);
-  const [newScript, setNewScript] = useState({ name: "", content: "", description: "" });
+  const [newScript, setNewScript] = useState({ name: "", content: "", description: "", quick: false });
+  const [editingScript, setEditingScript] = useState(null);
   const [showNew, setShowNew] = useState(false);
 
   const load = async () => {
@@ -51,9 +52,17 @@ export default function Batch() {
 
   const saveScript = async () => {
     if (!newScript.name || !newScript.content) return toast.error("Nome e conteúdo obrigatórios");
-    await api.post("/scripts", newScript);
-    toast.success("Script salvo"); setNewScript({ name: "", content: "", description: "" }); setShowNew(false); load();
+    if (editingScript) await api.put(`/scripts/${editingScript.id}`, newScript);
+    else await api.post("/scripts", newScript);
+    toast.success(editingScript ? "Script atualizado" : "Script salvo");
+    setNewScript({ name: "", content: "", description: "", quick: false }); setEditingScript(null); setShowNew(false); load();
   };
+  const editScript = (s) => {
+    setEditingScript(s);
+    setNewScript({ name: s.name, content: s.content, description: s.description || "", quick: !!s.quick });
+    setShowNew(true);
+  };
+  const cancelEdit = () => { setShowNew(false); setEditingScript(null); setNewScript({ name: "", content: "", description: "", quick: false }); };
   const delScript = async (id) => {
     if (!window.confirm("Excluir script?")) return;
     await api.delete(`/scripts/${id}`); load(); toast.success("Script excluído");
@@ -101,13 +110,18 @@ export default function Batch() {
           </div>
 
           {showNew && (
-            <div className="mb-4 p-3 border border-[#1E293B] rounded-md bg-[#0B111C] space-y-2">
+            <div className="mb-4 p-3 border border-[#1E293B] rounded-md bg-[#0B111C] space-y-2" data-testid="script-form">
+              <div className="text-[11px] uppercase tracking-widest text-slate-500 font-mono">{editingScript ? `Editando: ${editingScript.name}` : "Novo script"}</div>
               <Input placeholder="Nome" data-testid="new-script-name" value={newScript.name} onChange={e => setNewScript({ ...newScript, name: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
               <Input placeholder="Descrição" data-testid="new-script-desc" value={newScript.description} onChange={e => setNewScript({ ...newScript, description: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
               <Textarea placeholder="Conteúdo do script..." data-testid="new-script-content" rows={4} value={newScript.content} onChange={e => setNewScript({ ...newScript, content: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+              <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                <Checkbox data-testid="new-script-quick" checked={newScript.quick} onCheckedChange={(v) => setNewScript({ ...newScript, quick: !!v })} />
+                Mostrar como comando favorito na barra do terminal
+              </label>
               <div className="flex justify-end gap-2">
-                <Button variant="ghost" size="sm" onClick={() => setShowNew(false)}>Cancelar</Button>
-                <Button size="sm" onClick={saveScript} data-testid="save-new-script" className="bg-[#007AFF] hover:bg-[#0062CC]">Salvar</Button>
+                <Button variant="ghost" size="sm" onClick={cancelEdit} data-testid="cancel-script-btn">Cancelar</Button>
+                <Button size="sm" onClick={saveScript} data-testid="save-new-script" className="bg-[#007AFF] hover:bg-[#0062CC]">{editingScript ? "Atualizar" : "Salvar"}</Button>
               </div>
             </div>
           )}
@@ -146,8 +160,12 @@ export default function Batch() {
               <div className="text-xs uppercase tracking-widest text-slate-500 font-mono mb-2">Scripts salvos</div>
               <div className="flex flex-wrap gap-2">
                 {scripts.map(s => (
-                  <div key={s.id} className="flex items-center gap-2 bg-[#0B111C] border border-[#1E293B] rounded-md px-2 py-1">
+                  <div key={s.id} className="flex items-center gap-2 bg-[#0B111C] border border-[#1E293B] rounded-md px-2 py-1" data-testid={`script-chip-${s.id}`}>
+                    {s.quick && <Star className="w-3 h-3 text-amber-400" />}
                     <span className="text-xs text-slate-300">{s.name}</span>
+                    <button onClick={() => editScript(s)} data-testid={`edit-script-${s.id}`} className="text-slate-500 hover:text-[#4DA3FF]" title="Editar">
+                      <Pencil className="w-3 h-3" />
+                    </button>
                     <button onClick={() => delScript(s.id)} data-testid={`del-script-${s.id}`} className="text-slate-500 hover:text-red-400">
                       <Trash2 className="w-3 h-3" />
                     </button>

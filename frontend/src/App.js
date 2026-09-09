@@ -14,6 +14,8 @@ import Agents from "@/pages/Agents";
 import SshKey from "@/pages/SshKey";
 import Sessions from "@/pages/Sessions";
 import Users from "@/pages/Users";
+import Backups from "@/pages/Backups";
+import Automation from "@/pages/Automation";
 
 function RootRedirect() {
   const { user, loading } = useAuth();
@@ -47,6 +49,8 @@ function App() {
             <Route path="/agents" element={<Agents />} />
             <Route path="/ssh-key" element={<SshKey />} />
             <Route path="/sessions" element={<Sessions />} />
+            <Route path="/backups" element={<Backups />} />
+            <Route path="/automation" element={<Automation />} />
             <Route path="/users" element={<ProtectedRoute adminOnly><Users /></ProtectedRoute>} />
           </Route>
         </Routes>

@@ -6,7 +6,7 @@ import { TerminalWorkspace } from "@/components/TerminalWorkspace";
 import { useTerminal } from "@/context/TerminalContext";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, ShieldCheck,
+  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing,
 } from "lucide-react";
 
 const NAV = [
@@ -17,6 +17,8 @@ const NAV = [
   { to: "/agents", icon: Radio, label: "Agentes Remotos", testid: "nav-agents" },
   { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key" },
   { to: "/sessions", icon: History, label: "Histórico", testid: "nav-sessions" },
+  { to: "/backups", icon: Archive, label: "Backups", testid: "nav-backups" },
+  { to: "/automation", icon: BellRing, label: "Automação", testid: "nav-automation" },
   { to: "/users", icon: UsersIcon, label: "Usuários", adminOnly: true, testid: "nav-users" },
 ];
 

@@ -66,3 +66,12 @@ Sistema para acessar via SSH centenas de equipamentos em redes distintas atravé
 - Badge de sessões abertas no menu, botão Reconectar por aba
 - Deploy: requirements.txt mínimo (sem pacotes internos), frontend Dockerfile sem exigir yarn.lock, `deploy/env.example` (não `.env.example` — gitignore), README com Debian
 - Testes: iteration_3 (deps/regressão backend 100%), iteration_4 (persistência UI 100%)
+
+## Implemented (Jun 2026) — Automação, alertas, backups, favoritos, edição de scripts
+- `automation.py`: send_alert (Telegram sendMessage via httpx + webhook genérico), store_backup (sha256/changed), unified_diff, `Scheduler` (loop 30s: ping pela cadeia a cada N min com detecção de transição → alerta; backup diário na hora configurada, estado em config.backup_state)
+- Endpoints: `/api/automation/settings` GET/PUT (token Telegram criptografado, `has_telegram_token`), `/api/automation/test-alert`, `/api/automation/ping-now`, `/api/alerts`, `/api/backups/run|summary|{id}|{id}/diff/{other}|DELETE`
+- Comandos de backup por tipo (`BACKUP_COMMANDS`) + override por device (`backup_command`, `backup_enabled`)
+- Scripts: campo `quick` (favorito) + edição no Batch.jsx; barra de favoritos no TerminalWorkspace envia para a aba ativa
+- Páginas novas: Backups.jsx (versões, diff colorido, visualizar/baixar), Automation.jsx; nav "Backups" e "Automação"
+- Deploy: httpx no requirements.txt (bug 502 no VPS), startup espera Mongo (30x2s), healthcheck no compose
+- Testes: iteration_5.json 100% (19 backend + UI); suite /app/backend/tests/test_new_batch.py

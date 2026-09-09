@@ -6,10 +6,10 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { Plus, X, Wifi, WifiOff, Server, TerminalSquare, RotateCw } from "lucide-react";
+import { Plus, X, Wifi, WifiOff, Server, TerminalSquare, RotateCw, Zap } from "lucide-react";
 import { useTerminal } from "@/context/TerminalContext";
 
-function TerminalPane({ device, active, visible }) {
+function TerminalPane({ device, active, visible, registerWs }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
@@ -44,6 +44,7 @@ function TerminalPane({ device, active, visible }) {
     const url = `${wsUrl(`/ws/terminal/${device.id}`)}?token=${encodeURIComponent(token)}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
+    registerWs?.(device.id, ws);
     setStatus("connecting");
 
     ws.onopen = () => {
@@ -136,10 +137,24 @@ export function TerminalWorkspace({ visible }) {
   const { tabs, active, setActive, openTab, closeTab } = useTerminal();
   const [devices, setDevices] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [quick, setQuick] = useState([]);
+  const wsMap = useRef({});
+  const registerWs = (id, ws) => { wsMap.current[id] = ws; };
 
   useEffect(() => {
     if (pickerOpen) api.get("/devices").then(r => setDevices(r.data)).catch(() => toast.error("Falha ao carregar equipamentos"));
   }, [pickerOpen]);
+
+  useEffect(() => {
+    if (visible) api.get("/scripts").then(r => setQuick(r.data.filter(s => s.quick))).catch(() => {});
+  }, [visible]);
+
+  const sendQuick = (s) => {
+    const ws = active && wsMap.current[active];
+    if (!ws || ws.readyState !== WebSocket.OPEN) return toast.error("Nenhuma sessão ativa conectada");
+    const data = s.content.replace(/\r?\n/g, "\r").replace(/\r?$/, "\r");
+    ws.send(JSON.stringify({ type: "input", data }));
+  };
 
   return (
     <div className={`absolute inset-0 flex flex-col ${visible ? "visible z-20" : "invisible z-0 pointer-events-none"}`} data-testid="terminal-page">
@@ -192,16 +207,30 @@ export function TerminalWorkspace({ visible }) {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 bg-[#05070A] relative">
+      <div className="flex-1 min-h-0 bg-[#05070A] relative overflow-hidden">
         {tabs.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-500">
             <TerminalSquare className="w-10 h-10 mb-3 text-slate-600" />
             <div className="text-sm font-mono">Nenhuma sessão ativa. Clique em &quot;Nova aba&quot; para conectar em um equipamento.</div>
           </div>
         ) : (
-          tabs.map(t => <TerminalPane key={t.id} device={t} active={active === t.id} visible={visible} />)
+          tabs.map(t => <TerminalPane key={t.id} device={t} active={active === t.id} visible={visible} registerWs={registerWs} />)
         )}
       </div>
+
+      {tabs.length > 0 && (
+        <div className="relative z-30 flex items-center gap-2 px-3 py-2 border-t border-[#1E293B] bg-[#0A0F19] overflow-x-auto" data-testid="quick-commands-bar">
+          <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span className="text-[10px] uppercase tracking-widest text-slate-500 font-mono shrink-0">Favoritos</span>
+          {quick.length === 0 && <span className="text-xs text-slate-600 font-mono">Marque scripts como favoritos em "Execução em Lote" para aparecerem aqui.</span>}
+          {quick.map(s => (
+            <button key={s.id} onClick={() => sendQuick(s)} title={s.content} data-testid={`quick-cmd-${s.id}`}
+                    className="shrink-0 text-xs font-mono px-2.5 py-1 rounded border border-[#1E293B] bg-[#111722] text-slate-200 hover:border-amber-500/50 hover:text-amber-300 transition-colors">
+              {s.name}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

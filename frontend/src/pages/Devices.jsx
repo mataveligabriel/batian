@@ -19,7 +19,7 @@ export const DEVICE_TYPES = [
 ];
 const typeLabel = (t) => DEVICE_TYPES.find(x => x[0] === t)?.[1] || t || "linux";
 
-const emptyDevice = { name: "", host: "", port: 22, username: "", password: "", clear_password: false, device_type: "linux", tags: "", agent_id: "", description: "" };
+const emptyDevice = { name: "", host: "", port: 22, username: "", password: "", clear_password: false, device_type: "linux", tags: "", agent_id: "", description: "", backup_enabled: true, backup_command: "" };
 
 export default function Devices() {
   const [devices, setDevices] = useState([]);
@@ -41,7 +41,7 @@ export default function Devices() {
   const openNew = () => { setEditing(null); setForm(emptyDevice); setOpen(true); };
   const openEdit = (d) => {
     setEditing(d);
-    setForm({ ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", password: "", clear_password: false, device_type: d.device_type || "linux" });
+    setForm({ ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "" });
     setOpen(true);
   };
 
@@ -57,6 +57,8 @@ export default function Devices() {
       tags: form.tags.split(",").map(t => t.trim()).filter(Boolean),
       agent_id: form.agent_id || null,
       description: form.description || "",
+      backup_enabled: form.backup_enabled !== false,
+      backup_command: (form.backup_command || "").trim() || null,
     };
     if (!payload.name || !payload.host) return toast.error("Nome e host são obrigatórios");
     try {
@@ -259,6 +261,15 @@ export default function Devices() {
             <div>
               <Label>Descrição</Label>
               <Textarea data-testid="device-form-desc" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+            </div>
+            <div className="grid grid-cols-3 gap-3 items-end">
+              <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer pb-2">
+                <input type="checkbox" data-testid="device-form-backup-enabled" checked={form.backup_enabled !== false} onChange={e => setForm({ ...form, backup_enabled: e.target.checked })} /> Backup diário
+              </label>
+              <div className="col-span-2">
+                <Label>Comando de backup (opcional, sobrescreve o padrão do tipo)</Label>
+                <Input data-testid="device-form-backup-command" value={form.backup_command} onChange={e => setForm({ ...form, backup_command: e.target.value })} placeholder="ex.: show running-config" className="bg-[#05070A] border-[#1E293B] font-mono" />
+              </div>
             </div>
           </div>
           <DialogFooter>

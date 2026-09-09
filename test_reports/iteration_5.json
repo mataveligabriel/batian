@@ -1,0 +1,23 @@
+{
+  "summary": "Batch: quick scripts, quick-command bar in terminal, automation (ping/backup/alerts) settings, alerts (webhook + invalid telegram token), config backups (run/diff/summary/delete), device backup fields, deploy httpx bug. Backend: 19/19 passing pytest in /app/backend/tests/test_new_batch.py, including a real fresh-venv install of requirements.txt + `import server` to prove the httpx deploy bug is fixed. Frontend: all requested UI flows verified end-to-end: Batch page (new script + edit + quick + cancel), Terminal at /terminal/dev-2-hops connected and quick-cmd for TEST_QUICK_UI produced 'QUICK-OK' in xterm (bar clickable, not covered), Backups page (list, versions, diff with +/- lines, view dialog + download, run device backup adds a version, run-all toast), Automation page (all cards/inputs, save->reload persists ping_interval=7, restored to 5, ping-now toast, test-alert with no channels shows 'Nenhum canal configurado'), Devices edit dialog shows backup_enabled + backup_command prefilled for dev-2-hops. Cleaned all TEST_ data. Left automation settings clean (no token, notify_devices false, ping_interval 5, backup_hour 3).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_new_batch.py",
+    "/app/test_reports/pytest/new_batch.xml",
+    "/app/backend/tests/test_bastion_features.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py has no GET /api/devices/{id}; UI + tests must fetch the list. Consider adding it for symmetry.",
+    "PUT /api/devices/{id} rejects partial payloads (422 when host missing) because it re-uses DeviceCreate. Documented behavior; acceptable but easy to trip in a partial-update client.",
+    "Scheduler.tick runs every 30 s and reads ping_interval_min; that is fine, but the class-level `last_ping` is only updated when a ping actually runs — GET /automation/settings therefore never reports last_ping from persistence after a backend restart. Consider persisting last_ping in the config collection so it survives restarts."
+  ],
+  "updated_files": ["/app/backend/tests/test_new_batch.py"],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "100% (Batch, Terminal quick bar, Backups, Automation, Devices dialog)"},
+  "test_credentials": "admin@sshcentral.io / admin123 (see /app/memory/test_credentials.md); temp operator TEST_opnb@sshcentral.io/operator123 (deleted by fixture)",
+  "seed_data_creation": "Test-side only: TEST_opnb operator user (deleted), TEST_linux_no_bcmd device (deleted), TEST_QUICK_UI script (deleted). dev-2-hops backup_command was set to 'cat /etc/hostname; date +%s%N' as instructed and left in place; ~9 backup versions accumulated for dev-2-hops on the /backups page (safe to leave, or delete via UI/API if desired).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression: `pytest /app/backend/tests/test_new_batch.py` (19 tests) + `pytest /app/backend/tests/test_bastion_features.py` (previous suite). Lab sshd at 127.0.0.1:2222 was NOT running when this run started — I restarted it with `mkdir -p /run/sshd && /usr/sbin/sshd -f /app/sshd_test/sshd_config`. It seems to die between sessions; always verify with `ss -ltn | grep 2222` first. The fresh-venv install test takes ~60 s (installs the full requirements.txt into a temp venv under /tmp). Automation cleanup is done in TestZFinalCleanup — always keep that last (session-scoped LoadScope pytest-xdist puts it late but not last; safe because it resets to defaults). data-testids used for frontend: new-script-quick, edit-script-<id>, cancel-script-btn, save-new-script, quick-commands-bar, quick-cmd-<id>, xterm-<id>, backup-device-<id>, backup-version-<id>, diff-check-<id>, compare-btn, backup-diff, view-backup-<id>, backup-view-dialog, backup-content, download-backup-btn, run-device-backup-btn, run-all-backups-btn, ping-enabled, ping-interval, backup-enabled, backup-hour, notify-agents, notify-devices, telegram-token, telegram-chat, webhook-url, save-automation-btn, ping-now-btn, test-alert-btn, alerts-history, device-form-backup-enabled, device-form-backup-command, nav-backups, nav-automation."
+}
