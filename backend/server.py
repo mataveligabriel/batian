@@ -49,6 +49,13 @@ logger = logging.getLogger("bastion")
 # ---------- Startup ----------
 @app.on_event("startup")
 async def startup():
+    for attempt in range(30):
+        try:
+            await client.admin.command("ping")
+            break
+        except Exception as e:
+            logger.warning(f"MongoDB indisponível ({e.__class__.__name__}), tentativa {attempt + 1}/30…")
+            await asyncio.sleep(2)
     await db.users.create_index("email", unique=True)
     await db.devices.create_index("name")
     await db.agents.create_index("name")
