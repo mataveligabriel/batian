@@ -77,17 +77,38 @@ async def send_alert(db, title: str, text: str) -> dict:
 async def store_backup(db, dev: dict, content: str, ok: bool, error: Optional[str] = None) -> dict:
     prev = await db.backups.find_one({"device_id": dev["id"], "ok": True}, {"_id": 0, "sha256": 1}, sort=[("created_at", -1)])
     sha = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest() if ok else ""
+    now = datetime.now(timezone.utc)
     doc = {
         "id": os.urandom(8).hex(), "device_id": dev["id"], "device_name": dev["name"],
         "device_type": dev.get("device_type", "linux"),
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now.isoformat(),
         "content": content if ok else "", "sha256": sha, "size": len(content) if ok else 0,
         "lines": content.count("\n") + 1 if ok and content else 0,
         "changed": bool(ok and (not prev or prev.get("sha256") != sha)),
-        "ok": ok, "error": error,
+        "ok": ok, "error": error, "file_path": None,
     }
+    if ok:
+        doc["file_path"] = write_backup_file(dev["name"], now, content)
     await db.backups.insert_one(dict(doc))
     return doc
+
+
+def write_backup_file(device_name: str, when: datetime, content: str) -> Optional[str]:
+    """Also persist the config as a plain file under BACKUP_DIR/<device>/<timestamp>.cfg (if configured)."""
+    base = os.environ.get("BACKUP_DIR", "").strip()
+    if not base:
+        return None
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", device_name).strip("_") or "device"
+    folder = os.path.join(base, safe)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, when.strftime("%Y-%m-%d_%H-%M-%S") + ".cfg")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+    except Exception as e:
+        logger.warning(f"não foi possível gravar backup em disco ({folder}): {e}")
+        return None
 
 
 def unified_diff(a: str, b: str, label_a: str, label_b: str) -> str:
