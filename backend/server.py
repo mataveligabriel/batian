@@ -29,6 +29,7 @@ from models import (
     AutomationSettings, BackupRunPayload,
 )
 from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES
+from telnet_service import TelnetClientWrapper
 import vault
 import automation
 
@@ -535,36 +536,53 @@ Write-Host "Agente {a['name']} iniciado -> {suser}@{host}:{sport} (túnel {TUNNE
 
 
 # ---------- Devices ----------
-def _normalize_device(data: dict) -> dict:
+def _normalize_device(data: dict, user: Optional[dict] = None) -> dict:
     if data.get("agent_id") == "":
         data["agent_id"] = None
     if data.get("device_type") not in DEVICE_TYPES:
         data["device_type"] = "other"
+    if data.get("protocol") not in ("ssh", "telnet"):
+        data["protocol"] = "ssh"
+    if user is not None:
+        if user.get("role") != "admin" or not data.get("owner_id"):
+            data["owner_id"] = user["id"]
     return data
 
 
+def _scope(user: dict) -> dict:
+    """Mongo filter restricting devices to the current user (admins see everything)."""
+    return {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+
+
+async def _get_device_for(user: dict, device_id: str) -> dict:
+    d = await db.devices.find_one({"id": device_id, **_scope(user)}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+    return d
+
+
 @api.get("/devices")
-async def list_devices(_: dict = Depends(get_current_user)):
-    docs = await db.devices.find({}, {"_id": 0}).to_list(5000)
+async def list_devices(user: dict = Depends(get_current_user)):
+    docs = await db.devices.find(_scope(user), {"_id": 0}).to_list(5000)
     return [_public(d) for d in docs]
 
 
 @api.post("/devices")
-async def create_device(payload: DeviceCreate, _: dict = Depends(get_current_user)):
-    data = _normalize_device(_apply_secret(payload.model_dump(), None))
+async def create_device(payload: DeviceCreate, user: dict = Depends(get_current_user)):
+    data = _normalize_device(_apply_secret(payload.model_dump(), None), user)
     doc = Device(**data).model_dump()
     await db.devices.insert_one(doc)
     return _public(doc)
 
 
 @api.post("/devices/import")
-async def import_devices(payload: dict, _: dict = Depends(get_current_user)):
+async def import_devices(payload: dict, user: dict = Depends(get_current_user)):
     """Bulk import. payload = {"rows": [{name, host, port, username, password, device_type, tags, agent, description}]}"""
     rows = payload.get("rows") or []
     agents = await db.agents.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(1000)
     agent_by_name = {a["name"].strip().lower(): a["id"] for a in agents}
     agent_ids = {a["id"] for a in agents}
-    existing = await db.devices.find({}, {"_id": 0, "name": 1, "host": 1, "port": 1}).to_list(10000)
+    existing = await db.devices.find(_scope(user), {"_id": 0, "name": 1, "host": 1, "port": 1}).to_list(10000)
     seen = {(d["name"].strip().lower(), d["host"].strip(), int(d.get("port") or 22)) for d in existing}
     created, skipped, errors = 0, 0, []
     to_insert = []
@@ -593,13 +611,14 @@ async def import_devices(payload: dict, _: dict = Depends(get_current_user)):
         tags = [t.strip() for t in re.split(r"[;|,]", str(tags_raw)) if t.strip()] if not isinstance(tags_raw, list) else tags_raw
         dtype = str(r.get("device_type") or r.get("type") or "linux").strip().lower()
         pw = str(r.get("password") or "").strip()
+        proto = str(r.get("protocol") or "ssh").strip().lower()
         doc = Device(**_normalize_device({
-            "name": name, "host": host, "port": port,
+            "name": name, "host": host, "port": port, "protocol": proto,
             "username": str(r.get("username") or r.get("user") or "").strip(),
             "password": vault.encrypt(pw) if pw else "",
             "device_type": dtype, "tags": tags, "agent_id": agent_id,
             "description": str(r.get("description") or "").strip(),
-        })).model_dump()
+        }, user)).model_dump()
         to_insert.append(doc)
         seen.add(key)
         created += 1
@@ -609,18 +628,18 @@ async def import_devices(payload: dict, _: dict = Depends(get_current_user)):
 
 
 @api.put("/devices/{device_id}")
-async def update_device(device_id: str, payload: DeviceCreate, _: dict = Depends(get_current_user)):
-    existing = await db.devices.find_one({"id": device_id}, {"_id": 0})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Equipamento não encontrado")
-    data = _normalize_device(_apply_secret(payload.model_dump(), existing))
+async def update_device(device_id: str, payload: DeviceCreate, user: dict = Depends(get_current_user)):
+    existing = await _get_device_for(user, device_id)
+    data = _normalize_device(_apply_secret(payload.model_dump(), existing), user)
+    if user.get("role") == "admin" and not payload.owner_id:
+        data["owner_id"] = existing.get("owner_id")
     await db.devices.update_one({"id": device_id}, {"$set": data})
     return _public(await db.devices.find_one({"id": device_id}, {"_id": 0}))
 
 
 @api.delete("/devices/{device_id}")
-async def delete_device(device_id: str, _: dict = Depends(get_current_user)):
-    r = await db.devices.delete_one({"id": device_id})
+async def delete_device(device_id: str, user: dict = Depends(get_current_user)):
+    r = await db.devices.delete_one({"id": device_id, **_scope(user)})
     return {"deleted": r.deleted_count}
 
 
@@ -641,10 +660,8 @@ async def _ping_device(dev: dict) -> Optional[float]:
 
 
 @api.post("/devices/{device_id}/ping")
-async def ping_device(device_id: str, _: dict = Depends(get_current_user)):
-    d = await db.devices.find_one({"id": device_id}, {"_id": 0})
-    if not d:
-        raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+async def ping_device(device_id: str, user: dict = Depends(get_current_user)):
+    d = await _get_device_for(user, device_id)
     lat = await _ping_device(d)
     status = "online" if lat is not None else "offline"
     now = datetime.now(timezone.utc).isoformat()
@@ -653,8 +670,8 @@ async def ping_device(device_id: str, _: dict = Depends(get_current_user)):
 
 
 @api.post("/devices/ping-all")
-async def ping_all_devices(_: dict = Depends(get_current_user)):
-    devs = await db.devices.find({}, {"_id": 0}).to_list(5000)
+async def ping_all_devices(user: dict = Depends(get_current_user)):
+    devs = await db.devices.find(_scope(user), {"_id": 0}).to_list(5000)
     results = []
     sem = asyncio.Semaphore(20)
 
@@ -728,22 +745,25 @@ async def delete_script(sid: str, _: dict = Depends(get_current_user)):
 
 # ---------- Sessions ----------
 @api.get("/sessions")
-async def list_sessions(_: dict = Depends(get_current_user), limit: int = 100):
-    return await db.sessions.find({}, {"_id": 0}).sort("started_at", -1).to_list(limit)
+async def list_sessions(user: dict = Depends(get_current_user), limit: int = 100):
+    q = {} if user.get("role") == "admin" else {"user_id": user["id"]}
+    return await db.sessions.find(q, {"_id": 0}).sort("started_at", -1).to_list(limit)
 
 
 # ---------- Dashboard stats ----------
 @api.get("/stats")
-async def stats(_: dict = Depends(get_current_user)):
-    total_devices = await db.devices.count_documents({})
-    online_devices = await db.devices.count_documents({"status": "online"})
-    offline_devices = await db.devices.count_documents({"status": "offline"})
+async def stats(user: dict = Depends(get_current_user)):
+    sc = _scope(user)
+    total_devices = await db.devices.count_documents(sc)
+    online_devices = await db.devices.count_documents({**sc, "status": "online"})
+    offline_devices = await db.devices.count_documents({**sc, "status": "offline"})
     total_agents = await db.agents.count_documents({})
     online_agents = await db.agents.count_documents({"status": "online"})
-    sessions_today = await db.sessions.count_documents({
+    sq = {} if user.get("role") == "admin" else {"user_id": user["id"]}
+    sessions_today = await db.sessions.count_documents({**sq,
         "started_at": {"$gte": datetime.now(timezone.utc).date().isoformat()}
     })
-    recent = await db.sessions.find({}, {"_id": 0}).sort("started_at", -1).to_list(8)
+    recent = await db.sessions.find(sq, {"_id": 0}).sort("started_at", -1).to_list(8)
     return {
         "total_devices": total_devices,
         "online_devices": online_devices,
@@ -776,9 +796,14 @@ async def _device_hops(dev: dict):
     return hops, dtype
 
 
-async def _connect_device(dev: dict) -> SSHClientWrapper:
+async def _connect_device(dev: dict):
     hops, dtype = await _device_hops(dev)
-    wrapper = SSHClientWrapper(hops, device_type=dtype)
+    if dev.get("protocol") == "telnet":
+        target = hops[-1]
+        wrapper = TelnetClientWrapper(hops[:-1], target.host, target.port, username=target.username,
+                                      password=target.password, device_type=dtype, label=dev["name"])
+    else:
+        wrapper = SSHClientWrapper(hops, device_type=dtype)
     await wrapper.connect()
     return wrapper
 
@@ -795,7 +820,7 @@ async def batch_execute(payload: BatchExecPayload, user: dict = Depends(get_curr
         raise HTTPException(status_code=400, detail="Comando ou script obrigatório")
 
     async def _run(dev_id: str):
-        dev = await db.devices.find_one({"id": dev_id}, {"_id": 0})
+        dev = await db.devices.find_one({"id": dev_id, **_scope(user)}, {"_id": 0})
         if not dev:
             return BatchResultItem(device_id=dev_id, device_name="?", host="?",
                                    ok=False, exit_status=-1, stdout="", stderr="",
@@ -939,19 +964,32 @@ async def list_alerts(_: dict = Depends(get_current_user), limit: int = 50):
 
 @api.post("/backups/run")
 async def run_backups(payload: BackupRunPayload, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        mine = {d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(5000)}
+        payload.device_ids = [i for i in (payload.device_ids or list(mine)) if i in mine]
+        if not payload.device_ids:
+            return {"results": []}
     results = await _backup_many(payload.device_ids)
     return {"results": results}
 
 
 @api.get("/backups")
-async def list_backups(_: dict = Depends(get_current_user), device_id: Optional[str] = None, limit: int = 200):
+async def list_backups(user: dict = Depends(get_current_user), device_id: Optional[str] = None, limit: int = 200):
     q = {"device_id": device_id} if device_id else {}
+    if user.get("role") != "admin":
+        mine = [d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(5000)]
+        q["device_id"] = device_id if device_id in mine else {"$in": mine}
     return await db.backups.find(q, {"_id": 0, "content": 0}).sort("created_at", -1).to_list(limit)
 
 
 @api.get("/backups/summary")
-async def backups_summary(_: dict = Depends(get_current_user)):
+async def backups_summary(user: dict = Depends(get_current_user)):
+    match = {}
+    if user.get("role") != "admin":
+        mine = [d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(5000)]
+        match = {"device_id": {"$in": mine}}
     pipeline = [
+        {"$match": match},
         {"$sort": {"created_at": -1}},
         {"$group": {"_id": "$device_id", "device_name": {"$first": "$device_name"}, "device_type": {"$first": "$device_type"},
                     "last_at": {"$first": "$created_at"}, "last_ok": {"$first": "$ok"}, "last_error": {"$first": "$error"},
@@ -1000,7 +1038,8 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
     user_id = payload["sub"]
     user_email = payload["email"]
 
-    dev = await db.devices.find_one({"id": device_id}, {"_id": 0})
+    scope = {} if payload.get("role") == "admin" else {"owner_id": user_id}
+    dev = await db.devices.find_one({"id": device_id, **scope}, {"_id": 0})
     if not dev:
         await ws.send_json({"type": "error", "message": "Equipamento não encontrado"})
         await ws.close()
@@ -1017,9 +1056,9 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
 
     wrapper: Optional[SSHClientWrapper] = None
     try:
-        await ws.send_json({"type": "status", "message": f"Conectando em {dev['name']} ({dev['host']}:{dev.get('port',22)})..."})
+        await ws.send_json({"type": "status", "message": f"Conectando em {dev['name']} ({dev['host']}:{dev.get('port',22)}) via {dev.get('protocol','ssh').upper()}..."})
         wrapper = await _connect_device(dev)
-        await ws.send_json({"type": "status", "message": "Conectado. Sessão SSH ativa."})
+        await ws.send_json({"type": "status", "message": "Conectado. Sessão ativa."})
         process = await wrapper.open_shell(cols=120, rows=32)
 
         async def pump_stdout():

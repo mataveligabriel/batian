@@ -5,10 +5,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import { Upload, Download, FileSpreadsheet } from "lucide-react";
 
-const TEMPLATE = `name,host,port,username,password,device_type,tags,agent,description
-core-sp-01,10.10.1.1,22,admin,,cisco,Core;SP,jump-vpn,Core Router SP
-sw-rj-02,192.168.20.5,2222,admin,,huawei,Switch;RJ,,Switch Distribuição
-rb-mg-01,172.16.0.1,22,admin+ct,,mikrotik,Roteador;MG,,RouterBoard
+const TEMPLATE = `name,host,port,protocol,username,password,device_type,tags,agent,description
+core-sp-01,10.10.1.1,22,ssh,admin,,cisco,Core;SP,jump-vpn,Core Router SP
+sw-rj-02,192.168.20.5,23,telnet,admin,,huawei,Switch;RJ,,Switch Distribuição
+rb-mg-01,172.16.0.1,22,ssh,admin+ct,,mikrotik,Roteador;MG,,RouterBoard
 `;
 
 function parseCSV(text) {
@@ -74,7 +74,7 @@ export function ImportDevicesDialog({ open, onOpenChange, onDone }) {
       <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-3xl" data-testid="import-dialog">
         <DialogHeader><DialogTitle>Importar equipamentos (CSV)</DialogTitle></DialogHeader>
         <p className="text-xs text-slate-400 font-mono">
-          Colunas: <span className="text-emerald-300">name, host, port, username, password, device_type, tags, agent, description</span>.
+          Colunas: <span className="text-emerald-300">name, host, port, protocol (ssh|telnet), username, password, device_type, tags, agent, description</span>.
           Apenas <b>name</b> e <b>host</b> são obrigatórios. Tags separadas por <code>;</code>. <b>agent</b> = nome do agente cadastrado.
           Tipos: linux, mikrotik, cisco, huawei, ubiquiti, datacom, zte, other.
         </p>

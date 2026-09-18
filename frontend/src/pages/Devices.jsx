@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, KeyRound } from "lucide-react";
 import { ImportDevicesDialog } from "@/components/ImportDevicesDialog";
+import { useAuth } from "@/context/AuthContext";
 
 export const DEVICE_TYPES = [
   ["linux", "Linux / Unix"], ["mikrotik", "Mikrotik RouterOS"], ["cisco", "Cisco IOS/NX-OS"], ["huawei", "Huawei VRP"],
@@ -19,7 +20,7 @@ export const DEVICE_TYPES = [
 ];
 const typeLabel = (t) => DEVICE_TYPES.find(x => x[0] === t)?.[1] || t || "linux";
 
-const emptyDevice = { name: "", host: "", port: 22, username: "", password: "", clear_password: false, device_type: "linux", tags: "", agent_id: "", description: "", backup_enabled: true, backup_command: "" };
+const emptyDevice = { name: "", host: "", port: 22, protocol: "ssh", owner_id: "", username: "", password: "", clear_password: false, device_type: "linux", tags: "", agent_id: "", description: "", backup_enabled: true, backup_command: "" };
 
 export default function Devices() {
   const [devices, setDevices] = useState([]);
@@ -30,18 +31,22 @@ export default function Devices() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyDevice);
   const [importOpen, setImportOpen] = useState(false);
+  const [users, setUsers] = useState([]);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const nav = useNavigate();
 
   const load = async () => {
     const [d, a] = await Promise.all([api.get("/devices"), api.get("/agents")]);
     setDevices(d.data); setAgents(a.data);
+    if (isAdmin) api.get("/users").then(r => setUsers(r.data)).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
   const openNew = () => { setEditing(null); setForm(emptyDevice); setOpen(true); };
   const openEdit = (d) => {
     setEditing(d);
-    setForm({ ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "" });
+    setForm({ ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", protocol: d.protocol || "ssh", owner_id: d.owner_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "" });
     setOpen(true);
   };
 
@@ -49,7 +54,9 @@ export default function Devices() {
     const payload = {
       name: form.name.trim(),
       host: form.host.trim(),
-      port: Number(form.port) || 22,
+      port: Number(form.port) || (form.protocol === "telnet" ? 23 : 22),
+      protocol: form.protocol || "ssh",
+      owner_id: isAdmin ? (form.owner_id || null) : null,
       username: form.username.trim(),
       password: form.password || null,
       clear_password: !!form.clear_password,
@@ -161,7 +168,7 @@ export default function Devices() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-slate-100 font-medium">{d.name}</td>
-                  <td className="px-4 py-3 font-mono text-slate-300">{d.host}:{d.port}</td>
+                  <td className="px-4 py-3 font-mono text-slate-300">{d.host}:{d.port} <span data-testid={`device-proto-${d.id}`} className={`ml-1 text-[9px] uppercase px-1 py-0.5 rounded border ${d.protocol === "telnet" ? "border-amber-500/40 text-amber-400" : "border-[#1E293B] text-slate-500"}`}>{d.protocol || "ssh"}</span></td>
                   <td className="px-4 py-3 text-xs text-slate-400" data-testid={`device-type-${d.id}`}>{typeLabel(d.device_type)}</td>
                   <td className="px-4 py-3 font-mono text-slate-400">
                     <span className="inline-flex items-center gap-1.5">{d.username || <span className="text-slate-600">padrão</span>}
@@ -199,23 +206,46 @@ export default function Devices() {
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-lg">
+        <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-lg max-h-[92vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? "Editar equipamento" : "Novo equipamento"}</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div>
               <Label>Nome</Label>
               <Input data-testid="device-form-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-4 gap-3">
               <div className="col-span-2">
                 <Label>Host / IP</Label>
                 <Input data-testid="device-form-host" value={form.host} onChange={e => setForm({ ...form, host: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
               </div>
               <div>
-                <Label>Porta SSH</Label>
+                <Label>Protocolo</Label>
+                <Select value={form.protocol || "ssh"} onValueChange={(v) => setForm({ ...form, protocol: v, port: (v === "telnet" && Number(form.port) === 22) ? 23 : (v === "ssh" && Number(form.port) === 23) ? 22 : form.port })}>
+                  <SelectTrigger data-testid="device-form-protocol" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
+                  <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
+                    <SelectItem value="ssh">SSH</SelectItem>
+                    <SelectItem value="telnet">Telnet</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Porta</Label>
                 <Input data-testid="device-form-port" type="number" value={form.port} onChange={e => setForm({ ...form, port: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
               </div>
             </div>
+            {isAdmin && (
+              <div>
+                <Label>Dono (quem enxerga este equipamento)</Label>
+                <Select value={form.owner_id || "me"} onValueChange={(v) => setForm({ ...form, owner_id: v === "me" ? "" : v })}>
+                  <SelectTrigger data-testid="device-form-owner" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue placeholder="Eu (admin)" /></SelectTrigger>
+                  <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
+                    <SelectItem value="me">Eu ({user?.email})</SelectItem>
+                    {users.filter(u => u.id !== user?.id).map(u => <SelectItem key={u.id} value={u.id}>{u.name} · {u.email} ({u.role})</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <div className="text-[11px] text-slate-500 mt-1 font-mono">Operadores só veem os próprios equipamentos; administradores veem todos.</div>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Usuário SSH</Label>

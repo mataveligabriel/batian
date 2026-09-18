@@ -112,7 +112,7 @@ function TerminalPane({ device, active, visible, registerWs }) {
           <Server className="w-4 h-4 text-[#4DA3FF]" />
           <div>
             <div className="text-sm font-medium text-slate-100">{device.name}</div>
-            <div className="text-[11px] font-mono text-slate-500">{device.host}:{device.port} · {device.username || "padrão"}</div>
+            <div className="text-[11px] font-mono text-slate-500">{(device.protocol || "ssh").toUpperCase()} · {device.host}:{device.port} · {device.username || "padrão"}</div>
           </div>
         </div>
         <div className="flex items-center gap-3">

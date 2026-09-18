@@ -68,6 +68,8 @@ class DeviceCreate(BaseModel):
     name: str
     host: str
     port: int = 22
+    protocol: str = "ssh"  # ssh | telnet
+    owner_id: Optional[str] = None  # admin may assign; operators always own their devices
     username: str = ""
     password: Optional[str] = None  # write-only; empty keeps existing
     clear_password: bool = False
