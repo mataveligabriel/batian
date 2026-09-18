@@ -1,5 +1,17 @@
 # SSH Bastion Central — Guia de Produção (VPS próprio)
 
+## Instalação rápida (máquina do zero, Debian/Ubuntu, como root)
+```bash
+curl -fsSL https://raw.githubusercontent.com/mataveligabriel/batian/main/deploy/install.sh | bash
+```
+O script instala Docker, libera o firewall, clona o repositório em `/opt/bastion`, pergunta domínio/IP e
+credenciais do admin, gera o `.env` e sobe tudo. Para atualizar após qualquer alteração no código:
+```bash
+bash /opt/bastion/deploy/update.sh
+```
+
+---
+
 O Bastion precisa rodar num servidor **com IP público e sshd acessível**, porque os agentes
 (sua máquina com FortiClient, filiais etc.) abrem túneis SSH reversos até ele. Hospedagens
 serverless/containers gerenciados não recebem SSH de entrada — use um VPS (Ubuntu 22.04/24.04,
