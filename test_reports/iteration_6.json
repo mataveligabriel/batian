@@ -1,0 +1,23 @@
+{
+  "summary": "Tested per-user device isolation, Telnet protocol (direct + agent chain), protocol validation, clean login page, and Devices UI protocol/owner controls. Backend: 15/15 pytest passing in /app/backend/tests/test_isolation_telnet.py — op1 GET/PUT/DELETE/ping/batch/WS on admin-owned dev-2-hops all return 'Equipamento não encontrado' (no 500s); POST /devices as op1 forces owner_id even when trying to spoof admin id; admin PUT without owner_id keeps existing owner; admin POST with owner_id=op1 appears in op1's list; /sessions, /stats.recent_sessions, /backups, /backups/summary all filtered to op1; POST /backups/run as op1 targeting admin device returns []; CSV import as op1 forces owner. Protocol validation: 'xyz' -> normalized to 'ssh'; CSV row protocol=telnet -> stored as telnet. Telnet: batch 'show version' on lab-telnet (agent chain via 127.0.0.1:2222) returns FakeOS 1.0; WS terminal shows 'via TELNET' + 'Sessão ativa' + 'Welcome labuser' + FakeOS 1.0 after sending 'show version\\r'; direct-telnet TEST device (127.0.0.1:2323, labuser/labpass) online ping, batch OK, wrong-password path yields 'Login incorrect' with no 500. Frontend: /login shows BASTION logo, no 'admin@sshcentral.io' or 'Padrão inicial' text, empty inputs; wrong password -> error toast; correct login -> /dashboard. Devices dialog: protocol select switches port 22<->23 automatically; owner select visible for admin only (0 for op1); created TEST_ui_telnet_op1 telnet device assigned to op1 with TELNET badge; op1 login in a fresh session sees only that one device; connecting terminal shows 'Welcome labuser' and 'fake-router#' via xterm. Import dialog description contains 'protocol'. Regression: admin SSH terminal on dev-2-hops connected, banner shown; /batch, /backups, /automation render without error nodes. Cleaned all TEST_ data.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_isolation_telnet.py",
+    "/app/test_reports/pytest/isolation_telnet.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "DialogContent is missing aria-describedby (Radix warning in console). Non-blocking, but easy to fix by adding <DialogDescription> to the device/import dialogs.",
+    "server.py telnet_service imports OPT_ECHO/OPT_SGA/OPT_NAWS but only OPT_ECHO/OPT_SGA are used positively; NAWS reply is sent via IAC bytes — works but harmless leftover imports.",
+    "PUT /devices/{id} still requires full DeviceCreate; partial payloads (e.g. only changing owner) will fail with 422. Consider a partial update model. Not blocking any tested flow.",
+    "GET /devices/{id} still missing; only GET /devices exists (list). UI compensates by listing then filtering."
+  ],
+  "updated_files": ["/app/backend/tests/test_isolation_telnet.py"],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100% (login, devices dialog, telnet terminal, import, regression)"},
+  "test_credentials": "admin@sshcentral.io / admin123 ; op1@sshcentral.io / op1pass (see /app/memory/test_credentials.md)",
+  "seed_data_creation": "All test data cleaned up (TEST_iso_dev, TEST_admin_assign, TEST_imp_op1, TEST_imp_tel, TEST_proto_bad, TEST_direct_telnet deleted by fixtures; TEST_ui_telnet_op1 deleted via UI in cleanup step). fake_telnet already running on 127.0.0.1:2323; local sshd on 127.0.0.1:2222 already running.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression command: `pytest /app/backend/tests/test_isolation_telnet.py -n 0` (15 tests, ~16s). pytest.ini fixes xdist -n 2 --dist loadscope; use `-n 0` for serial. Login page and Devices dialog have data-testids: login-logo, login-email-input, login-password-input, login-submit-btn, device-form-protocol, device-form-owner, device-form-port, device-proto-<id>, device-row-<id>, connect-ssh-<id>, delete-device-<id>, add-device-btn, import-devices-btn. Op1 legitimately never sees the sidebar 'Usuários' entry (admin-only). fake_telnet expects exact 'show version' (whitespace stripped); prompt 'fake-router# '. Backend telnet auto-login triggers on 'user…:'/'password…:' via regex in telnet_service.py."
+}

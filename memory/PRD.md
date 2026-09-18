@@ -75,3 +75,10 @@ Sistema para acessar via SSH centenas de equipamentos em redes distintas atravé
 - Páginas novas: Backups.jsx (versões, diff colorido, visualizar/baixar), Automation.jsx; nav "Backups" e "Automação"
 - Deploy: httpx no requirements.txt (bug 502 no VPS), startup espera Mongo (30x2s), healthcheck no compose
 - Testes: iteration_5.json 100% (19 backend + UI); suite /app/backend/tests/test_new_batch.py
+
+## Implemented (Jun 2026) — Isolamento por usuário, Telnet, login clean
+- `owner_id` em Device: operadores só veem/usam os próprios (`_scope`, `_get_device_for`); admin vê tudo e escolhe o dono no formulário; sessões/stats/backups também escopados; WS terminal valida dono via role do JWT
+- `protocol: ssh|telnet` por device; `telnet_service.TelnetClientWrapper` (negociação IAC, NAWS, auto-login com user/senha, run_command shell-mode) direto ou via último hop SSH (`open_connection`); CSV aceita coluna `protocol`
+- Login.jsx limpo (logo BASTION + email/senha, sem credenciais padrão)
+- Lab: `/app/sshd_test/fake_telnet.py` (127.0.0.1:2323, labuser/labpass); ids do lab em `/app/sshd_test/ids`
+- Testes: iteration_6.json 100% (15 backend + UI)
