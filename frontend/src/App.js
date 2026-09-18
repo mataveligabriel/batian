@@ -50,7 +50,7 @@ function App() {
             <Route path="/ssh-key" element={<SshKey />} />
             <Route path="/sessions" element={<Sessions />} />
             <Route path="/backups" element={<Backups />} />
-            <Route path="/automation" element={<Automation />} />
+            <Route path="/automation" element={<ProtectedRoute adminOnly><Automation /></ProtectedRoute>} />
             <Route path="/users" element={<ProtectedRoute adminOnly><Users /></ProtectedRoute>} />
           </Route>
         </Routes>

@@ -812,8 +812,8 @@ async def stats(user: dict = Depends(get_current_user)):
     total_devices = await db.devices.count_documents(sc)
     online_devices = await db.devices.count_documents({**sc, "status": "online"})
     offline_devices = await db.devices.count_documents({**sc, "status": "offline"})
-    total_agents = await db.agents.count_documents({})
-    online_agents = await db.agents.count_documents({"status": "online"})
+    total_agents = await db.agents.count_documents(sc)
+    online_agents = await db.agents.count_documents({**sc, "status": "online"})
     sq = {} if user.get("role") == "admin" else {"user_id": user["id"]}
     sessions_today = await db.sessions.count_documents({**sq,
         "started_at": {"$gte": datetime.now(timezone.utc).date().isoformat()}
@@ -977,7 +977,7 @@ scheduler = automation.Scheduler(db, _ping_everything, _backup_many)
 
 
 @api.get("/automation/settings")
-async def get_automation_settings(_: dict = Depends(get_current_user)):
+async def get_automation_settings(_: dict = Depends(require_admin)):
     s = await automation.get_settings(db)
     out = automation.public_settings(s)
     out["last_ping"] = scheduler.last_ping.isoformat() if scheduler.last_ping else None
@@ -1005,7 +1005,7 @@ async def test_alert(_: dict = Depends(require_admin)):
 
 
 @api.post("/automation/ping-now")
-async def ping_now(_: dict = Depends(get_current_user)):
+async def ping_now(_: dict = Depends(require_admin)):
     if scheduler.busy:
         return {"started": False, "reason": "Ping já em andamento"}
     asyncio.create_task(scheduler.tick(force_ping=True))
@@ -1013,7 +1013,7 @@ async def ping_now(_: dict = Depends(get_current_user)):
 
 
 @api.get("/alerts")
-async def list_alerts(_: dict = Depends(get_current_user), limit: int = 50):
+async def list_alerts(_: dict = Depends(require_admin), limit: int = 50):
     return await db.alerts.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
 
 

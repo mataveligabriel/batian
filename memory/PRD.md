@@ -88,3 +88,4 @@ Sistema para acessar via SSH centenas de equipamentos em redes distintas atravé
 - `PUT /api/users/{id}` (admin: nome/papel/senha, bloqueia auto-rebaixamento); `POST /api/auth/change-password` (senha atual + nova ≥6)
 - UI: Users.jsx (editar/resetar senha), `ChangePasswordDialog` no sidebar ("Trocar senha"), Agents.jsx com seletor de dono (admin) e botões para todos
 - Testes: iteration_7.json 100% (backend via curl + 6 fluxos UI)
+- Automação/alertas restritos a admin (nav adminOnly, rota protegida, endpoints require_admin); stats de agentes escopados por usuário

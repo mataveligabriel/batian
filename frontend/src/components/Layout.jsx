@@ -19,7 +19,7 @@ const NAV = [
   { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key" },
   { to: "/sessions", icon: History, label: "Histórico", testid: "nav-sessions" },
   { to: "/backups", icon: Archive, label: "Backups", testid: "nav-backups" },
-  { to: "/automation", icon: BellRing, label: "Automação", testid: "nav-automation" },
+  { to: "/automation", icon: BellRing, label: "Automação", testid: "nav-automation", adminOnly: true },
   { to: "/users", icon: UsersIcon, label: "Usuários", adminOnly: true, testid: "nav-users" },
 ];
 
