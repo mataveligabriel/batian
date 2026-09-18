@@ -7,7 +7,7 @@ import { useTerminal } from "@/context/TerminalContext";
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, KeyRound,
+  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing,
 } from "lucide-react";
 
 const NAV = [

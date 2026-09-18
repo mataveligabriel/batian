@@ -1,0 +1,26 @@
+{
+  "summary": "Tested per-user agent scoping, admin edit-user (name/role/password reset), self change-password from sidebar, and agents owner assignment. FIRST RUN blocked by a syntax error in /app/frontend/src/components/Layout.jsx: `KeyRound` imported twice (lines 9 and 10) causing 'Compiled with problems: Identifier KeyRound has already been declared'. Removed the duplicate on line 10 and app compiled. After fix, ALL 6 flows PASS: (1) admin -> Usuários: edit-user-<id> opens edit-user-dialog with name/role/password; changed op1 -> 'Operador Um' + password 'temp123' -> save-edit-user-btn -> row updates; role select is disabled when editing own admin row (attribute honored via `disabled` prop on shadcn Select). (2) op1 login temp123 OK; change-password-btn on sidebar opens change-password-dialog; wrong current -> toast 'Senha atual incorreta'; mismatched confirmation -> toast 'A confirmação não confere'; correct (temp123 -> op1pass) -> dialog closes; relogin with op1pass works; login with old temp123 correctly stays on /login. (3) op1 Agentes page: does NOT show admin agents gw-minha-maquina/jump-vpn; no bastion-settings-btn; add-agent-btn opens dialog with NO agent-form-owner select; agent-form-parent lists only 'Nenhum' (no admin agents leaked); created 'op-jump-ui' 10.1.1.1 -> agent-card appears; deleted at end. (4) admin Agentes: agent-form-owner select lists users; created 'admin-for-op1' with Dono=op1 -> card shows agent-owner-<id> line with op1's email; op1 sees admin-for-op1 in own list; admin deleted it after. (5) op1 Equipamentos -> Novo Equipamento dialog does not leak admin agents in agent select. (6) Regression: admin restored op1 name to 'Operador 1'; dev-2-hops terminal connected showing 'Conectado. Sessão ativa.' and Debian banner; dialogs fit 1920x800 viewport; no app-level console errors (only 2 expected 400/401 from probing endpoints as op1 and the old-pw login attempt).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "None required — I fixed the duplicate `KeyRound` import in /app/frontend/src/components/Layout.jsx that was blocking compilation. Please review the fix."
+  ],
+  "critical_code_review_comments": [
+    "Layout.jsx had `KeyRound` imported twice (once alongside Radio/KeyRound and again after BellRing/KeyRound); adding new icons should not duplicate existing imports — consider ESLint rule `no-duplicate-imports`/`import/no-duplicates` to catch this pre-commit.",
+    "In Users.jsx openEdit, if `editing?.id === current?.id` disables role select — good. Consider also blocking password reset on own row through this dialog to force use of ChangePasswordDialog (self-service) and avoid admin resetting own password blindly here.",
+    "ChangePasswordDialog only enforces `new.length >= 6` on client; ensure backend also enforces this length (already verified via curl per E1 note).",
+    "Agents.jsx openEdit spreads {...empty, ...a} — a `has_password` from backend is spread into form state where it's not used but is harmless; still, prefer whitelisting fields to keep form shape stable."
+  ],
+  "updated_files": ["/app/frontend/src/components/Layout.jsx"],
+  "success_rate": {"backend": "not tested (per request)", "frontend": "100% (6/6 flows)"},
+  "test_credentials": "admin@sshcentral.io / admin123 ; op1@sshcentral.io / op1pass (restored at end)",
+  "seed_data_creation": "Ephemeral only: op-jump-ui (op1) and admin-for-op1 (admin, assigned to op1) — both deleted via UI at end. op1 name restored to 'Operador 1' and password restored to 'op1pass'.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Duplicate KeyRound import fix in Layout.jsx made the app compile; keep that. Data-testids used: edit-user-<id>, edit-user-dialog, edit-user-name, edit-user-role, edit-user-password, save-edit-user-btn, change-password-btn, change-password-dialog, cp-current/cp-new/cp-confirm/cp-submit, add-agent-btn, agent-form-owner, agent-form-parent, agent-owner-<id>, agent-card-<id>, del-agent-<id>, connect-ssh-<device_id>. When testing multi-user flows, ALWAYS `localStorage.clear()` + goto /login between users — going to /login while authenticated redirects to /dashboard and the login inputs never render (I hit this in my first pass and it made op1 appear to see admin's agents)."
+}

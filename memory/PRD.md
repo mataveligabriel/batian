@@ -82,3 +82,9 @@ Sistema para acessar via SSH centenas de equipamentos em redes distintas atravé
 - Login.jsx limpo (logo BASTION + email/senha, sem credenciais padrão)
 - Lab: `/app/sshd_test/fake_telnet.py` (127.0.0.1:2323, labuser/labpass); ids do lab em `/app/sshd_test/ids`
 - Testes: iteration_6.json 100% (15 backend + UI)
+
+## Implemented (Jun 2026) — Agentes por usuário, reset/troca de senha
+- `owner_id` em Agent (`_own`, `_get_agent_for`, `_check_parent`): qualquer usuário cria/gerencia seus agentes; operadores não veem/usam agentes de outros (pai/agent_id validados); admin vê tudo e atribui dono
+- `PUT /api/users/{id}` (admin: nome/papel/senha, bloqueia auto-rebaixamento); `POST /api/auth/change-password` (senha atual + nova ≥6)
+- UI: Users.jsx (editar/resetar senha), `ChangePasswordDialog` no sidebar ("Trocar senha"), Agents.jsx com seletor de dono (admin) e botões para todos
+- Testes: iteration_7.json 100% (backend via curl + 6 fluxos UI)
