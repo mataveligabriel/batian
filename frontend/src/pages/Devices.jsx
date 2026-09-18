@@ -12,7 +12,6 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, KeyRound } from "lucide-react";
 import { ImportDevicesDialog } from "@/components/ImportDevicesDialog";
-import { useAuth } from "@/context/AuthContext";
 
 export const DEVICE_TYPES = [
   ["linux", "Linux / Unix"], ["mikrotik", "Mikrotik RouterOS"], ["cisco", "Cisco IOS/NX-OS"], ["huawei", "Huawei VRP"],
@@ -31,15 +30,11 @@ export default function Devices() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyDevice);
   const [importOpen, setImportOpen] = useState(false);
-  const [users, setUsers] = useState([]);
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
   const nav = useNavigate();
 
   const load = async () => {
     const [d, a] = await Promise.all([api.get("/devices"), api.get("/agents")]);
     setDevices(d.data); setAgents(a.data);
-    if (isAdmin) api.get("/users").then(r => setUsers(r.data)).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -56,7 +51,6 @@ export default function Devices() {
       host: form.host.trim(),
       port: Number(form.port) || (form.protocol === "telnet" ? 23 : 22),
       protocol: form.protocol || "ssh",
-      owner_id: isAdmin ? (form.owner_id || null) : null,
       username: form.username.trim(),
       password: form.password || null,
       clear_password: !!form.clear_password,
@@ -233,19 +227,6 @@ export default function Devices() {
                 <Input data-testid="device-form-port" type="number" value={form.port} onChange={e => setForm({ ...form, port: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
               </div>
             </div>
-            {isAdmin && (
-              <div>
-                <Label>Dono (quem enxerga este equipamento)</Label>
-                <Select value={form.owner_id || "me"} onValueChange={(v) => setForm({ ...form, owner_id: v === "me" ? "" : v })}>
-                  <SelectTrigger data-testid="device-form-owner" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue placeholder="Eu (admin)" /></SelectTrigger>
-                  <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
-                    <SelectItem value="me">Eu ({user?.email})</SelectItem>
-                    {users.filter(u => u.id !== user?.id).map(u => <SelectItem key={u.id} value={u.id}>{u.name} · {u.email} ({u.role})</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                <div className="text-[11px] text-slate-500 mt-1 font-mono">Operadores só veem os próprios equipamentos; administradores veem todos.</div>
-              </div>
-            )}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Usuário SSH</Label>

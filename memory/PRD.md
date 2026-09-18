@@ -89,3 +89,4 @@ Sistema para acessar via SSH centenas de equipamentos em redes distintas atravé
 - UI: Users.jsx (editar/resetar senha), `ChangePasswordDialog` no sidebar ("Trocar senha"), Agents.jsx com seletor de dono (admin) e botões para todos
 - Testes: iteration_7.json 100% (backend via curl + 6 fluxos UI)
 - Automação/alertas restritos a admin (nav adminOnly, rota protegida, endpoints require_admin); stats de agentes escopados por usuário
+- Isolamento total: `_scope` = `{owner_id: user}` para TODOS (admins inclusive); sem seletor de dono; sessões/stats/backups/WS sempre por usuário. Migração no startup: devices/agents sem owner_id → admin do ADMIN_EMAIL. Verificado via API com segundo admin (0 devices/agents/sessões, 404 em recursos alheios)

@@ -38,12 +38,10 @@ export default function Agents() {
   const [testing, setTesting] = useState(null);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const [users, setUsers] = useState([]);
 
   const load = async () => setAgents((await api.get("/agents")).data);
   useEffect(() => {
     load(); api.get("/bastion/settings").then(r => setBastion(r.data)).catch(() => {});
-    if (isAdmin) api.get("/users").then(r => setUsers(r.data)).catch(() => {});
     // eslint-disable-next-line
   }, []);
 
@@ -65,7 +63,6 @@ export default function Agents() {
       username: form.username.trim() || "root",
       password: form.password || null,
       parent_agent_id: form.parent_agent_id || null,
-      owner_id: isAdmin ? (form.owner_id || null) : null,
     };
     try {
       if (editing) await api.put(`/agents/${editing.id}`, payload);
@@ -182,9 +179,6 @@ export default function Agents() {
                 <div className="flex items-center gap-1 text-slate-500"><Route className="w-3 h-3" /> via <span className="text-slate-200">{chainOf(a).slice(0, -1).join(" → ")}</span></div>
               )}
               <div>latência: <span className="text-slate-200">{a.latency_ms != null ? `${a.latency_ms} ms` : "—"}</span></div>
-              {isAdmin && a.owner_id && a.owner_id !== user?.id && (
-                <div data-testid={`agent-owner-${a.id}`}>dono: <span className="text-slate-200">{users.find(u => u.id === a.owner_id)?.email || a.owner_id}</span></div>
-              )}
             </div>
             <div className="flex gap-2 mt-4 flex-wrap">
               <Button size="sm" variant="outline" onClick={() => ping(a)} data-testid={`ping-agent-${a.id}`}
@@ -263,18 +257,6 @@ export default function Agents() {
               </Select>
               <div className="text-[11px] text-slate-500 mt-1 font-mono">Ex.: jump host da VPN → pai = agente gateway da sua máquina.</div>
             </div>
-            {isAdmin && (
-              <div>
-                <Label>Dono (quem enxerga este agente)</Label>
-                <Select value={form.owner_id || "me"} onValueChange={(v) => setForm({ ...form, owner_id: v === "me" ? "" : v })}>
-                  <SelectTrigger data-testid="agent-form-owner" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
-                  <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
-                    <SelectItem value="me">Eu ({user?.email})</SelectItem>
-                    {users.filter(u => u.id !== user?.id).map(u => <SelectItem key={u.id} value={u.id}>{u.name} · {u.email} ({u.role})</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
             <div><Label>Descrição</Label><Textarea data-testid="agent-form-desc" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" /></div>
           </div>
           <DialogFooter>

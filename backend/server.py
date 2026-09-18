@@ -63,6 +63,10 @@ async def startup():
     await seed_admin()
     await seed_sample_data()
     await db.backups.create_index([("device_id", 1), ("created_at", -1)])
+    admin = await db.users.find_one({"email": os.environ["ADMIN_EMAIL"].lower()}, {"_id": 0, "id": 1})
+    if admin:
+        for col in (db.devices, db.agents):
+            await col.update_many({"$or": [{"owner_id": None}, {"owner_id": {"$exists": False}}]}, {"$set": {"owner_id": admin["id"]}})
     scheduler.start()
 
 
@@ -393,11 +397,7 @@ def _gen_agent_keypair():
 
 
 def _own(data: dict, user: dict, existing: Optional[dict] = None) -> dict:
-    if user.get("role") == "admin":
-        if not data.get("owner_id"):
-            data["owner_id"] = existing.get("owner_id") if existing else user["id"]
-    else:
-        data["owner_id"] = user["id"]
+    data["owner_id"] = existing.get("owner_id") if existing else user["id"]
     return data
 
 
@@ -409,7 +409,7 @@ async def _get_agent_for(user: dict, agent_id: str) -> dict:
 
 
 async def _check_parent(user: dict, parent_id: Optional[str]):
-    if parent_id and user.get("role") != "admin":
+    if parent_id:
         await _get_agent_for(user, parent_id)
 
 
@@ -595,14 +595,13 @@ def _normalize_device(data: dict, user: Optional[dict] = None) -> dict:
     if data.get("protocol") not in ("ssh", "telnet"):
         data["protocol"] = "ssh"
     if user is not None:
-        if user.get("role") != "admin" or not data.get("owner_id"):
-            data["owner_id"] = user["id"]
+        data["owner_id"] = user["id"]
     return data
 
 
 def _scope(user: dict) -> dict:
-    """Mongo filter restricting devices to the current user (admins see everything)."""
-    return {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+    """Mongo filter: every user (admins included) only sees what they created."""
+    return {"owner_id": user["id"]}
 
 
 async def _get_device_for(user: dict, device_id: str) -> dict:
@@ -686,8 +685,7 @@ async def update_device(device_id: str, payload: DeviceCreate, user: dict = Depe
     data = _normalize_device(_apply_secret(payload.model_dump(), existing), user)
     if data.get("agent_id") and data["agent_id"] != existing.get("agent_id"):
         await _get_agent_for(user, data["agent_id"])
-    if user.get("role") == "admin" and not payload.owner_id:
-        data["owner_id"] = existing.get("owner_id")
+    data["owner_id"] = existing.get("owner_id") or user["id"]
     await db.devices.update_one({"id": device_id}, {"$set": data})
     return _public(await db.devices.find_one({"id": device_id}, {"_id": 0}))
 
@@ -801,7 +799,7 @@ async def delete_script(sid: str, _: dict = Depends(get_current_user)):
 # ---------- Sessions ----------
 @api.get("/sessions")
 async def list_sessions(user: dict = Depends(get_current_user), limit: int = 100):
-    q = {} if user.get("role") == "admin" else {"user_id": user["id"]}
+    q = {"user_id": user["id"]}
     return await db.sessions.find(q, {"_id": 0}).sort("started_at", -1).to_list(limit)
 
 
@@ -814,7 +812,7 @@ async def stats(user: dict = Depends(get_current_user)):
     offline_devices = await db.devices.count_documents({**sc, "status": "offline"})
     total_agents = await db.agents.count_documents(sc)
     online_agents = await db.agents.count_documents({**sc, "status": "online"})
-    sq = {} if user.get("role") == "admin" else {"user_id": user["id"]}
+    sq = {"user_id": user["id"]}
     sessions_today = await db.sessions.count_documents({**sq,
         "started_at": {"$gte": datetime.now(timezone.utc).date().isoformat()}
     })
@@ -1019,30 +1017,25 @@ async def list_alerts(_: dict = Depends(require_admin), limit: int = 50):
 
 @api.post("/backups/run")
 async def run_backups(payload: BackupRunPayload, user: dict = Depends(get_current_user)):
-    if user.get("role") != "admin":
-        mine = {d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(5000)}
-        payload.device_ids = [i for i in (payload.device_ids or list(mine)) if i in mine]
-        if not payload.device_ids:
-            return {"results": []}
+    mine = {d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(5000)}
+    payload.device_ids = [i for i in (payload.device_ids or list(mine)) if i in mine]
+    if not payload.device_ids:
+        return {"results": []}
     results = await _backup_many(payload.device_ids)
     return {"results": results}
 
 
 @api.get("/backups")
 async def list_backups(user: dict = Depends(get_current_user), device_id: Optional[str] = None, limit: int = 200):
-    q = {"device_id": device_id} if device_id else {}
-    if user.get("role") != "admin":
-        mine = [d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(5000)]
-        q["device_id"] = device_id if device_id in mine else {"$in": mine}
+    mine = [d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(5000)]
+    q = {"device_id": device_id if device_id in mine else {"$in": mine}}
     return await db.backups.find(q, {"_id": 0, "content": 0}).sort("created_at", -1).to_list(limit)
 
 
 @api.get("/backups/summary")
 async def backups_summary(user: dict = Depends(get_current_user)):
-    match = {}
-    if user.get("role") != "admin":
-        mine = [d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(5000)]
-        match = {"device_id": {"$in": mine}}
+    mine = [d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(5000)]
+    match = {"device_id": {"$in": mine}}
     pipeline = [
         {"$match": match},
         {"$sort": {"created_at": -1}},
@@ -1093,8 +1086,7 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
     user_id = payload["sub"]
     user_email = payload["email"]
 
-    scope = {} if payload.get("role") == "admin" else {"owner_id": user_id}
-    dev = await db.devices.find_one({"id": device_id, **scope}, {"_id": 0})
+    dev = await db.devices.find_one({"id": device_id, "owner_id": user_id}, {"_id": 0})
     if not dev:
         await ws.send_json({"type": "error", "message": "Equipamento não encontrado"})
         await ws.close()
