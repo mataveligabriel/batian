@@ -21,7 +21,7 @@ from auth import (
     get_current_user, require_admin,
 )
 from models import (
-    UserCreate, UserOut, LoginPayload,
+    UserCreate, UserOut, LoginPayload, UserUpdate, ChangePasswordPayload,
     AgentCreate, Agent,
     DeviceCreate, Device, DEVICE_TYPES,
     ScriptCreate, Script,
@@ -195,6 +195,42 @@ async def create_user(payload: UserCreate, _: dict = Depends(require_admin)):
     return doc
 
 
+@api.put("/users/{user_id}")
+async def update_user(user_id: str, payload: UserUpdate, current: dict = Depends(require_admin)):
+    u = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    update = {}
+    if payload.name and payload.name.strip():
+        update["name"] = payload.name.strip()
+    if payload.role:
+        if payload.role not in ("admin", "operator"):
+            raise HTTPException(status_code=400, detail="Papel inválido")
+        if user_id == current["id"] and payload.role != "admin":
+            raise HTTPException(status_code=400, detail="Você não pode remover seu próprio papel de administrador")
+        update["role"] = payload.role
+    if payload.password:
+        if len(payload.password) < 6:
+            raise HTTPException(status_code=400, detail="A senha deve ter pelo menos 6 caracteres")
+        update["password_hash"] = hash_password(payload.password)
+    if update:
+        await db.users.update_one({"id": user_id}, {"$set": update})
+    return await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+
+
+@api.post("/auth/change-password")
+async def change_password(payload: ChangePasswordPayload, current: dict = Depends(get_current_user)):
+    u = await db.users.find_one({"id": current["id"]})
+    if not u or not verify_password(payload.current_password, u["password_hash"]):
+        raise HTTPException(status_code=400, detail="Senha atual incorreta")
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="A nova senha deve ter pelo menos 6 caracteres")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="A nova senha deve ser diferente da atual")
+    await db.users.update_one({"id": current["id"]}, {"$set": {"password_hash": hash_password(payload.new_password)}})
+    return {"ok": True}
+
+
 @api.delete("/users/{user_id}")
 async def delete_user(user_id: str, current: dict = Depends(require_admin)):
     if user_id == current["id"]:
@@ -356,17 +392,39 @@ def _gen_agent_keypair():
     return key.export_private_key().decode(), key.export_public_key().decode()
 
 
+def _own(data: dict, user: dict, existing: Optional[dict] = None) -> dict:
+    if user.get("role") == "admin":
+        if not data.get("owner_id"):
+            data["owner_id"] = existing.get("owner_id") if existing else user["id"]
+    else:
+        data["owner_id"] = user["id"]
+    return data
+
+
+async def _get_agent_for(user: dict, agent_id: str) -> dict:
+    a = await db.agents.find_one({"id": agent_id, **_scope(user)}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Agente não encontrado")
+    return a
+
+
+async def _check_parent(user: dict, parent_id: Optional[str]):
+    if parent_id and user.get("role") != "admin":
+        await _get_agent_for(user, parent_id)
+
+
 @api.get("/agents")
-async def list_agents(_: dict = Depends(get_current_user)):
-    docs = await db.agents.find({}, {"_id": 0}).to_list(500)
+async def list_agents(user: dict = Depends(get_current_user)):
+    docs = await db.agents.find(_scope(user), {"_id": 0}).to_list(500)
     return [_public(d) for d in docs]
 
 
 @api.post("/agents")
-async def create_agent(payload: AgentCreate, _: dict = Depends(require_admin)):
-    data = _apply_secret(payload.model_dump(), None)
+async def create_agent(payload: AgentCreate, user: dict = Depends(get_current_user)):
+    data = _own(_apply_secret(payload.model_dump(), None), user)
     if data.get("parent_agent_id") == "":
         data["parent_agent_id"] = None
+    await _check_parent(user, data.get("parent_agent_id"))
     a = Agent(**data)
     doc = a.model_dump()
     if doc["mode"] == "reverse":
@@ -380,15 +438,14 @@ async def create_agent(payload: AgentCreate, _: dict = Depends(require_admin)):
 
 
 @api.put("/agents/{agent_id}")
-async def update_agent(agent_id: str, payload: AgentCreate, _: dict = Depends(require_admin)):
-    existing = await db.agents.find_one({"id": agent_id}, {"_id": 0})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Agente não encontrado")
+async def update_agent(agent_id: str, payload: AgentCreate, user: dict = Depends(get_current_user)):
+    existing = await _get_agent_for(user, agent_id)
     if payload.parent_agent_id == agent_id:
         raise HTTPException(status_code=400, detail="Agente não pode ser pai de si mesmo")
-    data = _apply_secret(payload.model_dump(), existing)
+    data = _own(_apply_secret(payload.model_dump(), existing), user, existing)
     if data.get("parent_agent_id") == "":
         data["parent_agent_id"] = None
+    await _check_parent(user, data.get("parent_agent_id"))
     if data["mode"] == "reverse":
         data["tunnel_port"] = int(data.get("tunnel_port") or existing.get("tunnel_port") or await _next_tunnel_port())
         if not existing.get("agent_public_key"):
@@ -400,8 +457,8 @@ async def update_agent(agent_id: str, payload: AgentCreate, _: dict = Depends(re
 
 
 @api.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str, _: dict = Depends(require_admin)):
-    r = await db.agents.delete_one({"id": agent_id})
+async def delete_agent(agent_id: str, user: dict = Depends(get_current_user)):
+    r = await db.agents.delete_one({"id": agent_id, **_scope(user)})
     await db.agents.update_many({"parent_agent_id": agent_id}, {"$set": {"parent_agent_id": None}})
     return {"deleted": r.deleted_count}
 
@@ -423,10 +480,8 @@ async def _ping_agent(ag: dict) -> Optional[float]:
 
 
 @api.post("/agents/{agent_id}/ping")
-async def ping_agent(agent_id: str, _: dict = Depends(get_current_user)):
-    a = await db.agents.find_one({"id": agent_id}, {"_id": 0})
-    if not a:
-        raise HTTPException(status_code=404, detail="Agente não encontrado")
+async def ping_agent(agent_id: str, user: dict = Depends(get_current_user)):
+    a = await _get_agent_for(user, agent_id)
     lat = await _ping_agent(a)
     status = "online" if lat is not None else "offline"
     now = datetime.now(timezone.utc).isoformat()
@@ -435,11 +490,9 @@ async def ping_agent(agent_id: str, _: dict = Depends(get_current_user)):
 
 
 @api.post("/agents/{agent_id}/test")
-async def test_agent(agent_id: str, _: dict = Depends(get_current_user)):
+async def test_agent(agent_id: str, user: dict = Depends(get_current_user)):
     """Full SSH login through the chain up to this agent."""
-    a = await db.agents.find_one({"id": agent_id}, {"_id": 0})
-    if not a:
-        raise HTTPException(status_code=404, detail="Agente não encontrado")
+    a = await _get_agent_for(user, agent_id)
     priv, _, _ = await _get_ssh_key()
     try:
         chain = await _agent_chain(agent_id)
@@ -453,10 +506,8 @@ async def test_agent(agent_id: str, _: dict = Depends(get_current_user)):
 
 
 @api.get("/agents/{agent_id}/install-script")
-async def install_script(agent_id: str, _: dict = Depends(get_current_user)):
-    a = await db.agents.find_one({"id": agent_id}, {"_id": 0})
-    if not a:
-        raise HTTPException(status_code=404, detail="Agente não encontrado")
+async def install_script(agent_id: str, user: dict = Depends(get_current_user)):
+    a = await _get_agent_for(user, agent_id)
     if a.get("mode") != "reverse":
         return {"mode": "direct", "bash": "", "powershell": "",
                 "note": "Agente em modo direto: o Bastion conecta diretamente em "
@@ -570,6 +621,8 @@ async def list_devices(user: dict = Depends(get_current_user)):
 @api.post("/devices")
 async def create_device(payload: DeviceCreate, user: dict = Depends(get_current_user)):
     data = _normalize_device(_apply_secret(payload.model_dump(), None), user)
+    if data.get("agent_id"):
+        await _get_agent_for(user, data["agent_id"])
     doc = Device(**data).model_dump()
     await db.devices.insert_one(doc)
     return _public(doc)
@@ -579,7 +632,7 @@ async def create_device(payload: DeviceCreate, user: dict = Depends(get_current_
 async def import_devices(payload: dict, user: dict = Depends(get_current_user)):
     """Bulk import. payload = {"rows": [{name, host, port, username, password, device_type, tags, agent, description}]}"""
     rows = payload.get("rows") or []
-    agents = await db.agents.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(1000)
+    agents = await db.agents.find(_scope(user), {"_id": 0, "id": 1, "name": 1}).to_list(1000)
     agent_by_name = {a["name"].strip().lower(): a["id"] for a in agents}
     agent_ids = {a["id"] for a in agents}
     existing = await db.devices.find(_scope(user), {"_id": 0, "name": 1, "host": 1, "port": 1}).to_list(10000)
@@ -631,6 +684,8 @@ async def import_devices(payload: dict, user: dict = Depends(get_current_user)):
 async def update_device(device_id: str, payload: DeviceCreate, user: dict = Depends(get_current_user)):
     existing = await _get_device_for(user, device_id)
     data = _normalize_device(_apply_secret(payload.model_dump(), existing), user)
+    if data.get("agent_id") and data["agent_id"] != existing.get("agent_id"):
+        await _get_agent_for(user, data["agent_id"])
     if user.get("role") == "admin" and not payload.owner_id:
         data["owner_id"] = existing.get("owner_id")
     await db.devices.update_one({"id": device_id}, {"$set": data})

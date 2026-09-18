@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { UserPlus, Trash2 } from "lucide-react";
+import {UserPlus, Trash2, Pencil } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 const empty = { name: "", email: "", password: "", role: "operator" };
@@ -20,6 +20,16 @@ export default function Users() {
   const { user: current } = useAuth();
 
   const load = async () => setUsers((await api.get("/users")).data);
+  const [editing, setEditing] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", role: "operator", password: "" });
+  const openEdit = (u) => { setEditing(u); setEditForm({ name: u.name, role: u.role, password: "" }); };
+  const saveEdit = async () => {
+    try {
+      await api.put(`/users/${editing.id}`, { name: editForm.name, role: editForm.role, password: editForm.password || null });
+      toast.success(editForm.password ? "Usuário atualizado e senha redefinida" : "Usuário atualizado");
+      setEditing(null); load();
+    } catch (e) { toast.error(formatApiError(e)); }
+  };
   useEffect(() => { load(); }, []);
 
   const save = async () => {
@@ -69,6 +79,9 @@ export default function Users() {
                 </td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-400">{new Date(u.created_at).toLocaleString("pt-BR")}</td>
                 <td className="px-4 py-3 text-right">
+                  <Button size="sm" variant="ghost" onClick={() => openEdit(u)} data-testid={`edit-user-${u.id}`} className="text-slate-300 hover:bg-slate-800">
+                    <Pencil className="w-4 h-4" />
+                  </Button>
                   {u.id !== current?.id && (
                     <Button size="sm" variant="ghost" onClick={() => del(u)} data-testid={`del-user-${u.id}`} className="text-red-400 hover:bg-red-950/40">
                       <Trash2 className="w-4 h-4" />
@@ -80,6 +93,33 @@ export default function Users() {
           </tbody>
         </table>
       </Card>
+
+      <Dialog open={!!editing} onOpenChange={(v) => !v && setEditing(null)}>
+        <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100" data-testid="edit-user-dialog">
+          <DialogHeader><DialogTitle>Editar usuário — {editing?.email}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div><Label>Nome</Label><Input data-testid="edit-user-name" value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" /></div>
+            <div>
+              <Label>Papel</Label>
+              <Select value={editForm.role} onValueChange={(v) => setEditForm({ ...editForm, role: v })} disabled={editing?.id === current?.id}>
+                <SelectTrigger data-testid="edit-user-role" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
+                  <SelectItem value="operator">operator</SelectItem>
+                  <SelectItem value="admin">admin</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Nova senha (opcional — redefine sem excluir o usuário)</Label>
+              <Input data-testid="edit-user-password" type="password" value={editForm.password} onChange={e => setEditForm({ ...editForm, password: e.target.value })} placeholder="deixe vazio para manter" className="bg-[#05070A] border-[#1E293B] font-mono" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Cancelar</Button>
+            <Button onClick={saveEdit} data-testid="save-edit-user-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">Salvar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100">

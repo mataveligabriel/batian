@@ -12,7 +12,7 @@ import { toast } from "sonner";
 import { Plus, Radio, Zap, Trash2, Pencil, Copy, Terminal as TerminalIco, Settings2, ShieldCheck, ArrowDownRight, Laptop, Route } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
-const empty = { name: "", location: "", mode: "direct", host: "", port: 22, tunnel_port: "", username: "", password: "", clear_password: false, parent_agent_id: "", description: "" };
+const empty = { name: "", location: "", mode: "direct", host: "", port: 22, tunnel_port: "", username: "", password: "", clear_password: false, parent_agent_id: "", owner_id: "", description: "" };
 
 function CodeBlock({ code, testId }) {
   return (
@@ -38,14 +38,19 @@ export default function Agents() {
   const [testing, setTesting] = useState(null);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const [users, setUsers] = useState([]);
 
   const load = async () => setAgents((await api.get("/agents")).data);
-  useEffect(() => { load(); api.get("/bastion/settings").then(r => setBastion(r.data)).catch(() => {}); }, []);
+  useEffect(() => {
+    load(); api.get("/bastion/settings").then(r => setBastion(r.data)).catch(() => {});
+    if (isAdmin) api.get("/users").then(r => setUsers(r.data)).catch(() => {});
+    // eslint-disable-next-line
+  }, []);
 
   const openNew = () => { setEditing(null); setForm(empty); setOpen(true); };
   const openEdit = (a) => {
     setEditing(a);
-    setForm({ ...empty, ...a, tunnel_port: a.tunnel_port ?? "", parent_agent_id: a.parent_agent_id || "", password: "", clear_password: false });
+    setForm({ ...empty, ...a, tunnel_port: a.tunnel_port ?? "", parent_agent_id: a.parent_agent_id || "", owner_id: a.owner_id || "", password: "", clear_password: false });
     setOpen(true);
   };
 
@@ -60,6 +65,7 @@ export default function Agents() {
       username: form.username.trim() || "root",
       password: form.password || null,
       parent_agent_id: form.parent_agent_id || null,
+      owner_id: isAdmin ? (form.owner_id || null) : null,
     };
     try {
       if (editing) await api.put(`/agents/${editing.id}`, payload);
@@ -126,7 +132,7 @@ export default function Agents() {
           <h1 className="font-heading text-3xl sm:text-4xl font-bold text-slate-100 mt-1">Agentes / Jump Hosts</h1>
           <p className="text-slate-400 mt-2 text-sm max-w-2xl">
             <b>Túnel reverso</b>: máquina atrás de NAT/VPN que abre um túnel até o Bastion (ex.: seu PC com FortiClient).
-            <b> Direto</b>: jump host alcançável pelo Bastion ou pelo agente pai. Encadeie agentes para chegar aos equipamentos.
+            <b> Direto</b>: jump host alcançável pelo Bastion ou pelo agente pai. Cada usuário gerencia seus próprios agentes.
           </p>
         </div>
         <div className="flex gap-2">
@@ -135,11 +141,9 @@ export default function Agents() {
               <Settings2 className="w-4 h-4 mr-2" /> Configurar Bastion
             </Button>
           )}
-          {isAdmin && (
-            <Button onClick={openNew} data-testid="add-agent-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
-              <Plus className="w-4 h-4 mr-2" /> Novo Agente
-            </Button>
-          )}
+          <Button onClick={openNew} data-testid="add-agent-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
+            <Plus className="w-4 h-4 mr-2" /> Novo Agente
+          </Button>
         </div>
       </div>
 
@@ -178,6 +182,9 @@ export default function Agents() {
                 <div className="flex items-center gap-1 text-slate-500"><Route className="w-3 h-3" /> via <span className="text-slate-200">{chainOf(a).slice(0, -1).join(" → ")}</span></div>
               )}
               <div>latência: <span className="text-slate-200">{a.latency_ms != null ? `${a.latency_ms} ms` : "—"}</span></div>
+              {isAdmin && a.owner_id && a.owner_id !== user?.id && (
+                <div data-testid={`agent-owner-${a.id}`}>dono: <span className="text-slate-200">{users.find(u => u.id === a.owner_id)?.email || a.owner_id}</span></div>
+              )}
             </div>
             <div className="flex gap-2 mt-4 flex-wrap">
               <Button size="sm" variant="outline" onClick={() => ping(a)} data-testid={`ping-agent-${a.id}`}
@@ -192,23 +199,19 @@ export default function Agents() {
                       className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800 flex-1">
                 <TerminalIco className="w-3.5 h-3.5 mr-1.5" /> Instalar
               </Button>
-              {isAdmin && (
-                <>
-                  <Button size="sm" variant="ghost" onClick={() => openEdit(a)} data-testid={`edit-agent-${a.id}`} className="text-slate-300 hover:bg-slate-800">
-                    <Pencil className="w-4 h-4" />
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => del(a)} data-testid={`del-agent-${a.id}`} className="text-red-400 hover:bg-red-950/40">
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </>
-              )}
+              <Button size="sm" variant="ghost" onClick={() => openEdit(a)} data-testid={`edit-agent-${a.id}`} className="text-slate-300 hover:bg-slate-800">
+                <Pencil className="w-4 h-4" />
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => del(a)} data-testid={`del-agent-${a.id}`} className="text-red-400 hover:bg-red-950/40">
+                <Trash2 className="w-4 h-4" />
+              </Button>
             </div>
           </Card>
         ))}
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-lg">
+        <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-lg max-h-[92vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? "Editar agente" : "Novo agente"}</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
@@ -260,6 +263,18 @@ export default function Agents() {
               </Select>
               <div className="text-[11px] text-slate-500 mt-1 font-mono">Ex.: jump host da VPN → pai = agente gateway da sua máquina.</div>
             </div>
+            {isAdmin && (
+              <div>
+                <Label>Dono (quem enxerga este agente)</Label>
+                <Select value={form.owner_id || "me"} onValueChange={(v) => setForm({ ...form, owner_id: v === "me" ? "" : v })}>
+                  <SelectTrigger data-testid="agent-form-owner" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
+                  <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
+                    <SelectItem value="me">Eu ({user?.email})</SelectItem>
+                    {users.filter(u => u.id !== user?.id).map(u => <SelectItem key={u.id} value={u.id}>{u.name} · {u.email} ({u.role})</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div><Label>Descrição</Label><Textarea data-testid="agent-form-desc" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" /></div>
           </div>
           <DialogFooter>

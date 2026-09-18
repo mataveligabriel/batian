@@ -1,12 +1,13 @@
-import React from "react";
+import React, { useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
 import { TerminalWorkspace } from "@/components/TerminalWorkspace";
 import { useTerminal } from "@/context/TerminalContext";
+import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing,
+  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, KeyRound,
 } from "lucide-react";
 
 const NAV = [
@@ -27,6 +28,7 @@ export default function Layout() {
   const { tabs } = useTerminal();
   const { pathname } = useLocation();
   const onTerminal = pathname.startsWith("/terminal");
+  const [cpOpen, setCpOpen] = useState(false);
 
   return (
     <div className="min-h-screen flex bg-[#090D14]">
@@ -72,6 +74,14 @@ export default function Layout() {
             <div className="text-xs text-slate-500 font-mono truncate">{user?.email}</div>
             <div className="text-[10px] uppercase mt-1 text-emerald-400 font-mono">{user?.role}</div>
           </div>
+          <button
+            data-testid="change-password-btn"
+            onClick={() => setCpOpen(true)}
+            className="mt-2 w-full flex items-center justify-center gap-2 text-xs uppercase tracking-widest font-mono text-slate-400 hover:text-[#4DA3FF] px-3 py-2 rounded-md hover:bg-slate-800/60 transition-colors border border-transparent hover:border-[#1E293B]"
+          >
+            <KeyRound className="w-3.5 h-3.5" /> Trocar senha
+          </button>
+          <ChangePasswordDialog open={cpOpen} onOpenChange={setCpOpen} />
           <button
             data-testid="logout-btn"
             onClick={logout}

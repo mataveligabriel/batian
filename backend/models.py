@@ -21,6 +21,17 @@ class UserCreate(BaseModel):
     role: str = "operator"  # 'admin' | 'operator'
 
 
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    password: Optional[str] = None  # admin reset; empty keeps current
+
+
+class ChangePasswordPayload(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
@@ -47,6 +58,7 @@ class AgentCreate(BaseModel):
     password: Optional[str] = None  # write-only; empty keeps existing
     clear_password: bool = False
     parent_agent_id: Optional[str] = None  # chain: this agent is only reachable through the parent
+    owner_id: Optional[str] = None  # admin may assign; operators always own their agents
     description: str = ""
 
 
