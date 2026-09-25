@@ -42,7 +42,14 @@ export const TERM_THEMES = {
 
 const KEY = "bastion_term_prefs";
 const EVT = "bastion-term-prefs";
-export const DEFAULT_PREFS = { theme: "mobaxterm", fontSize: 14, highlight: true, copyOnSelect: true, rightClickPaste: true };
+export const DEFAULT_PREFS = {
+  theme: "mobaxterm", fontSize: 14, highlight: true,
+  copyOnSelect: true,          // selecionar já copia (MobaXterm)
+  rightClick: "menu",          // "menu" = menu de contexto | "paste" = botão direito cola (Ctrl+botão direito abre o menu)
+  pasteConfirm: "always",      // "always" | "multiline" | "never" — caixa de confirmação/edição antes de colar
+  focusMode: false,            // terminal sem menu lateral nem cabeçalho
+  sidebarCollapsed: false,     // menu lateral só com ícones
+};
 
 export function getTermPrefs() {
   try {
