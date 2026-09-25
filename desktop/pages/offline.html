@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><title>Bastion SSH</title><link rel="stylesheet" href="_style.css"></head>
+<body>
+  <div class="card">
+    <div class="logo"><img src="../build/icon.png" alt=""><h1>BASTION</h1><small>SSH Central</small></div>
+    <div style="text-align:center">Não foi possível conectar ao servidor<br><code id="url"></code></div>
+    <div class="err" id="err" style="text-align:center"></div>
+    <div class="hint" style="text-align:center">Confira se o servidor Linux está ligado, se o IP está certo e se a porta está liberada.<br>Tentando de novo automaticamente em <span id="t">15</span>s…</div>
+    <div class="row">
+      <button id="change">Alterar servidor</button>
+      <button class="primary" id="retry">Tentar de novo</button>
+    </div>
+  </div>
+  <script>
+    const q = new URLSearchParams(location.search);
+    document.getElementById("url").textContent = q.get("url") || "";
+    document.getElementById("err").textContent = q.get("erro") || "";
+    document.getElementById("retry").onclick = () => window.bastionDesktop.retry();
+    document.getElementById("change").onclick = () => window.bastionDesktop.changeServer();
+    let n = 15; setInterval(() => { n--; document.getElementById("t").textContent = n; if (n <= 0) window.bastionDesktop.retry(); }, 1000);
+  </script>
+</body>
+</html>

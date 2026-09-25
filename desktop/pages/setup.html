@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><title>Bastion SSH</title><link rel="stylesheet" href="_style.css"></head>
+<body>
+  <form class="card" id="f">
+    <div class="logo"><img src="../build/icon.png" alt=""><h1>BASTION</h1><small>SSH Central</small></div>
+    <label for="url">Endereço do servidor Bastion (Linux)</label>
+    <input type="text" id="url" placeholder="177.184.221.5  ou  https://bastion.suaempresa.com" autofocus spellcheck="false">
+    <div class="hint">É o mesmo endereço que você abre no navegador. Fica salvo; dá para trocar depois em <b>Bastion → Alterar servidor</b>.</div>
+    <label class="check"><input type="checkbox" id="insecure"> Aceitar certificado HTTPS inválido/autoassinado deste servidor (use só se acessar por IP com https)</label>
+    <div class="err" id="err"></div>
+    <div class="row"><button type="submit" class="primary">Salvar e conectar</button></div>
+  </form>
+  <script>
+    const q = new URLSearchParams(location.search);
+    const $ = (id) => document.getElementById(id);
+    window.bastionDesktop.getConfig().then(c => { $("url").value = q.get("url") || c.url || ""; $("insecure").checked = q.get("insecure") === "1" || c.insecure; });
+    $("f").addEventListener("submit", async (e) => {
+      e.preventDefault(); $("err").textContent = "";
+      const r = await window.bastionDesktop.saveServer($("url").value, $("insecure").checked);
+      if (!r.ok) $("err").textContent = r.error;
+    });
+  </script>
+</body>
+</html>

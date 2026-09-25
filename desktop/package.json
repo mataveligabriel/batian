@@ -1,0 +1,36 @@
+{
+  "name": "bastion-desktop",
+  "productName": "Bastion SSH",
+  "version": "1.0.0",
+  "description": "App desktop do Bastion SSH Central — abre o servidor Bastion (Linux) numa janela própria, sempre na versão mais nova.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.bastion.sshcentral",
+    "productName": "Bastion SSH",
+    "files": ["main.js", "preload.js", "pages/**", "build/icon.png"],
+    "directories": { "output": "dist", "buildResources": "build" },
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] }],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Bastion SSH",
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Bastion-SSH-Setup-${version}.exe"
+    },
+    "portable": { "artifactName": "Bastion-SSH-Portatil-${version}.exe" }
+  }
+}

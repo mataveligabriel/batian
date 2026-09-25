@@ -1,0 +1,35 @@
+# Gera o instalador do app desktop "Bastion SSH" para Windows.
+# Rodar: GitHub → Actions → "App Windows (Bastion SSH)" → Run workflow.
+# Baixar: abra a execução concluída → seção "Artifacts" → Bastion-SSH-Windows.
+name: App Windows (Bastion SSH)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop-windows.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Instalar dependências
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+      - name: Gerar instalador
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bastion-SSH-Windows
+          path: |
+            desktop/dist/*.exe
+          if-no-files-found: error
+          retention-days: 30

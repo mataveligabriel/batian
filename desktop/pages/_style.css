@@ -1,0 +1,19 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #05070A; color: #E2E8F0; font-family: "Segoe UI", system-ui, sans-serif; }
+body { display: flex; align-items: center; justify-content: center; padding: 16px; }
+.card { width: 100%; max-width: 440px; background: #0B111C; border: 1px solid #1E293B; border-radius: 14px; padding: 28px; }
+.logo { display: flex; flex-direction: column; align-items: center; margin-bottom: 22px; }
+.logo img { width: 72px; height: 72px; }
+.logo h1 { margin: 12px 0 2px; font-size: 26px; letter-spacing: .06em; }
+.logo small { font: 11px/1 Consolas, monospace; letter-spacing: .3em; color: #64748B; text-transform: uppercase; }
+label { display: block; font-size: 13px; color: #94A3B8; margin: 14px 0 6px; }
+input[type=text] { width: 100%; padding: 10px 12px; background: #05070A; border: 1px solid #1E293B; border-radius: 8px; color: #F1F5F9; font: 14px Consolas, monospace; outline: none; }
+input[type=text]:focus { border-color: #007AFF; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: #94A3B8; margin-top: 12px; cursor: pointer; }
+.hint { font-size: 12px; color: #64748B; margin-top: 6px; }
+.err { color: #F87171; font-size: 13px; margin-top: 12px; min-height: 18px; word-break: break-word; }
+.row { display: flex; gap: 10px; margin-top: 18px; }
+button { flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid #1E293B; background: #111722; color: #E2E8F0; font-size: 14px; cursor: pointer; }
+button.primary { background: #007AFF; border-color: #007AFF; color: #fff; }
+button:hover { filter: brightness(1.1); }
+code { font-family: Consolas, monospace; color: #93C5FD; }
