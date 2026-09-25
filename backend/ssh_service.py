@@ -7,15 +7,16 @@ from typing import Optional, List
 import asyncssh
 
 # device types that usually only speak old kex/ciphers
-LEGACY_TYPES = {"mikrotik", "cisco", "huawei", "ubiquiti", "datacom", "zte", "other"}
+LEGACY_TYPES = {"mikrotik", "cisco", "huawei", "juniper", "ubiquiti", "datacom", "zte", "other"}
 # device types without a proper "exec" channel -> run commands inside an interactive shell
-SHELL_EXEC_TYPES = {"cisco", "huawei", "datacom", "zte", "mikrotik"}
+SHELL_EXEC_TYPES = {"cisco", "huawei", "juniper", "datacom", "zte", "mikrotik"}
 # commands sent before batch commands in shell mode to disable pagination
 PAGINATION_OFF = {
     "cisco": "terminal length 0",
     "huawei": "screen-length 0 temporary",
     "datacom": "terminal length 0",
     "zte": "terminal length 0",
+    "juniper": "set cli screen-length 0",
 }
 
 LEGACY_ALGS = dict(
@@ -103,9 +104,9 @@ class SSHClientWrapper:
             except Exception:
                 pass
 
-    async def run_command(self, command: str, timeout: int = 60) -> dict:
+    async def run_command(self, command: str, timeout: int = 60, idle: float = 1.5) -> dict:
         if self.device_type in SHELL_EXEC_TYPES:
-            return await self._run_in_shell(command, timeout)
+            return await self._run_in_shell(command, timeout, idle)
         try:
             result = await asyncio.wait_for(self.conn.run(command, check=False), timeout=timeout)
             return {"stdout": result.stdout or "", "stderr": result.stderr or "",
@@ -114,26 +115,26 @@ class SSHClientWrapper:
         except asyncio.TimeoutError:
             return {"stdout": "", "stderr": "Timeout", "exit_status": -1, "ok": False}
         except asyncssh.ChannelOpenError:
-            return await self._run_in_shell(command, timeout)
+            return await self._run_in_shell(command, timeout, idle)
 
     async def _read_until_idle(self, proc, idle: float = 1.2, hard: float = 60) -> bytes:
+        """Lê até o equipamento ficar quieto. Com o prompt visível no fim, basta ~1s de silêncio;
+        sem prompt (comando lento ainda gerando saída) espera até `idle` segundos."""
         buf = b""
         deadline = time.monotonic() + hard
         while time.monotonic() < deadline:
+            wait = min(idle, 1.0) if buf and PROMPT_RE.search(buf[-200:]) else idle
             try:
-                chunk = await asyncio.wait_for(proc.stdout.read(65536), timeout=idle)
+                chunk = await asyncio.wait_for(proc.stdout.read(65536), timeout=wait)
                 if not chunk:
                     break
                 buf += chunk
-                if PROMPT_RE.search(buf[-200:]):
-                    await asyncio.sleep(0.15)
-                    continue
             except asyncio.TimeoutError:
                 if buf:
                     break
         return buf
 
-    async def _run_in_shell(self, command: str, timeout: int) -> dict:
+    async def _run_in_shell(self, command: str, timeout: int, idle: float = 1.5) -> dict:
         proc = await self.conn.create_process(term_type="vt100", term_size=(200, 100), encoding=None)
         try:
             await self._read_until_idle(proc, idle=1.5, hard=10)
@@ -146,7 +147,7 @@ class SSHClientWrapper:
                 if not line.strip():
                     continue
                 proc.stdin.write((line + "\n").encode())
-                out += await self._read_until_idle(proc, idle=1.5, hard=timeout)
+                out += await self._read_until_idle(proc, idle=idle, hard=timeout)
             text = _clean_ansi(out.decode("utf-8", "replace"))
             return {"stdout": text, "stderr": "", "exit_status": 0, "ok": True}
         finally:

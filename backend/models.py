@@ -73,7 +73,7 @@ class Agent(AgentCreate):
 
 
 # ---------- Devices ----------
-DEVICE_TYPES = ["linux", "mikrotik", "cisco", "huawei", "ubiquiti", "datacom", "zte", "other"]
+DEVICE_TYPES = ["linux", "mikrotik", "cisco", "huawei", "juniper", "ubiquiti", "datacom", "zte", "other"]
 
 
 class DeviceCreate(BaseModel):
@@ -91,6 +91,10 @@ class DeviceCreate(BaseModel):
     description: str = ""
     backup_enabled: bool = True
     backup_command: Optional[str] = None  # overrides the per-type default
+
+
+class DeviceCreateRequest(DeviceCreate):
+    copy_password_from: Optional[str] = None  # duplicar: herda a senha criptografada deste equipamento
 
 
 class Device(DeviceCreate):
@@ -193,6 +197,21 @@ class AutomationSettings(BaseModel):
     clear_telegram_token: bool = False
     telegram_chat_id: str = ""
     webhook_url: str = ""
+
+
+class AITelegramUser(BaseModel):
+    telegram_id: str
+    user_id: str
+    label: str = ""
+
+
+class AISettings(BaseModel):
+    ai_enabled: bool = False
+    anthropic_api_key: Optional[str] = None  # write-only; vazio mantém
+    clear_api_key: bool = False
+    ai_model: str = "claude-sonnet-5"
+    ai_allow_changes: bool = True
+    ai_users: List[AITelegramUser] = []
 
 
 class BackupRunPayload(BaseModel):

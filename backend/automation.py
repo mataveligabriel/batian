@@ -4,6 +4,7 @@ import difflib
 import hashlib
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Callable, Awaitable, Optional
 
@@ -19,6 +20,7 @@ BACKUP_COMMANDS = {
     "mikrotik": "/export",
     "datacom": "show running-config",
     "zte": "show running-config",
+    "juniper": "show configuration | display set",
     "ubiquiti": "cat /tmp/system.cfg",
     "linux": "",
     "other": "",

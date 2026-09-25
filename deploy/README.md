@@ -77,3 +77,20 @@ onde o sshd do VPS entrega os túneis reversos dos agentes.
 - Logs: `docker compose logs -f backend`
 - Requisitos na máquina-agente: servidor SSH ativo (Windows: recurso "Servidor OpenSSH";
   Linux: `openssh-server`; macOS: Login Remoto) e acesso de saída à porta 22 do VPS.
+
+## 7. Assistente IA no Telegram (Claude)
+Operar os equipamentos conversando com o bot do Telegram ("em quais PONs está a ONU de MAC X?",
+"mostra os peers BGP da borda Y", "desativa a GE0/0/5 do switch Z").
+
+1. Crie uma chave em https://console.anthropic.com (**API Keys**) e coloque créditos na conta — o uso
+   da API é cobrado à parte, por tokens (o consumo do mês aparece no card).
+2. **Automação → Notificações**: token do bot (via @BotFather) já configurado.
+3. **Automação → Assistente IA**: cole a chave, escolha o modelo, ative e clique **Testar Claude**.
+4. Cada pessoa manda `/id` para o bot; cadastre o ID dela vinculado a um usuário do Bastion. Ela só
+   enxerga os equipamentos desse usuário.
+5. Segurança: comandos de leitura (`show`, `display`, `ping`, Mikrotik `print`…) rodam direto;
+   o backend recusa qualquer outro comando fora de uma **proposta**, que só executa após o clique em
+   **✅ Confirmar** por quem pediu (válida por 15 min, uma única vez). Tudo fica em
+   **Automação → Últimas ações do assistente** e no **Histórico**. "Permitir alterações" desligado = só consultas.
+6. O VPS precisa de saída HTTPS para `api.anthropic.com` e `api.telegram.org`. O bot usa long polling
+   (não precisa de webhook nem de porta aberta) — não use o mesmo token em outro sistema com webhook.

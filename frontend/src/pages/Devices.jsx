@@ -11,14 +11,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2 } from "lucide-react";
+import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy } from "lucide-react";
 import { ImportDevicesDialog } from "@/components/ImportDevicesDialog";
 import { ExportDevicesDialog } from "@/components/ExportDevicesDialog";
 import { BulkEditDevicesDialog } from "@/components/BulkEditDevicesDialog";
 
 export const DEVICE_TYPES = [
-  ["linux", "Linux / Unix"], ["mikrotik", "Mikrotik RouterOS"], ["cisco", "Cisco IOS/NX-OS"], ["huawei", "Huawei VRP"],
-  ["ubiquiti", "Ubiquiti"], ["datacom", "Datacom DmOS"], ["zte", "ZTE"], ["other", "Outro (legado)"],
+  ["linux", "Linux / Unix"], ["mikrotik", "Mikrotik RouterOS"], ["cisco", "Cisco IOS/NX-OS"], ["huawei", "Huawei VRP"], ["juniper", "Juniper Junos"],
+  ["ubiquiti", "Ubiquiti"], ["datacom", "Datacom DmOS"], ["zte", "ZTE (OLT / Switch)"], ["other", "Outro (legado)"],
 ];
 const typeLabel = (t) => DEVICE_TYPES.find(x => x[0] === t)?.[1] || t || "linux";
 
@@ -31,6 +31,7 @@ export default function Devices() {
   const [tagFilter, setTagFilter] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [cloneOf, setCloneOf] = useState(null);
   const [form, setForm] = useState(emptyDevice);
   const [importOpen, setImportOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -50,10 +51,13 @@ export default function Devices() {
   };
   useEffect(() => { load(); }, []);
 
-  const openNew = () => { setEditing(null); setForm(emptyDevice); setOpen(true); };
-  const openEdit = (d) => {
-    setEditing(d);
-    setForm({ ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", protocol: d.protocol || "ssh", owner_id: d.owner_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "" });
+  const openNew = () => { setEditing(null); setCloneOf(null); setForm(emptyDevice); setOpen(true); };
+  const toForm = (d) => ({ ...emptyDevice, ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", protocol: d.protocol || "ssh", owner_id: d.owner_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "", description: d.description || "", username: d.username || "" });
+  const openEdit = (d) => { setEditing(d); setCloneOf(null); setForm(toForm(d)); setOpen(true); };
+  // Duplicar: mesmo formulário do "novo", pré-preenchido; a senha é copiada no servidor
+  const openClone = (d) => {
+    setEditing(null); setCloneOf(d);
+    setForm({ ...toForm(d), name: `${d.name} (cópia)`, host: "" });
     setOpen(true);
   };
 
@@ -72,12 +76,15 @@ export default function Devices() {
       description: form.description || "",
       backup_enabled: form.backup_enabled !== false,
       backup_command: (form.backup_command || "").trim() || null,
+      copy_password_from: cloneOf?.has_password && !form.password && !form.clear_password ? cloneOf.id : null,
     };
     if (!payload.name || !payload.host) return toast.error("Nome e host são obrigatórios");
+    if (cloneOf && devices.some(x => x.name.trim().toLowerCase() === payload.name.toLowerCase() && x.host === payload.host && Number(x.port) === payload.port))
+      return toast.error("Já existe um equipamento com esse nome, host e porta");
     try {
       if (editing) await api.put(`/devices/${editing.id}`, payload);
       else await api.post("/devices", payload);
-      toast.success(editing ? "Equipamento atualizado" : "Equipamento cadastrado");
+      toast.success(editing ? "Equipamento atualizado" : cloneOf ? `Cópia de ${cloneOf.name} criada` : "Equipamento cadastrado");
       setOpen(false); await load();
     } catch (e) { toast.error(formatApiError(e)); }
   };
@@ -304,8 +311,11 @@ export default function Devices() {
                       <Button size="sm" variant="ghost" onClick={() => nav(`/terminal/${d.id}`)} data-testid={`connect-ssh-${d.id}`} className="text-[#4DA3FF] hover:bg-[#007AFF]/15">
                         <TerminalSquare className="w-4 h-4" />
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => openEdit(d)} data-testid={`edit-device-${d.id}`} className="text-slate-300 hover:bg-slate-800">
+                      <Button size="sm" variant="ghost" onClick={() => openEdit(d)} data-testid={`edit-device-${d.id}`} className="text-slate-300 hover:bg-slate-800" title="Editar">
                         <Pencil className="w-4 h-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => openClone(d)} data-testid={`clone-device-${d.id}`} className="text-slate-300 hover:bg-slate-800" title="Duplicar (muda só nome e IP)">
+                        <Copy className="w-4 h-4" />
                       </Button>
                       <Button size="sm" variant="ghost" onClick={() => del(d)} data-testid={`delete-device-${d.id}`} className="text-red-400 hover:bg-red-950/40">
                         <Trash2 className="w-4 h-4" />
@@ -321,7 +331,12 @@ export default function Devices() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-lg max-h-[92vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>{editing ? "Editar equipamento" : "Novo equipamento"}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editing ? "Editar equipamento" : cloneOf ? `Duplicar ${cloneOf.name}` : "Novo equipamento"}</DialogTitle></DialogHeader>
+          {cloneOf && (
+            <div className="text-[11px] font-mono text-slate-400 -mt-1" data-testid="clone-hint">
+              Tudo copiado de <span className="text-slate-200">{cloneOf.name}</span>{cloneOf.has_password ? ", inclusive a senha" : ""}. Troque o nome e o host/IP.
+            </div>
+          )}
           <div className="space-y-3">
             <div>
               <Label>Nome</Label>
@@ -330,7 +345,7 @@ export default function Devices() {
             <div className="grid grid-cols-4 gap-3">
               <div className="col-span-2">
                 <Label>Host / IP</Label>
-                <Input data-testid="device-form-host" value={form.host} onChange={e => setForm({ ...form, host: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+                <Input data-testid="device-form-host" autoFocus={!!cloneOf} placeholder={cloneOf ? `antes: ${cloneOf.host}` : ""} value={form.host} onChange={e => setForm({ ...form, host: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
               </div>
               <div>
                 <Label>Protocolo</Label>
@@ -355,7 +370,7 @@ export default function Devices() {
               <div>
                 <Label>Senha (RADIUS/TACACS)</Label>
                 <Input data-testid="device-form-password" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })}
-                       placeholder={editing?.has_password ? "•••••••• (mantida)" : "vazio = senha padrão / chave"} className="bg-[#05070A] border-[#1E293B] font-mono" />
+                       placeholder={editing?.has_password ? "•••••••• (mantida)" : cloneOf?.has_password ? "•••••••• (copiada do original)" : "vazio = senha padrão / chave"} className="bg-[#05070A] border-[#1E293B] font-mono" />
                 {editing?.has_password && (
                   <label className="flex items-center gap-2 mt-1 text-[11px] text-slate-400 cursor-pointer">
                     <input type="checkbox" data-testid="device-form-clear-password" checked={form.clear_password} onChange={e => setForm({ ...form, clear_password: e.target.checked })} /> remover senha própria

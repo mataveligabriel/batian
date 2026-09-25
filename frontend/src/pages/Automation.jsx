@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { Activity, Archive, BellRing, Send, Zap, Loader2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { AIAssistantCard } from "@/components/AIAssistantCard";
 
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR") : "nunca";
 
@@ -86,7 +87,7 @@ export default function Automation() {
           </div>
           <Label>Hora do dia (0–23, horário do servidor)</Label>
           <Input data-testid="backup-hour" type="number" min={0} max={23} value={s.backup_hour} onChange={e => setS({ ...s, backup_hour: e.target.value })} className={inputCls} disabled={!isAdmin} />
-          <div className="text-[11px] font-mono text-slate-500 mt-3">Comandos padrão: Cisco/Datacom/ZTE <code>show running-config</code> · Huawei <code>display current-configuration</code> · Mikrotik <code>/export</code>. Personalize por equipamento.</div>
+          <div className="text-[11px] font-mono text-slate-500 mt-3">Comandos padrão: Cisco/Datacom/ZTE <code>show running-config</code> · Huawei <code>display current-configuration</code> · Juniper <code>show configuration | display set</code> · Mikrotik <code>/export</code>. Personalize por equipamento.</div>
         </Card>
 
         <Card className="bg-[#111722] border-[#1E293B] p-5" data-testid="alerts-card">
@@ -126,6 +127,8 @@ export default function Automation() {
           </Button>
         </div>
       )}
+
+      {isAdmin && <AIAssistantCard />}
 
       <Card className="bg-[#111722] border-[#1E293B] mt-6 overflow-hidden" data-testid="alerts-history">
         <div className="px-4 py-3 border-b border-[#1E293B] text-xs uppercase tracking-widest text-slate-400 font-mono">Últimos alertas enviados</div>

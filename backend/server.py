@@ -25,12 +25,13 @@ from auth import (
 from models import (
     UserCreate, UserOut, LoginPayload, UserUpdate, ChangePasswordPayload,
     AgentCreate, Agent,
-    DeviceCreate, Device, DEVICE_TYPES,
+    DeviceCreate, DeviceCreateRequest, Device, DEVICE_TYPES,
     DeviceIdsPayload, DeviceExportPayload, DeviceBulkUpdate,
     ScriptCreate, Script,
     Session, BatchExecPayload, BatchResultItem, SshKeyConfig, BastionSettings,
-    AutomationSettings, BackupRunPayload,
+    AutomationSettings, BackupRunPayload, AISettings,
 )
+import ai_assistant
 from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES
 from telnet_service import TelnetClientWrapper
 import vault
@@ -70,7 +71,10 @@ async def startup():
     if admin:
         for col in (db.devices, db.agents):
             await col.update_many({"$or": [{"owner_id": None}, {"owner_id": {"$exists": False}}]}, {"$set": {"owner_id": admin["id"]}})
+    await db.ai_audit.create_index([("at", -1)])
+    await db.ai_pending.create_index("id")
     scheduler.start()
+    assistant.start()
 
 
 async def seed_admin():
@@ -621,8 +625,13 @@ async def list_devices(user: dict = Depends(get_current_user)):
 
 
 @api.post("/devices")
-async def create_device(payload: DeviceCreate, user: dict = Depends(get_current_user)):
-    data = _normalize_device(_apply_secret(payload.model_dump(), None), user)
+async def create_device(payload: DeviceCreateRequest, user: dict = Depends(get_current_user)):
+    raw = payload.model_dump()
+    src_id = raw.pop("copy_password_from", None)
+    data = _normalize_device(_apply_secret(raw, None), user)
+    if src_id and not payload.password and not payload.clear_password:
+        src = await _get_device_for(user, src_id)  # 404 se não for do usuário
+        data["password"] = src.get("password", "")
     if data.get("agent_id"):
         await _get_agent_for(user, data["agent_id"])
     doc = Device(**data).model_dump()
@@ -1073,6 +1082,70 @@ async def _backup_many(device_ids: Optional[List[str]] = None) -> List[dict]:
 scheduler = automation.Scheduler(db, _ping_everything, _backup_many)
 
 
+async def _telegram_token() -> str:
+    s = await automation.get_settings(db)
+    return vault.decrypt(s.get("telegram_bot_token", ""))
+
+assistant = ai_assistant.TelegramAssistant(db, _connect_device, _telegram_token)
+
+
+# ---------- Assistente IA (Claude via Telegram) ----------
+@api.get("/ai/settings")
+async def get_ai_settings(_: dict = Depends(require_admin)):
+    s = await ai_assistant.get_ai_settings(db)
+    out = ai_assistant.public_ai_settings(s)
+    auto = await automation.get_settings(db)
+    out["has_telegram_token"] = bool(auto.get("telegram_bot_token"))
+    out["bot_status"] = assistant.status
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    out["usage"] = await db.ai_usage.find_one({"month": month}, {"_id": 0}) or {"month": month}
+    return out
+
+
+@api.put("/ai/settings")
+async def put_ai_settings(payload: AISettings, _: dict = Depends(require_admin)):
+    existing = await ai_assistant.get_ai_settings(db)
+    data = payload.model_dump()
+    clear = data.pop("clear_api_key", False)
+    key = (data.pop("anthropic_api_key", None) or "").strip()
+    data["anthropic_api_key"] = "" if clear else (vault.encrypt(key) if key else existing.get("anthropic_api_key", ""))
+    valid_users = {u["id"] for u in await db.users.find({}, {"_id": 0, "id": 1}).to_list(1000)}
+    seen, users = set(), []
+    for u in data.get("ai_users") or []:
+        tid = re.sub(r"\D", "", str(u.get("telegram_id", "")))
+        if not tid or tid in seen:
+            continue
+        if u.get("user_id") not in valid_users:
+            raise HTTPException(status_code=400, detail=f"Usuário do Bastion inválido para o Telegram ID {tid}")
+        seen.add(tid)
+        users.append({"telegram_id": tid, "user_id": u["user_id"], "label": (u.get("label") or "").strip()})
+    data["ai_users"] = users
+    if data["ai_model"] not in {m[0] for m in ai_assistant.MODELS}:
+        raise HTTPException(status_code=400, detail="Modelo inválido")
+    await db.config.update_one({"key": "ai"}, {"$set": data}, upsert=True)
+    return await get_ai_settings(_)
+
+
+@api.post("/ai/test")
+async def test_ai(_: dict = Depends(require_admin)):
+    s = await ai_assistant.get_ai_settings(db)
+    key = vault.decrypt(s.get("anthropic_api_key", ""))
+    if not key:
+        return {"ok": False, "error": "Chave da API não configurada"}
+    try:
+        r = await ai_assistant.call_claude(key, s["ai_model"], [{"role": "user", "content": "Responda apenas: OK"}],
+                                           [{"type": "text", "text": "Teste de conexão."}], max_tokens=10)
+        text = "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text").strip()
+        return {"ok": True, "model": r.get("model"), "reply": text}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@api.get("/ai/audit")
+async def ai_audit(_: dict = Depends(require_admin), limit: int = 50):
+    return await db.ai_audit.find({}, {"_id": 0}).sort("at", -1).to_list(max(1, min(limit, 500)))
+
+
 @api.get("/automation/settings")
 async def get_automation_settings(_: dict = Depends(require_admin)):
     s = await automation.get_settings(db)
@@ -1284,4 +1357,5 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     scheduler.stop()
+    assistant.stop()
     client.close()

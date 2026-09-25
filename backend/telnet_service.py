@@ -179,19 +179,18 @@ class TelnetClientWrapper:
         buf = b""
         deadline = time.monotonic() + hard
         while time.monotonic() < deadline:
+            wait = min(idle, 1.0) if buf and PROMPT_RE.search(buf[-200:]) else idle
             try:
-                chunk = await asyncio.wait_for(self.queue.get(), timeout=idle)
+                chunk = await asyncio.wait_for(self.queue.get(), timeout=wait)
                 if not chunk:
                     break
                 buf += chunk
-                if PROMPT_RE.search(buf[-200:]):
-                    await asyncio.sleep(0.15)
             except asyncio.TimeoutError:
                 if buf:
                     break
         return buf
 
-    async def run_command(self, command: str, timeout: int = 60) -> dict:
+    async def run_command(self, command: str, timeout: int = 60, idle: float = 1.5) -> dict:
         if not self._pump:
             await self.open_shell()
         await self._read_until_idle(idle=2.0, hard=15)
@@ -204,7 +203,7 @@ class TelnetClientWrapper:
         for line in command.splitlines():
             if line.strip():
                 self._send(line.encode() + b"\r\n")
-                out += await self._read_until_idle(idle=1.5, hard=timeout)
+                out += await self._read_until_idle(idle=idle, hard=timeout)
         return {"stdout": _clean_ansi(out.decode("utf-8", "replace")), "stderr": "", "exit_status": 0, "ok": True}
 
     async def tcp_check(self, host: str, port: int, timeout: float = 5.0):

@@ -85,7 +85,7 @@ export function ImportDevicesDialog({ open, onOpenChange, onDone }) {
         <p className="text-xs text-slate-400 font-mono">
           Colunas: <span className="text-emerald-300">name, host, port, protocol (ssh|telnet), username, password, device_type, tags, agent, description, backup_enabled, backup_command</span>.
           Apenas <b>name</b> e <b>host</b> são obrigatórios. Separador <code>,</code> ou <code>;</code> (detectado pelo cabeçalho). Tags separadas por <code>;</code> (use <code>|</code> se o arquivo usar <code>;</code> como separador). <b>agent</b> = nome do agente cadastrado.
-          Tipos: linux, mikrotik, cisco, huawei, ubiquiti, datacom, zte, other.
+          Tipos: linux, mikrotik, cisco, huawei, juniper, ubiquiti, datacom, zte, other.
         </p>
         <div className="flex gap-2 flex-wrap">
           <input ref={inputRef} type="file" accept=".csv,text/csv" className="hidden" data-testid="import-file-input"
