@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Play, Loader2, Plus, Trash2, Pencil, Star } from "lucide-react";
+import { useLocation } from "react-router-dom";
 
 export default function Batch() {
   const [devices, setDevices] = useState([]);
@@ -24,9 +25,17 @@ export default function Batch() {
   const [editingScript, setEditingScript] = useState(null);
   const [showNew, setShowNew] = useState(false);
 
+  const location = useLocation();
   const load = async () => {
     const [d, s] = await Promise.all([api.get("/devices"), api.get("/scripts")]);
     setDevices(d.data); setScripts(s.data);
+    // pré-seleção vinda de Equipamentos → "Executar em lote"
+    const pre = location.state?.deviceIds;
+    if (Array.isArray(pre) && pre.length) {
+      const ids = new Set(d.data.map(x => x.id));
+      setSelected(pre.filter(id => ids.has(id)));
+      window.history.replaceState({}, "");
+    }
   };
   useEffect(() => { load(); }, []);
 

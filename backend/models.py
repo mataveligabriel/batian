@@ -101,6 +101,27 @@ class Device(DeviceCreate):
     created_at: str = Field(default_factory=_now_iso)
 
 
+class DeviceIdsPayload(BaseModel):
+    device_ids: List[str] = []
+
+
+class DeviceExportPayload(BaseModel):
+    device_ids: Optional[List[str]] = None  # None = todos os equipamentos do usuário
+    include_passwords: bool = False
+
+
+class DeviceBulkUpdate(BaseModel):
+    device_ids: List[str]
+    add_tags: List[str] = []
+    remove_tags: List[str] = []
+    agent_id: Optional[str] = None  # None = manter, "" = remover agente, id = definir
+    device_type: Optional[str] = None
+    protocol: Optional[str] = None
+    port: Optional[int] = None
+    username: Optional[str] = None
+    backup_enabled: Optional[bool] = None
+
+
 # ---------- Scripts ----------
 class ScriptCreate(BaseModel):
     name: str

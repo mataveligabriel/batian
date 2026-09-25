@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,8 +10,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
-import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, KeyRound } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2 } from "lucide-react";
 import { ImportDevicesDialog } from "@/components/ImportDevicesDialog";
+import { ExportDevicesDialog } from "@/components/ExportDevicesDialog";
+import { BulkEditDevicesDialog } from "@/components/BulkEditDevicesDialog";
 
 export const DEVICE_TYPES = [
   ["linux", "Linux / Unix"], ["mikrotik", "Mikrotik RouterOS"], ["cisco", "Cisco IOS/NX-OS"], ["huawei", "Huawei VRP"],
@@ -30,11 +33,20 @@ export default function Devices() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyDevice);
   const [importOpen, setImportOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [statusFilter, setStatusFilter] = useState("");
+  const [pinging, setPinging] = useState(false);
+  const lastClicked = useRef(null);
   const nav = useNavigate();
 
   const load = async () => {
     const [d, a] = await Promise.all([api.get("/devices"), api.get("/agents")]);
     setDevices(d.data); setAgents(a.data);
+    // descarta da seleção o que não existe mais
+    const ids = new Set(d.data.map(x => x.id));
+    setSelected(prev => new Set([...prev].filter(id => ids.has(id))));
   };
   useEffect(() => { load(); }, []);
 
@@ -85,12 +97,74 @@ export default function Devices() {
     } catch (e) { toast.error(formatApiError(e)); }
   };
 
-  const allTags = Array.from(new Set(devices.flatMap(d => d.tags || [])));
-  const filtered = devices.filter(d => {
-    const matchQ = !q || d.name.toLowerCase().includes(q.toLowerCase()) || d.host.includes(q);
+  const allTags = Array.from(new Set(devices.flatMap(d => d.tags || []))).sort();
+  const filtered = useMemo(() => devices.filter(d => {
+    const ql = q.toLowerCase();
+    const matchQ = !q || d.name.toLowerCase().includes(ql) || d.host.includes(q) || (d.description || "").toLowerCase().includes(ql);
     const matchTag = !tagFilter || (d.tags || []).includes(tagFilter);
-    return matchQ && matchTag;
+    const st = d.status === "online" || d.status === "offline" ? d.status : "unknown";
+    const matchStatus = !statusFilter || st === statusFilter;
+    return matchQ && matchTag && matchStatus;
+  }), [devices, q, tagFilter, statusFilter]);
+
+  // ---- seleção ----
+  const filteredIds = filtered.map(d => d.id);
+  const selectedIds = [...selected];
+  const selInView = filteredIds.filter(id => selected.has(id)).length;
+  const allInViewChecked = filteredIds.length > 0 && selInView === filteredIds.length;
+  const headerState = allInViewChecked ? true : selInView > 0 ? "indeterminate" : false;
+
+  const toggleAllInView = () => setSelected(prev => {
+    const next = new Set(prev);
+    if (allInViewChecked) filteredIds.forEach(id => next.delete(id));
+    else filteredIds.forEach(id => next.add(id));
+    return next;
   });
+
+  // Shift+clique seleciona o intervalo desde o último clicado
+  const toggleRow = (id, shift) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      const on = !prev.has(id);
+      const last = lastClicked.current;
+      if (shift && last && last !== id) {
+        const a = filteredIds.indexOf(last), b = filteredIds.indexOf(id);
+        if (a >= 0 && b >= 0) {
+          filteredIds.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(x => on ? next.add(x) : next.delete(x));
+          return next;
+        }
+      }
+      on ? next.add(id) : next.delete(id);
+      return next;
+    });
+    lastClicked.current = id;
+  };
+  const clearSelection = () => setSelected(new Set());
+  const selectOffline = () => setSelected(new Set(filtered.filter(d => d.status === "offline").map(d => d.id)));
+
+  const pingSelected = async () => {
+    setPinging(true);
+    toast.info(`Ping em ${selectedIds.length} equipamento(s)…`);
+    try {
+      const { data } = await api.post("/devices/ping-all", { device_ids: selectedIds });
+      const on = data.filter(r => r.status === "online").length;
+      toast.success(`${on} online · ${data.length - on} offline`);
+      load();
+    } catch (e) { toast.error(formatApiError(e)); }
+    finally { setPinging(false); }
+  };
+
+  const deleteSelected = async () => {
+    const n = selectedIds.length;
+    if (!window.confirm(`Excluir ${n} equipamento(s)? Essa ação não pode ser desfeita.`)) return;
+    try {
+      const { data } = await api.post("/devices/bulk-delete", { device_ids: selectedIds });
+      toast.success(`${data.deleted} excluído(s)`);
+      clearSelection(); load();
+    } catch (e) { toast.error(formatApiError(e)); }
+  };
+
+  const batchSelected = () => nav("/batch", { state: { deviceIds: selectedIds } });
 
   const agentName = (id) => agents.find(a => a.id === id)?.name || "—";
 
@@ -107,12 +181,18 @@ export default function Devices() {
                   className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">
             <Upload className="w-4 h-4 mr-2" /> Importar CSV
           </Button>
+          <Button variant="outline" onClick={() => setExportOpen(true)} disabled={!devices.length} data-testid="export-devices-btn"
+                  className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">
+            <Download className="w-4 h-4 mr-2" /> Exportar
+          </Button>
           <Button onClick={openNew} data-testid="add-device-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
             <Plus className="w-4 h-4 mr-2" /> Novo Equipamento
           </Button>
         </div>
       </div>
       <ImportDevicesDialog open={importOpen} onOpenChange={setImportOpen} onDone={load} />
+      <ExportDevicesDialog open={exportOpen} onOpenChange={setExportOpen} total={devices.length} filteredIds={filteredIds} selectedIds={selectedIds} />
+      <BulkEditDevicesDialog open={bulkOpen} onOpenChange={setBulkOpen} deviceIds={selectedIds} agents={agents} deviceTypes={DEVICE_TYPES} onDone={load} />
 
       <div className="flex gap-3 mb-4 flex-wrap">
         <div className="relative">
@@ -128,13 +208,50 @@ export default function Devices() {
               className={`cursor-pointer ${tagFilter === t ? "bg-[#007AFF] text-white" : "bg-[#111722] text-slate-300 border-[#1E293B]"}`}>{t}</Badge>
           ))}
         </div>
+        <div className="flex gap-1 ml-auto" data-testid="status-filter">
+          {[["", "Todos"], ["online", "Online"], ["offline", "Offline"], ["unknown", "Sem status"]].map(([v, l]) => (
+            <button key={v || "all"} onClick={() => setStatusFilter(v)} data-testid={`status-filter-${v || "all"}`}
+              className={`text-xs font-mono px-2.5 py-1 rounded border ${statusFilter === v ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] bg-[#111722] text-slate-400 hover:text-slate-200"}`}>{l}</button>
+          ))}
+        </div>
       </div>
+
+      {selected.size > 0 && (
+        <div className="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-2 px-3 py-2 rounded border border-[#007AFF]/50 bg-[#0B1A2E]" data-testid="selection-bar">
+          <span className="text-sm text-slate-100 font-mono mr-1" data-testid="selection-count">
+            {selected.size} selecionado(s)
+            {selected.size !== selInView && <span className="text-slate-400"> · {selInView} visível(is)</span>}
+          </span>
+          <Button size="sm" variant="ghost" onClick={pingSelected} disabled={pinging} data-testid="bulk-ping-btn" className="text-amber-400 hover:bg-amber-950/40">
+            {pinging ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Zap className="w-4 h-4 mr-1.5" />} Ping
+          </Button>
+          <Button size="sm" variant="ghost" onClick={batchSelected} data-testid="bulk-batch-btn" className="text-[#4DA3FF] hover:bg-[#007AFF]/15">
+            <Play className="w-4 h-4 mr-1.5" /> Executar em lote
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setBulkOpen(true)} data-testid="bulk-edit-btn" className="text-slate-200 hover:bg-slate-800">
+            <Pencil className="w-4 h-4 mr-1.5" /> Editar em massa
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setExportOpen(true)} data-testid="bulk-export-btn" className="text-slate-200 hover:bg-slate-800">
+            <Download className="w-4 h-4 mr-1.5" /> Exportar
+          </Button>
+          <Button size="sm" variant="ghost" onClick={deleteSelected} data-testid="bulk-delete-btn" className="text-red-400 hover:bg-red-950/40">
+            <Trash2 className="w-4 h-4 mr-1.5" /> Excluir
+          </Button>
+          <Button size="sm" variant="ghost" onClick={clearSelection} data-testid="bulk-clear-btn" className="ml-auto text-slate-400 hover:bg-slate-800">
+            <X className="w-4 h-4 mr-1.5" /> Limpar seleção
+          </Button>
+        </div>
+      )}
 
       <Card className="bg-[#111722] border-[#1E293B] overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="text-xs uppercase tracking-widest text-slate-500 font-mono bg-[#0B111C]">
               <tr>
+                <th className="pl-4 pr-1 py-3 w-8">
+                  <Checkbox checked={headerState} onCheckedChange={toggleAllInView} disabled={!filteredIds.length}
+                            data-testid="select-all-devices" aria-label="Selecionar todos os visíveis" className="border-slate-500" />
+                </th>
                 <th className="text-left px-4 py-3">Status</th>
                 <th className="text-left px-4 py-3">Nome</th>
                 <th className="text-left px-4 py-3">Host:Porta</th>
@@ -148,10 +265,13 @@ export default function Devices() {
             </thead>
             <tbody className="divide-y divide-[#1E293B]">
               {filtered.length === 0 && (
-                <tr><td colSpan={9} className="text-center py-10 text-slate-500 font-mono">Nenhum equipamento encontrado</td></tr>
+                <tr><td colSpan={10} className="text-center py-10 text-slate-500 font-mono">Nenhum equipamento encontrado</td></tr>
               )}
               {filtered.map(d => (
-                <tr key={d.id} data-testid={`device-row-${d.id}`} className="hover:bg-slate-900/40">
+                <tr key={d.id} data-testid={`device-row-${d.id}`} className={selected.has(d.id) ? "bg-[#007AFF]/10" : "hover:bg-slate-900/40"}>
+                  <td className="pl-4 pr-1 py-3" onClick={(e) => { e.preventDefault(); toggleRow(d.id, e.shiftKey); }}>
+                    <Checkbox checked={selected.has(d.id)} data-testid={`select-device-${d.id}`} aria-label={`Selecionar ${d.name}`} className="border-slate-500" />
+                  </td>
                   <td className="px-4 py-3">
                     {d.status === "online" ? (
                       <span className="inline-flex items-center gap-1.5 text-emerald-400 font-mono text-xs"><Wifi className="w-3.5 h-3.5" /> online</span>

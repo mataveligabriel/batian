@@ -4,6 +4,8 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+import csv
+import io
 import os
 import re
 import asyncio
@@ -24,6 +26,7 @@ from models import (
     UserCreate, UserOut, LoginPayload, UserUpdate, ChangePasswordPayload,
     AgentCreate, Agent,
     DeviceCreate, Device, DEVICE_TYPES,
+    DeviceIdsPayload, DeviceExportPayload, DeviceBulkUpdate,
     ScriptCreate, Script,
     Session, BatchExecPayload, BatchResultItem, SshKeyConfig, BastionSettings,
     AutomationSettings, BackupRunPayload,
@@ -627,6 +630,12 @@ async def create_device(payload: DeviceCreate, user: dict = Depends(get_current_
     return _public(doc)
 
 
+def _truthy(v, default: bool = True) -> bool:
+    if v is None or str(v).strip() == "":
+        return default
+    return str(v).strip().lower() in ("1", "true", "sim", "yes", "y", "s", "on")
+
+
 @api.post("/devices/import")
 async def import_devices(payload: dict, user: dict = Depends(get_current_user)):
     """Bulk import. payload = {"rows": [{name, host, port, username, password, device_type, tags, agent, description}]}"""
@@ -670,6 +679,8 @@ async def import_devices(payload: dict, user: dict = Depends(get_current_user)):
             "password": vault.encrypt(pw) if pw else "",
             "device_type": dtype, "tags": tags, "agent_id": agent_id,
             "description": str(r.get("description") or "").strip(),
+            "backup_enabled": _truthy(r.get("backup_enabled"), True),
+            "backup_command": str(r.get("backup_command") or "").strip() or None,
         }, user)).model_dump()
         to_insert.append(doc)
         seen.add(key)
@@ -694,6 +705,91 @@ async def update_device(device_id: str, payload: DeviceCreate, user: dict = Depe
 async def delete_device(device_id: str, user: dict = Depends(get_current_user)):
     r = await db.devices.delete_one({"id": device_id, **_scope(user)})
     return {"deleted": r.deleted_count}
+
+
+EXPORT_COLUMNS = ["name", "host", "port", "protocol", "username", "password", "device_type",
+                  "tags", "agent", "description", "backup_enabled", "backup_command"]
+
+
+@api.post("/devices/export")
+async def export_devices(payload: DeviceExportPayload, user: dict = Depends(get_current_user)):
+    """CSV no mesmo formato aceito pelo /devices/import (ida e volta)."""
+    q = dict(_scope(user))
+    if payload.device_ids is not None:
+        q["id"] = {"$in": payload.device_ids}
+    devs = await db.devices.find(q, {"_id": 0}).sort("name", 1).to_list(10000)
+    agents = await db.agents.find(_scope(user), {"_id": 0, "id": 1, "name": 1}).to_list(1000)
+    agent_name = {a["id"]: a["name"] for a in agents}
+    buf = io.StringIO()
+    w = csv.writer(buf, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    w.writerow(EXPORT_COLUMNS)
+    for d in devs:
+        w.writerow([
+            d.get("name", ""), d.get("host", ""), d.get("port", 22), d.get("protocol") or "ssh",
+            d.get("username", ""),
+            vault.decrypt(d.get("password", "")) if payload.include_passwords else "",
+            d.get("device_type") or "linux", ";".join(d.get("tags") or []),
+            agent_name.get(d.get("agent_id") or "", ""), d.get("description", ""),
+            "true" if d.get("backup_enabled", True) is not False else "false",
+            d.get("backup_command") or "",
+        ])
+    if payload.include_passwords:
+        logger.info("Export de equipamentos COM senhas por %s (%d itens)", user.get("email"), len(devs))
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    return PlainTextResponse(
+        "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="equipamentos-{stamp}.csv"',
+                 "X-Export-Count": str(len(devs))},
+    )
+
+
+@api.post("/devices/bulk-delete")
+async def bulk_delete_devices(payload: DeviceIdsPayload, user: dict = Depends(get_current_user)):
+    if not payload.device_ids:
+        return {"deleted": 0}
+    r = await db.devices.delete_many({"id": {"$in": payload.device_ids}, **_scope(user)})
+    return {"deleted": r.deleted_count}
+
+
+@api.post("/devices/bulk-update")
+async def bulk_update_devices(payload: DeviceBulkUpdate, user: dict = Depends(get_current_user)):
+    if not payload.device_ids:
+        return {"updated": 0}
+    q = {"id": {"$in": payload.device_ids}, **_scope(user)}
+    setf: dict = {}
+    if payload.agent_id is not None:
+        if payload.agent_id:
+            await _get_agent_for(user, payload.agent_id)
+            setf["agent_id"] = payload.agent_id
+        else:
+            setf["agent_id"] = None
+    if payload.device_type:
+        if payload.device_type not in DEVICE_TYPES:
+            raise HTTPException(status_code=400, detail="Tipo de equipamento inválido")
+        setf["device_type"] = payload.device_type
+    if payload.protocol:
+        if payload.protocol not in ("ssh", "telnet"):
+            raise HTTPException(status_code=400, detail="Protocolo inválido")
+        setf["protocol"] = payload.protocol
+    if payload.port is not None:
+        if not 1 <= payload.port <= 65535:
+            raise HTTPException(status_code=400, detail="Porta inválida")
+        setf["port"] = payload.port
+    if payload.username is not None:
+        setf["username"] = payload.username.strip()
+    if payload.backup_enabled is not None:
+        setf["backup_enabled"] = payload.backup_enabled
+    add = [t.strip() for t in payload.add_tags if t.strip()]
+    rem = [t.strip() for t in payload.remove_tags if t.strip()]
+    matched = await db.devices.count_documents(q)
+    if setf:
+        await db.devices.update_many(q, {"$set": setf})
+    # $addToSet e $pull no mesmo campo não podem ir na mesma operação
+    if rem:
+        await db.devices.update_many(q, {"$pull": {"tags": {"$in": rem}}})
+    if add:
+        await db.devices.update_many(q, {"$addToSet": {"tags": {"$each": add}}})
+    return {"updated": matched}
 
 
 async def _ping_device(dev: dict) -> Optional[float]:
@@ -723,8 +819,11 @@ async def ping_device(device_id: str, user: dict = Depends(get_current_user)):
 
 
 @api.post("/devices/ping-all")
-async def ping_all_devices(user: dict = Depends(get_current_user)):
-    devs = await db.devices.find(_scope(user), {"_id": 0}).to_list(5000)
+async def ping_all_devices(payload: Optional[DeviceIdsPayload] = None, user: dict = Depends(get_current_user)):
+    q = dict(_scope(user))
+    if payload and payload.device_ids:
+        q["id"] = {"$in": payload.device_ids}
+    devs = await db.devices.find(q, {"_id": 0}).to_list(5000)
     results = []
     sem = asyncio.Semaphore(20)
 
