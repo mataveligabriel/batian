@@ -10,7 +10,7 @@ import os
 import re
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query
@@ -29,7 +29,7 @@ from models import (
     DeviceIdsPayload, DeviceExportPayload, DeviceBulkUpdate,
     ScriptCreate, Script,
     Session, BatchExecPayload, BatchResultItem, SshKeyConfig, BastionSettings,
-    AutomationSettings, BackupRunPayload, AISettings,
+    AutomationSettings, BackupRunPayload, AISettings, BackupIdsPayload, BackupCleanupPayload,
 )
 import ai_assistant
 from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES
@@ -1220,28 +1220,148 @@ async def backups_summary(user: dict = Depends(get_current_user)):
     return [{"device_id": r["_id"], **{k: v for k, v in r.items() if k != "_id"}} for r in rows]
 
 
-@api.get("/backups/{backup_id}")
-async def get_backup(backup_id: str, _: dict = Depends(get_current_user)):
-    b = await db.backups.find_one({"id": backup_id}, {"_id": 0})
+async def _my_device_ids(user: dict) -> List[str]:
+    return [d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(10000)]
+
+
+async def _backup_for(user: dict, backup_id: str) -> dict:
+    """Backup só é visível para o dono do equipamento."""
+    b = await db.backups.find_one({"id": backup_id, "device_id": {"$in": await _my_device_ids(user)}}, {"_id": 0})
     if not b:
         raise HTTPException(status_code=404, detail="Backup não encontrado")
     return b
 
 
+def _remove_backup_files(docs: List[dict]):
+    for d in docs:
+        p = d.get("file_path")
+        if p:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+async def _orphan_device_ids() -> List[str]:
+    existing = set(await db.devices.distinct("id"))
+    return [i for i in await db.backups.distinct("device_id") if i not in existing]
+
+
+@api.get("/backups/storage")
+async def backups_storage(user: dict = Depends(get_current_user)):
+    async def _stats(match: dict) -> dict:
+        rows = await db.backups.aggregate([
+            {"$match": match},
+            {"$group": {"_id": None, "count": {"$sum": 1}, "size": {"$sum": {"$ifNull": ["$size", 0]}},
+                        "failed": {"$sum": {"$cond": ["$ok", 0, 1]}},
+                        "unchanged": {"$sum": {"$cond": [{"$and": ["$ok", {"$eq": ["$changed", False]}]}, 1, 0]}},
+                        "oldest": {"$min": "$created_at"}, "devices": {"$addToSet": "$device_id"}}},
+        ]).to_list(1)
+        r = rows[0] if rows else {}
+        return {"count": r.get("count", 0), "size_bytes": r.get("size", 0), "failed": r.get("failed", 0),
+                "unchanged": r.get("unchanged", 0), "oldest": r.get("oldest"), "devices": len(r.get("devices", []))}
+    out = await _stats({"device_id": {"$in": await _my_device_ids(user)}})
+    if user.get("role") == "admin":
+        orphans = await _orphan_device_ids()
+        o = await _stats({"device_id": {"$in": orphans}}) if orphans else {"count": 0, "size_bytes": 0}
+        out["orphans"] = {"count": o["count"], "size_bytes": o["size_bytes"], "devices": len(orphans)}
+    return out
+
+
+@api.get("/backups/all")
+async def backups_all(user: dict = Depends(get_current_user), q: str = "", status: str = "all",
+                      older_than_days: Optional[int] = None, device_id: Optional[str] = None,
+                      skip: int = 0, limit: int = 50):
+    mine = await _my_device_ids(user)
+    match: dict = {"device_id": device_id if device_id in mine else {"$in": mine}}
+    if q.strip():
+        match["device_name"] = {"$regex": re.escape(q.strip()), "$options": "i"}
+    if status == "ok":
+        match["ok"] = True
+    elif status == "failed":
+        match["ok"] = False
+    elif status == "unchanged":
+        match["ok"], match["changed"] = True, False
+    if older_than_days:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(older_than_days))).isoformat()
+        match["created_at"] = {"$lt": cutoff}
+    total = await db.backups.count_documents(match)
+    items = await db.backups.find(match, {"_id": 0, "content": 0}).sort("created_at", -1) \
+        .skip(max(0, skip)).to_list(max(1, min(limit, 500)))
+    return {"total": total, "items": items}
+
+
+@api.post("/backups/delete")
+async def delete_backups(payload: BackupIdsPayload, user: dict = Depends(get_current_user)):
+    match = {"id": {"$in": payload.ids}, "device_id": {"$in": await _my_device_ids(user)}}
+    docs = await db.backups.find(match, {"_id": 0, "id": 1, "file_path": 1, "size": 1}).to_list(len(payload.ids) + 1)
+    r = await db.backups.delete_many(match)
+    _remove_backup_files(docs)
+    return {"deleted": r.deleted_count, "freed_bytes": sum(d.get("size") or 0 for d in docs)}
+
+
+@api.post("/backups/cleanup")
+async def cleanup_backups(payload: BackupCleanupPayload, user: dict = Depends(get_current_user)):
+    """Limpeza por regras. Os `keep_last` backups OK mais recentes de cada equipamento nunca são apagados."""
+    mine = await _my_device_ids(user)
+    dev_ids = [i for i in (payload.device_ids or mine) if i in mine]
+    keep_last = max(1, int(payload.keep_last or 1))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=int(payload.older_than_days))).isoformat() \
+        if payload.older_than_days else None
+    if not (cutoff or payload.delete_unchanged or payload.delete_failed or payload.include_orphans):
+        raise HTTPException(status_code=400, detail="Escolha ao menos uma regra de limpeza")
+    proj = {"_id": 0, "id": 1, "device_id": 1, "created_at": 1, "ok": 1, "changed": 1, "size": 1, "file_path": 1}
+    docs = await db.backups.find({"device_id": {"$in": dev_ids}}, proj).sort("created_at", -1).to_list(500000)
+    kept: dict = {}
+    victims = []
+    for d in docs:  # mais novo primeiro
+        if d.get("ok") and kept.get(d["device_id"], 0) < keep_last:
+            kept[d["device_id"]] = kept.get(d["device_id"], 0) + 1
+            continue
+        if ((cutoff and d["created_at"] < cutoff)
+                or (payload.delete_unchanged and d.get("ok") and d.get("changed") is False)
+                or (payload.delete_failed and not d.get("ok"))):
+            victims.append(d)
+    orphan_docs = []
+    if payload.include_orphans:
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Somente administradores limpam backups de equipamentos excluídos")
+        orphans = await _orphan_device_ids()
+        if orphans:
+            orphan_docs = await db.backups.find({"device_id": {"$in": orphans}}, proj).to_list(500000)
+    all_victims = victims + orphan_docs
+    result = {"count": len(all_victims), "size_bytes": sum(d.get("size") or 0 for d in all_victims),
+              "devices": len({d["device_id"] for d in victims}), "orphans": len(orphan_docs), "dry_run": payload.dry_run}
+    if not payload.dry_run and all_victims:
+        ids = [d["id"] for d in all_victims]
+        deleted = 0
+        for i in range(0, len(ids), 1000):
+            deleted += (await db.backups.delete_many({"id": {"$in": ids[i:i + 1000]}})).deleted_count
+        _remove_backup_files(all_victims)
+        result["deleted"] = deleted
+        logger.info("Limpeza de backups por %s: %d apagados (%d bytes)", user.get("email"), deleted, result["size_bytes"])
+    return result
+
+
+@api.get("/backups/{backup_id}")
+async def get_backup(backup_id: str, user: dict = Depends(get_current_user)):
+    return await _backup_for(user, backup_id)
+
+
 @api.get("/backups/{backup_id}/diff/{other_id}")
-async def diff_backups(backup_id: str, other_id: str, _: dict = Depends(get_current_user)):
-    a = await db.backups.find_one({"id": other_id}, {"_id": 0})
-    b = await db.backups.find_one({"id": backup_id}, {"_id": 0})
-    if not a or not b:
-        raise HTTPException(status_code=404, detail="Backup não encontrado")
+async def diff_backups(backup_id: str, other_id: str, user: dict = Depends(get_current_user)):
+    a = await _backup_for(user, other_id)
+    b = await _backup_for(user, backup_id)
     diff = automation.unified_diff(a.get("content", ""), b.get("content", ""),
                                    f"{a['device_name']} @ {a['created_at']}", f"{b['device_name']} @ {b['created_at']}")
     return {"diff": diff, "identical": a.get("sha256") == b.get("sha256")}
 
 
 @api.delete("/backups/{backup_id}")
-async def delete_backup(backup_id: str, _: dict = Depends(require_admin)):
+async def delete_backup(backup_id: str, user: dict = Depends(get_current_user)):
+    b = await _backup_for(user, backup_id)
     r = await db.backups.delete_one({"id": backup_id})
+    _remove_backup_files([b])
     return {"deleted": r.deleted_count}
 
 

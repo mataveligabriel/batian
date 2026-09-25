@@ -214,5 +214,19 @@ class AISettings(BaseModel):
     ai_users: List[AITelegramUser] = []
 
 
+class BackupIdsPayload(BaseModel):
+    ids: List[str]
+
+
+class BackupCleanupPayload(BaseModel):
+    older_than_days: Optional[int] = None   # apaga backups com mais de N dias
+    delete_unchanged: bool = False          # apaga versões idênticas à anterior
+    delete_failed: bool = False             # apaga tentativas que falharam
+    keep_last: int = 3                      # sempre mantém os N backups OK mais recentes de cada equipamento
+    device_ids: Optional[List[str]] = None  # None = todos os equipamentos do usuário
+    include_orphans: bool = False           # admin: apaga backups de equipamentos que não existem mais
+    dry_run: bool = True                    # True = só calcula o que seria apagado
+
+
 class BackupRunPayload(BaseModel):
     device_ids: Optional[List[str]] = None

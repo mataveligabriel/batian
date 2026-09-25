@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Archive, Play, Loader2, Eye, GitCompare, CheckCircle2, XCircle, Download } from "lucide-react";
+import { Archive, Play, Loader2, Eye, GitCompare, CheckCircle2, XCircle, Download, Server, HardDrive } from "lucide-react";
+import { BackupsManager } from "@/components/BackupsManager";
 
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR") : "—";
 
@@ -29,6 +30,7 @@ export default function Backups() {
   const [viewing, setViewing] = useState(null);
   const [diffSel, setDiffSel] = useState([]);
   const [diff, setDiff] = useState(null);
+  const [tab, setTab] = useState("devices");
 
   const loadSummary = async () => setSummary((await api.get("/backups/summary")).data);
   const loadVersions = async (deviceId) => setVersions((await api.get("/backups", { params: { device_id: deviceId } })).data);
@@ -81,6 +83,20 @@ export default function Backups() {
         </Button>
       </div>
 
+      <div className="flex gap-1 mb-4 border-b border-[#1E293B]" data-testid="backups-tabs">
+        {[["devices", "Por equipamento", Server], ["manage", "Todos os backups / limpeza", HardDrive]].map(([v, l, Icon]) => (
+          <button key={v} onClick={() => setTab(v)} data-testid={`backups-tab-${v}`}
+            className={`flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${tab === v ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`}>
+            <Icon className="w-4 h-4" /> {l}
+          </button>
+        ))}
+      </div>
+
+      {tab === "manage" && (
+        <BackupsManager onView={view} onChanged={async () => { await loadSummary(); if (selected) await loadVersions(selected.device_id); }} />
+      )}
+
+      {tab === "devices" && (
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
         <Card className="bg-[#111722] border-[#1E293B] lg:col-span-2 overflow-hidden">
           <div className="px-4 py-3 border-b border-[#1E293B] text-xs uppercase tracking-widest text-slate-400 font-mono">Equipamentos</div>
@@ -143,6 +159,7 @@ export default function Backups() {
           {diff && <div className="p-3 border-t border-[#1E293B]"><DiffView diff={diff.identical ? "" : diff.diff} /></div>}
         </Card>
       </div>
+      )}
 
       <Dialog open={!!viewing} onOpenChange={(v) => !v && setViewing(null)}>
         <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-4xl" data-testid="backup-view-dialog">
