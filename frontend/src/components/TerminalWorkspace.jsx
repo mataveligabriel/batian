@@ -6,8 +6,58 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { Plus, X, Wifi, WifiOff, Server, TerminalSquare, RotateCw, Zap } from "lucide-react";
+import { Plus, X, Wifi, WifiOff, Server, TerminalSquare, RotateCw, Zap, Highlighter, Minus, Palette, Copy } from "lucide-react";
 import { useTerminal } from "@/context/TerminalContext";
+import { createHighlighter, HL_COLORS } from "@/lib/termHighlight";
+import { TERM_THEMES, useTermPrefs } from "@/lib/termPrefs";
+
+const LEGEND = [
+  ["IP público", HL_COLORS.ipPublic], ["IP privado/CGNAT", HL_COLORS.ipPrivate], ["Máscara", HL_COLORS.mask],
+  ["IPv6", HL_COLORS.ipv6], ["MAC", HL_COLORS.mac], ["Interface", HL_COLORS.iface],
+  ["up / established", HL_COLORS.good], ["down / erro", HL_COLORS.bad], ["idle / dBm", HL_COLORS.warn],
+];
+
+function TerminalToolbar() {
+  const [prefs, setPrefs] = useTermPrefs();
+  const [legend, setLegend] = useState(false);
+  const btn = "h-7 px-2 rounded border text-xs font-mono flex items-center gap-1 transition-colors";
+  const off = "border-[#1E293B] bg-[#111722] text-slate-400 hover:text-slate-200";
+  const on = "border-emerald-500/50 bg-emerald-500/10 text-emerald-300";
+  return (
+    <div className="flex items-center gap-1.5 relative" data-testid="terminal-toolbar">
+      <button className={`${btn} ${prefs.highlight ? on : off}`} onClick={() => setPrefs({ highlight: !prefs.highlight })}
+              onMouseEnter={() => setLegend(true)} onMouseLeave={() => setLegend(false)}
+              data-testid="toggle-highlight" title="Colorir IPs, MACs, interfaces e estados na saída">
+        <Highlighter className="w-3.5 h-3.5" /> Realce
+      </button>
+      {legend && prefs.highlight && (
+        <div className="absolute top-full right-0 mt-1 z-40 bg-[#111722] border border-[#1E293B] rounded-md p-2 shadow-xl w-52" data-testid="highlight-legend">
+          {LEGEND.map(([l, c]) => (
+            <div key={l} className="flex items-center gap-2 text-[11px] font-mono text-slate-300 py-0.5">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ background: c }} /> {l}
+            </div>
+          ))}
+        </div>
+      )}
+      <label className={`${btn} ${off} cursor-pointer`} title="Tema do terminal">
+        <Palette className="w-3.5 h-3.5" />
+        <select value={prefs.theme} onChange={e => setPrefs({ theme: e.target.value })} data-testid="terminal-theme"
+                className="bg-transparent outline-none text-slate-200 cursor-pointer">
+          {Object.entries(TERM_THEMES).map(([k, t]) => <option key={k} value={k} className="bg-[#111722]">{t.label}</option>)}
+        </select>
+      </label>
+      <div className={`${btn} ${off} px-1`} title="Tamanho da fonte">
+        <button onClick={() => setPrefs({ fontSize: prefs.fontSize - 1 })} className="px-1 hover:text-slate-100" data-testid="font-dec"><Minus className="w-3 h-3" /></button>
+        <span className="w-5 text-center text-slate-200" data-testid="font-size">{prefs.fontSize}</span>
+        <button onClick={() => setPrefs({ fontSize: prefs.fontSize + 1 })} className="px-1 hover:text-slate-100" data-testid="font-inc"><Plus className="w-3 h-3" /></button>
+      </div>
+      <button className={`${btn} ${prefs.copyOnSelect ? on : off}`} onClick={() => setPrefs({ copyOnSelect: !prefs.copyOnSelect, rightClickPaste: !prefs.copyOnSelect })}
+              data-testid="toggle-copy-select" title="Estilo MobaXterm: selecionar copia, botão direito cola">
+        <Copy className="w-3.5 h-3.5" /> Selec. copia
+      </button>
+    </div>
+  );
+}
 
 function TerminalPane({ device, active, visible, registerWs }) {
   const containerRef = useRef(null);
@@ -16,22 +66,25 @@ function TerminalPane({ device, active, visible, registerWs }) {
   const wsRef = useRef(null);
   const [status, setStatus] = useState("connecting");
   const [generation, setGeneration] = useState(0);
+  const [prefs] = useTermPrefs();
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+  const hlRef = useRef(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
+    const p0 = prefsRef.current;
     const term = new XTerm({
       cursorBlink: true,
-      fontFamily: '"JetBrains Mono", Menlo, Consolas, monospace',
-      fontSize: 13,
-      theme: {
-        background: "#05070A",
-        foreground: "#E2E8F0",
-        cursor: "#4DA3FF",
-        selectionBackground: "rgba(0,122,255,0.35)",
-        black: "#0A0E17", red: "#F87171", green: "#10B981", yellow: "#F59E0B",
-        blue: "#4DA3FF", magenta: "#8B5CF6", cyan: "#22D3EE", white: "#F8FAFC",
-      },
+      fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, Menlo, monospace',
+      fontSize: p0.fontSize,
+      lineHeight: 1.15,
+      scrollback: 10000,
+      drawBoldTextInBrightColors: true,
+      theme: (TERM_THEMES[p0.theme] || TERM_THEMES.mobaxterm).theme,
     });
+    const hl = createHighlighter((rest) => { try { term.write(rest); } catch { /* noop */ } });
+    hlRef.current = hl;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
@@ -54,7 +107,7 @@ function TerminalPane({ device, active, visible, registerWs }) {
     ws.onmessage = (evt) => {
       try {
         const msg = JSON.parse(evt.data);
-        if (msg.type === "data") term.write(msg.data);
+        if (msg.type === "data") term.write(prefsRef.current.highlight ? hl.process(msg.data) : hl.flush() + msg.data);
         else if (msg.type === "status") {
           term.writeln(`\x1b[36m>> ${msg.message}\x1b[0m`);
           if (msg.message?.toLowerCase().includes("conectado")) setStatus("connected");
@@ -71,9 +124,23 @@ function TerminalPane({ device, active, visible, registerWs }) {
     };
     ws.onerror = () => setStatus("error");
 
-    term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data }));
+    const sendInput = (data) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data })); };
+    term.onData(sendInput);
+
+    // estilo MobaXterm: selecionar copia, botão direito cola
+    const selSub = term.onSelectionChange(() => {
+      const sel = term.getSelection();
+      if (prefsRef.current.copyOnSelect && sel && navigator.clipboard?.writeText) navigator.clipboard.writeText(sel).catch(() => {});
     });
+    const onContext = (e) => {
+      if (!prefsRef.current.rightClickPaste) return;
+      e.preventDefault();
+      if (!navigator.clipboard?.readText) return toast.error("Colar com botão direito exige HTTPS — use Ctrl+Shift+V");
+      navigator.clipboard.readText().then(t => { if (t) sendInput(t.replace(/\r?\n/g, "\r")); })
+        .catch(() => toast.error("O navegador bloqueou a leitura da área de transferência — permita ou use Ctrl+Shift+V"));
+    };
+    const el = containerRef.current;
+    el.addEventListener("contextmenu", onContext);
 
     const onResize = () => {
       try {
@@ -85,10 +152,27 @@ function TerminalPane({ device, active, visible, registerWs }) {
 
     return () => {
       window.removeEventListener("resize", onResize);
+      el.removeEventListener("contextmenu", onContext);
+      try { selSub.dispose(); } catch { /* noop */ }
       try { ws.close(); } catch { /* noop */ }
       try { term.dispose(); } catch { /* noop */ }
     };
   }, [device.id, generation]);
+
+  // aplica tema / fonte quando o usuário muda na barra
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = (TERM_THEMES[prefs.theme] || TERM_THEMES.mobaxterm).theme;
+    if (term.options.fontSize !== prefs.fontSize) {
+      term.options.fontSize = prefs.fontSize;
+      try {
+        fitRef.current?.fit();
+        const ws = wsRef.current;
+        if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      } catch { /* noop */ }
+    }
+  }, [prefs.theme, prefs.fontSize]);
 
   useEffect(() => {
     if (active && visible && fitRef.current) {
@@ -128,13 +212,15 @@ function TerminalPane({ device, active, visible, registerWs }) {
           }`}>{label}</span>
         </div>
       </div>
-      <div ref={containerRef} className="xterm-container flex-1" data-testid={`xterm-${device.id}`} />
+      <div ref={containerRef} className="xterm-container flex-1" data-testid={`xterm-${device.id}`}
+           style={{ background: (TERM_THEMES[prefs.theme] || TERM_THEMES.mobaxterm).theme.background }} />
     </div>
   );
 }
 
 export function TerminalWorkspace({ visible }) {
   const { tabs, active, setActive, openTab, closeTab } = useTerminal();
+  const [termPrefs] = useTermPrefs();
   const [devices, setDevices] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [quick, setQuick] = useState([]);
@@ -163,8 +249,11 @@ export function TerminalWorkspace({ visible }) {
           <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Console SSH</div>
           <h1 className="font-heading text-2xl font-bold text-slate-100">Terminal Workspace</h1>
         </div>
-        <div className="text-xs font-mono text-slate-500">
-          <span className="text-emerald-400" data-testid="active-sessions-count">{tabs.length}</span> sessão(ões) ativa(s) · permanecem abertas ao navegar
+        <div className="flex items-center gap-4">
+          <div className="text-xs font-mono text-slate-500 hidden xl:block">
+            <span className="text-emerald-400" data-testid="active-sessions-count">{tabs.length}</span> sessão(ões) ativa(s) · permanecem abertas ao navegar
+          </div>
+          <TerminalToolbar />
         </div>
       </div>
 
@@ -207,7 +296,7 @@ export function TerminalWorkspace({ visible }) {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 bg-[#05070A] relative overflow-hidden">
+      <div className="flex-1 min-h-0 relative overflow-hidden" style={{ background: (TERM_THEMES[termPrefs.theme] || TERM_THEMES.mobaxterm).theme.background }}>
         {tabs.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-500">
             <TerminalSquare className="w-10 h-10 mb-3 text-slate-600" />
