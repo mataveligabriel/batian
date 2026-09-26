@@ -177,23 +177,25 @@ def commands_for(device_type: str, settings: dict) -> List[str]:
     return DEFAULT_COMMANDS.get(device_type or "other", [])
 
 
-async def read_optics(client, device_type: str, ifname: str, settings: dict) -> Tuple[dict, str, str]:
-    """Tenta os comandos do tipo em ordem até um render lanes. -> (resultado, comando usado, saída bruta)"""
-    last_out, last_cmd = "", ""
+async def read_optics(session, device_type: str, ifname: str, settings: dict) -> Tuple[dict, str, str]:
+    """Tenta os comandos do tipo em ordem, na MESMA sessão de shell, até um trazer lanes.
+    -> (resultado, comando usado, saída bruta de todos os comandos tentados)"""
+    outs, last_cmd = [], ""
     cmds = commands_for(device_type, settings)
     if not cmds:
         return {"lanes": [], "rx_min": None, "ok": False}, "", "Sem comando de óptica para este tipo de equipamento."
     for tpl in cmds:
         cmd = tpl.replace("{ifname}", ifname)
-        res = await client.run_command(cmd, timeout=45, idle=2.5)
-        out = res.get("stdout") or ""
-        if isinstance(out, bytes):
-            out = out.decode("utf-8", "replace")
+        try:
+            out = await session.run(cmd, timeout=45, idle=2.5)
+        except Exception as e:
+            raise RuntimeError(f"{e} (ao rodar '{cmd}')") from e
+        outs.append(f"### {cmd}\n{out.strip()}")
         parsed = parse_optics(out)
-        last_out, last_cmd = out, cmd
+        last_cmd = cmd
         if parsed["ok"]:
             return parsed, cmd, out
-    return {"lanes": [], "rx_min": None, "ok": False}, last_cmd, last_out
+    return {"lanes": [], "rx_min": None, "ok": False}, last_cmd, "\n\n".join(outs)
 
 
 async def get_settings(db) -> dict:
@@ -250,7 +252,11 @@ class OpticsCollector:
     async def read_one(self, dev: dict, if_index: int, if_name: str, s: dict, store: bool = True) -> dict:
         client = await self.connect_device(dev)
         try:
-            parsed, cmd, raw = await read_optics(client, dev.get("device_type") or "other", if_name, s)
+            sess = await client.shell()
+            try:
+                parsed, cmd, raw = await read_optics(sess, dev.get("device_type") or "other", if_name, s)
+            finally:
+                await sess.close()
         finally:
             await client.close()
         if store:
@@ -285,6 +291,7 @@ class OpticsCollector:
                 async with sem:
                     try:
                         client = await self.connect_device(dev)
+                        sess = await client.shell()
                     except Exception as e:
                         for idx in ifaces:
                             self.errors[(dev_id, idx)] = f"SSH: {e}"
@@ -292,16 +299,17 @@ class OpticsCollector:
                     try:
                         for idx, name in ifaces.items():
                             try:
-                                parsed, cmd, raw = await read_optics(client, dev.get("device_type") or "other", name, s)
+                                parsed, cmd, raw = await read_optics(sess, dev.get("device_type") or "other", name, s)
                             except Exception as e:
                                 self.errors[(dev_id, idx)] = str(e)
-                                continue
+                                break  # sessão caiu: não adianta tentar as outras interfaces agora
                             self._store(dev_id, idx, parsed, cmd, raw)
                             if parsed["ok"]:
                                 samples.append({"device_id": dev_id, "if_index": idx, "ts": datetime.now(timezone.utc),
                                                 "lanes": [{"rx": l["rx"], "tx": l["tx"]} for l in parsed["lanes"]]})
                     finally:
                         try:
+                            await sess.close()
                             await client.close()
                         except Exception:
                             pass

@@ -106,6 +106,8 @@ class Monitor:
             for w in d.get("widgets", []):
                 if w.get("type") == "traffic" and w.get("device_id") and w.get("if_index") is not None:
                     want.setdefault(w["device_id"], set()).add(int(w["if_index"]))
+                for src in w.get("sources") or []:
+                    want.setdefault(src["device_id"], set()).add(int(src["if_index"]))
         async for mon in self.db.if_monitors.find({}, {"_id": 0, "device_id": 1, "if_index": 1}):
             want.setdefault(mon["device_id"], set()).add(int(mon["if_index"]))
         return want

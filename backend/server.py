@@ -28,7 +28,7 @@ from models import (
     DeviceCreate, DeviceCreateRequest, Device, DEVICE_TYPES,
     DeviceIdsPayload, DeviceExportPayload, DeviceBulkUpdate,
     MapCreate, MapUpdate, MonitorSettings, DeviceMonitorPayload,
-    DashboardCreate, DashboardUpdate, OpticsSettings, OpticsTestPayload,
+    DashboardCreate, DashboardUpdate, OpticsSettings, OpticsTestPayload, SeriesMultiPayload,
     ScriptCreate, Script,
     Session, BatchExecPayload, BatchResultItem, SshKeyConfig, BastionSettings,
     AutomationSettings, BackupRunPayload, AISettings, BackupIdsPayload, BackupCleanupPayload,
@@ -1431,6 +1431,82 @@ async def monitor_series(device_id: str, if_index: int, minutes: int = 60, point
     }
 
 
+@api.post("/monitor/series-multi")
+async def monitor_series_multi(payload: SeriesMultiPayload, user: dict = Depends(get_current_user)):
+    """Soma o tráfego de várias interfaces (de equipamentos diferentes): agregado de trânsitos, CDNs, PNIs…"""
+    mine = set(await _my_device_ids(user))
+    srcs = [s for s in payload.sources if s.device_id in mine][:60]
+    if not srcs:
+        raise HTTPException(status_code=400, detail="Nenhuma interface válida no agregado")
+    s = await monitoring.get_settings(db)
+    minutes = max(5, min(int(payload.minutes), int(s.get("history_days") or 7) * 1440))
+    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    base = max(30, int(s.get("interval_sec") or 30))  # resolução da coleta
+    per_src = []
+    for src in srcs:
+        rows = await db.if_samples.find({"device_id": src.device_id, "if_index": int(src.if_index), "ts": {"$gt": since}},
+                                        {"_id": 0, "ts": 1, "in_bps": 1, "out_bps": 1}).to_list(500000)
+        b: dict = {}
+        for r in rows:
+            ts = r["ts"] if isinstance(r["ts"], datetime) else datetime.fromisoformat(str(r["ts"]))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            k = int(ts.timestamp()) // base * base
+            vi, vo = r.get("in_bps"), r.get("out_bps")
+            if src.invert:
+                vi, vo = vo, vi
+            acc = b.setdefault(k, [0.0, 0.0, 0])
+            if vi is not None and vo is not None:
+                acc[0] += vi; acc[1] += vo; acc[2] += 1
+        per_src.append({k: (v[0] / v[2], v[1] / v[2]) for k, v in b.items() if v[2]})
+    keys = sorted({k for d in per_src for k in d})
+    # soma na resolução da coleta; cada membro repete o último valor por até 3 leituras (coletas desalinhadas)
+    last = [None] * len(per_src)
+    fine = []
+    for k in keys:
+        tin = tout = 0.0
+        present = 0
+        for i, d in enumerate(per_src):
+            if k in d:
+                last[i] = (k, d[k])
+            if last[i] and k - last[i][0] <= 3 * base:
+                tin += last[i][1][0]; tout += last[i][1][1]; present += 1
+        if present:
+            fine.append((k, tin, tout, present == len(per_src)))
+    complete = [f for f in fine if f[3]] or fine
+    step = max(base, _bucket_seconds(minutes, payload.points))
+    disp: dict = {}
+    for k, vi, vo, full in fine:
+        d = disp.setdefault(k // step * step, {"in": [], "out": [], "partial": False})
+        d["in"].append(vi); d["out"].append(vo); d["partial"] |= not full
+    pts = [{"t": datetime.fromtimestamp(k, timezone.utc).isoformat(),
+            "in": sum(v["in"]) / len(v["in"]), "out": sum(v["out"]) / len(v["out"]),
+            "in_max": max(v["in"]), "out_max": max(v["out"]), "partial": v["partial"]} for k, v in sorted(disp.items())]
+    # membros: valor atual, velocidade e participação
+    devs = {d["id"]: d["name"] for d in await db.devices.find({"id": {"$in": [x.device_id for x in srcs]}}, {"_id": 0, "id": 1, "name": 1}).to_list(100)}
+    caches = {c["device_id"]: c for c in await db.device_ifaces.find({"device_id": {"$in": [x.device_id for x in srcs]}}, {"_id": 0}).to_list(100)}
+    members, cur_in, cur_out, cap = [], 0.0, 0.0, 0
+    any_cur = False
+    for src in srcs:
+        lv = net_monitor.iface_live(src.device_id, src.if_index) or {}
+        vi, vo = lv.get("in_bps"), lv.get("out_bps")
+        if src.invert:
+            vi, vo = vo, vi
+        if vi is not None:
+            cur_in += vi; cur_out += vo or 0; any_cur = True
+        iface = next((i for i in caches.get(src.device_id, {}).get("interfaces", []) if i.get("index") == int(src.if_index)), {})
+        cap += iface.get("speed_mbps") or 0
+        members.append({"device_id": src.device_id, "device_name": devs.get(src.device_id, "?"), "if_index": src.if_index,
+                        "if_name": src.if_name or iface.get("name", ""), "alias": iface.get("alias", ""), "invert": src.invert,
+                        "in_bps": vi, "out_bps": vo, "oper": lv.get("oper"), "speed_mbps": iface.get("speed_mbps"),
+                        "error": net_monitor.dev_errors.get(src.device_id)})
+    return {
+        "points": pts, "step_sec": step, "members": members, "speed_mbps": cap or None,
+        "stats": {"in": {**_stats([f[1] for f in complete]), "cur": cur_in if any_cur else None},
+                  "out": {**_stats([f[2] for f in complete]), "cur": cur_out if any_cur else None}},
+    }
+
+
 # ---------- Óptica (RX/TX por lane via CLI) ----------
 optics_collector = optics_mod.OpticsCollector(db, _connect_device)
 
@@ -1556,10 +1632,18 @@ async def update_dashboard(dash_id: str, payload: DashboardUpdate, user: dict = 
     widgets = []
     for w in payload.widgets:
         wd = w.model_dump()
-        if wd["device_id"] not in mine:
-            raise HTTPException(status_code=400, detail="Equipamento inválido no dashboard")
-        if wd["type"] not in ("traffic", "optics"):
+        if wd["type"] not in ("traffic", "optics", "aggregate"):
             raise HTTPException(status_code=400, detail="Tipo de widget inválido")
+        if wd["type"] == "aggregate":
+            if not wd["sources"] or len(wd["sources"]) > 60:
+                raise HTTPException(status_code=400, detail="O agregado precisa de 1 a 60 interfaces")
+            if any(src["device_id"] not in mine for src in wd["sources"]):
+                raise HTTPException(status_code=400, detail="Equipamento inválido no agregado")
+            wd["device_id"], wd["if_index"] = None, None
+        else:
+            if wd["device_id"] not in mine or wd["if_index"] is None:
+                raise HTTPException(status_code=400, detail="Equipamento inválido no dashboard")
+            wd["sources"] = []
         wd["size"] = "half" if wd["size"] == "half" else "full"
         widgets.append(wd)
     upd = {"name": payload.name.strip() or "Dashboard", "group": payload.group.strip() or "Geral",

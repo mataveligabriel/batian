@@ -10,66 +10,135 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import {
   Gauge, Plus, Pencil, Save, X, Trash2, Copy, ChevronUp, ChevronDown, Activity, Radio, Search, Loader2,
-  FolderOpen, Settings2, RefreshCw, Columns2, Square,
+  FolderOpen, Settings2, RefreshCw, Columns2, Square, Sigma, Maximize2, Minimize, Maximize, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 import { InterfacePicker } from "@/components/maps/InterfacePicker";
 import { TrafficWidget } from "@/components/dash/TrafficWidget";
 import { OpticsPanel } from "@/components/dash/OpticsPanel";
+import { useTermPrefs } from "@/lib/termPrefs";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const RANGES = [[60, "1h"], [360, "6h"], [1440, "24h"], [10080, "7 dias"], [43200, "30 dias"]];
 const tabBtn = (on) => `flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${on ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`;
 const inputCls = "bg-[#05070A] border-[#1E293B]";
 
+// altura da janela: gráficos se ajustam à tela (e ao modo foco / tela cheia)
+function useVh() {
+  const [vh, setVh] = useState(window.innerHeight);
+  useEffect(() => { const on = () => setVh(window.innerHeight); window.addEventListener("resize", on); return () => window.removeEventListener("resize", on); }, []);
+  return vh;
+}
+const clamp = (v, a, b) => Math.max(a, Math.min(b, Math.round(v)));
+
+function useFullscreen() {
+  const [fs, setFs] = useState(!!document.fullscreenElement);
+  useEffect(() => { const on = () => setFs(!!document.fullscreenElement); document.addEventListener("fullscreenchange", on); return () => document.removeEventListener("fullscreenchange", on); }, []);
+  const toggle = async (onEnter) => {
+    try { if (document.fullscreenElement) await document.exitFullscreen(); else { onEnter?.(); await document.documentElement.requestFullscreen(); } }
+    catch { toast.error("O navegador não permitiu tela cheia — use F11"); }
+  };
+  return [fs, toggle];
+}
+
+function WidgetBody({ w, minutes, refreshKey, height }) {
+  if (w.type === "optics") {
+    return <OpticsPanel deviceId={w.device_id} ifIndex={w.if_index} ifName={w.if_name} minutes={Math.max(minutes, 360)}
+                        warn={w.rx_warn_dbm} crit={w.rx_crit_dbm} refreshKey={refreshKey} chartHeight={height} />;
+  }
+  return <TrafficWidget widget={w} minutes={minutes} refreshKey={refreshKey} height={height} />;
+}
+
+const widgetIcon = (t) => (t === "aggregate" ? Sigma : t === "optics" ? Radio : Activity);
+
 function WidgetDialog({ initial, devices, onCancel, onSave }) {
-  const [w, setW] = useState(initial || { id: uid(), type: "traffic", title: "", device_id: "", if_index: null, if_name: "", capacity_mbps: null, size: "full", rx_warn_dbm: null, rx_crit_dbm: null });
+  const [w, setW] = useState(initial || { id: uid(), type: "traffic", title: "", device_id: "", if_index: null, if_name: "", capacity_mbps: null, size: "full", rx_warn_dbm: null, rx_crit_dbm: null, sources: [] });
   const [q, setQ] = useState("");
-  const dev = devices.find(d => d.id === w.device_id);
+  const [pickDev, setPickDev] = useState(initial?.type === "aggregate" ? "" : initial?.device_id || "");
+  const agg = w.type === "aggregate";
+  const devId = agg ? pickDev : w.device_id;
+  const dev = devices.find(d => d.id === devId);
   const list = devices.filter(d => !q || `${d.name} ${d.host} ${(d.tags || []).join(" ")}`.toLowerCase().includes(q.toLowerCase()));
   const num = (v) => (v === "" || v === null || v === undefined ? null : Number(v));
-  const ok = w.device_id && w.if_index !== null;
+  const sources = w.sources || [];
+  const inAgg = (i) => sources.some(x => x.device_id === devId && x.if_index === i);
+  const ok = agg ? sources.length > 0 && w.title.trim() : w.device_id && w.if_index !== null;
+  const devName = (id) => devices.find(d => d.id === id)?.name || "?";
+
+  const onPickIface = (i) => {
+    if (!agg) return setW(prev => ({ ...prev, if_index: i.index, if_name: i.name, title: prev.title || `${dev?.name || ""} · ${i.alias || i.name}` }));
+    setW(prev => {
+      const has = (prev.sources || []).some(x => x.device_id === devId && x.if_index === i.index);
+      const next = has ? prev.sources.filter(x => !(x.device_id === devId && x.if_index === i.index))
+                       : [...(prev.sources || []), { device_id: devId, if_index: i.index, if_name: i.name, invert: false }];
+      return { ...prev, sources: next };
+    });
+  };
+
   return (
     <Dialog open onOpenChange={(v) => !v && onCancel()}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-4xl max-h-[92vh] overflow-y-auto" data-testid="widget-dialog">
+      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-5xl max-h-[94vh] overflow-y-auto" data-testid="widget-dialog">
         <DialogHeader><DialogTitle>{initial ? "Editar gráfico" : "Novo gráfico"}</DialogTitle></DialogHeader>
         <div className="flex gap-2">
-          {[["traffic", "Tráfego (consumo)", Activity], ["optics", "Sinal óptico (RX/TX por lane)", Radio]].map(([v, l, I]) => (
+          {[["traffic", "Tráfego de uma interface", Activity], ["aggregate", "Agregado (soma de várias)", Sigma], ["optics", "Sinal óptico (RX/TX por lane)", Radio]].map(([v, l, I]) => (
             <button key={v} onClick={() => setW({ ...w, type: v })} data-testid={`wtype-${v}`}
                     className={`flex-1 flex items-center gap-2 px-3 py-2 rounded border text-sm ${w.type === v ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] text-slate-400"}`}>
               <I className="w-4 h-4" /> {l}
             </button>
           ))}
         </div>
+        {agg && <div className="text-[11px] text-slate-400">Some interfaces de equipamentos diferentes (ex.: todos os trânsitos, todas as CDNs, todos os PNIs). Escolha o equipamento e clique nas interfaces para incluir/remover.
+          Marque <b>inverter</b> quando a interface for lida do lado do vizinho (a entrada dele é a sua saída).</div>}
         <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
           <div className="md:col-span-2">
             <Label>Equipamento</Label>
             <div className="relative mt-1"><Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
               <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar…" className={`${inputCls} pl-8 h-8 text-sm`} /></div>
             <div className="h-64 overflow-y-auto border border-[#1E293B] rounded mt-1 divide-y divide-[#111722] bg-[#05070A]">
-              {list.map(d => (
-                <button key={d.id} onClick={() => setW({ ...w, device_id: d.id, if_index: null, if_name: "" })} data-testid={`wdev-${d.id}`}
-                        className={`w-full text-left px-2.5 py-1.5 text-sm ${w.device_id === d.id ? "bg-[#007AFF]/20 text-slate-100" : "text-slate-300 hover:bg-slate-800/60"}`}>
-                  <div className="truncate">{d.name}</div><div className="text-[10px] font-mono text-slate-500">{d.host}</div>
-                </button>
-              ))}
+              {list.map(d => {
+                const n = sources.filter(x => x.device_id === d.id).length;
+                return (
+                  <button key={d.id} onClick={() => (agg ? setPickDev(d.id) : setW({ ...w, device_id: d.id, if_index: null, if_name: "" }))} data-testid={`wdev-${d.id}`}
+                          className={`w-full text-left px-2.5 py-1.5 text-sm flex items-center gap-2 ${devId === d.id ? "bg-[#007AFF]/20 text-slate-100" : "text-slate-300 hover:bg-slate-800/60"}`}>
+                    <div className="min-w-0"><div className="truncate">{d.name}</div><div className="text-[10px] font-mono text-slate-500">{d.host}</div></div>
+                    {agg && n > 0 && <span className="ml-auto text-[10px] font-mono px-1.5 rounded bg-[#007AFF]/25 text-[#93C5FD]">{n}</span>}
+                  </button>
+                );
+              })}
             </div>
           </div>
           <div className="md:col-span-3">
-            <Label>Interface {w.if_name && <span className="font-mono text-[#93C5FD] ml-1">{w.if_name}</span>}</Label>
+            <Label>{agg ? "Interfaces (clique para incluir/remover)" : <>Interface {w.if_name && <span className="font-mono text-[#93C5FD] ml-1">{w.if_name}</span>}</>}</Label>
             <div className="mt-1">
-              {w.device_id ? (
-                <InterfacePicker deviceId={w.device_id} value={w.if_index} height="h-64"
-                                 onPick={(i) => setW(prev => ({ ...prev, if_index: i.index, if_name: i.name, title: prev.title || `${dev?.name || ""} · ${i.alias || i.name}` }))} />
+              {devId ? (
+                agg ? <InterfacePicker deviceId={devId} mode="multi" selected={new Set(sources.filter(x => x.device_id === devId).map(x => x.if_index))} onToggle={onPickIface} height="h-64" />
+                    : <InterfacePicker deviceId={devId} value={w.if_index} height="h-64" onPick={onPickIface} />
               ) : <div className="h-72 flex items-center justify-center text-xs text-slate-500 font-mono border border-[#1E293B] rounded">Escolha o equipamento</div>}
             </div>
           </div>
         </div>
+        {agg && (
+          <div className="border border-[#1E293B] rounded" data-testid="agg-sources">
+            <div className="px-3 py-1.5 text-[11px] uppercase tracking-widest text-slate-400 font-mono border-b border-[#1E293B]">No agregado: {sources.length} interface(s)</div>
+            {sources.length === 0 && <div className="px-3 py-2 text-xs text-slate-500 font-mono">Nenhuma ainda.</div>}
+            <div className="max-h-44 overflow-y-auto divide-y divide-[#1E293B]">
+              {sources.map((x, i) => (
+                <div key={`${x.device_id}-${x.if_index}`} className="px-3 py-1.5 flex items-center gap-3 text-xs">
+                  <span className="text-slate-100 truncate">{devName(x.device_id)} · <span className="font-mono">{x.if_name}</span></span>
+                  <label className="ml-auto flex items-center gap-1.5 text-slate-400 cursor-pointer whitespace-nowrap">
+                    <input type="checkbox" checked={!!x.invert} onChange={e => setW({ ...w, sources: sources.map((y, j) => (j === i ? { ...y, invert: e.target.checked } : y)) })} /> inverter
+                  </label>
+                  <button onClick={() => setW({ ...w, sources: sources.filter((_, j) => j !== i) })} className="text-red-400 hover:text-red-300"><Trash2 className="w-3.5 h-3.5" /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div className="md:col-span-2"><Label>Título</Label>
-            <Input value={w.title} onChange={e => setW({ ...w, title: e.target.value })} placeholder="ex.: Trânsito Operadora X" className={inputCls} data-testid="wtitle" /></div>
-          {w.type === "traffic" ? (
-            <div><Label>Capacidade contratada (Mbps)</Label>
-              <Input type="number" value={w.capacity_mbps ?? ""} onChange={e => setW({ ...w, capacity_mbps: num(e.target.value) })} placeholder="vazio = velocidade da porta" className={`${inputCls} font-mono`} /></div>
+          <div className="md:col-span-2"><Label>Título{agg ? " *" : ""}</Label>
+            <Input value={w.title} onChange={e => setW({ ...w, title: e.target.value })} placeholder={agg ? "ex.: Todos os trânsitos" : "ex.: Trânsito Operadora X"} className={inputCls} data-testid="wtitle" /></div>
+          {w.type !== "optics" ? (
+            <div><Label>Capacidade {agg ? "total" : "contratada"} (Mbps)</Label>
+              <Input type="number" value={w.capacity_mbps ?? ""} onChange={e => setW({ ...w, capacity_mbps: num(e.target.value) })} placeholder={agg ? "vazio = soma das portas" : "vazio = velocidade da porta"} className={`${inputCls} font-mono`} /></div>
           ) : (
             <div className="grid grid-cols-2 gap-2">
               <div><Label>RX atenção (dBm)</Label><Input type="number" step="0.1" value={w.rx_warn_dbm ?? ""} onChange={e => setW({ ...w, rx_warn_dbm: num(e.target.value) })} placeholder="ex.: -8" className={`${inputCls} font-mono`} /></div>
@@ -87,7 +156,9 @@ function WidgetDialog({ initial, devices, onCancel, onSave }) {
         {w.type === "optics" && <div className="text-[11px] text-slate-500">Leitura pela CLI a cada 5 min. Interfaces de 40G/100G mostram as 4 lanes. Os limites viram linhas no gráfico e status na tabela.</div>}
         <DialogFooter>
           <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
-          <Button disabled={!ok} onClick={() => onSave({ ...w, title: w.title.trim() || `${dev?.name || ""} · ${w.if_name}` })} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="wsave">Salvar gráfico</Button>
+          <Button disabled={!ok} data-testid="wsave" className="bg-[#007AFF] hover:bg-[#0062CC]"
+                  onClick={() => onSave(agg ? { ...w, device_id: null, if_index: null, if_name: "", title: w.title.trim() }
+                                            : { ...w, sources: [], title: w.title.trim() || `${dev?.name || ""} · ${w.if_name}` })}>Salvar gráfico</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -160,6 +231,19 @@ export default function Dashboards() {
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [expanded, setExpanded] = useState(null);
+  const [prefs, setPrefs] = useTermPrefs();
+  const focus = !!prefs.dashFocus;
+  const vh = useVh();
+  const [isFs, toggleFs] = useFullscreen();
+  const hFull = clamp(vh * (focus ? 0.5 : 0.4), 240, 680);
+  const hHalf = clamp(vh * (focus ? 0.36 : 0.3), 190, 480);
+  useEffect(() => {
+    if (!expanded) return;
+    const esc = (e) => { if (e.key === "Escape") setExpanded(null); };
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [expanded]);
 
   const dash = editing ? draft : current;
   const dirty = editing && JSON.stringify(draft) !== JSON.stringify(current);
@@ -210,7 +294,7 @@ export default function Dashboards() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0" data-testid="dashboards-page">
-      <div className="px-8 pt-6">
+      <div className={`px-8 pt-6 ${focus ? "hidden" : ""}`}>
         <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Consumo & sinais</div>
         <h1 className="font-heading text-3xl font-bold text-slate-100 mt-1">Dashboards</h1>
         <div className="flex gap-1 mt-4 border-b border-[#1E293B]">
@@ -222,8 +306,8 @@ export default function Dashboards() {
       {tab === "optics" && <div className="p-8 pt-5 overflow-y-auto flex-1"><OpticsSettingsTab /></div>}
 
       {tab === "dash" && (
-        <div className="flex-1 min-h-0 flex gap-4 p-8 pt-5">
-          <Card className="bg-[#111722] border-[#1E293B] w-60 shrink-0 flex flex-col overflow-hidden">
+        <div className={`flex-1 min-h-0 flex gap-4 ${focus ? "p-3" : "p-8 pt-5"}`}>
+          <Card className={`bg-[#111722] border-[#1E293B] w-60 shrink-0 flex-col overflow-hidden ${focus ? "hidden" : "flex"}`}>
             <div className="p-3 border-b border-[#1E293B]">
               {!creating ? (
                 <Button size="sm" onClick={() => setCreating(true)} className="w-full h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="new-dash-btn"><Plus className="w-4 h-4 mr-1" /> Novo dashboard</Button>
@@ -272,13 +356,29 @@ export default function Dashboards() {
                   </>
                 ) : (
                   <>
-                    <div className="mr-2"><div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">{dash.group}</div><div className="text-lg font-semibold text-slate-100 leading-tight">{dash.name}</div></div>
+                    {focus ? (
+                      <select value={dash.id} onChange={e => open(e.target.value)} data-testid="focus-dash-select"
+                              className="h-8 bg-[#0B111C] border border-[#1E293B] rounded px-2 text-sm text-slate-100 font-semibold mr-2 max-w-[320px]">
+                        {groups.map(([g, ds]) => (
+                          <optgroup key={g} label={g}>{ds.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="mr-2"><div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">{dash.group}</div><div className="text-lg font-semibold text-slate-100 leading-tight">{dash.name}</div></div>
+                    )}
                     <div className="flex border border-[#1E293B] rounded overflow-hidden" data-testid="range-picker">
                       {RANGES.map(([m, l]) => (
                         <button key={m} onClick={() => setMinutes(m)} className={`h-8 px-3 text-xs font-mono ${minutes === m ? "bg-[#007AFF]/25 text-slate-100" : "bg-[#0B111C] text-slate-400 hover:text-slate-200"}`}>{l}</button>
                       ))}
                     </div>
                     <Button size="sm" variant="ghost" onClick={() => setRefreshKey(k => k + 1)} className="h-8 text-slate-400 hover:bg-slate-800" title="Atualizar"><RefreshCw className="w-3.5 h-3.5" /></Button>
+                    <Button size="sm" variant="outline" onClick={() => setPrefs({ dashFocus: !focus })} data-testid="dash-focus"
+                            className={`${tb} ${focus ? "border-[#007AFF]/60 text-[#4DA3FF]" : ""}`} title={focus ? "Mostrar menus" : "Modo foco: esconde menu lateral, cabeçalho e lista"}>
+                      {focus ? <><PanelLeftOpen className="w-3.5 h-3.5 mr-1.5" /> Menus</> : <><PanelLeftClose className="w-3.5 h-3.5 mr-1.5" /> Foco</>}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => toggleFs(() => setPrefs({ dashFocus: true }))} className={tb} title={isFs ? "Sair da tela cheia" : "Tela cheia"} data-testid="dash-fullscreen">
+                      {isFs ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+                    </Button>
                     <div className="ml-auto flex gap-2">
                       <Button size="sm" variant="outline" onClick={() => { setDraft(JSON.parse(JSON.stringify(current))); setEditing(true); }} className={tb} data-testid="dash-edit"><Pencil className="w-3.5 h-3.5 mr-1.5" /> Editar</Button>
                       <Button size="sm" variant="outline" onClick={duplicate} className={tb}><Copy className="w-3.5 h-3.5 mr-1.5" /> Duplicar</Button>
@@ -298,11 +398,17 @@ export default function Dashboards() {
                 {dash.widgets.map((w, i) => (
                   <Card key={w.id} className={`bg-[#111722] border-[#1E293B] p-4 ${w.size === "half" ? "" : "xl:col-span-2"}`} data-testid={`widget-${w.id}`}>
                     <div className="flex items-start gap-2 mb-3">
-                      {w.type === "traffic" ? <Activity className="w-4 h-4 text-[#4DA3FF] mt-0.5" /> : <Radio className="w-4 h-4 text-[#4DA3FF] mt-0.5" />}
+                      {React.createElement(widgetIcon(w.type), { className: "w-4 h-4 text-[#4DA3FF] mt-0.5 shrink-0" })}
                       <div className="min-w-0">
-                        <div className="text-sm font-semibold text-slate-100 truncate">{w.title}</div>
-                        <div className="text-[11px] font-mono text-slate-500 truncate">{devName(w.device_id)} · {w.if_name}{w.type === "optics" ? " · sinal óptico" : ""}</div>
+                        <div className={`${focus ? "text-base" : "text-sm"} font-semibold text-slate-100 truncate`}>{w.title}</div>
+                        <div className="text-[11px] font-mono text-slate-500 truncate">
+                          {w.type === "aggregate" ? `soma de ${(w.sources || []).length} interface(s)` : `${devName(w.device_id)} · ${w.if_name}${w.type === "optics" ? " · sinal óptico" : ""}`}
+                        </div>
                       </div>
+                      {!editing && (
+                        <Button size="sm" variant="ghost" onClick={() => setExpanded(w)} className="ml-auto h-7 px-1.5 text-slate-400 hover:text-slate-100 hover:bg-slate-800 shrink-0"
+                                title="Expandir" data-testid={`expand-${w.id}`}><Maximize2 className="w-4 h-4" /></Button>
+                      )}
                       {editing && (
                         <div className="ml-auto flex gap-1 shrink-0">
                           <Button size="sm" variant="ghost" onClick={() => move(i, -1)} disabled={i === 0} className="h-7 px-1.5 text-slate-400"><ChevronUp className="w-4 h-4" /></Button>
@@ -312,15 +418,35 @@ export default function Dashboards() {
                         </div>
                       )}
                     </div>
-                    {w.type === "traffic"
-                      ? <TrafficWidget widget={w} minutes={minutes} refreshKey={refreshKey} height={w.size === "half" ? 200 : 280} />
-                      : <OpticsPanel deviceId={w.device_id} ifIndex={w.if_index} ifName={w.if_name} minutes={Math.max(minutes, 360)}
-                                     warn={w.rx_warn_dbm} crit={w.rx_crit_dbm} refreshKey={refreshKey} />}
+                    <WidgetBody w={w} minutes={minutes} refreshKey={refreshKey} height={w.size === "half" ? hHalf : hFull} />
                   </Card>
                 ))}
               </div>
             </div>
           )}
+        </div>
+      )}
+      {expanded && (
+        <div className="fixed inset-0 z-[120] bg-black/75 p-3 sm:p-6 flex" data-testid="widget-expanded"
+             onMouseDown={(e) => { if (e.target === e.currentTarget) setExpanded(null); }}>
+          <Card className="flex-1 bg-[#111722] border-[#2A3345] p-5 overflow-y-auto">
+            <div className="flex items-start gap-2 mb-4">
+              {React.createElement(widgetIcon(expanded.type), { className: "w-5 h-5 text-[#4DA3FF] mt-0.5" })}
+              <div className="min-w-0">
+                <div className="text-lg font-semibold text-slate-100 truncate">{expanded.title}</div>
+                <div className="text-xs font-mono text-slate-500">{expanded.type === "aggregate" ? `soma de ${(expanded.sources || []).length} interface(s)` : `${devName(expanded.device_id)} · ${expanded.if_name}`}</div>
+              </div>
+              <div className="ml-auto flex items-center gap-2">
+                <div className="flex border border-[#1E293B] rounded overflow-hidden">
+                  {RANGES.map(([m, l]) => (
+                    <button key={m} onClick={() => setMinutes(m)} className={`h-8 px-3 text-xs font-mono ${minutes === m ? "bg-[#007AFF]/25 text-slate-100" : "bg-[#0B111C] text-slate-400 hover:text-slate-200"}`}>{l}</button>
+                  ))}
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => setExpanded(null)} className="h-8 text-slate-300 hover:bg-slate-800" title="Fechar (Esc)"><X className="w-4 h-4" /></Button>
+              </div>
+            </div>
+            <WidgetBody w={expanded} minutes={minutes} refreshKey={refreshKey} height={clamp(vh * 0.62, 300, 900)} />
+          </Card>
         </div>
       )}
       {wdlg && <WidgetDialog initial={wdlg.widget} devices={devices} onCancel={() => setWdlg(null)} onSave={saveWidget} />}

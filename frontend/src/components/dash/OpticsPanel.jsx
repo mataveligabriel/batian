@@ -54,7 +54,7 @@ export function OpticsTestDialog({ open, onClose, deviceId, ifIndex, ifName, onD
 }
 
 /** Potência óptica por lane: valores atuais (tabela) + histórico de RX/TX. */
-export function OpticsPanel({ deviceId, ifIndex, ifName, minutes = 1440, warn, crit, compact = false, refreshKey }) {
+export function OpticsPanel({ deviceId, ifIndex, ifName, minutes = 1440, warn, crit, compact = false, refreshKey, chartHeight }) {
   const [data, setData] = useState(null);
   const [which, setWhich] = useState("rx");
   const [testOpen, setTestOpen] = useState(false);
@@ -118,7 +118,7 @@ export function OpticsPanel({ deviceId, ifIndex, ifName, minutes = 1440, warn, c
             ))}
             {data.stats?.rx_min != null && <span className="ml-auto text-[10px] font-mono text-slate-500">pior RX no período {data.stats.rx_min.toFixed(2)} dBm</span>}
           </div>
-          <LineChart points={pts} series={series} height={compact ? 150 : 210} zeroBased={false} yFormat={(v) => v.toFixed(1)} tipFormat={(v) => `${v.toFixed(2)} dBm`}
+          <LineChart points={pts} series={series} height={compact ? 150 : chartHeight ? Math.max(170, chartHeight - 110) : 210} zeroBased={false} yFormat={(v) => v.toFixed(1)} tipFormat={(v) => `${v.toFixed(2)} dBm`}
                      refLines={refs} emptyText="Histórico óptico aparece após algumas leituras (a cada 5 min)." />
         </>
       ) : null}

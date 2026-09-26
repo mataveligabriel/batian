@@ -156,6 +156,15 @@ class SSHClientWrapper:
             except Exception:
                 pass
 
+    async def shell(self) -> "ShellSession":
+        """Uma única sessão de shell para vários comandos (equipamentos como Huawei VRP aceitam só
+        um canal por conexão e derrubam a conexão quando o primeiro canal fecha)."""
+        if self.device_type not in SHELL_EXEC_TYPES:
+            return _ExecSession(self)
+        s = ShellSession(self)
+        await s.open()
+        return s
+
     async def close(self):
         try:
             if self.process:
@@ -181,6 +190,53 @@ class SSHClientWrapper:
             return round((time.perf_counter() - start) * 1000, 1)
         except Exception:
             return None
+
+
+class ShellSession:
+    """Shell interativa reaproveitada: pagina desligada uma vez, comandos em sequência no mesmo canal."""
+
+    def __init__(self, wrapper: "SSHClientWrapper"):
+        self.w = wrapper
+        self.proc = None
+
+    async def open(self):
+        self.proc = await self.w.conn.create_process(term_type="vt100", term_size=(200, 100), encoding=None)
+        await self.w._read_until_idle(self.proc, idle=1.5, hard=10)
+        pre = PAGINATION_OFF.get(self.w.device_type)
+        if pre:
+            self.proc.stdin.write((pre + "\n").encode())
+            await self.w._read_until_idle(self.proc, idle=1.0, hard=8)
+
+    async def run(self, command: str, timeout: int = 60, idle: float = 1.5) -> str:
+        out = b""
+        for line in command.splitlines():
+            if line.strip():
+                self.proc.stdin.write((line + "\n").encode())
+                out += await self.w._read_until_idle(self.proc, idle=idle, hard=timeout)
+        return _clean_ansi(out.decode("utf-8", "replace"))
+
+    async def close(self):
+        try:
+            if self.proc:
+                self.proc.stdin.write(b"quit\n")
+                self.proc.close()
+        except Exception:
+            pass
+
+
+class _ExecSession:
+    """Linux e afins: cada comando num canal exec próprio (suportado normalmente)."""
+
+    def __init__(self, wrapper):
+        self.w = wrapper
+
+    async def run(self, command: str, timeout: int = 60, idle: float = 1.5) -> str:
+        r = await self.w.run_command(command, timeout=timeout, idle=idle)
+        out = r.get("stdout") or ""
+        return out.decode("utf-8", "replace") if isinstance(out, bytes) else out
+
+    async def close(self):
+        pass
 
 
 def _clean_ansi(s: str) -> str:

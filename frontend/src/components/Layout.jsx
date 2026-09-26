@@ -34,7 +34,8 @@ export default function Layout() {
   const [cpOpen, setCpOpen] = useState(false);
   const [prefs, setPrefs] = useTermPrefs();
   const mini = prefs.sidebarCollapsed;
-  const hidden = onTerminal && prefs.focusMode;   // modo foco do terminal esconde o menu lateral
+  const onDash = pathname.startsWith("/dashboards");
+  const hidden = (onTerminal && prefs.focusMode) || (onDash && prefs.dashFocus);   // modo foco esconde o menu lateral
 
   return (
     <div className="h-screen flex bg-[#090D14] overflow-hidden">

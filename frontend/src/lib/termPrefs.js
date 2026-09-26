@@ -49,6 +49,7 @@ export const DEFAULT_PREFS = {
   pasteConfirm: "always",      // "always" | "multiline" | "never" — caixa de confirmação/edição antes de colar
   focusMode: false,            // terminal sem menu lateral nem cabeçalho
   sidebarCollapsed: false,     // menu lateral só com ícones
+  dashFocus: false,            // dashboards sem menu lateral, cabeçalho nem lista
 };
 
 export function getTermPrefs() {

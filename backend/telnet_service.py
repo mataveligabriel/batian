@@ -206,6 +206,19 @@ class TelnetClientWrapper:
                 out += await self._read_until_idle(idle=idle, hard=timeout)
         return {"stdout": _clean_ansi(out.decode("utf-8", "replace")), "stderr": "", "exit_status": 0, "ok": True}
 
+    async def shell(self):
+        """Telnet já é uma sessão única: os comandos seguem na mesma conexão."""
+        w = self
+
+        class _S:
+            async def run(self, command, timeout=60, idle=1.5):
+                r = await w.run_command(command, timeout=timeout, idle=idle)
+                return r.get("stdout") or ""
+
+            async def close(self):
+                pass
+        return _S()
+
     async def tcp_check(self, host: str, port: int, timeout: float = 5.0):
         return None
 

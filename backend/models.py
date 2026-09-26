@@ -264,13 +264,27 @@ class MonitorSettings(BaseModel):
     history_days: int = 7
 
 
-class DashboardWidget(BaseModel):
-    id: str
-    type: str = "traffic"            # traffic | optics
-    title: str = ""
+class AggSource(BaseModel):
     device_id: str
     if_index: int
     if_name: str = ""
+    invert: bool = False             # interface "do outro lado": troca entrada/saída antes de somar
+
+
+class SeriesMultiPayload(BaseModel):
+    sources: List[AggSource]
+    minutes: int = 60
+    points: int = 500
+
+
+class DashboardWidget(BaseModel):
+    id: str
+    type: str = "traffic"            # traffic | optics | aggregate
+    title: str = ""
+    device_id: Optional[str] = None
+    if_index: Optional[int] = None
+    if_name: str = ""
+    sources: List[AggSource] = []    # aggregate: soma destas interfaces
     capacity_mbps: Optional[int] = None
     size: str = "full"               # full | half
     rx_warn_dbm: Optional[float] = None   # óptica: abaixo disso = atenção
