@@ -249,7 +249,12 @@ export function MapCanvas({
           {hv?.error && <div className="text-amber-300">⚠ {hv.error}</div>}
           <div>→ {nodeName(hoverLink.to)}: <b>{fmtBps(hv?.ab_bps)}</b>{hv?.ab_pct != null ? ` (${hv.ab_pct}%)` : ""}</div>
           <div>← {nodeName(hoverLink.from)}: <b>{fmtBps(hv?.ba_bps)}</b>{hv?.ba_pct != null ? ` (${hv.ba_pct}%)` : ""}</div>
-          <div className="text-slate-500 mt-1">capacidade {fmtSpeed(hv?.capacity_mbps)} · clique para ver o gráfico</div>
+          {[["A", hv?.optics_a, hoverLink.from], ["B", hv?.optics_b, hoverLink.to]].filter(([, o]) => o && (o.lanes?.length || o.error)).map(([k, o, nid]) => (
+            <div key={k} className="text-slate-300">RX {nodeName(nid)}: {o.lanes?.length
+              ? o.lanes.map(l => (l.rx == null ? "—" : l.rx <= -40 ? "sem luz" : l.rx.toFixed(1))).join(" / ") + " dBm"
+              : <span className="text-amber-300">⚠ óptica</span>}</div>
+          ))}
+          <div className="text-slate-500 mt-1">capacidade {fmtSpeed(hv?.capacity_mbps)} · clique para ver gráfico e sinal</div>
         </div>
       )}
 

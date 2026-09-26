@@ -16,6 +16,7 @@ import Sessions from "@/pages/Sessions";
 import Users from "@/pages/Users";
 import Backups from "@/pages/Backups";
 import Maps from "@/pages/Maps";
+import Dashboards from "@/pages/Dashboards";
 import Automation from "@/pages/Automation";
 
 function RootRedirect() {
@@ -52,6 +53,7 @@ function App() {
             <Route path="/sessions" element={<Sessions />} />
             <Route path="/backups" element={<Backups />} />
             <Route path="/maps" element={<Maps />} />
+            <Route path="/dashboards" element={<Dashboards />} />
             <Route path="/automation" element={<ProtectedRoute adminOnly><Automation /></ProtectedRoute>} />
             <Route path="/users" element={<ProtectedRoute adminOnly><Users /></ProtectedRoute>} />
           </Route>

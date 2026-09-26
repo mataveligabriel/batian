@@ -1,6 +1,6 @@
 """Pydantic models for MongoDB documents. Uses uuid strings as ids."""
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
-from typing import List, Optional
+from typing import Dict, List, Optional
 from datetime import datetime, timezone
 import uuid
 
@@ -261,6 +261,42 @@ class MonitorSettings(BaseModel):
     default_community: str = ""
     confirm_polls: int = 2
     alert_up: bool = True
+    history_days: int = 7
+
+
+class DashboardWidget(BaseModel):
+    id: str
+    type: str = "traffic"            # traffic | optics
+    title: str = ""
+    device_id: str
+    if_index: int
+    if_name: str = ""
+    capacity_mbps: Optional[int] = None
+    size: str = "full"               # full | half
+    rx_warn_dbm: Optional[float] = None   # óptica: abaixo disso = atenção
+    rx_crit_dbm: Optional[float] = None   # óptica: abaixo disso = crítico
+
+
+class DashboardCreate(BaseModel):
+    name: str
+    group: str = "Geral"
+
+
+class DashboardUpdate(BaseModel):
+    name: str
+    group: str = "Geral"
+    widgets: List[DashboardWidget] = []
+
+
+class OpticsSettings(BaseModel):
+    optics_enabled: bool = True
+    optics_interval_sec: int = 300
+    optics_commands: Dict[str, List[str]] = {}
+
+
+class OpticsTestPayload(BaseModel):
+    if_index: int
+    if_name: str
 
 
 class MonitoredIface(BaseModel):

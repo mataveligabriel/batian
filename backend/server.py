@@ -28,6 +28,7 @@ from models import (
     DeviceCreate, DeviceCreateRequest, Device, DEVICE_TYPES,
     DeviceIdsPayload, DeviceExportPayload, DeviceBulkUpdate,
     MapCreate, MapUpdate, MonitorSettings, DeviceMonitorPayload,
+    DashboardCreate, DashboardUpdate, OpticsSettings, OpticsTestPayload,
     ScriptCreate, Script,
     Session, BatchExecPayload, BatchResultItem, SshKeyConfig, BastionSettings,
     AutomationSettings, BackupRunPayload, AISettings, BackupIdsPayload, BackupCleanupPayload,
@@ -39,6 +40,7 @@ import vault
 import automation
 import snmp_service
 import monitor as monitoring
+import optics as optics_mod
 
 TUNNEL_BIND_HOST = os.environ.get("TUNNEL_BIND_HOST", "127.0.0.1")
 
@@ -76,14 +78,17 @@ async def startup():
             await col.update_many({"$or": [{"owner_id": None}, {"owner_id": {"$exists": False}}]}, {"$set": {"owner_id": admin["id"]}})
     await db.ai_audit.create_index([("at", -1)])
     await db.ai_pending.create_index("id")
-    await db.if_samples.create_index("ts", expireAfterSeconds=48 * 3600)
+    await _apply_retention()
     await db.if_samples.create_index([("device_id", 1), ("if_index", 1), ("ts", -1)])
+    await db.optics_samples.create_index([("device_id", 1), ("if_index", 1), ("ts", -1)])
+    await db.dashboards.create_index("owner_id")
     await db.if_monitors.create_index([("device_id", 1), ("if_index", 1)], unique=True)
     await db.if_events.create_index([("at", -1)])
     await db.maps.create_index("owner_id")
     scheduler.start()
     assistant.start()
     net_monitor.start()
+    optics_collector.start()
 
 
 async def seed_admin():
@@ -1264,6 +1269,8 @@ async def map_live(map_id: str, user: dict = Depends(get_current_user)):
             "stale": bool((la and la.get("stale")) or (lb and lb.get("stale"))),
             "error": errors[0] if errors else None,
             "collecting": not (fi or ti) or (la is None and lb is None),
+            "optics_a": optics_collector.get_live(a_dev, fi["index"]) if a_dev and fi else None,
+            "optics_b": optics_collector.get_live(b_dev, ti["index"]) if b_dev and ti else None,
         }
     s = await monitoring.get_settings(db)
     return {"nodes": nodes, "links": links, "interval_sec": s["interval_sec"], "enabled": s["enabled"],
@@ -1296,7 +1303,9 @@ async def put_monitor_settings(payload: MonitorSettings, _: dict = Depends(requi
     data["interval_sec"] = max(10, min(int(data["interval_sec"]), 3600))
     data["confirm_polls"] = max(1, min(int(data["confirm_polls"]), 10))
     data["default_community"] = data["default_community"].strip()
+    data["history_days"] = max(1, min(int(data["history_days"]), 90))
     await db.config.update_one({"key": "monitor"}, {"$set": data}, upsert=True)
+    await _apply_retention()
     return await monitoring.get_settings(db)
 
 
@@ -1342,6 +1351,238 @@ async def set_device_monitor(device_id: str, payload: DeviceMonitorPayload, user
 async def monitor_events(user: dict = Depends(get_current_user), limit: int = 100):
     mine = await _my_device_ids(user)
     return await db.if_events.find({"device_id": {"$in": mine}}, {"_id": 0}).sort("at", -1).to_list(max(1, min(limit, 1000)))
+
+# ---------- Retenção do histórico (TTL do Mongo acompanha a configuração) ----------
+async def _ensure_ttl(coll: str, seconds: int):
+    info = await db[coll].index_information()
+    idx = info.get("ts_1")
+    if idx is None:
+        await db[coll].create_index("ts", expireAfterSeconds=seconds)
+    elif idx.get("expireAfterSeconds") != seconds:
+        await db.command("collMod", coll, index={"keyPattern": {"ts": 1}, "expireAfterSeconds": seconds})
+
+
+async def _apply_retention():
+    s = await monitoring.get_settings(db)
+    seconds = int(s.get("history_days") or 7) * 86400
+    for coll in ("if_samples", "optics_samples"):
+        try:
+            await _ensure_ttl(coll, seconds)
+        except Exception as e:
+            logger.warning(f"TTL de {coll}: {e}")
+
+
+# ---------- Séries agregadas (gráficos longos) ----------
+def _pct(values: List[float], p: float) -> Optional[float]:
+    v = sorted(x for x in values if x is not None)
+    if not v:
+        return None
+    k = (len(v) - 1) * p
+    lo = int(k)
+    hi = min(lo + 1, len(v) - 1)
+    return v[lo] + (v[hi] - v[lo]) * (k - lo)
+
+
+def _bucket_seconds(minutes: int, points: int) -> int:
+    return max(30, int(minutes * 60 / max(50, points)))
+
+
+def _stats(vals: List[float]) -> dict:
+    v = [x for x in vals if x is not None]
+    if not v:
+        return {"avg": None, "max": None, "p95": None}
+    return {"avg": sum(v) / len(v), "max": max(v), "p95": _pct(v, 0.95)}
+
+
+@api.get("/monitor/series")
+async def monitor_series(device_id: str, if_index: int, minutes: int = 60, points: int = 500,
+                         user: dict = Depends(get_current_user)):
+    await _get_device_for(user, device_id)
+    s = await monitoring.get_settings(db)
+    minutes = max(5, min(int(minutes), int(s.get("history_days") or 7) * 1440))
+    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    rows = await db.if_samples.find({"device_id": device_id, "if_index": int(if_index), "ts": {"$gt": since}},
+                                    {"_id": 0, "ts": 1, "in_bps": 1, "out_bps": 1}).sort("ts", 1).to_list(500000)
+    step = _bucket_seconds(minutes, points)
+    buckets: dict = {}
+    for r in rows:
+        ts = r["ts"] if isinstance(r["ts"], datetime) else datetime.fromisoformat(str(r["ts"]))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        k = int(ts.timestamp()) // step * step
+        b = buckets.setdefault(k, {"in": [], "out": []})
+        b["in"].append(r.get("in_bps")); b["out"].append(r.get("out_bps"))
+    pts = []
+    for k in sorted(buckets):
+        b = buckets[k]
+        vi = [x for x in b["in"] if x is not None]; vo = [x for x in b["out"] if x is not None]
+        pts.append({"t": datetime.fromtimestamp(k, timezone.utc).isoformat(),
+                    "in": sum(vi) / len(vi) if vi else None, "out": sum(vo) / len(vo) if vo else None,
+                    "in_max": max(vi) if vi else None, "out_max": max(vo) if vo else None})
+    lv = net_monitor.iface_live(device_id, if_index) or {}
+    cache = await db.device_ifaces.find_one({"device_id": device_id}, {"_id": 0, "interfaces": 1})
+    iface = next((i for i in (cache or {}).get("interfaces", []) if i.get("index") == int(if_index)), None)
+    return {
+        "points": pts, "step_sec": step,
+        "stats": {"in": {**_stats([r.get("in_bps") for r in rows]), "cur": lv.get("in_bps")},
+                  "out": {**_stats([r.get("out_bps") for r in rows]), "cur": lv.get("out_bps")}},
+        "oper": lv.get("oper"), "stale": lv.get("stale"), "error": net_monitor.dev_errors.get(device_id),
+        "speed_mbps": (iface or {}).get("speed_mbps"), "alias": (iface or {}).get("alias", ""),
+    }
+
+
+# ---------- Óptica (RX/TX por lane via CLI) ----------
+optics_collector = optics_mod.OpticsCollector(db, _connect_device)
+
+
+@api.get("/optics/series")
+async def optics_series(device_id: str, if_index: int, minutes: int = 1440, points: int = 300,
+                        user: dict = Depends(get_current_user)):
+    await _get_device_for(user, device_id)
+    s = await monitoring.get_settings(db)
+    minutes = max(30, min(int(minutes), int(s.get("history_days") or 7) * 1440))
+    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    rows = await db.optics_samples.find({"device_id": device_id, "if_index": int(if_index), "ts": {"$gt": since}},
+                                        {"_id": 0, "ts": 1, "lanes": 1}).sort("ts", 1).to_list(200000)
+    step = max(300, _bucket_seconds(minutes, points))
+    buckets: dict = {}
+    nlanes = 0
+    for r in rows:
+        ts = r["ts"] if isinstance(r["ts"], datetime) else datetime.fromisoformat(str(r["ts"]))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        k = int(ts.timestamp()) // step * step
+        lanes = r.get("lanes") or []
+        nlanes = max(nlanes, len(lanes))
+        b = buckets.setdefault(k, {})
+        for i, ln in enumerate(lanes):
+            b.setdefault(i, {"rx": [], "tx": []})
+            if ln.get("rx") is not None:
+                b[i]["rx"].append(ln["rx"])
+            if ln.get("tx") is not None:
+                b[i]["tx"].append(ln["tx"])
+    avg = lambda v: round(sum(v) / len(v), 2) if v else None  # noqa: E731
+    pts = [{"t": datetime.fromtimestamp(k, timezone.utc).isoformat(),
+            "rx": [avg(buckets[k].get(i, {}).get("rx", [])) for i in range(nlanes)],
+            "tx": [avg(buckets[k].get(i, {}).get("tx", [])) for i in range(nlanes)]} for k in sorted(buckets)]
+    live = optics_collector.get_live(device_id, if_index)
+    rx_all = [x for r in rows for ln in (r.get("lanes") or []) for x in [ln.get("rx")] if x is not None and x > optics_mod.NO_LIGHT]
+    return {"points": pts, "lanes": max(nlanes, len(live.get("lanes") or [])), "live": live,
+            "stats": {"rx_min": min(rx_all) if rx_all else None, "rx_max": max(rx_all) if rx_all else None}}
+
+
+@api.post("/devices/{device_id}/optics-test")
+async def optics_test(device_id: str, payload: OpticsTestPayload, user: dict = Depends(get_current_user)):
+    dev = await _get_device_for(user, device_id)
+    s = await optics_mod.get_settings(db)
+    try:
+        r = await asyncio.wait_for(optics_collector.read_one(dev, payload.if_index, payload.if_name, s), timeout=120)
+        return {"ok": r["parsed"]["ok"], "lanes": r["parsed"]["lanes"], "command": r["command"], "raw": (r["raw"] or "")[-6000:],
+                "commands_tried": optics_mod.commands_for(dev.get("device_type"), s)}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "lanes": [], "raw": "", "command": ""}
+
+
+@api.get("/optics/settings")
+async def get_optics_settings(user: dict = Depends(get_current_user)):
+    s = await optics_mod.get_settings(db)
+    cmds = {t: optics_mod.commands_for(t, s) for t in DEVICE_TYPES}
+    return {"optics_enabled": s["optics_enabled"], "optics_interval_sec": s["optics_interval_sec"], "commands": cmds,
+            "defaults": optics_mod.DEFAULT_COMMANDS, "last_tick": optics_collector.last_tick.isoformat() if optics_collector.last_tick else None,
+            "busy": optics_collector.busy, "errors": len(optics_collector.errors), "is_admin": user.get("role") == "admin"}
+
+
+@api.put("/optics/settings")
+async def put_optics_settings(payload: OpticsSettings, _: dict = Depends(require_admin)):
+    data = payload.model_dump()
+    data["optics_interval_sec"] = max(60, min(int(data["optics_interval_sec"]), 86400))
+    clean = {}
+    for t, cmds in (data.get("optics_commands") or {}).items():
+        if t not in DEVICE_TYPES:
+            continue
+        lst = [c.strip() for c in cmds if c and c.strip()]
+        if lst != optics_mod.DEFAULT_COMMANDS.get(t, []):
+            clean[t] = lst
+    data["optics_commands"] = clean
+    await db.config.update_one({"key": "optics"}, {"$set": data}, upsert=True)
+    return {"ok": True}
+
+
+@api.post("/optics/poll-now")
+async def optics_poll_now(_: dict = Depends(get_current_user)):
+    if optics_collector.busy:
+        return {"started": False, "reason": "Leitura óptica já em andamento"}
+    asyncio.create_task(optics_collector.tick())
+    return {"started": True}
+
+
+# ---------- Dashboards ----------
+async def _dash_for(user: dict, dash_id: str) -> dict:
+    d = await db.dashboards.find_one({"id": dash_id, "owner_id": user["id"]}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Dashboard não encontrado")
+    return d
+
+
+@api.get("/dashboards")
+async def list_dashboards(user: dict = Depends(get_current_user)):
+    rows = await db.dashboards.find({"owner_id": user["id"]}, {"_id": 0}).to_list(1000)
+    rows.sort(key=lambda d: ((d.get("group") or "Geral").lower(), d["name"].lower()))
+    return [{"id": d["id"], "name": d["name"], "group": d.get("group") or "Geral", "widgets": len(d.get("widgets", [])),
+             "updated_at": d.get("updated_at")} for d in rows]
+
+
+@api.post("/dashboards")
+async def create_dashboard(payload: DashboardCreate, user: dict = Depends(get_current_user)):
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="Nome obrigatório")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": os.urandom(8).hex(), "owner_id": user["id"], "name": payload.name.strip(),
+           "group": payload.group.strip() or "Geral", "widgets": [], "created_at": now, "updated_at": now}
+    await db.dashboards.insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/dashboards/{dash_id}")
+async def get_dashboard(dash_id: str, user: dict = Depends(get_current_user)):
+    return await _dash_for(user, dash_id)
+
+
+@api.put("/dashboards/{dash_id}")
+async def update_dashboard(dash_id: str, payload: DashboardUpdate, user: dict = Depends(get_current_user)):
+    await _dash_for(user, dash_id)
+    mine = set(await _my_device_ids(user))
+    widgets = []
+    for w in payload.widgets:
+        wd = w.model_dump()
+        if wd["device_id"] not in mine:
+            raise HTTPException(status_code=400, detail="Equipamento inválido no dashboard")
+        if wd["type"] not in ("traffic", "optics"):
+            raise HTTPException(status_code=400, detail="Tipo de widget inválido")
+        wd["size"] = "half" if wd["size"] == "half" else "full"
+        widgets.append(wd)
+    upd = {"name": payload.name.strip() or "Dashboard", "group": payload.group.strip() or "Geral",
+           "widgets": widgets, "updated_at": datetime.now(timezone.utc).isoformat()}
+    await db.dashboards.update_one({"id": dash_id}, {"$set": upd})
+    return await _dash_for(user, dash_id)
+
+
+@api.delete("/dashboards/{dash_id}")
+async def delete_dashboard(dash_id: str, user: dict = Depends(get_current_user)):
+    r = await db.dashboards.delete_one({"id": dash_id, "owner_id": user["id"]})
+    return {"deleted": r.deleted_count}
+
+
+@api.post("/dashboards/{dash_id}/duplicate")
+async def duplicate_dashboard(dash_id: str, user: dict = Depends(get_current_user)):
+    d = await _dash_for(user, dash_id)
+    now = datetime.now(timezone.utc).isoformat()
+    d.update({"id": os.urandom(8).hex(), "name": f"{d['name']} (cópia)", "created_at": now, "updated_at": now})
+    await db.dashboards.insert_one(dict(d))
+    d.pop("_id", None)
+    return d
+
 
 
 # ---------- Assistente IA (Claude via Telegram) ----------
@@ -1734,5 +1975,6 @@ async def shutdown_db_client():
     scheduler.stop()
     assistant.stop()
     net_monitor.stop()
+    optics_collector.stop()
     await agent_pool.close_all()
     client.close()

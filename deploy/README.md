@@ -107,3 +107,14 @@ importantes; queda/volta vai para o Telegram de **Automação → Notificações
   agente. Instale no agente: `sudo apt install snmp` e libere o SNMP do equipamento para o IP do agente.
 - O Bastion lê só as interfaces usadas nos mapas e as marcadas para alarme (padrão: a cada 30 s).
   O histórico fica 48 h no Mongo e é apagado sozinho.
+
+## 9. Dashboards (consumo) e sinal óptico por lane
+Menu **Dashboards**: crie grupos (ex.: *Borda*, *Clientes*) com vários dashboards. Cada gráfico pode ser:
+- **Tráfego**: consumo atual de entrada/saída em destaque, % da capacidade (contratada ou da porta), p95 e pico
+  do período, gráfico de 1h a 30 dias (pontos agregados automaticamente).
+- **Sinal óptico**: RX/TX de cada lane (interfaces 40G/100G têm 4 lanes), com limites de atenção/crítico.
+
+A óptica é lida pela **CLI via SSH** (funciona atrás de agente) a cada 5 min, nas interfaces dos links dos
+mapas e dos gráficos ópticos. Os comandos por fabricante ficam em **Dashboards → Configurações da óptica**;
+o botão **Testar leitura** mostra a saída bruta para ajustar ao seu firmware.
+O histórico (tráfego e óptica) é guardado por 7 dias por padrão — ajuste em **Mapas → Configurações**.

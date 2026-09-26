@@ -23,7 +23,7 @@ DEFAULTS = {
     "default_community": "",
     "confirm_polls": 2,     # leituras seguidas iguais para confirmar mudança de estado
     "alert_up": True,       # avisar também quando volta
-    "history_hours": 48,
+    "history_days": 7,      # retenção do histórico de tráfego/óptica
 }
 DOWN_STATES = {"down", "lowerLayerDown", "notPresent", "dormant"}
 
@@ -102,6 +102,10 @@ class Monitor:
                     iface, dev = ln.get(side), node_dev.get(ln.get(node_key))
                     if iface and dev and iface.get("index") is not None:
                         want.setdefault(dev, set()).add(int(iface["index"]))
+        async for d in self.db.dashboards.find({}, {"_id": 0, "widgets": 1}):
+            for w in d.get("widgets", []):
+                if w.get("type") == "traffic" and w.get("device_id") and w.get("if_index") is not None:
+                    want.setdefault(w["device_id"], set()).add(int(w["if_index"]))
         async for mon in self.db.if_monitors.find({}, {"_id": 0, "device_id": 1, "if_index": 1}):
             want.setdefault(mon["device_id"], set()).add(int(mon["if_index"]))
         return want

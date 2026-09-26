@@ -15,6 +15,7 @@ import { MapCanvas } from "@/components/maps/MapCanvas";
 import { LinkDialog } from "@/components/maps/LinkDialog";
 import { MonitorTab } from "@/components/maps/MonitorTab";
 import { TrafficChart } from "@/components/maps/TrafficChart";
+import { OpticsPanel } from "@/components/dash/OpticsPanel";
 import { fmtBps, fmtSpeed, UTIL_BANDS, STATUS, NO_DATA } from "@/lib/netfmt";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -43,8 +44,8 @@ function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onM
   useEffect(() => {
     if (!side) return setPoints([]);
     let alive = true;
-    const load = () => api.get("/monitor/history", { params: { device_id: side.dev, if_index: side.idx, minutes: range } })
-      .then(r => { if (alive) setPoints(r.data.map(p => side.flip ? { t: p.t, ab: p.in, ba: p.out } : { t: p.t, ab: p.out, ba: p.in })); })
+    const load = () => api.get("/monitor/series", { params: { device_id: side.dev, if_index: side.idx, minutes: range, points: 300 } })
+      .then(r => { if (alive) setPoints(r.data.points.map(p => side.flip ? { t: p.t, ab: p.in, ba: p.out } : { t: p.t, ab: p.out, ba: p.in })); })
       .catch(() => {});
     load(); const t = setInterval(load, 30000);
     return () => { alive = false; clearInterval(t); };
@@ -74,12 +75,18 @@ function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onM
       <div className="text-[11px] font-mono text-slate-500">capacidade {fmtSpeed(lv.capacity_mbps)}{link.capacity_mbps ? " (manual)" : " (velocidade da porta)"}</div>
       <div>
         <div className="flex gap-1 mb-1">
-          {[[60, "1h"], [360, "6h"], [1440, "24h"], [2880, "48h"]].map(([m, l]) => (
+          {[[60, "1h"], [360, "6h"], [1440, "24h"], [10080, "7d"]].map(([m, l]) => (
             <button key={m} onClick={() => setRange(m)} className={`text-[11px] font-mono px-2 py-0.5 rounded border ${range === m ? "border-[#007AFF] text-slate-100 bg-[#007AFF]/15" : "border-[#1E293B] text-slate-400"}`}>{l}</button>
           ))}
         </div>
         <TrafficChart points={points} labels={{ ab: `→ ${nameOf(b)}`, ba: `→ ${nameOf(a)}` }} />
       </div>
+      {[["A", a, link.from_if], ["B", b, link.to_if]].filter(([, n, i]) => n?.device_id && i).map(([k, n, i]) => (
+        <div key={k} className="border-t border-[#1E293B] pt-2">
+          <div className="text-[11px] uppercase tracking-widest text-slate-400 font-mono mb-1">Sinal óptico · {k} · {nameOf(n)} · {i.name}</div>
+          <OpticsPanel deviceId={n.device_id} ifIndex={i.index} ifName={i.name} minutes={1440} compact />
+        </div>
+      ))}
       <div className="flex flex-wrap gap-2 pt-1">
         {(link.from_if || link.to_if) && (
           <Button size="sm" variant="outline" onClick={onMonitor} className="h-7 text-xs border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="link-monitor">
