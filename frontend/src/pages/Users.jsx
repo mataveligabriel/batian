@@ -46,11 +46,11 @@ export default function Users() {
   };
 
   return (
-    <div className="p-8 flex-1 overflow-y-auto" data-testid="users-page">
+    <div className="p-6 flex-1 overflow-y-auto" data-testid="users-page">
       <div className="flex items-start justify-between mb-6">
         <div>
           <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Controle de Acesso</div>
-          <h1 className="font-heading text-3xl sm:text-4xl font-bold text-slate-100 mt-1">Usuários</h1>
+          <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Usuários</h1>
         </div>
         <Button onClick={() => setOpen(true)} data-testid="add-user-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
           <UserPlus className="w-4 h-4 mr-2" /> Novo Usuário

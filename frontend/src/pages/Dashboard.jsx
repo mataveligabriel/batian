@@ -59,11 +59,11 @@ export default function Dashboard() {
   }, []);
 
   return (
-    <div className="p-8 flex-1 overflow-y-auto" data-testid="dashboard-page">
+    <div className="p-6 flex-1 overflow-y-auto" data-testid="dashboard-page">
       <div className="flex items-start justify-between mb-8">
         <div>
           <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Painel de Operações</div>
-          <h1 className="font-heading text-3xl sm:text-4xl font-bold text-slate-100 mt-1">NOC Console</h1>
+          <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">NOC Console</h1>
           <p className="text-slate-400 mt-2 text-sm max-w-2xl">
             Visão em tempo real dos equipamentos, agentes remotos e sessões SSH ativas na sua infraestrutura multi-rede.
           </p>

@@ -236,8 +236,8 @@ export default function Dashboards() {
   const focus = !!prefs.dashFocus;
   const vh = useVh();
   const [isFs, toggleFs] = useFullscreen();
-  const hFull = clamp(vh * (focus ? 0.5 : 0.4), 240, 680);
-  const hHalf = clamp(vh * (focus ? 0.36 : 0.3), 190, 480);
+  const hFull = clamp(vh * (focus ? 0.4 : 0.3), 170, 560);
+  const hHalf = clamp(vh * (focus ? 0.28 : 0.2), 140, 380);
   useEffect(() => {
     if (!expanded) return;
     const esc = (e) => { if (e.key === "Escape") setExpanded(null); };
@@ -294,20 +294,20 @@ export default function Dashboards() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0" data-testid="dashboards-page">
-      <div className={`px-8 pt-6 ${focus ? "hidden" : ""}`}>
+      <div className={`px-6 pt-4 ${focus ? "hidden" : ""}`}>
         <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Consumo & sinais</div>
-        <h1 className="font-heading text-3xl font-bold text-slate-100 mt-1">Dashboards</h1>
+        <h1 className="font-heading text-2xl font-bold text-slate-100 mt-1">Dashboards</h1>
         <div className="flex gap-1 mt-4 border-b border-[#1E293B]">
           <button className={tabBtn(tab === "dash")} onClick={() => setTab("dash")}><Gauge className="w-4 h-4" /> Dashboards</button>
           <button className={tabBtn(tab === "optics")} onClick={() => setTab("optics")} data-testid="tab-optics-settings"><Settings2 className="w-4 h-4" /> Configurações da óptica</button>
         </div>
       </div>
 
-      {tab === "optics" && <div className="p-8 pt-5 overflow-y-auto flex-1"><OpticsSettingsTab /></div>}
+      {tab === "optics" && <div className="p-6 pt-4 overflow-y-auto flex-1"><OpticsSettingsTab /></div>}
 
       {tab === "dash" && (
-        <div className={`flex-1 min-h-0 flex gap-4 ${focus ? "p-3" : "p-8 pt-5"}`}>
-          <Card className={`bg-[#111722] border-[#1E293B] w-60 shrink-0 flex-col overflow-hidden ${focus ? "hidden" : "flex"}`}>
+        <div className={`flex-1 min-h-0 flex gap-3 ${focus ? "p-3" : "p-6 pt-4"}`}>
+          <Card className={`bg-[#111722] border-[#1E293B] w-52 shrink-0 flex-col overflow-hidden ${focus ? "hidden" : "flex"}`}>
             <div className="p-3 border-b border-[#1E293B]">
               {!creating ? (
                 <Button size="sm" onClick={() => setCreating(true)} className="w-full h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="new-dash-btn"><Plus className="w-4 h-4 mr-1" /> Novo dashboard</Button>
@@ -394,10 +394,10 @@ export default function Dashboards() {
                   {!editing ? <div className="mt-3"><Button size="sm" onClick={() => { setDraft(JSON.parse(JSON.stringify(current))); setEditing(true); setWdlg({}); }} className="bg-[#007AFF] hover:bg-[#0062CC]"><Plus className="w-3.5 h-3.5 mr-1" /> Adicionar gráfico</Button></div> : null}
                 </Card>
               )}
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+              <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 28rem), 1fr))" }}>
                 {dash.widgets.map((w, i) => (
-                  <Card key={w.id} className={`bg-[#111722] border-[#1E293B] p-4 ${w.size === "half" ? "" : "xl:col-span-2"}`} data-testid={`widget-${w.id}`}>
-                    <div className="flex items-start gap-2 mb-3">
+                  <Card key={w.id} className={`bg-[#111722] border-[#1E293B] p-3 min-w-0 ${w.size === "half" ? "" : "col-span-full"}`} data-testid={`widget-${w.id}`}>
+                    <div className="flex items-start gap-2 mb-2">
                       {React.createElement(widgetIcon(w.type), { className: "w-4 h-4 text-[#4DA3FF] mt-0.5 shrink-0" })}
                       <div className="min-w-0">
                         <div className={`${focus ? "text-base" : "text-sm"} font-semibold text-slate-100 truncate`}>{w.title}</div>

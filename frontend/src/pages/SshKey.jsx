@@ -50,10 +50,10 @@ export default function SshKey() {
   const copy = (t) => { navigator.clipboard.writeText(t); toast.success("Copiado"); };
 
   return (
-    <div className="p-8 flex-1 overflow-y-auto" data-testid="ssh-key-page">
+    <div className="p-6 flex-1 overflow-y-auto" data-testid="ssh-key-page">
       <div className="mb-6">
         <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Credenciais Globais</div>
-        <h1 className="font-heading text-3xl sm:text-4xl font-bold text-slate-100 mt-1">Chave SSH Global</h1>
+        <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Chave SSH Global</h1>
         <p className="text-slate-400 mt-2 text-sm max-w-2xl">
           Chave privada única usada pelo Bastion Central para conectar em todos os equipamentos e agentes.
           Distribua a chave pública para <code className="text-emerald-300 font-mono">~/.ssh/authorized_keys</code>.

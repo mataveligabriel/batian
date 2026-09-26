@@ -71,11 +71,11 @@ export default function Backups() {
   };
 
   return (
-    <div className="p-8 flex-1 overflow-y-auto" data-testid="backups-page">
+    <div className="p-6 flex-1 overflow-y-auto" data-testid="backups-page">
       <div className="flex items-start justify-between mb-6 gap-4">
         <div>
           <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Configurações versionadas</div>
-          <h1 className="font-heading text-3xl sm:text-4xl font-bold text-slate-100 mt-1">Backups de Configuração</h1>
+          <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Backups de Configuração</h1>
           <p className="text-slate-400 mt-2 text-sm max-w-2xl">Coleta automática diária (running-config, export etc.) por tipo de equipamento. Compare versões e baixe qualquer snapshot.</p>
         </div>
         <Button onClick={() => runAll(null)} disabled={running} data-testid="run-all-backups-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">

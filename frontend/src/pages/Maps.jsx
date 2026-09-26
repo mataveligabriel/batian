@@ -306,9 +306,9 @@ export default function Maps() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0" data-testid="maps-page">
-      <div className="px-8 pt-6 pb-0">
+      <div className="px-6 pt-4 pb-0">
         <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Topologia & tráfego</div>
-        <h1 className="font-heading text-3xl font-bold text-slate-100 mt-1">Mapas de rede</h1>
+        <h1 className="font-heading text-2xl font-bold text-slate-100 mt-1">Mapas de rede</h1>
         <div className="flex gap-1 mt-4 border-b border-[#1E293B]">
           <button className={tabBtn(tab === "maps")} onClick={() => setTab("maps")} data-testid="tab-maps"><Network className="w-4 h-4" /> Mapas</button>
           <button className={tabBtn(tab === "alarms")} onClick={() => setTab("alarms")} data-testid="tab-alarms"><BellRing className="w-4 h-4" /> Alarmes de interface</button>
@@ -316,11 +316,11 @@ export default function Maps() {
         </div>
       </div>
 
-      {tab === "alarms" && <div className="p-8 pt-5 overflow-y-auto flex-1"><MonitorTab devices={devices} /></div>}
-      {tab === "settings" && <div className="p-8 pt-5 overflow-y-auto flex-1"><SettingsTab /></div>}
+      {tab === "alarms" && <div className="p-6 pt-4 overflow-y-auto flex-1"><MonitorTab devices={devices} /></div>}
+      {tab === "settings" && <div className="p-6 pt-4 overflow-y-auto flex-1"><SettingsTab /></div>}
 
       {tab === "maps" && (
-        <div className="flex-1 min-h-0 flex gap-4 p-8 pt-5">
+        <div className="flex-1 min-h-0 flex gap-4 p-6 pt-4">
           {/* lista de mapas */}
           <Card className="bg-[#111722] border-[#1E293B] w-60 shrink-0 flex flex-col overflow-hidden">
             <div className="p-3 border-b border-[#1E293B] flex gap-1.5">

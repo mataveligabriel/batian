@@ -122,11 +122,11 @@ export default function Agents() {
   };
 
   return (
-    <div className="p-8 flex-1 overflow-y-auto" data-testid="agents-page">
+    <div className="p-6 flex-1 overflow-y-auto" data-testid="agents-page">
       <div className="flex items-start justify-between mb-6 gap-4">
         <div>
           <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Cadeia de Saltos</div>
-          <h1 className="font-heading text-3xl sm:text-4xl font-bold text-slate-100 mt-1">Agentes / Jump Hosts</h1>
+          <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Agentes / Jump Hosts</h1>
           <p className="text-slate-400 mt-2 text-sm max-w-2xl">
             <b>Túnel reverso</b>: máquina atrás de NAT/VPN que abre um túnel até o Bastion (ex.: seu PC com FortiClient).
             <b> Direto</b>: jump host alcançável pelo Bastion ou pelo agente pai. Cada usuário gerencia seus próprios agentes.
