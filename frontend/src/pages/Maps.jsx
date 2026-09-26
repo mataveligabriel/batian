@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
   Network, Plus, Pencil, Save, X, Trash2, Copy, Cable, Cloud, Type, Server, Loader2, MousePointer2,
-  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize,
+  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw,
 } from "lucide-react";
 import { MapCanvas } from "@/components/maps/MapCanvas";
 import { LinkDialog } from "@/components/maps/LinkDialog";
@@ -35,7 +35,7 @@ function Legend() {
   );
 }
 
-function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onMonitor }) {
+function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onMonitor, siblings = [], liveLinks, onPick, onAddParallel, onResetCurve }) {
   const [range, setRange] = useState(60);
   const [points, setPoints] = useState([]);
   const a = nodes[link.from], b = nodes[link.to];
@@ -58,6 +58,25 @@ function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onM
         <div className="text-[11px] font-mono text-slate-400 mt-1">A · {nameOf(a)} {link.from_if ? `· ${link.from_if.name}` : "· (sem interface)"}</div>
         <div className="text-[11px] font-mono text-slate-400">B · {nameOf(b)} {link.to_if ? `· ${link.to_if.name}` : "· (sem interface)"}</div>
       </div>
+      {siblings.length > 1 && (
+        <div data-testid="link-siblings">
+          <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono mb-1">{siblings.length} enlaces entre estes equipamentos</div>
+          <div className="space-y-0.5">
+            {siblings.map((s, i) => {
+              const sl = liveLinks?.[s.id] || {};
+              const ifn = s.from === link.from ? (s.from_if || s.to_if) : (s.to_if || s.from_if);
+              return (
+                <button key={s.id} onClick={() => onPick(s.id)}
+                        className={`w-full flex items-center gap-2 text-[11px] font-mono px-2 py-1 rounded border ${s.id === link.id ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] text-slate-300 hover:bg-slate-800/60"}`}>
+                  <span className="text-slate-500">{i + 1}</span>
+                  <span className="truncate">{s.label || ifn?.name || "sem interface"}</span>
+                  <span className={`ml-auto whitespace-nowrap ${sl.down ? "text-red-400" : "text-slate-400"}`}>{sl.down ? "DOWN" : fmtBps(Math.max(sl.ab_bps || 0, sl.ba_bps || 0) || null)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {lv.down && <div className="text-xs text-red-400 font-mono">✕ interface DOWN</div>}
       {lv.error && <div className="text-xs text-amber-300 font-mono break-words">⚠ {lv.error}</div>}
       <div className="grid grid-cols-2 gap-2 text-center">
@@ -95,8 +114,11 @@ function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onM
         )}
         {editing && <>
           <Button size="sm" variant="outline" onClick={onEdit} className="h-7 text-xs border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800"><Pencil className="w-3.5 h-3.5 mr-1" /> Editar link</Button>
+          <Button size="sm" variant="outline" onClick={onAddParallel} data-testid="link-add-parallel" className="h-7 text-xs border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800"><Plus className="w-3.5 h-3.5 mr-1" /> Outro enlace entre estes</Button>
+          {link.curve != null && <Button size="sm" variant="ghost" onClick={onResetCurve} className="h-7 text-xs text-slate-300 hover:bg-slate-800"><RotateCcw className="w-3.5 h-3.5 mr-1" /> Curva automática</Button>}
           <Button size="sm" variant="ghost" onClick={onDelete} className="h-7 text-xs text-red-400 hover:bg-red-950/40"><Trash2 className="w-3.5 h-3.5 mr-1" /> Excluir</Button>
         </>}
+      {editing && <div className="text-[11px] text-slate-500 w-full">Arraste a bolinha no meio do enlace para curvar/afastar (duplo clique volta ao automático).</div>}
       </div>
     </div>
   );
@@ -244,6 +266,7 @@ export default function Maps() {
     if (draft.nodes.some(n => n.device_id === dev.id)) return toast.info(`${dev.name} já está no mapa`);
     addNode("device", { device_id: dev.id }); setAddOpen(false); setAddQ("");
   };
+  const bendLink = (id, curve) => setDraft(d => ({ ...d, links: d.links.map(l => l.id === id ? { ...l, curve } : l) }));
   const moveNode = (id, x, y) => setDraft(d => ({ ...d, nodes: d.nodes.map(n => n.id === id ? { ...n, x, y } : n) }));
   const deleteSelected = () => {
     if (!selected) return;
@@ -275,6 +298,8 @@ export default function Maps() {
 
   const selLink = selected?.type === "link" && map?.links.find(l => l.id === selected.id);
   const selNode = selected?.type === "node" && nodesById[selected.id];
+  const pairOf = (l) => [l.from, l.to].sort().join("|");
+  const selSiblings = selLink ? map.links.filter(l => pairOf(l) === pairOf(selLink)) : [];
   const selDev = selNode?.device_id && devById[selNode.device_id];
   const addList = devices.filter(d => !addQ || `${d.name} ${d.host} ${(d.tags || []).join(" ")}`.toLowerCase().includes(addQ.toLowerCase()));
   const tb = "h-8 text-xs border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800";
@@ -381,7 +406,7 @@ export default function Maps() {
                     </div>
                   ) : (
                     <MapCanvas map={map} live={live} devices={devices} editing={editing} tool={tool} selected={selected}
-                               onSelect={setSelected} onMoveNode={moveNode} fitSignal={fitSignal}
+                               onSelect={setSelected} onMoveNode={moveNode} onBendLink={bendLink} fitSignal={fitSignal}
                                onConnect={(a, b) => setLinkDlg({ from: a, to: b })} />
                   )}
                 </div>
@@ -391,7 +416,10 @@ export default function Maps() {
                     {selLink && (
                       <LinkDetails link={selLink} live={live?.links?.[selLink.id]} nameOf={nameOf} nodes={nodesById} editing={editing}
                                    onEdit={() => setLinkDlg({ from: selLink.from, to: selLink.to, link: selLink })}
-                                   onDelete={deleteSelected} onMonitor={() => monitorLinkIfaces(selLink)} />
+                                   onDelete={deleteSelected} onMonitor={() => monitorLinkIfaces(selLink)}
+                                   siblings={selSiblings} liveLinks={live?.links} onPick={(id) => setSelected({ type: "link", id })}
+                                   onAddParallel={() => setLinkDlg({ from: selLink.from, to: selLink.to })}
+                                   onResetCurve={() => bendLink(selLink.id, null)} />
                     )}
                     {selNode && (
                       <div className="space-y-3" data-testid="node-details">
@@ -422,6 +450,8 @@ export default function Maps() {
       {linkDlg && (
         <LinkDialog key={linkDlg.link?.id || `${linkDlg.from}-${linkDlg.to}`} open link={linkDlg.link}
                     nodeA={nodesById[linkDlg.from]} nodeB={nodesById[linkDlg.to]} nameOf={nameOf}
+                    existing={(map?.links || []).filter(l => l.id !== linkDlg.link?.id && pairOf(l) === [linkDlg.from, linkDlg.to].sort().join("|"))
+                      .map(l => l.from === linkDlg.from ? l : { ...l, from_if: l.to_if, to_if: l.from_if })}
                     onCancel={() => setLinkDlg(null)} onSave={saveLink} />
       )}
     </div>

@@ -19,7 +19,7 @@ function Side({ node, value, onPick, letter, nameOf }) {
 }
 
 /** Cria/edita um link: interface de cada lado (pelo menos uma), capacidade e nome. */
-export function LinkDialog({ open, link, nodeA, nodeB, nameOf, onCancel, onSave }) {
+export function LinkDialog({ open, link, nodeA, nodeB, nameOf, onCancel, onSave, existing = [] }) {
   const [fromIf, setFromIf] = useState(link?.from_if || null);
   const [toIf, setToIf] = useState(link?.to_if || null);
   const [cap, setCap] = useState(link?.capacity_mbps || "");
@@ -37,6 +37,12 @@ export function LinkDialog({ open, link, nodeA, nodeB, nameOf, onCancel, onSave 
           Escolha a interface em <b>pelo menos um</b> dos lados — o tráfego é lido dela por SNMP. Se escolher dos dois lados,
           o Bastion usa o lado A e o B serve de reserva e para o alarme de queda.
         </p>
+        {existing.length > 0 && (
+          <div className="text-[11px] font-mono text-slate-400 bg-[#0B111C] border border-[#1E293B] rounded px-3 py-2" data-testid="link-existing">
+            Já existe{existing.length > 1 ? "m" : ""} {existing.length} enlace{existing.length > 1 ? "s" : ""} entre estes equipamentos — este será desenhado em paralelo (curva):
+            <div className="text-slate-300 mt-1">{existing.map(l => `${l.from_if?.name || "—"} ↔ ${l.to_if?.name || "—"}`).join("   ·   ")}</div>
+          </div>
+        )}
         <div className="flex gap-4 flex-col md:flex-row">
           <Side node={nodeA} value={fromIf} onPick={pick(setFromIf)} letter="A" nameOf={nameOf} />
           <Side node={nodeB} value={toIf} onPick={pick(setToIf)} letter="B" nameOf={nameOf} />

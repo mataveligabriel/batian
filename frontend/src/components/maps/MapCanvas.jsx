@@ -4,34 +4,67 @@ import { fmtBps, utilColor, STATUS, NO_DATA, fmtSpeed } from "@/lib/netfmt";
 const NODE = { device: { w: 200, h: 48 }, cloud: { w: 120, h: 44 }, label: { w: 120, h: 28 } };
 const SURFACE = "#0B111C";
 
-// distância do centro até a borda da caixa do nó, na direção (ux, uy)
-function edgeDist(node, ux, uy) {
+const SPREAD = 62; // distância entre enlaces paralelos (no meio da curva)
+
+function insideBox(node, p) {
   const s = NODE[node.kind] || NODE.device;
-  const tx = Math.abs(ux) > 1e-6 ? (s.w / 2) / Math.abs(ux) : Infinity;
-  const ty = Math.abs(uy) > 1e-6 ? (s.h / 2) / Math.abs(uy) : Infinity;
-  return Math.min(tx, ty) + 3;
+  return Math.abs(p.x - node.x) <= s.w / 2 + 3 && Math.abs(p.y - node.y) <= s.h / 2 + 3;
 }
 
-function linkGeometry(a, b, offset) {
+const qpt = (P0, C, P2, t) => {
+  const u = 1 - t;
+  return { x: u * u * P0.x + 2 * u * t * C.x + t * t * P2.x, y: u * u * P0.y + 2 * u * t * C.y + t * t * P2.y };
+};
+
+/**
+ * Link como curva quadrática: `bend` = quanto o meio da curva se afasta da reta (px, na normal de a→b).
+ * bend 0 = reta. Retorna pontos para desenhar as duas metades, onde ficam os rótulos e a alça de arrasto.
+ */
+function linkGeometry(a, b, bend) {
   const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len, uy = dy / len, nx = -uy * offset, ny = ux * offset;
-  const da = edgeDist(a, ux, uy), db = edgeDist(b, ux, uy);
-  // a linha começa/termina na borda das caixas (os valores não ficam por baixo do equipamento)
-  const pa = { x: a.x + nx + ux * da, y: a.y + ny + uy * da };
-  const pb = { x: b.x + nx - ux * db, y: b.y + ny - uy * db };
-  const vis = len - da - db;
-  return { pa, pb, m: { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 }, ux, uy, len: vis };
+  const ux = dx / len, uy = dy / len, nx = -uy, ny = ux;
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const C = { x: mid.x + nx * bend * 2, y: mid.y + ny * bend * 2 };
+  const P = (t) => qpt(a, C, b, t);
+  // onde a curva sai de cada caixa (busca binária) — a linha começa/termina na borda do equipamento
+  const exitT = (node, inside, outside) => {
+    if (!insideBox(node, P(inside))) return inside;
+    for (let k = 0; k < 18; k++) { const m = (inside + outside) / 2; if (insideBox(node, P(m))) inside = m; else outside = m; }
+    return outside;
+  };
+  const ta = exitT(a, 0, 0.5), tb = exitT(b, 1, 0.5);
+  const sample = (t0, t1, n = 28) => Array.from({ length: n + 1 }, (_, i) => P(t0 + ((t1 - t0) * i) / n));
+  return {
+    ok: ta < 0.42 && tb > 0.58,
+    halfA: sample(ta, 0.5), halfB: sample(tb, 0.5), full: sample(ta, tb, 40),
+    m: P(0.5), ux, uy, nx, ny, mid,
+    qA: P(ta + (0.5 - ta) * 0.5), qB: P(tb + (0.5 - tb) * 0.5),
+    len: Math.hypot(P(tb).x - P(ta).x, P(tb).y - P(ta).y),
+  };
 }
 
-function Half({ from, to, ux, uy, color, dashed, width = 7 }) {
-  // meia-linha de `from` até perto do meio + ponta de seta no meio (sentido do tráfego)
+const toPath = (pts) => pts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+
+// corta o final da polilinha em `cut` px (espaço para a ponta da seta)
+function trimEnd(pts, cut) {
+  const out = [...pts];
+  while (out.length > 1) {
+    const p = out[out.length - 1], q = out[out.length - 2], d = Math.hypot(p.x - q.x, p.y - q.y);
+    if (d > cut) { const r = (d - cut) / d; out[out.length - 1] = { x: q.x + (p.x - q.x) * r, y: q.y + (p.y - q.y) * r }; break; }
+    cut -= d; out.pop();
+  }
+  return out;
+}
+
+function Half({ pts, ux, uy, color, dashed, width = 7 }) {
+  // meia-linha até o meio + ponta de seta no meio (sentido do tráfego); no meio da curva a tangente = direção a→b
   const AL = 13, AW = 9;
-  const tip = to;
+  const tip = pts[pts.length - 1];
   const base = { x: tip.x - ux * AL, y: tip.y - uy * AL };
   const px = -uy, py = ux;
   return (
     <g>
-      <line x1={from.x} y1={from.y} x2={base.x} y2={base.y} stroke={color} strokeWidth={width} strokeLinecap="butt"
+      <path d={toPath(trimEnd(pts, AL - 1))} fill="none" stroke={color} strokeWidth={width} strokeLinecap="butt" strokeLinejoin="round"
             strokeDasharray={dashed ? "10 7" : undefined} />
       <polygon points={`${tip.x},${tip.y} ${base.x + px * AW},${base.y + py * AW} ${base.x - px * AW},${base.y - py * AW}`}
                fill={color} stroke={SURFACE} strokeWidth="1.5" />
@@ -51,7 +84,7 @@ function ValueTag({ x, y, text, sub, accent }) {
 }
 
 export function MapCanvas({
-  map, live, devices, editing, tool, selected, onSelect, onMoveNode, onMoveEnd, onConnect, fitSignal,
+  map, live, devices, editing, tool, selected, onSelect, onMoveNode, onMoveEnd, onConnect, onBendLink, fitSignal,
 }) {
   const wrapRef = useRef(null);
   const svgRef = useRef(null);
@@ -117,6 +150,12 @@ export function MapCanvas({
     if (drag.kind === "pan") {
       setView(v => ({ ...v, tx: drag.tx + e.clientX - drag.sx, ty: drag.ty + e.clientY - drag.sy }));
       if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true;
+    } else if (drag.kind === "bend" && editing) {
+      const w = toWorld(e);
+      drag.moved = true;
+      let bend = (w.x - drag.mid.x) * drag.nx + (w.y - drag.mid.y) * drag.ny;
+      bend = Math.abs(bend) < 8 ? 0 : Math.round(bend / 2) * 2; // gruda na reta perto do zero
+      onBendLink?.(drag.id, bend);
     } else if (drag.kind === "node" && editing) {
       const w = toWorld(e);
       drag.moved = true;
@@ -126,18 +165,27 @@ export function MapCanvas({
   const onUp = () => {
     if (drag?.kind === "node") {
       if (drag.moved) onMoveEnd?.(); else onSelect({ type: "node", id: drag.id });
+    } else if (drag?.kind === "bend") {
+      if (!drag.moved) onSelect({ type: "link", id: drag.id });
     } else if (drag?.kind === "pan" && !drag.moved) onSelect(null);
     setDrag(null);
   };
 
-  // links paralelos entre o mesmo par de nós ganham deslocamento lateral
-  const offsets = useMemo(() => {
+  // enlaces paralelos entre o mesmo par de equipamentos: abrem em leque (curvas), estilo weathermap
+  const autoBend = useMemo(() => {
     const groups = {};
-    (map.links || []).forEach(l => { const k = [l.from, l.to].sort().join("|"); (groups[k] = groups[k] || []).push(l.id); });
+    (map.links || []).forEach(l => { const k = [l.from, l.to].sort().join("|"); (groups[k] = groups[k] || []).push(l); });
     const out = {};
-    Object.values(groups).forEach(ids => ids.forEach((id, i) => { out[id] = { off: (i - (ids.length - 1) / 2) * 16, i, n: ids.length }; }));
+    Object.entries(groups).forEach(([k, ls]) => {
+      const first = k.split("|")[0];
+      ls.forEach((l, i) => {
+        const b = (i - (ls.length - 1) / 2) * SPREAD;          // na orientação canônica do par
+        out[l.id] = { bend: l.from === first ? b : -b, i, n: ls.length };
+      });
+    });
     return out;
   }, [map.links]);
+  const bendOf = (l) => (l.curve ?? null) !== null ? l.curve : (autoBend[l.id]?.bend || 0);
 
   const hoverLink = hover && (map.links || []).find(l => l.id === hover.linkId);
   const hv = hoverLink && live?.links?.[hoverLink.id];
@@ -157,37 +205,44 @@ export function MapCanvas({
           {(map.links || []).map(l => {
             const a = nodesById[l.from], b = nodesById[l.to];
             if (!a || !b) return null;
-            const par = offsets[l.id] || { off: 0, i: 0, n: 1 };
-            const g = linkGeometry(a, b, par.off);
-            if (g.len < 30) return null; // nós sobrepostos
+            const par = autoBend[l.id] || { i: 0, n: 1 };
+            const g = linkGeometry(a, b, bendOf(l));
+            if (!g.ok) return null; // nós sobrepostos
             const lv = live?.links?.[l.id];
             const down = lv?.down;
             const noData = !lv || lv.collecting || (lv.ab_bps == null && lv.ba_bps == null);
             const cAB = down ? STATUS.critical : noData ? NO_DATA : utilColor(lv.ab_pct);
             const cBA = down ? STATUS.critical : noData ? NO_DATA : utilColor(lv.ba_pct);
             const isSel = selected?.type === "link" && selected.id === l.id;
-            // links paralelos: rótulos empurrados para fora, cada um para o seu lado
-            const push = par.n > 1 ? Math.sign(par.off || (par.i ? 1 : -1)) * 16 : 0;
-            const nx = -g.uy * push, ny = g.ux * push;
-            const q1 = { x: g.pa.x + (g.m.x - g.pa.x) * 0.45 + nx, y: g.pa.y + (g.m.y - g.pa.y) * 0.45 + ny };
-            const q3 = { x: g.pb.x + (g.m.x - g.pb.x) * 0.45 + nx, y: g.pb.y + (g.m.y - g.pb.y) * 0.45 + ny };
+            const tags = g.len > (par.n > 1 ? 150 : 110);
+            const hoverOn = (e) => { if (drag) return; const r = wrapRef.current.getBoundingClientRect(); setHover({ linkId: l.id, x: e.clientX - r.left, y: e.clientY - r.top }); };
             return (
               <g key={l.id} data-testid={`link-${l.id}`}>
-                {isSel && <line x1={g.pa.x} y1={g.pa.y} x2={g.pb.x} y2={g.pb.y} stroke="#F8FAFC" strokeOpacity="0.35" strokeWidth="15" />}
-                <Half from={g.pa} to={g.m} ux={g.ux} uy={g.uy} color={cAB} dashed={down || noData} />
-                <Half from={g.pb} to={g.m} ux={-g.ux} uy={-g.uy} color={cBA} dashed={down || noData} />
-                {g.len > 110 && !down && !noData && <>
-                  <ValueTag x={q1.x} y={q1.y} text={fmtBps(lv.ab_bps)} sub={lv.ab_pct != null ? `${lv.ab_pct}%` : null} accent={cAB} />
-                  <ValueTag x={q3.x} y={q3.y} text={fmtBps(lv.ba_bps)} sub={lv.ba_pct != null ? `${lv.ba_pct}%` : null} accent={cBA} />
+                {isSel && <path d={toPath(g.full)} fill="none" stroke="#F8FAFC" strokeOpacity="0.35" strokeWidth="15" />}
+                <Half pts={g.halfA} ux={g.ux} uy={g.uy} color={cAB} dashed={down || noData} />
+                <Half pts={g.halfB} ux={-g.ux} uy={-g.uy} color={cBA} dashed={down || noData} />
+                {/* área de clique/hover maior que a linha */}
+                <path d={toPath(g.full)} fill="none" stroke="transparent" strokeWidth="22" style={{ cursor: "pointer" }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => { e.stopPropagation(); onSelect({ type: "link", id: l.id }); }}
+                      onMouseMove={hoverOn} onMouseLeave={() => setHover(null)} />
+                {tags && !down && !noData && <>
+                  <ValueTag x={g.qA.x} y={g.qA.y} text={fmtBps(lv.ab_bps)} sub={lv.ab_pct != null ? `${lv.ab_pct}%` : null} accent={cAB} />
+                  <ValueTag x={g.qB.x} y={g.qB.y} text={fmtBps(lv.ba_bps)} sub={lv.ba_pct != null ? `${lv.ba_pct}%` : null} accent={cBA} />
                 </>}
                 {down && <ValueTag x={g.m.x} y={g.m.y - 16} text="✕ DOWN" accent={STATUS.critical} />}
                 {noData && !down && g.len > 90 && <ValueTag x={g.m.x} y={g.m.y - 16} text={lv?.error ? "⚠ SNMP" : l.from_if || l.to_if ? "coletando…" : "sem interface"} accent={NO_DATA} />}
-                {/* área de clique/hover maior que a linha */}
-                <line x1={g.pa.x} y1={g.pa.y} x2={g.pb.x} y2={g.pb.y} stroke="transparent" strokeWidth="22" style={{ cursor: "pointer" }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={(e) => { e.stopPropagation(); onSelect({ type: "link", id: l.id }); }}
-                      onMouseMove={(e) => { const r = wrapRef.current.getBoundingClientRect(); setHover({ linkId: l.id, x: e.clientX - r.left, y: e.clientY - r.top }); }}
-                      onMouseLeave={() => setHover(null)} />
+                {/* alça para curvar/afastar o enlace (modo edição) — duplo clique volta ao automático */}
+                {editing && tool === "select" && (
+                  <g style={{ cursor: "grab" }} data-testid={`link-handle-${l.id}`}
+                     onMouseDown={(e) => { e.stopPropagation(); if (e.button !== 0) return; setHover(null);
+                       setDrag({ kind: "bend", id: l.id, mid: g.mid, nx: g.nx, ny: g.ny, moved: false }); }}
+                     onDoubleClick={(e) => { e.stopPropagation(); onBendLink?.(l.id, null); }}>
+                    <circle cx={g.m.x} cy={g.m.y} r="14" fill="transparent" />
+                    <circle cx={g.m.x} cy={g.m.y} r={isSel ? 7 : 5.5} fill="#F8FAFC" stroke="#007AFF" strokeWidth="2.5" />
+                    <title>Arraste para curvar/afastar este enlace · duplo clique = automático</title>
+                  </g>
+                )}
               </g>
             );
           })}

@@ -240,6 +240,7 @@ class MapLink(BaseModel):
     to_if: Optional[MapIface] = None
     capacity_mbps: Optional[int] = None
     label: str = ""
+    curve: Optional[float] = None   # curvatura (px, perpendicular a from→to); None = automático
     model_config = {"populate_by_name": True}
 
 
