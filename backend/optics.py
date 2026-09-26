@@ -56,7 +56,16 @@ def _values_after_colon(line: str) -> List[float]:
     """'Current RX Power(dBm) :-2.35|-2.41|-2.10|-2.62'  ou  'Rx Power: -3.42dBm, Warning range: [...]'"""
     if ":" not in line:
         return []
-    rest = line.split(":", 1)[1]
+    return _values_in(line.split(":", 1)[1])
+
+
+_LANE_TAG = re.compile(r"\((?:\s*lane\s*\d+\s*\|?)+\)", re.I)
+# linha de continuação do Huawei (S67xx/CE): "      -15.00|-14.05(Lane2|Lane3)" — só números, sem rótulo
+_CONT_LINE = re.compile(r"^\s+[-+]?\d+(?:\.\d+)?(?:\s*\|\s*[-+]?\d+(?:\.\d+)?)*\s*(?:\((?:\s*lane\s*\d+\s*\|?)+\))?\s*(?:dbm)?\s*$", re.I)
+
+
+def _values_in(rest: str) -> List[float]:
+    rest = _LANE_TAG.sub("", rest)                       # "(Lane0|Lane1)" grudado no número
     rest = re.split(r"(?i)\[|warning|range|,\s*[a-z]", rest)[0]
     out = []
     for tok in re.split(r"[|,;/]|\s{2,}", rest):
@@ -141,7 +150,8 @@ def _parse_lines(text: str) -> List[dict]:
     """Huawei (lanes separadas por |), Mikrotik e genérico: uma linha de RX e uma de TX."""
     rx: List[float] = []
     tx: List[float] = []
-    for line in text.splitlines():
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
         if _SKIP.search(line.split(":", 1)[0] if ":" in line else line):
             continue
         if not re.search(r"dbm", line, re.I):
@@ -152,6 +162,11 @@ def _parse_lines(text: str) -> List[dict]:
             vals = [v for v in (_to_dbm(x) for x in m) if v is not None]
         if not vals:
             continue
+        # lanes que continuam nas linhas de baixo (sem rótulo)
+        j = i + 1
+        while j < len(lines) and _CONT_LINE.match(lines[j]):
+            vals += _values_in(lines[j])
+            j += 1
         if _is_rx(line) and not rx:
             rx = vals
         elif _is_tx(line) and not tx:
