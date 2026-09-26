@@ -91,6 +91,8 @@ class DeviceCreate(BaseModel):
     description: str = ""
     backup_enabled: bool = True
     backup_command: Optional[str] = None  # overrides the per-type default
+    snmp_community: str = ""  # v2c; vazio = community padrão do monitoramento
+    snmp_port: int = 161
 
 
 class DeviceCreateRequest(DeviceCreate):
@@ -212,6 +214,63 @@ class AISettings(BaseModel):
     ai_model: str = "claude-sonnet-5"
     ai_allow_changes: bool = True
     ai_users: List[AITelegramUser] = []
+
+
+# ---------- Mapas (weathermap) e monitoramento de interfaces ----------
+class MapIface(BaseModel):
+    index: int
+    name: str = ""
+    speed_mbps: Optional[int] = None
+
+
+class MapNode(BaseModel):
+    id: str
+    kind: str = "device"            # device | cloud | label
+    device_id: Optional[str] = None
+    label: str = ""
+    x: float = 0
+    y: float = 0
+
+
+class MapLink(BaseModel):
+    id: str
+    from_: str = Field(alias="from")
+    to: str
+    from_if: Optional[MapIface] = None
+    to_if: Optional[MapIface] = None
+    capacity_mbps: Optional[int] = None
+    label: str = ""
+    model_config = {"populate_by_name": True}
+
+
+class MapCreate(BaseModel):
+    name: str
+    description: str = ""
+
+
+class MapUpdate(BaseModel):
+    name: str
+    description: str = ""
+    nodes: List[MapNode] = []
+    links: List[MapLink] = []
+
+
+class MonitorSettings(BaseModel):
+    enabled: bool = True
+    interval_sec: int = 30
+    default_community: str = ""
+    confirm_polls: int = 2
+    alert_up: bool = True
+
+
+class MonitoredIface(BaseModel):
+    index: int
+    name: str = ""
+    alias: str = ""
+
+
+class DeviceMonitorPayload(BaseModel):
+    interfaces: List[MonitoredIface] = []
 
 
 class BackupIdsPayload(BaseModel):

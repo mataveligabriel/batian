@@ -83,7 +83,7 @@ export function ImportDevicesDialog({ open, onOpenChange, onDone }) {
       <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-3xl" data-testid="import-dialog">
         <DialogHeader><DialogTitle>Importar equipamentos (CSV)</DialogTitle></DialogHeader>
         <p className="text-xs text-slate-400 font-mono">
-          Colunas: <span className="text-emerald-300">name, host, port, protocol (ssh|telnet), username, password, device_type, tags, agent, description, backup_enabled, backup_command</span>.
+          Colunas: <span className="text-emerald-300">name, host, port, protocol (ssh|telnet), username, password, device_type, tags, agent, description, backup_enabled, backup_command, snmp_community, snmp_port</span>.
           Apenas <b>name</b> e <b>host</b> são obrigatórios. Separador <code>,</code> ou <code>;</code> (detectado pelo cabeçalho). Tags separadas por <code>;</code> (use <code>|</code> se o arquivo usar <code>;</code> como separador). <b>agent</b> = nome do agente cadastrado.
           Tipos: linux, mikrotik, cisco, huawei, juniper, ubiquiti, datacom, zte, other.
         </p>

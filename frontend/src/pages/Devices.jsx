@@ -22,7 +22,7 @@ export const DEVICE_TYPES = [
 ];
 const typeLabel = (t) => DEVICE_TYPES.find(x => x[0] === t)?.[1] || t || "linux";
 
-const emptyDevice = { name: "", host: "", port: 22, protocol: "ssh", owner_id: "", username: "", password: "", clear_password: false, device_type: "linux", tags: "", agent_id: "", description: "", backup_enabled: true, backup_command: "" };
+const emptyDevice = { name: "", host: "", port: 22, protocol: "ssh", owner_id: "", username: "", password: "", clear_password: false, device_type: "linux", tags: "", agent_id: "", description: "", backup_enabled: true, backup_command: "", snmp_community: "", snmp_port: 161 };
 
 export default function Devices() {
   const [devices, setDevices] = useState([]);
@@ -52,7 +52,7 @@ export default function Devices() {
   useEffect(() => { load(); }, []);
 
   const openNew = () => { setEditing(null); setCloneOf(null); setForm(emptyDevice); setOpen(true); };
-  const toForm = (d) => ({ ...emptyDevice, ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", protocol: d.protocol || "ssh", owner_id: d.owner_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "", description: d.description || "", username: d.username || "" });
+  const toForm = (d) => ({ ...emptyDevice, ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", protocol: d.protocol || "ssh", owner_id: d.owner_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "", description: d.description || "", username: d.username || "", snmp_community: d.snmp_community || "", snmp_port: d.snmp_port || 161 });
   const openEdit = (d) => { setEditing(d); setCloneOf(null); setForm(toForm(d)); setOpen(true); };
   // Duplicar: mesmo formulário do "novo", pré-preenchido; a senha é copiada no servidor
   const openClone = (d) => {
@@ -76,6 +76,8 @@ export default function Devices() {
       description: form.description || "",
       backup_enabled: form.backup_enabled !== false,
       backup_command: (form.backup_command || "").trim() || null,
+      snmp_community: (form.snmp_community || "").trim(),
+      snmp_port: Number(form.snmp_port) || 161,
       copy_password_from: cloneOf?.has_password && !form.password && !form.clear_password ? cloneOf.id : null,
     };
     if (!payload.name || !payload.host) return toast.error("Nome e host são obrigatórios");
@@ -86,6 +88,15 @@ export default function Devices() {
       else await api.post("/devices", payload);
       toast.success(editing ? "Equipamento atualizado" : cloneOf ? `Cópia de ${cloneOf.name} criada` : "Equipamento cadastrado");
       setOpen(false); await load();
+    } catch (e) { toast.error(formatApiError(e)); }
+  };
+
+  const testSnmp = async () => {
+    if (!editing) return;
+    toast.info("Testando SNMP…");
+    try {
+      const { data } = await api.post(`/devices/${editing.id}/snmp-test`);
+      data.ok ? toast.success(`SNMP ok: ${data.sys_name || "respondeu"}${data.via_agent ? " (via agente)" : ""}`) : toast.error(`SNMP: ${data.error}`);
     } catch (e) { toast.error(formatApiError(e)); }
   };
 
@@ -407,6 +418,20 @@ export default function Devices() {
             <div>
               <Label>Descrição</Label>
               <Textarea data-testid="device-form-desc" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+            </div>
+            <div className="grid grid-cols-4 gap-3 items-end">
+              <div className="col-span-2">
+                <Label>SNMP community (v2c)</Label>
+                <Input data-testid="device-form-snmp" value={form.snmp_community} onChange={e => setForm({ ...form, snmp_community: e.target.value })}
+                       placeholder="vazio = community padrão dos Mapas" className="bg-[#05070A] border-[#1E293B] font-mono" />
+              </div>
+              <div>
+                <Label>Porta SNMP</Label>
+                <Input type="number" value={form.snmp_port} onChange={e => setForm({ ...form, snmp_port: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+              </div>
+              <Button type="button" variant="outline" disabled={!editing} onClick={testSnmp} data-testid="device-form-snmp-test"
+                      title={editing ? "Testa com a community já salva" : "Salve o equipamento primeiro"}
+                      className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">Testar</Button>
             </div>
             <div className="grid grid-cols-3 gap-3 items-end">
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer pb-2">

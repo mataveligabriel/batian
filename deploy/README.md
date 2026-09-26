@@ -94,3 +94,16 @@ Operar os equipamentos conversando com o bot do Telegram ("em quais PONs está a
    **Automação → Últimas ações do assistente** e no **Histórico**. "Permitir alterações" desligado = só consultas.
 6. O VPS precisa de saída HTTPS para `api.anthropic.com` e `api.telegram.org`. O bot usa long polling
    (não precisa de webhook nem de porta aberta) — não use o mesmo token em outro sistema com webhook.
+
+## 8. Mapas de rede (weathermap) e alarmes de interface
+Menu **Mapas de rede**: crie vários mapas (backbone, POPs…), arraste os equipamentos, ligue-os escolhendo as
+interfaces e veja o tráfego ao vivo (cor = utilização). Aba **Alarmes de interface**: marque as interfaces
+importantes; queda/volta vai para o Telegram de **Automação → Notificações**.
+
+- Tráfego e status vêm por **SNMP v2c** (contadores 64 bits). Informe a community no equipamento
+  (Equipamentos → editar → *SNMP community*) ou uma padrão em **Mapas → Configurações**.
+- **Acesso direto:** libere SNMP (UDP 161) no equipamento para o IP do servidor Bastion.
+- **Equipamento atrás de agente:** SNMP é UDP e não passa no túnel SSH — o Bastion roda o `snmpget` no próprio
+  agente. Instale no agente: `sudo apt install snmp` e libere o SNMP do equipamento para o IP do agente.
+- O Bastion lê só as interfaces usadas nos mapas e as marcadas para alarme (padrão: a cada 30 s).
+  O histórico fica 48 h no Mongo e é apagado sozinho.

@@ -27,6 +27,7 @@ from models import (
     AgentCreate, Agent,
     DeviceCreate, DeviceCreateRequest, Device, DEVICE_TYPES,
     DeviceIdsPayload, DeviceExportPayload, DeviceBulkUpdate,
+    MapCreate, MapUpdate, MonitorSettings, DeviceMonitorPayload,
     ScriptCreate, Script,
     Session, BatchExecPayload, BatchResultItem, SshKeyConfig, BastionSettings,
     AutomationSettings, BackupRunPayload, AISettings, BackupIdsPayload, BackupCleanupPayload,
@@ -36,6 +37,8 @@ from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES
 from telnet_service import TelnetClientWrapper
 import vault
 import automation
+import snmp_service
+import monitor as monitoring
 
 TUNNEL_BIND_HOST = os.environ.get("TUNNEL_BIND_HOST", "127.0.0.1")
 
@@ -73,8 +76,14 @@ async def startup():
             await col.update_many({"$or": [{"owner_id": None}, {"owner_id": {"$exists": False}}]}, {"$set": {"owner_id": admin["id"]}})
     await db.ai_audit.create_index([("at", -1)])
     await db.ai_pending.create_index("id")
+    await db.if_samples.create_index("ts", expireAfterSeconds=48 * 3600)
+    await db.if_samples.create_index([("device_id", 1), ("if_index", 1), ("ts", -1)])
+    await db.if_monitors.create_index([("device_id", 1), ("if_index", 1)], unique=True)
+    await db.if_events.create_index([("at", -1)])
+    await db.maps.create_index("owner_id")
     scheduler.start()
     assistant.start()
+    net_monitor.start()
 
 
 async def seed_admin():
@@ -690,6 +699,8 @@ async def import_devices(payload: dict, user: dict = Depends(get_current_user)):
             "description": str(r.get("description") or "").strip(),
             "backup_enabled": _truthy(r.get("backup_enabled"), True),
             "backup_command": str(r.get("backup_command") or "").strip() or None,
+            "snmp_community": str(r.get("snmp_community") or "").strip(),
+            "snmp_port": int(str(r.get("snmp_port") or 161).strip() or 161) if str(r.get("snmp_port") or "161").strip().isdigit() else 161,
         }, user)).model_dump()
         to_insert.append(doc)
         seen.add(key)
@@ -717,7 +728,7 @@ async def delete_device(device_id: str, user: dict = Depends(get_current_user)):
 
 
 EXPORT_COLUMNS = ["name", "host", "port", "protocol", "username", "password", "device_type",
-                  "tags", "agent", "description", "backup_enabled", "backup_command"]
+                  "tags", "agent", "description", "backup_enabled", "backup_command", "snmp_community", "snmp_port"]
 
 
 @api.post("/devices/export")
@@ -741,6 +752,7 @@ async def export_devices(payload: DeviceExportPayload, user: dict = Depends(get_
             agent_name.get(d.get("agent_id") or "", ""), d.get("description", ""),
             "true" if d.get("backup_enabled", True) is not False else "false",
             d.get("backup_command") or "",
+            d.get("snmp_community") or "", d.get("snmp_port") or 161,
         ])
     if payload.include_passwords:
         logger.info("Export de equipamentos COM senhas por %s (%d itens)", user.get("email"), len(devs))
@@ -1087,6 +1099,249 @@ async def _telegram_token() -> str:
     return vault.decrypt(s.get("telegram_bot_token", ""))
 
 assistant = ai_assistant.TelegramAssistant(db, _connect_device, _telegram_token)
+
+
+# ---------- Mapas (weathermap) e monitoramento de interfaces por SNMP ----------
+agent_pool = monitoring.SshAgentPool(lambda hops: SSHClientWrapper(hops, device_type="linux"))
+
+
+async def _snmp_client(dev: dict, settings: Optional[dict] = None):
+    s = settings or await monitoring.get_settings(db)
+    community = (dev.get("snmp_community") or s.get("default_community") or "").strip()
+    if not community:
+        raise snmp_service.SnmpError("community SNMP não configurada (no equipamento ou a padrão em Mapas → Configurações)")
+    port = int(dev.get("snmp_port") or 161)
+    if not dev.get("agent_id"):
+        return snmp_service.SnmpClient(dev["host"], community, port)
+    # atrás de agente: SNMP (UDP) não passa no túnel SSH -> net-snmp roda no próprio agente
+    hops, _ = await _device_hops(dev)
+    key = tuple(h.label for h in hops[:-1]) + tuple(f"{h.host}:{h.port}" for h in hops[:-1])
+    run = await agent_pool.runner(key, hops[:-1])
+    return snmp_service.AgentSnmpClient(run, dev["host"], community, port)
+
+
+net_monitor = monitoring.Monitor(db, _snmp_client, automation.send_alert)
+
+
+@api.get("/devices/{device_id}/interfaces")
+async def device_interfaces(device_id: str, refresh: bool = False, user: dict = Depends(get_current_user)):
+    dev = await _get_device_for(user, device_id)
+    cached = await db.device_ifaces.find_one({"device_id": device_id}, {"_id": 0})
+    if cached and not refresh:
+        return cached
+    try:
+        info = await asyncio.wait_for(snmp_service.discover_interfaces(await _snmp_client(dev)), timeout=90)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="SNMP demorou demais para responder")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"SNMP: {e}")
+    doc = {"device_id": device_id, "at": datetime.now(timezone.utc).isoformat(), **info}
+    await db.device_ifaces.update_one({"device_id": device_id}, {"$set": doc}, upsert=True)
+    return doc
+
+
+@api.post("/devices/{device_id}/snmp-test")
+async def device_snmp_test(device_id: str, user: dict = Depends(get_current_user)):
+    dev = await _get_device_for(user, device_id)
+    try:
+        c = await _snmp_client(dev)
+        v = await asyncio.wait_for(c.get([snmp_service.SYS_NAME, snmp_service.SYS_DESCR]), timeout=20)
+        name, descr = v.get(snmp_service.SYS_NAME), v.get(snmp_service.SYS_DESCR)
+        return {"ok": True, "sys_name": name if isinstance(name, str) else None,
+                "sys_descr": (descr if isinstance(descr, str) else "")[:200], "via_agent": bool(dev.get("agent_id"))}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "via_agent": bool(dev.get("agent_id"))}
+
+
+# ----- mapas -----
+async def _map_for(user: dict, map_id: str) -> dict:
+    m = await db.maps.find_one({"id": map_id, "owner_id": user["id"]}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Mapa não encontrado")
+    return m
+
+
+@api.get("/maps")
+async def list_maps(user: dict = Depends(get_current_user)):
+    maps = await db.maps.find({"owner_id": user["id"]}, {"_id": 0}).sort("name", 1).to_list(500)
+    return [{"id": m["id"], "name": m["name"], "description": m.get("description", ""),
+             "nodes": len(m.get("nodes", [])), "links": len(m.get("links", [])), "updated_at": m.get("updated_at")} for m in maps]
+
+
+@api.post("/maps")
+async def create_map(payload: MapCreate, user: dict = Depends(get_current_user)):
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="Nome obrigatório")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": os.urandom(8).hex(), "owner_id": user["id"], "name": payload.name.strip(),
+           "description": payload.description.strip(), "nodes": [], "links": [], "created_at": now, "updated_at": now}
+    await db.maps.insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/maps/{map_id}")
+async def get_map(map_id: str, user: dict = Depends(get_current_user)):
+    return await _map_for(user, map_id)
+
+
+@api.put("/maps/{map_id}")
+async def update_map(map_id: str, payload: MapUpdate, user: dict = Depends(get_current_user)):
+    await _map_for(user, map_id)
+    mine = set(await _my_device_ids(user))
+    nodes = []
+    for n in payload.nodes:
+        nd = n.model_dump()
+        if nd["kind"] == "device":
+            if nd.get("device_id") not in mine:
+                raise HTTPException(status_code=400, detail="Equipamento inválido no mapa")
+        else:
+            nd["device_id"] = None
+        nd["x"], nd["y"] = round(float(nd["x"]), 1), round(float(nd["y"]), 1)
+        nodes.append(nd)
+    node_ids = {n["id"] for n in nodes}
+    links = []
+    for ln in payload.links:
+        ld = ln.model_dump(by_alias=True)
+        if ld["from"] not in node_ids or ld["to"] not in node_ids or ld["from"] == ld["to"]:
+            continue  # link órfão (nó removido)
+        links.append(ld)
+    upd = {"name": payload.name.strip() or "Mapa", "description": payload.description.strip(),
+           "nodes": nodes, "links": links, "updated_at": datetime.now(timezone.utc).isoformat()}
+    await db.maps.update_one({"id": map_id}, {"$set": upd})
+    return await _map_for(user, map_id)
+
+
+@api.delete("/maps/{map_id}")
+async def delete_map(map_id: str, user: dict = Depends(get_current_user)):
+    r = await db.maps.delete_one({"id": map_id, "owner_id": user["id"]})
+    return {"deleted": r.deleted_count}
+
+
+@api.post("/maps/{map_id}/duplicate")
+async def duplicate_map(map_id: str, user: dict = Depends(get_current_user)):
+    m = await _map_for(user, map_id)
+    now = datetime.now(timezone.utc).isoformat()
+    m.update({"id": os.urandom(8).hex(), "name": f"{m['name']} (cópia)", "created_at": now, "updated_at": now})
+    await db.maps.insert_one(dict(m))
+    m.pop("_id", None)
+    return m
+
+
+@api.get("/maps/{map_id}/live")
+async def map_live(map_id: str, user: dict = Depends(get_current_user)):
+    m = await _map_for(user, map_id)
+    dev_ids = [n["device_id"] for n in m.get("nodes", []) if n.get("device_id")]
+    devs = {d["id"]: d for d in await db.devices.find({"id": {"$in": dev_ids}}, {"_id": 0, "id": 1, "name": 1, "host": 1, "status": 1, "latency_ms": 1}).to_list(1000)}
+    node_dev = {n["id"]: n.get("device_id") for n in m.get("nodes", [])}
+    nodes = {}
+    for n in m.get("nodes", []):
+        d = devs.get(n.get("device_id"))
+        if d:
+            nodes[n["id"]] = {"status": d.get("status") or "unknown", "latency_ms": d.get("latency_ms"),
+                              "name": d["name"], "host": d["host"], "snmp_error": net_monitor.dev_errors.get(d["id"])}
+    links = {}
+    for ln in m.get("links", []):
+        a_dev, b_dev = node_dev.get(ln["from"]), node_dev.get(ln["to"])
+        fi, ti = ln.get("from_if"), ln.get("to_if")
+        la = net_monitor.iface_live(a_dev, fi["index"]) if a_dev and fi else None
+        lb = net_monitor.iface_live(b_dev, ti["index"]) if b_dev and ti else None
+        # tráfego A→B = saída da interface em A (ou entrada da interface em B)
+        if la:
+            ab, ba = la.get("out_bps"), la.get("in_bps")
+        elif lb:
+            ab, ba = lb.get("in_bps"), lb.get("out_bps")
+        else:
+            ab = ba = None
+        cap = ln.get("capacity_mbps") or (fi or {}).get("speed_mbps") or (ti or {}).get("speed_mbps")
+        util = (lambda v: round(v / (cap * 1e6) * 100, 1) if (v is not None and cap) else None)
+        opers = [x.get("oper") for x in (la, lb) if x]
+        errors = [net_monitor.dev_errors[d] for d in (a_dev if fi else None, b_dev if ti else None) if d in net_monitor.dev_errors]
+        links[ln["id"]] = {
+            "ab_bps": ab, "ba_bps": ba, "ab_pct": util(ab), "ba_pct": util(ba), "capacity_mbps": cap,
+            "oper_a": la.get("oper") if la else None, "oper_b": lb.get("oper") if lb else None,
+            "down": any(o in monitoring.DOWN_STATES for o in opers),
+            "stale": bool((la and la.get("stale")) or (lb and lb.get("stale"))),
+            "error": errors[0] if errors else None,
+            "collecting": not (fi or ti) or (la is None and lb is None),
+        }
+    s = await monitoring.get_settings(db)
+    return {"nodes": nodes, "links": links, "interval_sec": s["interval_sec"], "enabled": s["enabled"],
+            "last_tick": net_monitor.last_tick.isoformat() if net_monitor.last_tick else None}
+
+
+@api.get("/monitor/history")
+async def monitor_history(device_id: str, if_index: int, minutes: int = 60, user: dict = Depends(get_current_user)):
+    await _get_device_for(user, device_id)
+    since = datetime.now(timezone.utc) - timedelta(minutes=max(5, min(minutes, 48 * 60)))
+    rows = await db.if_samples.find({"device_id": device_id, "if_index": int(if_index), "ts": {"$gt": since}},
+                                    {"_id": 0, "ts": 1, "in_bps": 1, "out_bps": 1}).sort("ts", 1).to_list(20000)
+    return [{"t": r["ts"].isoformat() if hasattr(r["ts"], "isoformat") else r["ts"], "in": r["in_bps"], "out": r["out_bps"]} for r in rows]
+
+
+# ----- configurações e alarmes -----
+@api.get("/monitor/settings")
+async def get_monitor_settings(user: dict = Depends(get_current_user)):
+    s = await monitoring.get_settings(db)
+    if user.get("role") != "admin":
+        s.pop("default_community", None)
+    return {**s, "last_tick": net_monitor.last_tick.isoformat() if net_monitor.last_tick else None,
+            "last_duration": net_monitor.last_duration, "busy": net_monitor.busy,
+            "errors": len(net_monitor.dev_errors), "is_admin": user.get("role") == "admin"}
+
+
+@api.put("/monitor/settings")
+async def put_monitor_settings(payload: MonitorSettings, _: dict = Depends(require_admin)):
+    data = payload.model_dump()
+    data["interval_sec"] = max(10, min(int(data["interval_sec"]), 3600))
+    data["confirm_polls"] = max(1, min(int(data["confirm_polls"]), 10))
+    data["default_community"] = data["default_community"].strip()
+    await db.config.update_one({"key": "monitor"}, {"$set": data}, upsert=True)
+    return await monitoring.get_settings(db)
+
+
+@api.post("/monitor/poll-now")
+async def monitor_poll_now(_: dict = Depends(get_current_user)):
+    if net_monitor.busy:
+        return {"started": False, "reason": "Coleta já em andamento"}
+    asyncio.create_task(net_monitor.tick())
+    return {"started": True}
+
+
+@api.get("/monitor/interfaces")
+async def monitored_interfaces(user: dict = Depends(get_current_user)):
+    mine = await _my_device_ids(user)
+    rows = await db.if_monitors.find({"device_id": {"$in": mine}}, {"_id": 0}).to_list(5000)
+    names = {d["id"]: d["name"] for d in await db.devices.find({"id": {"$in": list({r["device_id"] for r in rows})}}, {"_id": 0, "id": 1, "name": 1}).to_list(5000)}
+    out = []
+    for r in rows:
+        lv = net_monitor.iface_live(r["device_id"], r["if_index"]) or {}
+        out.append({**r, "device_name": names.get(r["device_id"], "?"), "in_bps": lv.get("in_bps"), "out_bps": lv.get("out_bps"),
+                    "oper": lv.get("oper") or r.get("last_oper"), "snmp_error": net_monitor.dev_errors.get(r["device_id"])})
+    return sorted(out, key=lambda x: (x["device_name"].lower(), x["if_index"]))
+
+
+@api.put("/devices/{device_id}/monitor")
+async def set_device_monitor(device_id: str, payload: DeviceMonitorPayload, user: dict = Depends(get_current_user)):
+    dev = await _get_device_for(user, device_id)
+    wanted = {i.index: i for i in payload.interfaces}
+    current = {r["if_index"] for r in await db.if_monitors.find({"device_id": device_id}, {"_id": 0, "if_index": 1}).to_list(5000)}
+    removed = [i for i in current if i not in wanted]
+    if removed:
+        await db.if_monitors.delete_many({"device_id": device_id, "if_index": {"$in": removed}})
+    for idx, i in wanted.items():
+        if idx in current:
+            await db.if_monitors.update_one({"device_id": device_id, "if_index": idx}, {"$set": {"if_name": i.name, "alias": i.alias}})
+        else:
+            await db.if_monitors.insert_one({"device_id": device_id, "if_index": idx, "if_name": i.name, "alias": i.alias,
+                                             "owner_id": dev.get("owner_id"), "created_at": datetime.now(timezone.utc).isoformat()})
+    return {"monitored": len(wanted), "removed": len(removed)}
+
+
+@api.get("/monitor/events")
+async def monitor_events(user: dict = Depends(get_current_user), limit: int = 100):
+    mine = await _my_device_ids(user)
+    return await db.if_events.find({"device_id": {"$in": mine}}, {"_id": 0}).sort("at", -1).to_list(max(1, min(limit, 1000)))
 
 
 # ---------- Assistente IA (Claude via Telegram) ----------
@@ -1478,4 +1733,6 @@ app.add_middleware(
 async def shutdown_db_client():
     scheduler.stop()
     assistant.stop()
+    net_monitor.stop()
+    await agent_pool.close_all()
     client.close()
