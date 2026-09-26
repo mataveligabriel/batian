@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { InterfacePicker } from "@/components/maps/InterfacePicker";
 import { TrafficWidget } from "@/components/dash/TrafficWidget";
+import { useIsMobile } from "@/lib/pwa";
 import { OpticsPanel } from "@/components/dash/OpticsPanel";
 import { useTermPrefs } from "@/lib/termPrefs";
 
@@ -235,6 +236,7 @@ export default function Dashboards() {
   const [prefs, setPrefs] = useTermPrefs();
   const focus = !!prefs.dashFocus;
   const vh = useVh();
+  const isMobile = useIsMobile();
   const [isFs, toggleFs] = useFullscreen();
   const hFull = clamp(vh * (focus ? 0.4 : 0.3), 170, 560);
   const hHalf = clamp(vh * (focus ? 0.28 : 0.2), 140, 380);
@@ -294,20 +296,20 @@ export default function Dashboards() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0" data-testid="dashboards-page">
-      <div className={`px-6 pt-4 ${focus ? "hidden" : ""}`}>
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Consumo & sinais</div>
-        <h1 className="font-heading text-2xl font-bold text-slate-100 mt-1">Dashboards</h1>
-        <div className="flex gap-1 mt-4 border-b border-[#1E293B]">
+      <div className={`px-4 md:px-6 pt-4 ${focus ? "hidden" : ""}`}>
+        <div className="hidden md:block text-xs uppercase tracking-widest text-slate-400 font-mono">Consumo & sinais</div>
+        <h1 className="hidden md:block font-heading text-2xl font-bold text-slate-100 mt-1">Dashboards</h1>
+        <div className="flex gap-1 md:mt-4 border-b border-[#1E293B] overflow-x-auto whitespace-nowrap">
           <button className={tabBtn(tab === "dash")} onClick={() => setTab("dash")}><Gauge className="w-4 h-4" /> Dashboards</button>
           <button className={tabBtn(tab === "optics")} onClick={() => setTab("optics")} data-testid="tab-optics-settings"><Settings2 className="w-4 h-4" /> Configurações da óptica</button>
         </div>
       </div>
 
-      {tab === "optics" && <div className="p-6 pt-4 overflow-y-auto flex-1"><OpticsSettingsTab /></div>}
+      {tab === "optics" && <div className="p-4 md:p-6 pt-4 overflow-y-auto flex-1"><OpticsSettingsTab /></div>}
 
       {tab === "dash" && (
-        <div className={`flex-1 min-h-0 flex gap-3 ${focus ? "p-3" : "p-6 pt-4"}`}>
-          <Card className={`bg-[#111722] border-[#1E293B] w-52 shrink-0 flex-col overflow-hidden ${focus ? "hidden" : "flex"}`}>
+        <div className={`flex-1 min-h-0 flex gap-3 ${focus ? "p-3" : "p-3 md:px-6 md:pb-6 md:pt-4"}`}>
+          <Card className={`bg-[#111722] border-[#1E293B] ${isMobile ? "w-full" : "w-52"} shrink-0 flex-col overflow-hidden ${focus || (isMobile && dash) ? "hidden" : "flex"}`}>
             <div className="p-3 border-b border-[#1E293B]">
               {!creating ? (
                 <Button size="sm" onClick={() => setCreating(true)} className="w-full h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="new-dash-btn"><Plus className="w-4 h-4 mr-1" /> Novo dashboard</Button>
@@ -339,7 +341,7 @@ export default function Dashboards() {
           </Card>
 
           {!dash ? (
-            <Card className="flex-1 bg-[#111722] border-[#1E293B] flex items-center justify-center text-slate-500 text-sm font-mono">Selecione ou crie um dashboard.</Card>
+            <Card className="hidden md:flex flex-1 bg-[#111722] border-[#1E293B] items-center justify-center text-slate-500 text-sm font-mono">Selecione ou crie um dashboard.</Card>
           ) : (
             <div className="flex-1 min-w-0 flex flex-col gap-3 overflow-y-auto pr-1">
               <div className="flex items-center gap-2 flex-wrap sticky top-0 z-10 bg-[#090D14] pb-2">
@@ -356,32 +358,33 @@ export default function Dashboards() {
                   </>
                 ) : (
                   <>
-                    {focus ? (
-                      <select value={dash.id} onChange={e => open(e.target.value)} data-testid="focus-dash-select"
-                              className="h-8 bg-[#0B111C] border border-[#1E293B] rounded px-2 text-sm text-slate-100 font-semibold mr-2 max-w-[320px]">
+                    {focus || isMobile ? (
+                      <select value={dash.id} onChange={e => (e.target.value === "__new" ? (setCurrent(null), setCreating(true)) : open(e.target.value))} data-testid="focus-dash-select"
+                              className="h-9 md:h-8 bg-[#0B111C] border border-[#1E293B] rounded px-2 text-sm text-slate-100 font-semibold mr-2 max-w-full md:max-w-[320px] flex-1 md:flex-none min-w-0">
                         {groups.map(([g, ds]) => (
                           <optgroup key={g} label={g}>{ds.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>
                         ))}
+                        {isMobile && <option value="__new">＋ Novo dashboard…</option>}
                       </select>
                     ) : (
                       <div className="mr-2"><div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">{dash.group}</div><div className="text-lg font-semibold text-slate-100 leading-tight">{dash.name}</div></div>
                     )}
                     <div className="flex border border-[#1E293B] rounded overflow-hidden" data-testid="range-picker">
                       {RANGES.map(([m, l]) => (
-                        <button key={m} onClick={() => setMinutes(m)} className={`h-8 px-3 text-xs font-mono ${minutes === m ? "bg-[#007AFF]/25 text-slate-100" : "bg-[#0B111C] text-slate-400 hover:text-slate-200"}`}>{l}</button>
+                        <button key={m} onClick={() => setMinutes(m)} className={`h-8 px-2 md:px-3 text-xs font-mono ${minutes === m ? "bg-[#007AFF]/25 text-slate-100" : "bg-[#0B111C] text-slate-400 hover:text-slate-200"}`}>{l}</button>
                       ))}
                     </div>
                     <Button size="sm" variant="ghost" onClick={() => setRefreshKey(k => k + 1)} className="h-8 text-slate-400 hover:bg-slate-800" title="Atualizar"><RefreshCw className="w-3.5 h-3.5" /></Button>
                     <Button size="sm" variant="outline" onClick={() => setPrefs({ dashFocus: !focus })} data-testid="dash-focus"
-                            className={`${tb} ${focus ? "border-[#007AFF]/60 text-[#4DA3FF]" : ""}`} title={focus ? "Mostrar menus" : "Modo foco: esconde menu lateral, cabeçalho e lista"}>
+                            className={`${tb} hidden md:inline-flex ${focus ? "border-[#007AFF]/60 text-[#4DA3FF]" : ""}`} title={focus ? "Mostrar menus" : "Modo foco: esconde menu lateral, cabeçalho e lista"}>
                       {focus ? <><PanelLeftOpen className="w-3.5 h-3.5 mr-1.5" /> Menus</> : <><PanelLeftClose className="w-3.5 h-3.5 mr-1.5" /> Foco</>}
                     </Button>
-                    <Button size="sm" variant="outline" onClick={() => toggleFs(() => setPrefs({ dashFocus: true }))} className={tb} title={isFs ? "Sair da tela cheia" : "Tela cheia"} data-testid="dash-fullscreen">
+                    <Button size="sm" variant="outline" onClick={() => toggleFs(() => setPrefs({ dashFocus: true }))} className={`${tb} hidden md:inline-flex`} title={isFs ? "Sair da tela cheia" : "Tela cheia"} data-testid="dash-fullscreen">
                       {isFs ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
                     </Button>
                     <div className="ml-auto flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => { setDraft(JSON.parse(JSON.stringify(current))); setEditing(true); }} className={tb} data-testid="dash-edit"><Pencil className="w-3.5 h-3.5 mr-1.5" /> Editar</Button>
-                      <Button size="sm" variant="outline" onClick={duplicate} className={tb}><Copy className="w-3.5 h-3.5 mr-1.5" /> Duplicar</Button>
+                      <Button size="sm" variant="outline" onClick={() => { setDraft(JSON.parse(JSON.stringify(current))); setEditing(true); }} className={tb} data-testid="dash-edit"><Pencil className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Editar</span></Button>
+                      <Button size="sm" variant="outline" onClick={duplicate} className={tb} title="Duplicar"><Copy className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Duplicar</span></Button>
                       <Button size="sm" variant="ghost" onClick={remove} className="h-8 text-xs text-red-400 hover:bg-red-950/40"><Trash2 className="w-3.5 h-3.5" /></Button>
                     </div>
                   </>

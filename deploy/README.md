@@ -118,3 +118,33 @@ A óptica é lida pela **CLI via SSH** (funciona atrás de agente) a cada 5 min,
 mapas e dos gráficos ópticos. Os comandos por fabricante ficam em **Dashboards → Configurações da óptica**;
 o botão **Testar leitura** mostra a saída bruta para ajustar ao seu firmware.
 O histórico (tráfego e óptica) é guardado por 7 dias por padrão — ajuste em **Mapas → Configurações**.
+
+## 10. App no celular (PWA) e notificações dos alarmes
+O Bastion pode ser instalado no celular como um app, sem loja:
+- **iPhone/iPad (Safari):** abra o endereço do Bastion → **Compartilhar** → **Adicionar à Tela de Início**.
+- **Android (Chrome):** menu ⋮ → **Instalar app**.
+
+Abrindo pelo ícone ele fica em tela cheia, com menu em gaveta, mapas com toque (arrastar e pinça para zoom),
+dashboards em uma coluna e o terminal com uma barra de teclas extra (Esc, Tab, setas, Ctrl+C/Z/D…).
+
+**Alarmes no celular (push):** no menu lateral, toque em **Alertas neste aparelho**. Cada usuário ativa nos
+aparelhos que quiser; os alarmes de interface e de equipamento chegam como notificação (junto do Telegram).
+Tocar no alarme abre o mapa. No iPhone é preciso iOS 16.4+ e ativar **pelo app instalado** (não pelo Safari).
+
+⚠ **Push e instalação completa exigem HTTPS.** Acessando por `http://IP` o app funciona, mas sem notificações.
+Para ter HTTPS (certificado grátis e automático do Let's Encrypt):
+
+1. Crie um nome apontando para o IP do VPS — um subdomínio do seu próprio domínio (registro **A**
+   `bastion.suaempresa.com.br → IP_DO_VPS`) ou, sem mexer em DNS, use o `sslip.io`:
+   `IP-COM-TRACOS.sslip.io` (ex.: IP `177.10.20.30` → `177-10-20-30.sslip.io`).
+2. No servidor, edite `/opt/bastion/deploy/.env`:
+   ```
+   BASTION_DOMAIN=177-10-20-30.sslip.io
+   BASTION_ALT=http://177.10.20.30
+   PUBLIC_URL=https://177-10-20-30.sslip.io
+   CORS_ORIGINS=https://177-10-20-30.sslip.io,http://177.10.20.30
+   ```
+   `BASTION_ALT` mantém o acesso antigo por IP funcionando (app do Windows) enquanto você migra.
+3. Portas **80 e 443** liberadas no firewall/VPS e rode `bash /opt/bastion/deploy/update.sh`.
+   Em ~1 minuto o Caddy emite o certificado; acesse `https://…` e instale no celular por esse endereço.
+4. No app do Windows: menu **Bastion → Alterar servidor…** e informe o endereço `https://…`.

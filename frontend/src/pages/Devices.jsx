@@ -187,24 +187,24 @@ export default function Devices() {
   const agentName = (id) => agents.find(a => a.id === id)?.name || "—";
 
   return (
-    <div className="p-6 flex-1 overflow-y-auto" data-testid="devices-page">
-      <div className="flex items-start justify-between mb-6">
+    <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="devices-page">
+      <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
         <div>
           <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Inventário</div>
           <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Equipamentos</h1>
-          <p className="text-slate-400 mt-2 text-sm">Cadastre hosts com porta SSH customizada e associe a um agente proxy.</p>
+          <p className="hidden md:block text-slate-400 mt-2 text-sm">Cadastre hosts com porta SSH customizada e associe a um agente proxy.</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setImportOpen(true)} data-testid="import-devices-btn"
                   className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">
-            <Upload className="w-4 h-4 mr-2" /> Importar CSV
+            <Upload className="w-4 h-4 md:mr-2" /><span className="hidden md:inline">Importar CSV</span>
           </Button>
           <Button variant="outline" onClick={() => setExportOpen(true)} disabled={!devices.length} data-testid="export-devices-btn"
                   className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">
-            <Download className="w-4 h-4 mr-2" /> Exportar
+            <Download className="w-4 h-4 md:mr-2" /><span className="hidden md:inline">Exportar</span>
           </Button>
           <Button onClick={openNew} data-testid="add-device-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
-            <Plus className="w-4 h-4 mr-2" /> Novo Equipamento
+            <Plus className="w-4 h-4 mr-1 md:mr-2" /> <span className="md:hidden">Novo</span><span className="hidden md:inline">Novo Equipamento</span>
           </Button>
         </div>
       </div>
@@ -213,10 +213,10 @@ export default function Devices() {
       <BulkEditDevicesDialog open={bulkOpen} onOpenChange={setBulkOpen} deviceIds={selectedIds} agents={agents} deviceTypes={DEVICE_TYPES} onDone={load} />
 
       <div className="flex gap-3 mb-4 flex-wrap">
-        <div className="relative">
+        <div className="relative w-full md:w-auto">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
           <Input placeholder="Buscar por nome ou IP..." data-testid="search-devices-input" value={q} onChange={(e) => setQ(e.target.value)}
-                 className="pl-9 w-72 bg-[#111722] border-[#1E293B] font-mono text-sm" />
+                 className="pl-9 w-full md:w-72 bg-[#111722] border-[#1E293B] font-mono text-sm" />
         </div>
         <div className="flex gap-2 flex-wrap">
           <Badge onClick={() => setTagFilter("")} data-testid="tag-filter-all"
@@ -226,7 +226,7 @@ export default function Devices() {
               className={`cursor-pointer ${tagFilter === t ? "bg-[#007AFF] text-white" : "bg-[#111722] text-slate-300 border-[#1E293B]"}`}>{t}</Badge>
           ))}
         </div>
-        <div className="flex gap-1 ml-auto" data-testid="status-filter">
+        <div className="flex gap-1 md:ml-auto overflow-x-auto" data-testid="status-filter">
           {[["", "Todos"], ["online", "Online"], ["offline", "Offline"], ["unknown", "Sem status"]].map(([v, l]) => (
             <button key={v || "all"} onClick={() => setStatusFilter(v)} data-testid={`status-filter-${v || "all"}`}
               className={`text-xs font-mono px-2.5 py-1 rounded border ${statusFilter === v ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] bg-[#111722] text-slate-400 hover:text-slate-200"}`}>{l}</button>
@@ -261,7 +261,27 @@ export default function Devices() {
         </div>
       )}
 
-      <Card className="bg-[#111722] border-[#1E293B] overflow-hidden">
+      {/* celular: lista em cartões — tocar abre o terminal */}
+      <div className="md:hidden space-y-2" data-testid="devices-mobile-list">
+        {filtered.length === 0 && <div className="text-center py-10 text-slate-500 font-mono text-sm">Nenhum equipamento encontrado</div>}
+        {filtered.map(d => (
+          <div key={d.id} className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 ${selected.has(d.id) ? "border-[#007AFF]/60 bg-[#007AFF]/10" : "border-[#1E293B] bg-[#111722]"}`}>
+            <button className="flex-1 min-w-0 text-left" onClick={() => nav(`/terminal/${d.id}`)} data-testid={`mobile-device-${d.id}`}>
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${d.status === "online" ? "bg-emerald-400" : d.status === "offline" ? "bg-red-400" : "bg-slate-600"}`} />
+                <span className="text-slate-100 font-medium truncate">{d.name}</span>
+              </div>
+              <div className="text-[11px] font-mono text-slate-400 truncate mt-0.5">
+                {d.host}:{d.port} · {d.protocol === "telnet" ? "telnet" : "ssh"} · {typeLabel(d.device_type)}{d.latency_ms ? ` · ${d.latency_ms} ms` : ""}
+              </div>
+            </button>
+            <Button size="sm" variant="ghost" onClick={() => ping(d)} className="h-9 w-9 p-0 text-amber-400" title="Ping"><Zap className="w-4 h-4" /></Button>
+            <Button size="sm" variant="ghost" onClick={() => openEdit(d)} className="h-9 w-9 p-0 text-slate-300" title="Editar"><Pencil className="w-4 h-4" /></Button>
+          </div>
+        ))}
+      </div>
+
+      <Card className="hidden md:block bg-[#111722] border-[#1E293B] overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="text-xs uppercase tracking-widest text-slate-500 font-mono bg-[#0B111C]">

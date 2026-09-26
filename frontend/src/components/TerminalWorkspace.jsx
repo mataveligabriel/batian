@@ -15,6 +15,13 @@ import { createHighlighter, HL_COLORS } from "@/lib/termHighlight";
 import { TERM_THEMES, useTermPrefs, setTermPrefs, getTermPrefs } from "@/lib/termPrefs";
 import { copyText, readText } from "@/lib/clipboard";
 
+// Celular: teclas que o teclado do iPhone/Android não tem (enviadas direto para a sessão ativa)
+const MOBILE_KEYS = [
+  ["Esc", "\x1b"], ["Tab", "\t"], ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["←", "\x1b[D"], ["→", "\x1b[C"],
+  ["^C", "\x03"], ["^Z", "\x1a"], ["^D", "\x04"], ["^A", "\x01"], ["^E", "\x05"], ["^U", "\x15"], ["^L", "\x0c"],
+  ["|", "|"], ["/", "/"], ["-", "-"], ["?", "?"], ["~", "~"], ["Enter", "\r"],
+];
+
 const LEGEND = [
   ["IP público", HL_COLORS.ipPublic], ["IP privado/CGNAT", HL_COLORS.ipPrivate], ["Máscara", HL_COLORS.mask],
   ["IPv6", HL_COLORS.ipv6], ["MAC", HL_COLORS.mac], ["Interface", HL_COLORS.iface],
@@ -422,6 +429,12 @@ export function TerminalWorkspace({ visible }) {
     if (visible) api.get("/scripts").then(r => setQuick(r.data.filter(s => s.quick))).catch(() => {});
   }, [visible]);
 
+  const sendRaw = (data) => {
+    const ws = active && wsMap.current[active];
+    if (!ws || ws.readyState !== WebSocket.OPEN) return toast.error("Nenhuma sessão ativa conectada");
+    ws.send(JSON.stringify({ type: "input", data }));
+  };
+
   const sendQuick = (s) => {
     const ws = active && wsMap.current[active];
     if (!ws || ws.readyState !== WebSocket.OPEN) return toast.error("Nenhuma sessão ativa conectada");
@@ -450,7 +463,7 @@ export function TerminalWorkspace({ visible }) {
   return (
     <div className={`absolute inset-0 flex flex-col ${visible ? "visible z-20" : "invisible z-0 pointer-events-none"}`} data-testid="terminal-page">
       {!focus && (
-        <div className="px-6 py-4 border-b border-[#1E293B] bg-[#0B111C] flex items-center justify-between">
+        <div className="hidden md:flex px-6 py-4 border-b border-[#1E293B] bg-[#0B111C] items-center justify-between">
           <div>
             <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Console SSH</div>
             <h1 className="font-heading text-2xl font-bold text-slate-100">Terminal Workspace</h1>
@@ -479,10 +492,10 @@ export function TerminalWorkspace({ visible }) {
         </div>
         <div className="relative shrink-0">
           <Button size="sm" variant="ghost" onClick={() => setPickerOpen(v => !v)} data-testid="add-tab-btn" className="text-slate-300 hover:bg-slate-800 h-8">
-            <Plus className="w-4 h-4 mr-1" /> Nova aba
+            <Plus className="w-4 h-4 md:mr-1" /><span className="hidden md:inline">Nova aba</span>
           </Button>
           {pickerOpen && (
-            <div className="absolute top-full mt-1 right-0 z-40 w-72 bg-[#111722] border border-[#1E293B] rounded-md shadow-xl max-h-80 overflow-y-auto">
+            <div className="absolute top-full mt-1 right-0 z-40 w-72 max-w-[calc(100vw-16px)] bg-[#111722] border border-[#1E293B] rounded-md shadow-xl max-h-80 overflow-y-auto">
               {devices.length === 0 && <div className="p-4 text-sm text-slate-500 font-mono">Sem equipamentos</div>}
               {devices.map(d => (
                 <div key={d.id} onClick={() => { openTab(d); setPickerOpen(false); }} data-testid={`picker-device-${d.id}`}
@@ -498,10 +511,10 @@ export function TerminalWorkspace({ visible }) {
           )}
         </div>
         {focus && <div className="hidden lg:block ml-1"><TerminalToolbar /></div>}
-        <button className={iconBtn} onClick={toggleFs} data-testid="fullscreen-btn" title={isFs ? "Sair da tela cheia" : "Tela cheia"}>
+        <button className={`${iconBtn} hidden md:flex`} onClick={toggleFs} data-testid="fullscreen-btn" title={isFs ? "Sair da tela cheia" : "Tela cheia"}>
           {isFs ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
         </button>
-        <button className={`${iconBtn} ${focus ? "border-[#007AFF]/60 text-[#4DA3FF]" : ""}`} data-testid="focus-mode-btn"
+        <button className={`${iconBtn} hidden md:flex ${focus ? "border-[#007AFF]/60 text-[#4DA3FF]" : ""}`} data-testid="focus-mode-btn"
                 onClick={() => setTermPrefs({ focusMode: !focus })}
                 title={focus ? "Mostrar menus" : "Modo foco: esconder o menu lateral e o cabeçalho"}>
           {focus ? <><PanelLeftOpen className="w-3.5 h-3.5" /> Menus</> : <><PanelLeftClose className="w-3.5 h-3.5" /> Foco</>}
@@ -523,6 +536,18 @@ export function TerminalWorkspace({ visible }) {
         )}
       </div>
 
+      {tabs.length > 0 && (
+        <div className="md:hidden flex items-center gap-1 px-1.5 py-1.5 border-t border-[#1E293B] bg-[#0A0F19] overflow-x-auto" data-testid="mobile-keys">
+          {MOBILE_KEYS.map(([l, d]) => (
+            // onPointerDown + preventDefault: não tira o foco do terminal (o teclado do celular não fecha)
+            <button key={l} onPointerDown={(e) => { e.preventDefault(); sendRaw(d); }}
+                    className={`shrink-0 h-9 min-w-[2.4rem] px-2 rounded border text-[13px] font-mono active:bg-[#007AFF]/30 ${l.startsWith("^") ? "border-amber-600/40 text-amber-200 bg-amber-500/5" : "border-[#1E293B] text-slate-200 bg-[#111722]"}`}>{l}</button>
+          ))}
+          <button onPointerDown={(e) => { e.preventDefault(); active && requestPaste(active); }} className="shrink-0 h-9 px-2 rounded border border-[#1E293B] bg-[#111722] text-slate-200" title="Colar"><ClipboardPaste className="w-4 h-4" /></button>
+          <button onPointerDown={(e) => { e.preventDefault(); bumpFont(-1); }} className="shrink-0 h-9 px-2 rounded border border-[#1E293B] bg-[#111722] text-slate-200" title="Fonte menor"><ZoomOut className="w-4 h-4" /></button>
+          <button onPointerDown={(e) => { e.preventDefault(); bumpFont(1); }} className="shrink-0 h-9 px-2 rounded border border-[#1E293B] bg-[#111722] text-slate-200" title="Fonte maior"><ZoomIn className="w-4 h-4" /></button>
+        </div>
+      )}
       {tabs.length > 0 && !focus && (
         <div className="relative z-30 flex items-center gap-2 px-3 py-2 border-t border-[#1E293B] bg-[#0A0F19] overflow-x-auto" data-testid="quick-commands-bar">
           <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />

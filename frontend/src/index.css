@@ -15,6 +15,19 @@ html { font-size: 13px; }
 @media (min-width: 1800px) { html { font-size: 15px; } }
 @media (min-width: 2400px) { html { font-size: 16px; } }
 
+/* ---------- Celular / PWA ---------- */
+body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+@media (max-width: 767px) {
+  html { font-size: 14px; }
+  /* iOS dá zoom ao focar campo com fonte < 16px */
+  input, select, textarea { font-size: 16px !important; }
+  /* tabelas largas rolam de lado em vez de estourar a tela */
+  [data-testid$="-page"] table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  [data-testid$="-page"] th, [data-testid$="-page"] td { white-space: nowrap; }
+  /* diálogos ocupam a tela quase toda */
+  [role="dialog"] { max-width: calc(100vw - 16px) !important; max-height: calc(100dvh - 24px); overflow-y: auto; }
+}
+
 body {
   margin: 0;
   font-family: "DM Sans", system-ui, sans-serif;

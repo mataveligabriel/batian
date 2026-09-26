@@ -30,6 +30,7 @@ services:
     network_mode: host
     environment:
       BASTION_DOMAIN: ${BASTION_DOMAIN}
+      BASTION_ALT: ${BASTION_ALT:-}
     volumes:
       - caddy_data:/data
       - caddy_config:/config

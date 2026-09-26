@@ -15,6 +15,7 @@ import { MapCanvas } from "@/components/maps/MapCanvas";
 import { LinkDialog } from "@/components/maps/LinkDialog";
 import { MonitorTab } from "@/components/maps/MonitorTab";
 import { TrafficChart } from "@/components/maps/TrafficChart";
+import { useIsMobile } from "@/lib/pwa";
 import { OpticsPanel } from "@/components/dash/OpticsPanel";
 import { fmtBps, fmtSpeed, UTIL_BANDS, STATUS, NO_DATA } from "@/lib/netfmt";
 
@@ -193,6 +194,7 @@ export default function Maps() {
   const [addQ, setAddQ] = useState("");
   const [newName, setNewName] = useState("");
   const [saving, setSaving] = useState(false);
+  const isMobile = useIsMobile();
 
   const map = editing ? draft : current;
   const dirty = editing && JSON.stringify(draft) !== JSON.stringify(current);
@@ -306,23 +308,23 @@ export default function Maps() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0" data-testid="maps-page">
-      <div className="px-6 pt-4 pb-0">
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Topologia & tráfego</div>
-        <h1 className="font-heading text-2xl font-bold text-slate-100 mt-1">Mapas de rede</h1>
-        <div className="flex gap-1 mt-4 border-b border-[#1E293B]">
+      <div className="px-4 md:px-6 pt-4 pb-0">
+        <div className="hidden md:block text-xs uppercase tracking-widest text-slate-400 font-mono">Topologia & tráfego</div>
+        <h1 className="hidden md:block font-heading text-2xl font-bold text-slate-100 mt-1">Mapas de rede</h1>
+        <div className="flex gap-1 md:mt-4 border-b border-[#1E293B] overflow-x-auto whitespace-nowrap">
           <button className={tabBtn(tab === "maps")} onClick={() => setTab("maps")} data-testid="tab-maps"><Network className="w-4 h-4" /> Mapas</button>
           <button className={tabBtn(tab === "alarms")} onClick={() => setTab("alarms")} data-testid="tab-alarms"><BellRing className="w-4 h-4" /> Alarmes de interface</button>
           <button className={tabBtn(tab === "settings")} onClick={() => setTab("settings")} data-testid="tab-settings"><Settings2 className="w-4 h-4" /> Configurações</button>
         </div>
       </div>
 
-      {tab === "alarms" && <div className="p-6 pt-4 overflow-y-auto flex-1"><MonitorTab devices={devices} /></div>}
-      {tab === "settings" && <div className="p-6 pt-4 overflow-y-auto flex-1"><SettingsTab /></div>}
+      {tab === "alarms" && <div className="p-4 md:p-6 pt-4 overflow-y-auto flex-1"><MonitorTab devices={devices} /></div>}
+      {tab === "settings" && <div className="p-4 md:p-6 pt-4 overflow-y-auto flex-1"><SettingsTab /></div>}
 
       {tab === "maps" && (
-        <div className="flex-1 min-h-0 flex gap-4 p-6 pt-4">
-          {/* lista de mapas */}
-          <Card className="bg-[#111722] border-[#1E293B] w-60 shrink-0 flex flex-col overflow-hidden">
+        <div className="flex-1 min-h-0 flex gap-4 p-2 md:px-6 md:pb-6 md:pt-4">
+          {/* lista de mapas (no celular: só quando nenhum mapa está aberto) */}
+          <Card className={`bg-[#111722] border-[#1E293B] ${isMobile ? "w-full" : "w-60"} shrink-0 flex-col overflow-hidden ${isMobile && map ? "hidden" : "flex"}`}>
             <div className="p-3 border-b border-[#1E293B] flex gap-1.5">
               <Input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && createMap()}
                      placeholder="Novo mapa…" className="h-8 bg-[#05070A] border-[#1E293B] text-sm" data-testid="new-map-name" />
@@ -342,22 +344,28 @@ export default function Maps() {
 
           {/* editor / visualização */}
           {!map ? (
-            <Card className="flex-1 bg-[#111722] border-[#1E293B] flex items-center justify-center text-slate-500 text-sm font-mono">Selecione ou crie um mapa.</Card>
+            <Card className="hidden md:flex flex-1 bg-[#111722] border-[#1E293B] items-center justify-center text-slate-500 text-sm font-mono">Selecione ou crie um mapa.</Card>
           ) : (
             <div className="flex-1 min-w-0 flex flex-col gap-2">
               <div className="flex items-center gap-2 flex-wrap">
                 {editing ? (
                   <Input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} className="h-8 w-56 bg-[#05070A] border-[#1E293B] font-semibold" data-testid="map-name" />
+                ) : isMobile ? (
+                  <select value={map.id} onChange={e => (e.target.value === "__list" ? confirmDiscard() && (setCurrent(null), setDraft(null), setEditing(false), setSelected(null)) : openMap(e.target.value))}
+                          className="h-9 flex-1 min-w-0 bg-[#0B111C] border border-[#1E293B] rounded px-2 text-sm text-slate-100 font-semibold" data-testid="mobile-map-select">
+                    {maps.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    <option value="__list">☰ Lista de mapas / novo…</option>
+                  </select>
                 ) : <div className="text-lg font-semibold text-slate-100 mr-2">{map.name}</div>}
                 {!editing ? <>
-                  <Button size="sm" variant="outline" onClick={startEdit} className={tb} data-testid="map-edit"><Pencil className="w-3.5 h-3.5 mr-1.5" /> Editar</Button>
-                  <Button size="sm" variant="outline" onClick={duplicate} className={tb}><Copy className="w-3.5 h-3.5 mr-1.5" /> Duplicar</Button>
-                  <Button size="sm" variant="ghost" onClick={removeMap} className="h-8 text-xs text-red-400 hover:bg-red-950/40"><Trash2 className="w-3.5 h-3.5 mr-1.5" /> Excluir</Button>
+                  <Button size="sm" variant="outline" onClick={startEdit} className={tb} data-testid="map-edit" title="Editar"><Pencil className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Editar</span></Button>
+                  <Button size="sm" variant="outline" onClick={duplicate} className={`${tb} hidden md:inline-flex`}><Copy className="w-3.5 h-3.5 mr-1.5" /> Duplicar</Button>
+                  <Button size="sm" variant="ghost" onClick={removeMap} className="h-8 text-xs text-red-400 hover:bg-red-950/40 hidden md:inline-flex"><Trash2 className="w-3.5 h-3.5 mr-1.5" /> Excluir</Button>
                 </> : <>
                   <div className="relative">
                     <Button size="sm" variant="outline" onClick={() => setAddOpen(v => !v)} className={tb} data-testid="map-add-device"><Server className="w-3.5 h-3.5 mr-1.5" /> Equipamento</Button>
                     {addOpen && (
-                      <div className="absolute top-full mt-1 left-0 z-30 w-80 bg-[#111722] border border-[#1E293B] rounded-md shadow-2xl">
+                      <div className="absolute top-full mt-1 left-0 z-30 w-80 max-w-[calc(100vw-24px)] bg-[#111722] border border-[#1E293B] rounded-md shadow-2xl">
                         <div className="p-2 relative"><Search className="w-3.5 h-3.5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
                           <Input autoFocus value={addQ} onChange={e => setAddQ(e.target.value)} placeholder="Buscar…" className="pl-8 h-8 bg-[#05070A] border-[#1E293B] text-sm" /></div>
                         <div className="max-h-72 overflow-y-auto">
@@ -390,7 +398,7 @@ export default function Maps() {
                   </div>
                 </>}
                 {!editing && (
-                  <div className="ml-auto text-[11px] font-mono text-slate-500 flex items-center gap-3">
+                  <div className="ml-auto text-[11px] font-mono text-slate-500 hidden md:flex items-center gap-3">
                     <span>{live?.enabled === false ? "coleta desativada" : `atualiza a cada ${live?.interval_sec || 30}s · última ${fmtTime(live?.last_tick)}`}</span>
                     <button onClick={() => setFitSignal(s => s + 1)} className="text-slate-400 hover:text-slate-100 flex items-center gap-1"><Maximize className="w-3.5 h-3.5" /> ajustar</button>
                   </div>
@@ -411,8 +419,10 @@ export default function Maps() {
                   )}
                 </div>
                 {(selLink || selNode) && (
-                  <Card className="w-80 shrink-0 bg-[#111722] border-[#1E293B] p-4 overflow-y-auto relative">
-                    <button className="absolute top-3 right-3 text-slate-500 hover:text-slate-200" onClick={() => setSelected(null)}><X className="w-4 h-4" /></button>
+                  <Card className={isMobile
+                    ? "fixed inset-x-0 bottom-0 z-30 max-h-[62dvh] rounded-b-none rounded-t-xl bg-[#111722] border-[#2A3345] p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] overflow-y-auto shadow-2xl"
+                    : "w-80 shrink-0 bg-[#111722] border-[#1E293B] p-4 overflow-y-auto relative"}>
+                    <button className="absolute top-3 right-3 p-1 text-slate-400 hover:text-slate-200" onClick={() => setSelected(null)}><X className="w-4 h-4" /></button>
                     {selLink && (
                       <LinkDetails link={selLink} live={live?.links?.[selLink.id]} nameOf={nameOf} nodes={nodesById} editing={editing}
                                    onEdit={() => setLinkDlg({ from: selLink.from, to: selLink.to, link: selLink })}

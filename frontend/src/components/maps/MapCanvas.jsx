@@ -130,13 +130,31 @@ export function MapCanvas({
     return () => el.removeEventListener("wheel", onWheel);
   });
 
+  // toque: dois dedos = zoom (pinça) em volta do ponto médio
+  const pts = useRef(new Map());
+  const pinchStart = () => {
+    const [a, b] = [...pts.current.values()];
+    const r = svgRef.current.getBoundingClientRect();
+    return { kind: "pinch", d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2 - r.left, my: (a.y + b.y) / 2 - r.top, v0: view, moved: true };
+  };
+  const onDownCapture = (e) => {
+    if (e.pointerType === "mouse") return;
+    pts.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.current.size === 2) { setHover(null); setDrag(pinchStart()); }
+  };
+  const onPtrEnd = (e) => {
+    pts.current.delete(e.pointerId);
+    if (drag?.kind === "pinch") { if (pts.current.size < 2) setDrag(null); return; }
+    onUp();
+  };
+
   const onBgDown = (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || pts.current.size >= 2) return;
     setDrag({ kind: "pan", sx: e.clientX, sy: e.clientY, tx: view.tx, ty: view.ty, moved: false });
   };
   const onNodeDown = (e, n) => {
     e.stopPropagation();
-    if (e.button !== 0) return;
+    if (e.button !== 0 || pts.current.size >= 2) return;
     if (editing && tool === "connect") {
       if (!pending) setPending(n.id);
       else if (pending !== n.id) { onConnect(pending, n.id); setPending(null); }
@@ -146,7 +164,17 @@ export function MapCanvas({
     setDrag({ kind: "node", id: n.id, ox: w.x - n.x, oy: w.y - n.y, moved: false });
   };
   const onMove = (e) => {
+    if (pts.current.has(e.pointerId)) pts.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (!drag) return;
+    if (drag.kind === "pinch") {
+      if (pts.current.size < 2) return;
+      const [a, b] = [...pts.current.values()];
+      const v = drag.v0, k = Math.max(0.2, Math.min(3, v.k * (Math.hypot(a.x - b.x, a.y - b.y) / drag.d0)));
+      const r = svgRef.current.getBoundingClientRect();
+      const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;   // também arrasta com os dois dedos
+      setView({ k, tx: mx - ((drag.mx - v.tx) / v.k) * k, ty: my - ((drag.my - v.ty) / v.k) * k });
+      return;
+    }
     if (drag.kind === "pan") {
       setView(v => ({ ...v, tx: drag.tx + e.clientX - drag.sx, ty: drag.ty + e.clientY - drag.sy }));
       if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true;
@@ -192,9 +220,10 @@ export function MapCanvas({
   const nodeName = (id) => { const n = nodesById[id]; return n?.device_id ? (devById[n.device_id]?.name || n.label || "?") : (n?.label || "?"); };
 
   return (
-    <div ref={wrapRef} className="relative w-full h-full overflow-hidden select-none" style={{ background: SURFACE }}
-         onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={() => { setDrag(null); setHover(null); }} data-testid="map-canvas">
-      <svg ref={svgRef} className={`w-full h-full ${drag?.kind === "pan" ? "cursor-grabbing" : "cursor-grab"}`} onMouseDown={onBgDown}>
+    <div ref={wrapRef} className="relative w-full h-full overflow-hidden select-none" style={{ background: SURFACE, touchAction: "none" }}
+         onPointerDownCapture={onDownCapture} onPointerMove={onMove} onPointerUp={onPtrEnd} onPointerCancel={onPtrEnd}
+         onPointerLeave={(e) => { if (e.pointerType === "mouse") { setDrag(null); setHover(null); } }} data-testid="map-canvas">
+      <svg ref={svgRef} className={`w-full h-full ${drag?.kind === "pan" ? "cursor-grabbing" : "cursor-grab"}`} style={{ touchAction: "none" }} onPointerDown={onBgDown}>
         <defs>
           <pattern id="grid" width={40 * view.k} height={40 * view.k} patternUnits="userSpaceOnUse" x={view.tx} y={view.ty}>
             <circle cx="1" cy="1" r="1" fill="#1E293B" />
@@ -223,9 +252,9 @@ export function MapCanvas({
                 <Half pts={g.halfB} ux={-g.ux} uy={-g.uy} color={cBA} dashed={down || noData} />
                 {/* área de clique/hover maior que a linha */}
                 <path d={toPath(g.full)} fill="none" stroke="transparent" strokeWidth="22" style={{ cursor: "pointer" }}
-                      onMouseDown={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
                       onClick={(e) => { e.stopPropagation(); onSelect({ type: "link", id: l.id }); }}
-                      onMouseMove={hoverOn} onMouseLeave={() => setHover(null)} />
+                      onPointerMove={(e) => e.pointerType === "mouse" && hoverOn(e)} onPointerLeave={() => setHover(null)} />
                 {tags && !down && !noData && <>
                   <ValueTag x={g.qA.x} y={g.qA.y} text={fmtBps(lv.ab_bps)} sub={lv.ab_pct != null ? `${lv.ab_pct}%` : null} accent={cAB} />
                   <ValueTag x={g.qB.x} y={g.qB.y} text={fmtBps(lv.ba_bps)} sub={lv.ba_pct != null ? `${lv.ba_pct}%` : null} accent={cBA} />
@@ -235,10 +264,10 @@ export function MapCanvas({
                 {/* alça para curvar/afastar o enlace (modo edição) — duplo clique volta ao automático */}
                 {editing && tool === "select" && (
                   <g style={{ cursor: "grab" }} data-testid={`link-handle-${l.id}`}
-                     onMouseDown={(e) => { e.stopPropagation(); if (e.button !== 0) return; setHover(null);
+                     onPointerDown={(e) => { e.stopPropagation(); if (e.button !== 0) return; setHover(null);
                        setDrag({ kind: "bend", id: l.id, mid: g.mid, nx: g.nx, ny: g.ny, moved: false }); }}
                      onDoubleClick={(e) => { e.stopPropagation(); onBendLink?.(l.id, null); }}>
-                    <circle cx={g.m.x} cy={g.m.y} r="14" fill="transparent" />
+                    <circle cx={g.m.x} cy={g.m.y} r="18" fill="transparent" />
                     <circle cx={g.m.x} cy={g.m.y} r={isSel ? 7 : 5.5} fill="#F8FAFC" stroke="#007AFF" strokeWidth="2.5" />
                     <title>Arraste para curvar/afastar este enlace · duplo clique = automático</title>
                   </g>
@@ -259,14 +288,14 @@ export function MapCanvas({
             const cursor = editing ? (tool === "connect" ? "crosshair" : "move") : "pointer";
             if (n.kind === "label") {
               return (
-                <g key={n.id} transform={`translate(${n.x},${n.y})`} onMouseDown={(e) => onNodeDown(e, n)} style={{ cursor }} data-testid={`node-${n.id}`}>
+                <g key={n.id} transform={`translate(${n.x},${n.y})`} onPointerDown={(e) => onNodeDown(e, n)} style={{ cursor }} data-testid={`node-${n.id}`}>
                   <rect x={-sz.w / 2} y={-sz.h / 2} width={sz.w} height={sz.h} fill="transparent" stroke={isSel ? "#4DA3FF" : "transparent"} strokeDasharray="4 3" rx="4" />
                   <text textAnchor="middle" y="5" fontSize="14" fontWeight="600" fill="#CBD5E1" fontFamily="Outfit, sans-serif">{title}</text>
                 </g>
               );
             }
             return (
-              <g key={n.id} transform={`translate(${n.x},${n.y})`} onMouseDown={(e) => onNodeDown(e, n)} style={{ cursor }} data-testid={`node-${n.id}`}>
+              <g key={n.id} transform={`translate(${n.x},${n.y})`} onPointerDown={(e) => onNodeDown(e, n)} style={{ cursor }} data-testid={`node-${n.id}`}>
                 <rect x={-sz.w / 2} y={-sz.h / 2} width={sz.w} height={sz.h} rx={n.kind === "cloud" ? sz.h / 2 : 8}
                       fill="#111722" stroke={isPending ? "#FAB219" : isSel ? "#4DA3FF" : "#334155"} strokeWidth={isSel || isPending ? 2.5 : 1.5}
                       strokeDasharray={n.kind === "cloud" ? "5 4" : undefined} />

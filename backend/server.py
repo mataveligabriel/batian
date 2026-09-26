@@ -22,6 +22,7 @@ from auth import (
     hash_password, verify_password, create_access_token, decode_token,
     get_current_user, require_admin,
 )
+from pydantic import BaseModel
 from models import (
     UserCreate, UserOut, LoginPayload, UserUpdate, ChangePasswordPayload,
     AgentCreate, Agent,
@@ -38,6 +39,7 @@ from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES
 from telnet_service import TelnetClientWrapper
 import vault
 import automation
+import webpush
 import snmp_service
 import monitor as monitoring
 import optics as optics_mod
@@ -2035,6 +2037,60 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
             await ws.close()
         except Exception:
             pass
+
+
+# ---------- Notificações push (PWA) ----------
+class PushKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+
+class PushSubscribeIn(BaseModel):
+    endpoint: str
+    keys: PushKeys
+    device: str = ""
+
+
+class PushEndpointIn(BaseModel):
+    endpoint: str
+
+
+@api.get("/push/public-key")
+async def push_public_key(_: dict = Depends(get_current_user)):
+    return {"key": (await webpush.get_vapid(db))["public_key"]}
+
+
+@api.post("/push/subscribe")
+async def push_subscribe(body: PushSubscribeIn, user: dict = Depends(get_current_user)):
+    if not body.endpoint.startswith("https://"):
+        raise HTTPException(400, "Endpoint de push inválido")
+    await db.push_subs.update_one({"endpoint": body.endpoint}, {"$set": {
+        "endpoint": body.endpoint, "keys": body.keys.model_dump(), "user_id": user["id"], "user_name": user.get("name"),
+        "device": body.device[:120], "updated_at": datetime.now(timezone.utc).isoformat(), "last_error": None,
+    }, "$setOnInsert": {"created_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    return {"ok": True}
+
+
+@api.post("/push/unsubscribe")
+async def push_unsubscribe(body: PushEndpointIn, user: dict = Depends(get_current_user)):
+    await db.push_subs.delete_one({"endpoint": body.endpoint, "user_id": user["id"]})
+    return {"ok": True}
+
+
+@api.get("/push/devices")
+async def push_devices(user: dict = Depends(get_current_user)):
+    return [{k: s.get(k) for k in ("device", "created_at", "last_ok", "last_error")} | {"id": s["endpoint"][-16:]}
+            async for s in db.push_subs.find({"user_id": user["id"]}, {"_id": 0})]
+
+
+@api.post("/push/test")
+async def push_test(user: dict = Depends(get_current_user)):
+    res = await webpush.send(db, "🔔 Bastion", "Notificações ativadas. Os alarmes de interface e de equipamento chegam aqui.",
+                             url="/", user_id=user["id"], tag="bastion-test")
+    if not res["sent"]:
+        raise HTTPException(400, "Nenhum aparelho recebeu. Ative as notificações neste aparelho primeiro."
+                            if not res["failed"] else "O serviço de push recusou o envio — desative e ative de novo.")
+    return res
 
 
 # ---------- Health ----------

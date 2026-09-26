@@ -10,6 +10,8 @@ from typing import Callable, Awaitable, Optional
 
 import httpx
 
+import webpush
+
 import vault
 
 logger = logging.getLogger("bastion.automation")
@@ -49,13 +51,24 @@ def backup_command_for(dev: dict) -> str:
     return (dev.get("backup_command") or BACKUP_COMMANDS.get(dev.get("device_type") or "linux", "")).strip()
 
 
-async def send_alert(db, title: str, text: str) -> dict:
+async def send_alert(db, title: str, text: str, push_url: str = "/", push_tag: str = None) -> dict:
     s = await get_settings(db)
     token = vault.decrypt(s.get("telegram_bot_token", ""))
     chat = (s.get("telegram_chat_id") or "").strip()
     hook = (s.get("webhook_url") or "").strip()
-    results = {"telegram": None, "webhook": None}
+    results = {"telegram": None, "webhook": None, "push": None}
+    # push no celular/PC (PWA) vai para quem ativou "alertas neste aparelho", mesmo sem Telegram
+    try:
+        pr = await webpush.send(db, title, text, url=push_url, tag=push_tag)
+        if pr["sent"] or pr["failed"]:
+            results["push"] = f"{pr['sent']} aparelho(s)" + (f", {pr['failed']} falha(s)" if pr["failed"] else "")
+    except Exception as e:
+        results["push"] = f"erro: {e}"
     if not token and not hook:
+        if results["push"]:
+            await db.alerts.insert_one({"id": os.urandom(8).hex(), "title": title, "text": text,
+                                        "created_at": datetime.now(timezone.utc).isoformat(), "results": results})
+            return results
         return {**results, "error": "Nenhum canal configurado"}
     async with httpx.AsyncClient(timeout=15) as client:
         if token and chat:

@@ -122,7 +122,7 @@ export default function Agents() {
   };
 
   return (
-    <div className="p-6 flex-1 overflow-y-auto" data-testid="agents-page">
+    <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="agents-page">
       <div className="flex items-start justify-between mb-6 gap-4">
         <div>
           <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Cadeia de Saltos</div>

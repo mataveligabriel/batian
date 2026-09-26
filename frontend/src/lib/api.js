@@ -1,6 +1,9 @@
 import axios from "axios";
 
-const BASE = process.env.REACT_APP_BACKEND_URL;
+// Em produção o Caddy serve o app e a /api no mesmo endereço: usa sempre a origem atual.
+// Assim o mesmo build funciona por http://IP, por https://dominio e no app instalado (PWA/Windows).
+// REACT_APP_BACKEND_URL só vale no desenvolvimento (npm start na porta 3000).
+const BASE = window.location.port === "3000" ? (process.env.REACT_APP_BACKEND_URL || "") : "";
 export const API_BASE = `${BASE}/api`;
 
 export const api = axios.create({

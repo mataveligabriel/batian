@@ -9,7 +9,7 @@ export default function Sessions() {
   useEffect(() => { api.get("/sessions").then(r => setItems(r.data)); }, []);
   const fmt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR") : "—";
   return (
-    <div className="p-6 flex-1 overflow-y-auto" data-testid="sessions-page">
+    <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="sessions-page">
       <div className="mb-6">
         <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Auditoria</div>
         <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Histórico de Sessões</h1>
