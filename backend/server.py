@@ -43,6 +43,7 @@ import automation
 import webpush
 import sharing
 import netanalysis
+import mplscli
 import netreport
 import auth as auth_mod
 import snmp_service
@@ -99,6 +100,7 @@ async def startup():
     await db.if_events.create_index([("at", -1)])
     await db.maps.create_index("owner_id")
     await db.net_reports.create_index([("map_id", 1), ("at", -1)])
+    await db.net_reports_raw.create_index("rid")
     scheduler.start()
     assistant.start()
     net_monitor.start()
@@ -2095,6 +2097,39 @@ class AnalysisIn(BaseModel):
     util_warn: int = 70
     util_crit: int = 90
     sample_sec: int = 10
+    mpls: bool = True                       # LDP / VPWS / VPLS / L3VPN pela CLI (SSH)
+
+
+class MplsSettingsIn(BaseModel):
+    mpls_commands: dict = {}                # {tipo: {seção: [comandos]}}
+
+
+async def _mpls_settings() -> dict:
+    return await db.config.find_one({"key": "mpls"}, {"_id": 0}) or {}
+
+
+async def _mpls_collect(dev: dict, settings: dict) -> dict:
+    """Uma sessão SSH por equipamento, todas as seções MPLS em sequência."""
+    dtype = dev.get("device_type") or "other"
+    if not any(mplscli.commands_for(dtype, settings).values()):
+        return {"skipped": True, "device_type": dtype}
+    try:
+        client = await _connect_device(dev)
+    except Exception as e:
+        return {"error": f"SSH: {e}", "device_type": dtype}
+    try:
+        sess = await client.shell()
+        try:
+            return {"device_type": dtype, "sections": await mplscli.collect(sess, dtype, settings)}
+        finally:
+            await sess.close()
+    except Exception as e:
+        return {"error": str(e), "device_type": dtype}
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
 
 
 class SimulateIn(BaseModel):
@@ -2135,7 +2170,24 @@ async def run_analysis(map_id: str, body: AnalysisIn, user: dict = Depends(get_c
             except Exception as e:
                 return did, {"ok": False, "error": str(e)}
 
-    data = dict(await asyncio.gather(*[one(d) for d in dev_ids]))
+    mpls_settings = await _mpls_settings()
+    ssh_sem = asyncio.Semaphore(6)
+
+    async def one_mpls(did: str):
+        dev = devs.get(did)
+        if not dev:
+            return did, {"error": "equipamento não encontrado"}
+        async with ssh_sem:
+            try:
+                return did, await asyncio.wait_for(_mpls_collect(dev, mpls_settings), timeout=240)
+            except asyncio.TimeoutError:
+                return did, {"error": "CLI demorou demais"}
+
+    snmp_task = asyncio.gather(*[one(d) for d in dev_ids])
+    mpls_task = asyncio.gather(*[one_mpls(d) for d in dev_ids]) if body.mpls else None
+    data = dict(await snmp_task)
+    mpls_raw = dict(await mpls_task) if mpls_task else {}
+    mpls_data = {d: v for d, v in mpls_raw.items() if not v.get("skipped")}
     live = (await map_live(map_id, user=user)).get("links", {})
     optics = {}
     node_dev = {n["id"]: n.get("device_id") for n in m.get("nodes", [])}
@@ -2144,8 +2196,8 @@ async def run_analysis(map_id: str, body: AnalysisIn, user: dict = Depends(get_c
             did, iface = node_dev.get(ln[key]), ln.get(side)
             if did and iface:
                 optics[(did, iface["index"])] = optics_collector.get_live(did, iface["index"])
-    opts = {k: v for k, v in body.model_dump().items() if v is not None}
-    rep = netanalysis.analyze(m, devs, data, live, optics, opts)
+    opts = {k: v for k, v in body.model_dump().items() if v is not None and k != "mpls"}
+    rep = netanalysis.analyze(m, devs, data, live, optics, opts, mpls=mpls_data or None)
     doc = {"id": os.urandom(8).hex(), "owner_id": user["id"], "map_id": map_id, "map_name": m["name"],
            "at": datetime.now(timezone.utc).isoformat(), "duration_sec": round(time.monotonic() - started, 1),
            "nodes": [{"id": n["id"], "x": n["x"], "y": n["y"], "kind": n.get("kind"),
@@ -2153,10 +2205,16 @@ async def run_analysis(map_id: str, body: AnalysisIn, user: dict = Depends(get_c
                      if n.get("kind") != "label"],
            "summary": rep["summary"], "report": rep}
     await db.net_reports.insert_one(dict(doc))
+    for did, v in mpls_data.items():      # saída bruta da CLI fica à parte (para ajustar comandos/leitores)
+        await db.net_reports_raw.insert_one({"rid": doc["id"], "device_id": did, "name": (devs.get(did) or {}).get("name"),
+                                             "error": v.get("error"),
+                                             "sections": {k: {"command": x.get("command"), "ok": x.get("ok"), "raw": x.get("raw")}
+                                                          for k, x in (v.get("sections") or {}).items()}})
     # guarda os 15 últimos por mapa
     old = await db.net_reports.find({"map_id": map_id, "owner_id": user["id"]}, {"_id": 0, "id": 1, "at": 1}).sort("at", -1).to_list(100)
     for x in old[15:]:
         await db.net_reports.delete_one({"id": x["id"]})
+        await db.net_reports_raw.delete_many({"rid": x["id"]})
     doc.pop("_id", None)
     return doc
 
@@ -2173,9 +2231,55 @@ async def get_analysis(rid: str, user: dict = Depends(get_current_user)):
     return await _report_for(user, rid)
 
 
+@api.get("/analysis/{rid}/raw/{device_id}")
+async def analysis_raw(rid: str, device_id: str, user: dict = Depends(get_current_user)):
+    await _report_for(user, rid)
+    d = await db.net_reports_raw.find_one({"rid": rid, "device_id": device_id}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Sem saída MPLS guardada para este equipamento")
+    return d
+
+
+@api.get("/mpls/settings")
+async def get_mpls_settings(user: dict = Depends(get_current_user)):
+    s = await _mpls_settings()
+    types = [t for t in DEVICE_TYPES if t in mplscli.DEFAULT_COMMANDS]
+    return {"commands": {t: mplscli.commands_for(t, s) for t in types}, "defaults": mplscli.DEFAULT_COMMANDS,
+            "sections": mplscli.SECTION_LABEL, "is_admin": user.get("role") == "admin"}
+
+
+@api.put("/mpls/settings")
+async def put_mpls_settings(body: MplsSettingsIn, _: dict = Depends(require_admin)):
+    clean = {}
+    for t, secs in (body.mpls_commands or {}).items():
+        if t not in mplscli.DEFAULT_COMMANDS or not isinstance(secs, dict):
+            continue
+        for sec, cmds in secs.items():
+            if sec not in mplscli.SECTIONS or not isinstance(cmds, list):
+                continue
+            lst = [str(c).strip() for c in cmds if str(c).strip()][:5]
+            if lst != mplscli.DEFAULT_COMMANDS[t].get(sec, []):
+                clean.setdefault(t, {})[sec] = lst
+    await db.config.update_one({"key": "mpls"}, {"$set": {"mpls_commands": clean}}, upsert=True)
+    return {"ok": True}
+
+
+@api.post("/devices/{device_id}/mpls-test")
+async def mpls_test(device_id: str, user: dict = Depends(get_current_user)):
+    dev = await _get_device_for(user, device_id)
+    try:
+        r = await asyncio.wait_for(_mpls_collect(dev, await _mpls_settings()), timeout=240)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="CLI demorou demais")
+    if r.get("skipped"):
+        raise HTTPException(status_code=400, detail=f"Sem comandos MPLS para o tipo '{r['device_type']}'")
+    return r
+
+
 @api.delete("/analysis/{rid}")
 async def delete_analysis(rid: str, user: dict = Depends(get_current_user)):
     r = await db.net_reports.delete_one({"id": rid, "owner_id": user["id"]})
+    await db.net_reports_raw.delete_many({"rid": rid})
     return {"deleted": r.deleted_count}
 
 

@@ -110,6 +110,44 @@ def render(doc: dict) -> str:
         f'<td class="mono">{e(d.get("router_id") or "—")}</td><td class="num">{d.get("ospf_full", "—")}/{d.get("ospf_nbrs", "—")}</td>'
         f'<td class="num">{d.get("bgp_up", "—")}/{d.get("bgp_peers", "—")}</td></tr>' for d in r["devices"])
     ref = o.get("ref_used_mbps")
+    mp = r.get("mpls")
+    mpls_html = ""
+    if mp:
+        ms = mp["summary"]
+        yes = lambda v: '<b style="color:#2e7d32">sim</b>' if v else ('<b style="color:#c62828">NÃO</b>' if v is False else "—")  # noqa: E731
+        ldp_rows = rows(
+            f'<tr><td>{e(L["a_name"])} ↔ {e(L["b_name"])}</td><td>{yes(L.get("ldp_a"))}</td><td>{yes(L.get("ldp_b"))}</td>'
+            f'<td>{e(L.get("ldp_session") or "—")}</td><td>{"sim" if L.get("in_spf") else "não"}</td></tr>' for L in r["links"])
+        svc = []
+        for d in mp["devices"]:
+            secs = d.get("sections") or {}
+            for vc in (secs.get("vpws") or {}).get("items", []):
+                svc.append((d["name"], "VPWS", f'VC {vc.get("vcid")}' + (f' · {vc["iface"]}' if vc.get("iface") else ""), vc.get("peer"), vc.get("state"),
+                            "AC down" if vc.get("ac") == "down" else ""))
+            for v in (secs.get("vpls") or {}).get("items", []):
+                svc.append((d["name"], "VPLS", v.get("name"), "", v.get("state"), f'PWs {v["pws_up"]}/{v["pws"]}' if v.get("pws") else ""))
+            for v in (secs.get("vrf") or {}).get("items", []):
+                svc.append((d["name"], "L3VPN", v.get("name"), v.get("rd") or "", "—", "" if v.get("routes") is None else f'{v["routes"]} rotas'))
+            for p in (secs.get("bgp_vpn") or {}).get("items", []):
+                svc.append((d["name"], "MP-BGP", "vpnv4", p.get("peer"), p.get("state"), "" if p.get("prefixes") is None else f'{p["prefixes"]} prefixos'))
+        col = lambda st: "#2e7d32" if st == "up" else "#c62828" if st in ("down", "degraded") else "#44515f"  # noqa: E731
+        svc_rows = rows(f'<tr><td>{e(a)}</td><td>{e(b)}</td><td>{e(str(c or ""))}</td><td class="mono">{e(str(dd or ""))}</td>'
+                        f'<td><b style="color:{col(st)}">{e(str(st or ""))}</b></td><td>{e(ex)}</td></tr>' for a, b, c, dd, st, ex in svc)
+        errs = "".join(f'<div class="muted" style="color:#c62828">{e(d["name"])}: {e(d["error"])}</div>' for d in mp["devices"] if d.get("error"))
+        mpls_html = f"""<h2>MPLS (LDP, VPWS, VPLS, L3VPN)</h2>
+<div class="cards">
+ <div class="card"><div class="l">Sessões LDP up</div><div class="v">{ms["ldp_up"]}/{ms["ldp_total"]}</div></div>
+ <div class="card"><div class="l">Enlaces OSPF sem LDP</div><div class="v" style="color:{"#c62828" if ms["links_no_ldp"] else "#1d2733"}">{ms["links_no_ldp"]}</div></div>
+ <div class="card"><div class="l">VPWS up</div><div class="v">{ms["vc_up"]}/{ms["vc_total"]}</div></div>
+ <div class="card"><div class="l">VPLS up</div><div class="v">{ms["vsi_up"]}/{ms["vsi_total"]}</div></div>
+ <div class="card"><div class="l">VRFs</div><div class="v">{ms["vrfs"]}</div></div>
+ <div class="card"><div class="l">MP-BGP VPN up</div><div class="v">{ms["bgp_vpn_up"]}/{ms["bgp_vpn_total"]}</div></div>
+</div>{errs}
+<h2 style="font-size:15px">LDP por enlace</h2>
+<table><tr><th>Enlace</th><th>LDP em A</th><th>LDP em B</th><th>Sessão LDP</th><th>Roteia (OSPF)</th></tr>{ldp_rows}</table>
+<h2 style="font-size:15px">Serviços</h2>
+<table><tr><th>Equipamento</th><th>Tipo</th><th>Serviço</th><th>Peer / RD</th><th>Estado</th><th></th></tr>{svc_rows}</table>
+<div class="note">MPLS lido pela CLI (SSH) com os comandos configurados por fabricante.</div>"""
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Análise de rede — {e(doc.get("map_name", ""))}</title>
 <style>
@@ -152,6 +190,7 @@ Vermelho = problema crítico · laranja = atenção · tracejado = fora do cálc
 Não há matriz de tráfego real (NetFlow), então trate como ordem de grandeza.</div>
 <h2>BGP</h2>
 <table><tr><th>Equipamento</th><th>Peer</th><th>AS</th><th>Estado</th><th>Estabelecida há</th><th class="num">Quedas</th><th>Último erro</th></tr>{bgp}</table>
+{mpls_html}
 <h2>Interfaces (erros, descartes, enlaces do mapa)</h2>
 <table><tr><th>Equipamento</th><th>Interface</th><th>Status</th><th class="num">Erros entrada/s</th><th class="num">Erros saída/s</th><th class="num">Descartes entrada/s</th><th class="num">Descartes saída/s</th><th class="num">MTU</th></tr>{ifs}</table>
 <h2>Equipamentos</h2>

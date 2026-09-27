@@ -174,6 +174,14 @@ Em **Mapas → Analisar**, o Bastion lê por SNMP cada equipamento do mapa e ger
 - **Cenários:** para cada enlace, quem fica isolado se ele cair (ponto único de falha) e qual enlace congestiona com o
   tráfego desviado; equipamentos que são ponto único de falha. Clicando no mapa dá para **simular** queda de enlace,
   parada de equipamento ou **outro custo OSPF** e ver para onde vai o tráfego.
+- **MPLS (pela CLI, via SSH):** enlace OSPF **sem LDP** (buraco negro para as VPNs — crítico se carrega tráfego,
+  atenção se é reserva), sessão LDP entre as pontas de cada enlace, sessões LDP caídas, e o cenário "se o enlace X
+  cair, o tráfego passa por um enlace sem LDP e as VPNs param". Serviços: **VPWS/l2vc** (VC down, separando AC do
+  cliente caído de PW caído; VC configurado só de um lado), **VPLS/VSI** (down ou com PW down), **L3VPN**
+  (vpn-instance/VRF sem rotas) e **MP-BGP VPNv4** caído ou sem rotas.
+  Comandos padrão para Huawei, Juniper, Cisco (IOS/XE/XR), Datacom DMOS e ZTE — editáveis em
+  *Analisar → opções → comandos MPLS por fabricante*, com botão **Testar** que mostra a saída real do equipamento
+  (útil para ajustar DMOS/ZTE e firmwares diferentes). A saída bruta de cada análise fica guardada ("ver saída da CLI").
 - **Relatório:** botão *Relatório* baixa um HTML completo (abre em qualquer navegador; Ctrl+P salva em PDF).
 
 Sem custo: usa só SNMP v2c com MIBs padrão (OSPF-MIB, BGP4-MIB, IF-MIB, IP-MIB) e nada é alterado nos equipamentos.

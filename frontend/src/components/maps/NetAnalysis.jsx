@@ -6,6 +6,7 @@ import {
   X, Play, Loader2, Download, Printer, Settings2, AlertTriangle, XCircle, Info, Activity, RotateCcw, Unplug, Power, Stethoscope,
 } from "lucide-react";
 import { MapCanvas } from "@/components/maps/MapCanvas";
+import { MplsTab, MplsSettingsDialog } from "@/components/maps/MplsPanel";
 import { fmtBps, fmtSpeed, STATUS } from "@/lib/netfmt";
 
 const SEV = {
@@ -14,7 +15,7 @@ const SEV = {
   info: { label: "Info", color: "#4DA3FF", icon: Info },
 };
 const REFS = [["", "automática (a que a rede usa)"], ["10000", "10 Gbps"], ["100000", "100 Gbps"], ["400000", "400 Gbps"], ["1000000", "1 Tbps"]];
-const TABS = [["findings", "Achados"], ["ospf", "OSPF"], ["scen", "Cenários"], ["bgp", "BGP"], ["ifaces", "Interfaces"]];
+const TABS = [["findings", "Achados"], ["ospf", "OSPF"], ["mpls", "MPLS"], ["scen", "Cenários"], ["bgp", "BGP"], ["ifaces", "Interfaces"]];
 const fmtWhen = (iso) => new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 const num = (v, d = 1) => (v === null || v === undefined ? "—" : v === 0 ? "0" : Number(v).toFixed(d));
 const pctColor = (p) => (p === null || p === undefined ? "#94A3B8" : p >= 100 ? STATUS.critical : p >= 90 ? STATUS.critical : p >= 70 ? STATUS.warning : "#E2E8F0");
@@ -31,7 +32,8 @@ export function NetAnalysis({ map, devices, onClose }) {
   const [doc, setDoc] = useState(null);
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const [opts, setOpts] = useState({ ref: "", util_warn: 70, util_crit: 90 });
+  const [opts, setOpts] = useState({ ref: "", util_warn: 70, util_crit: 90, mpls: true });
+  const [mplsCfg, setMplsCfg] = useState(false);
   const [showOpts, setShowOpts] = useState(false);
   const [tab, setTab] = useState("findings");
   const [sel, setSel] = useState(null);
@@ -58,7 +60,7 @@ export function NetAnalysis({ map, devices, onClose }) {
     tick.current = setInterval(() => setElapsed(s => s + 1), 1000);
     try {
       const { data } = await api.post(`/maps/${map.id}/analysis`, {
-        ref_bw_mbps: opts.ref ? Number(opts.ref) : null, util_warn: Number(opts.util_warn) || 70, util_crit: Number(opts.util_crit) || 90,
+        ref_bw_mbps: opts.ref ? Number(opts.ref) : null, util_warn: Number(opts.util_warn) || 70, util_crit: Number(opts.util_crit) || 90, mpls: opts.mpls,
       }, { timeout: 300000 });
       setDoc(data); setSel(null); clearSim(); setTab("findings");
       const s = data.report.summary;
@@ -121,7 +123,12 @@ export function NetAnalysis({ map, devices, onClose }) {
   }, [rep, sim.costs]);
   const marks = useMemo(() => {
     if (!rep || simActive) return null;
-    return Object.fromEntries(rep.links.filter(l => l.sev === "crit" || l.sev === "warn").map(l => [l.id, l.sev]));
+    const out = {};
+    rep.findings.forEach(f => {          // enlace herda o achado mais grave (OSPF, MPLS, capacidade…)
+      if (!f.link_id || f.sev === "info") return;
+      if (out[f.link_id] !== "crit") out[f.link_id] = f.sev;
+    });
+    return out;
   }, [rep, simActive]);
 
   const selLink = sel?.type === "link" ? linkById[sel.id] : null;
@@ -169,6 +176,11 @@ export function NetAnalysis({ map, devices, onClose }) {
                   <label className="text-slate-400">Atenção (%)<input type="number" value={opts.util_warn} onChange={e => setOpts({ ...opts, util_warn: e.target.value })} className="mt-1 w-full h-8 bg-[#05070A] border border-[#1E293B] rounded px-2 font-mono" /></label>
                   <label className="text-slate-400">Crítico (%)<input type="number" value={opts.util_crit} onChange={e => setOpts({ ...opts, util_crit: e.target.value })} className="mt-1 w-full h-8 bg-[#05070A] border border-[#1E293B] rounded px-2 font-mono" /></label>
                 </div>
+                <label className="flex items-start gap-2 text-slate-300 cursor-pointer">
+                  <input type="checkbox" className="accent-[#007AFF] mt-0.5" checked={opts.mpls} onChange={e => setOpts({ ...opts, mpls: e.target.checked })} data-testid="na-opt-mpls" />
+                  <span>Ler MPLS pela CLI (LDP, VPWS, VPLS, L3VPN) — entra por SSH em cada equipamento</span>
+                </label>
+                <button onClick={() => { setShowOpts(false); setMplsCfg(true); }} className="text-[11px] text-[#4DA3FF] underline">comandos MPLS por fabricante…</button>
                 <div className="text-[11px] text-slate-500">Vale para a próxima análise.</div>
               </div>
             )}
@@ -266,6 +278,7 @@ export function NetAnalysis({ map, devices, onClose }) {
                       <div className="text-[11px] font-mono text-slate-400">
                         esperado ~{selLink.expected_cost ?? "—"} · área {selLink.area_a ?? "—"}{selLink.area_a !== selLink.area_b ? `/${selLink.area_b}` : ""} · {selLink.type_a ?? "—"} · MTU {selLink.mtu_a ?? "—"}/{selLink.mtu_b ?? "—"} · adjacência {selLink.adjacency ?? "—"}
                         {!selLink.in_spf && <span className="text-amber-300"> · fora do cálculo de rotas</span>}
+                        {rep.mpls && <> · LDP {selLink.ldp_a === false ? <span className="text-red-300">✕</span> : selLink.ldp_a ? "✓" : "—"}/{selLink.ldp_b === false ? <span className="text-red-300">✕</span> : selLink.ldp_b ? "✓" : "—"}{selLink.ldp_session ? ` · sessão ${selLink.ldp_session}` : ""}</>}
                       </div>
                       {sc && <div className="text-[11px] text-slate-300">Se cair: {sc.isolated_nodes.length ? <b className="text-red-300">isola {sc.isolated_nodes.join(", ")}</b> : "ninguém fica isolado"}
                         {sc.worst_link && <> · mais carregado: {sc.worst_link} <b style={{ color: pctColor(sc.worst_pct) }}>{num(sc.worst_pct, 0)}%</b></>}</div>}
@@ -370,6 +383,7 @@ export function NetAnalysis({ map, devices, onClose }) {
                   </tbody>
                 </table>
               )}
+              {tab === "mpls" && <MplsTab rep={rep} rid={doc.id} selId={sel?.id} onSelectLink={(id) => setSel({ type: "link", id })} onOpenSettings={() => setMplsCfg(true)} />}
               {tab === "ifaces" && (
                 <table className="w-full font-mono text-xs">
                   <thead className="text-[10px] uppercase text-slate-500"><tr><Th>Interface</Th><Th right>erros/s in·out</Th><Th right>desc/s</Th></tr></thead>
@@ -395,6 +409,7 @@ export function NetAnalysis({ map, devices, onClose }) {
           </div>
         </div>
       )}
+      {mplsCfg && <MplsSettingsDialog devices={devices} onClose={() => setMplsCfg(false)} />}
       {running && doc && <div className="absolute inset-x-0 top-[52px] h-0.5 bg-[#007AFF]/60 animate-pulse" />}
     </div>
   );

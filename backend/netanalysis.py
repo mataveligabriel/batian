@@ -17,6 +17,7 @@ import time
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
+import mplscli
 import snmp_service as S
 
 # ---------- OIDs ----------
@@ -334,7 +335,7 @@ def _pairs(g: Graph, dist) -> List[Tuple[str, str]]:
 
 # ---------- análise principal ----------
 def analyze(m: dict, devs: Dict[str, dict], data: Dict[str, dict], live_links: Dict[str, dict],
-            optics: Dict[Tuple[str, int], dict], opts: Optional[dict] = None) -> dict:
+            optics: Dict[Tuple[str, int], dict], opts: Optional[dict] = None, mpls: Optional[Dict[str, dict]] = None) -> dict:
     o = {**DEFAULT_OPTS, **(opts or {})}
     F: List[dict] = []
     nodes = {n["id"]: n for n in m.get("nodes", [])}
@@ -605,6 +606,10 @@ def analyze(m: dict, devs: Dict[str, dict], data: Dict[str, dict], live_links: D
     graph = build_graph(links)
     topo, scen, tf = topology(graph, links, nname, o)
     F += tf
+    mpls_rep = None
+    if mpls:
+        mf, mpls_rep = mpls_checks(mpls, links, graph, topo, node_dev, data, dname, nname)
+        F += mf
 
     F.sort(key=lambda f: (SEV_ORDER[f["sev"]], f["cat"], f["title"]))
     cnt = {s: sum(1 for f in F if f["sev"] == s) for s in ("crit", "warn", "info")}
@@ -615,7 +620,9 @@ def analyze(m: dict, devs: Dict[str, dict], data: Dict[str, dict], live_links: D
                "bgp_sessions": sum(1 for r in bgp_rows if r.get("admin_up")),
                "bgp_down": sum(1 for r in bgp_rows if r.get("admin_up") and r.get("state") != "established"),
                "ifaces_with_errors": sum(1 for r in iface_rows if (r.get("in_err_ps") or 0) + (r.get("out_err_ps") or 0) > 0)}
-    return {"summary": summary, "findings": F, "links": links, "devices": dev_rows, "bgp": bgp_rows,
+    if mpls_rep:
+        summary["mpls"] = mpls_rep["summary"]
+    return {"summary": summary, "findings": F, "links": links, "devices": dev_rows, "bgp": bgp_rows, "mpls": mpls_rep,
             "ifaces": sorted(iface_rows, key=lambda r: -((r.get("in_err_ps") or 0) + (r.get("out_err_ps") or 0))),
             "topology": topo, "scenarios": scen, "opts": o}
 
@@ -782,3 +789,200 @@ def topology(g: Graph, links: List[dict], nname, o: dict):
                         "Se ele parar, fica(m) isolado(s): " + ", ".join(iso[:8]),
                         "Considere redundância (segundo caminho que não passe por ele)."))
     return topo, scen, F
+
+
+# =====================================================================================
+# MPLS (LDP, VPWS, VPLS, L3VPN) — dados coletados pela CLI (mplscli)
+# =====================================================================================
+LDP_FIX = ("Habilite MPLS/LDP na interface (Huawei: mpls + mpls ldp na interface; Juniper: set protocols ldp interface X e "
+           "family mpls; Cisco: mpls ip; DMOS/ZTE: mpls ldp na interface) e ative a sincronia LDP-IGP para o OSPF evitar o "
+           "enlace enquanto o LDP não sobe (Huawei: ospf ldp-sync; Juniper: ldp-synchronization; Cisco: mpls ldp sync).")
+
+
+def pair_usage(g: Graph, only: Optional[set] = None) -> Dict[str, float]:
+    """Quantos pares (entre os nós `only`, se dado) passam por cada enlace."""
+    dist = g.all_dist()
+    use: Dict[str, float] = defaultdict(float)
+    for s_, t in _pairs(g, dist):
+        if only is not None and (s_ not in only or t not in only):
+            continue
+        for k, v in g.route(dist, s_, t).items():
+            use[k[0]] += v
+    return use
+
+
+def _ldp_on(iface_list: List[dict], name: Optional[str]) -> Optional[bool]:
+    if not name:
+        return None
+    k = mplscli.iface_key(name)
+    for x in iface_list:
+        if not x.get("active", True):
+            continue
+        if mplscli.iface_match(x["iface"], name) or mplscli.iface_key(x["iface"]).startswith(k + "."):
+            return True
+    return False
+
+
+def mpls_checks(mpls: Dict[str, dict], links: List[dict], g: Graph, topo: dict, node_dev: Dict[str, str],
+                data: Dict[str, dict], dname, nname):
+    F: List[dict] = []
+    dev_node = {d: n for n, d in node_dev.items()}
+    # IP -> equipamento (router-id + IPs das interfaces lidos por SNMP)
+    ip_dev: Dict[str, str] = {}
+    for did, d in data.items():
+        if not d.get("ok"):
+            continue
+        if d.get("router_id"):
+            ip_dev[d["router_id"]] = did
+        for i in (d.get("ifaces") or {}).values():
+            for cidr in i.get("ips") or []:
+                ip_dev.setdefault(cidr.split("/")[0], did)
+    peer_name = lambda ip: dname(ip_dev[ip]) if ip in ip_dev else ip      # noqa: E731
+    sec = lambda did, k: ((mpls.get(did) or {}).get("sections") or {}).get(k) or {}   # noqa: E731
+    ok = lambda did, k: bool(sec(did, k).get("ok"))                                  # noqa: E731
+    items = lambda did, k: sec(did, k).get("items") or []                             # noqa: E731
+
+    for did, m in mpls.items():
+        if m.get("error"):
+            F.append(_f("warn", "Coleta", f"Sem leitura MPLS de {dname(did)} (SSH)", m["error"],
+                        "Confira usuário/senha SSH do equipamento no Bastion (a leitura MPLS usa a CLI).", device=dname(did)))
+
+    # ---- LDP nos enlaces OSPF (só importa no caminho entre roteadores que rodam MPLS)
+    no_ldp = set()
+    reported_pairs = set()
+    mpls_nodes = {nid for nid, did in node_dev.items()
+                  if items(did, "ldp_iface") or any(x["state"] == "up" for x in items(did, "ldp_session"))}
+    usage_m = pair_usage(g, mpls_nodes) if mpls_nodes else {}
+    if not mpls_nodes and any(ok(did, "ldp_iface") or ok(did, "ldp_session") for did in node_dev.values()):
+        F.append(_f("info", "MPLS", "Nenhum LDP ativo nos equipamentos do mapa", "As regras de MPLS nos enlaces foram puladas."))
+    for L in links:
+        a_dev, b_dev = node_dev.get(L["a"]), node_dev.get(L["b"])
+        L["ldp_a"] = _ldp_on(items(a_dev, "ldp_iface"), L.get("a_if")) if ok(a_dev, "ldp_iface") else None
+        L["ldp_b"] = _ldp_on(items(b_dev, "ldp_iface"), L.get("b_if")) if ok(b_dev, "ldp_iface") else None
+        L["ldp_session"] = None
+        if not L.get("in_spf"):
+            continue
+        where = f"{L['a_name']} {L.get('a_if')} ↔ {L['b_name']} {L.get('b_if')}"
+        missing = [nm for nm, v in ((L["a_name"], L["ldp_a"]), (L["b_name"], L["ldp_b"])) if v is False]
+        used = usage_m.get(L["id"], 0) > 0
+        if missing and not used and not (L["a"] in mpls_nodes and L["b"] in mpls_nodes):
+            missing = []            # borda só IP (sem MPLS) e nenhum PE passa por aqui: normal
+        if missing:
+            no_ldp.add(L["id"])
+            F.append(_f("crit" if used else "warn", "MPLS",
+                        f"Enlace OSPF sem LDP em {', '.join(missing)}" + ("" if used else " (enlace de reserva)"),
+                        ("O OSPF manda tráfego por este enlace, mas sem rótulo MPLS: VPLS, VPWS e L3VPN que passam por aqui caem (buraco negro)."
+                         if used else "Hoje ninguém passa por aqui; se o caminho principal cair, o tráfego MPLS vem para cá e as VPNs quebram."),
+                        LDP_FIX, link_id=L["id"], where=where))
+            continue
+        # sessão LDP entre as pontas
+        if L["ldp_a"] and L["ldp_b"] and (ok(a_dev, "ldp_session") or ok(b_dev, "ldp_session")):
+            def has_up(x_dev, y_dev):
+                return any(ip_dev.get(sx["peer"]) == y_dev and sx["state"] == "up" for sx in items(x_dev, "ldp_session"))
+            up = has_up(a_dev, b_dev) or has_up(b_dev, a_dev)
+            L["ldp_session"] = "up" if up else "down"
+            if not up:
+                reported_pairs.add(frozenset((a_dev, b_dev)))
+                F.append(_f("crit", "MPLS", f"Sem sessão LDP operacional entre {L['a_name']} e {L['b_name']}",
+                            "LDP habilitado nas duas interfaces, mas a sessão não está operacional: não há troca de rótulos neste enlace.",
+                            "Confira alcance entre as loopbacks (LSR-ID / transport-address), autenticação MD5 do LDP e ACLs para TCP/UDP 646.",
+                            link_id=L["id"], where=where))
+    # sessões LDP caídas em geral
+    ldp_up = ldp_total = 0
+    for did in node_dev.values():
+        for sx in items(did, "ldp_session"):
+            ldp_total += 1
+            ldp_up += sx["state"] == "up"
+            if sx["state"] == "up":
+                continue
+            other = ip_dev.get(sx["peer"])
+            if other and frozenset((did, other)) in reported_pairs:
+                continue
+            F.append(_f("crit" if other else "warn", "MPLS", f"Sessão LDP {dname(did)} → {peer_name(sx['peer'])} não operacional",
+                        f"Estado: {sx.get('raw_state') or sx['state']}" + ("" if other else " · peer fora deste mapa"),
+                        "Confira alcance entre as loopbacks, autenticação do LDP e se o outro lado tem o LDP ativo.", device=dname(did)))
+
+    # cenário: queda de um enlace joga o tráfego num enlace sem LDP
+    if no_ldp:
+        base = usage_m
+        for L in links:
+            if not L.get("in_spf") or L["id"] in no_ldp:
+                continue
+            after = pair_usage(g.without(links={L["id"]}), mpls_nodes)
+            hit = [x for x in links if x["id"] in no_ldp and base.get(x["id"], 0) == 0 and after.get(x["id"], 0) > 0]
+            for x in hit:
+                F.append(_f("crit", "MPLS", f"Se {L['a_name']} ↔ {L['b_name']} cair, o tráfego passa por enlace sem LDP",
+                            f"O desvio vai por {x['a_name']} ↔ {x['b_name']}, que não tem LDP: as VPNs param durante a falha.",
+                            LDP_FIX, link_id=L["id"]))
+
+    # ---- VPWS (l2vc)
+    vc_up = vc_total = 0
+    for did in node_dev.values():
+        for vc in items(did, "vpws"):
+            vc_total += 1
+            vc_up += vc["state"] == "up"
+            who = f"VC {vc.get('vcid') or '?'}" + (f" ({vc['name']})" if vc.get("name") else "")
+            dst = peer_name(vc["peer"]) if vc.get("peer") else "?"
+            if vc["state"] != "up":
+                if vc.get("ac") == "down":
+                    F.append(_f("warn", "VPWS", f"{who} em {dname(did)}: circuito do cliente (AC) DOWN",
+                                f"Interface {vc.get('iface') or '?'} → {dst}. O PW não sobe porque a porta do cliente está fora.",
+                                "Verifique a porta/cabo/equipamento do cliente.", device=dname(did)))
+                else:
+                    F.append(_f("crit", "VPWS", f"{who} DOWN em {dname(did)} → {dst}",
+                                f"Interface {vc.get('iface') or '?'}" + (f" · estado {vc['raw_state']}" if vc.get("raw_state") else ""),
+                                "Confira a sessão LDP com o PE remoto, o mesmo VC ID e tipo/MTU nos dois lados (MTU diferente derruba o PW).",
+                                device=dname(did)))
+            other = ip_dev.get(vc.get("peer") or "")
+            if other and other in dev_node and ok(other, "vpws") and vc.get("vcid"):
+                if not any(x.get("vcid") == vc["vcid"] and ip_dev.get(x.get("peer") or "") == did for x in items(other, "vpws")):
+                    F.append(_f("warn", "VPWS", f"{who} só existe em {dname(did)}",
+                                f"{dname(did)} aponta para {dname(other)}, mas {dname(other)} não tem o VC {vc['vcid']} de volta.",
+                                "Configure o mesmo VC ID no PE remoto apontando para este equipamento.", device=dname(did)))
+    # ---- VPLS (vsi)
+    vsi_up = vsi_total = 0
+    for did in node_dev.values():
+        for v in items(did, "vpls"):
+            vsi_total += 1
+            vsi_up += v["state"] == "up"
+            pws = f" · PWs {v['pws_up']}/{v['pws']} up" if v.get("pws") else ""
+            if v["state"] == "down":
+                F.append(_f("crit", "VPLS", f"VSI {v['name']} DOWN em {dname(did)}", "Serviço VPLS parado neste PE" + pws,
+                            "Veja se há AC ativo na VSI e se os PWs para os outros PEs sobem (sessões LDP, VSI-ID/peer iguais).",
+                            device=dname(did)))
+            elif v["state"] == "degraded" or (v.get("pws") and v.get("pws_up") is not None and v["pws_up"] < v["pws"]):
+                F.append(_f("warn", "VPLS", f"VSI {v['name']} com PW down em {dname(did)}", pws.strip(" ·"),
+                            "Algum PE remoto ficou fora da VSI: confira a sessão LDP com ele e a configuração do peer.",
+                            device=dname(did)))
+    # ---- L3VPN
+    vrfs = 0
+    for did in node_dev.values():
+        for v in items(did, "vrf"):
+            vrfs += 1
+            if v.get("routes") == 0:
+                F.append(_f("warn", "L3VPN", f"VRF {v['name']} sem rotas em {dname(did)}", "A tabela da VRF está vazia.",
+                            "Confira as sessões MP-BGP VPNv4, RT import/export e as interfaces da VRF.", device=dname(did)))
+    bgp_up = bgp_total = 0
+    for did in node_dev.values():
+        for p in items(did, "bgp_vpn"):
+            bgp_total += 1
+            bgp_up += p["state"] == "up"
+            if p["state"] != "up":
+                F.append(_f("crit", "L3VPN", f"Sessão MP-BGP VPN caída: {dname(did)} → {peer_name(p['peer'])}",
+                            f"AS {p.get('as') or '?'} · sem ela as rotas das VPNs L3 entre esses PEs não são trocadas.",
+                            "Confira alcance entre as loopbacks, update-source/connect-interface, AS e a address-family vpnv4 ativa nos dois lados.",
+                            device=dname(did)))
+            elif p.get("prefixes") == 0:
+                F.append(_f("info", "L3VPN", f"Sessão VPNv4 {dname(did)} → {peer_name(p['peer'])} sem rotas recebidas", "",
+                            "Normal se o outro PE não tem VRF com rotas; senão confira route-targets e políticas.", device=dname(did)))
+
+    devices = []
+    for nid, did in node_dev.items():
+        m = mpls.get(did) or {}
+        devices.append({"id": did, "name": dname(did), "error": m.get("error"), "device_type": m.get("device_type"),
+                        "sections": {k: {"ok": v.get("ok"), "command": v.get("command"), "items": v.get("items") or []}
+                                     for k, v in (m.get("sections") or {}).items()}})
+    summary = {"devices": sum(1 for d in devices if d["sections"]), "ldp_up": ldp_up, "ldp_total": ldp_total,
+               "links_no_ldp": len(no_ldp), "vc_up": vc_up, "vc_total": vc_total, "vsi_up": vsi_up, "vsi_total": vsi_total,
+               "vrfs": vrfs, "bgp_vpn_up": bgp_up, "bgp_vpn_total": bgp_total}
+    return F, {"summary": summary, "devices": devices, "no_ldp_links": sorted(no_ldp)}
