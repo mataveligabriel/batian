@@ -9,12 +9,13 @@ import io
 import os
 import re
 import asyncio
+import time
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -41,6 +42,8 @@ import vault
 import automation
 import webpush
 import sharing
+import netanalysis
+import netreport
 import auth as auth_mod
 import snmp_service
 import monitor as monitoring
@@ -95,6 +98,7 @@ async def startup():
     await db.if_monitors.create_index([("device_id", 1), ("if_index", 1)], unique=True)
     await db.if_events.create_index([("at", -1)])
     await db.maps.create_index("owner_id")
+    await db.net_reports.create_index([("map_id", 1), ("at", -1)])
     scheduler.start()
     assistant.start()
     net_monitor.start()
@@ -2083,6 +2087,120 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
             await ws.close()
         except Exception:
             pass
+
+
+# ---------- Análise de rede (OSPF / BGP / interfaces / cenários) ----------
+class AnalysisIn(BaseModel):
+    ref_bw_mbps: Optional[int] = None       # None = descobre a referência usada na rede
+    util_warn: int = 70
+    util_crit: int = 90
+    sample_sec: int = 10
+
+
+class SimulateIn(BaseModel):
+    down_links: List[str] = []
+    down_nodes: List[str] = []
+    costs: List[dict] = []                  # [{link_id, dir: "ab"|"ba", cost}]
+
+
+async def _report_for(user: dict, rid: str) -> dict:
+    d = await db.net_reports.find_one({"id": rid, "owner_id": user["id"]}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Relatório não encontrado")
+    return d
+
+
+@api.post("/maps/{map_id}/analysis")
+async def run_analysis(map_id: str, body: AnalysisIn, user: dict = Depends(get_current_user)):
+    m = await _map_for(user, map_id)
+    dev_ids = list({n["device_id"] for n in m.get("nodes", []) if n.get("device_id")})
+    if not dev_ids:
+        raise HTTPException(status_code=400, detail="O mapa não tem equipamentos")
+    devs = {d["id"]: d async for d in db.devices.find({"id": {"$in": dev_ids}, "owner_id": user["id"]}, {"_id": 0})}
+    settings = await monitoring.get_settings(db)
+    sample = max(3, min(int(body.sample_sec), 30))
+    sem = asyncio.Semaphore(8)
+    started = time.monotonic()
+
+    async def one(did: str):
+        dev = devs.get(did)
+        if not dev:
+            return did, {"ok": False, "error": "equipamento não encontrado"}
+        async with sem:
+            try:
+                client = await _snmp_client(dev, settings)
+                return did, await asyncio.wait_for(netanalysis.collect_device(client, sample), timeout=150)
+            except asyncio.TimeoutError:
+                return did, {"ok": False, "error": "SNMP demorou demais"}
+            except Exception as e:
+                return did, {"ok": False, "error": str(e)}
+
+    data = dict(await asyncio.gather(*[one(d) for d in dev_ids]))
+    live = (await map_live(map_id, user=user)).get("links", {})
+    optics = {}
+    node_dev = {n["id"]: n.get("device_id") for n in m.get("nodes", [])}
+    for ln in m.get("links", []):
+        for side, key in (("from_if", "from"), ("to_if", "to")):
+            did, iface = node_dev.get(ln[key]), ln.get(side)
+            if did and iface:
+                optics[(did, iface["index"])] = optics_collector.get_live(did, iface["index"])
+    opts = {k: v for k, v in body.model_dump().items() if v is not None}
+    rep = netanalysis.analyze(m, devs, data, live, optics, opts)
+    doc = {"id": os.urandom(8).hex(), "owner_id": user["id"], "map_id": map_id, "map_name": m["name"],
+           "at": datetime.now(timezone.utc).isoformat(), "duration_sec": round(time.monotonic() - started, 1),
+           "nodes": [{"id": n["id"], "x": n["x"], "y": n["y"], "kind": n.get("kind"),
+                      "name": (devs.get(n.get("device_id")) or {}).get("name") or n.get("label") or ""} for n in m.get("nodes", [])
+                     if n.get("kind") != "label"],
+           "summary": rep["summary"], "report": rep}
+    await db.net_reports.insert_one(dict(doc))
+    # guarda os 15 últimos por mapa
+    old = await db.net_reports.find({"map_id": map_id, "owner_id": user["id"]}, {"_id": 0, "id": 1, "at": 1}).sort("at", -1).to_list(100)
+    for x in old[15:]:
+        await db.net_reports.delete_one({"id": x["id"]})
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/maps/{map_id}/analysis")
+async def list_analysis(map_id: str, user: dict = Depends(get_current_user)):
+    await _map_for(user, map_id)
+    rows = await db.net_reports.find({"map_id": map_id, "owner_id": user["id"]}, {"_id": 0, "id": 1, "at": 1, "summary": 1}).sort("at", -1).to_list(50)
+    return [{"id": r["id"], "at": r["at"], "summary": r.get("summary")} for r in rows]
+
+
+@api.get("/analysis/{rid}")
+async def get_analysis(rid: str, user: dict = Depends(get_current_user)):
+    return await _report_for(user, rid)
+
+
+@api.delete("/analysis/{rid}")
+async def delete_analysis(rid: str, user: dict = Depends(get_current_user)):
+    r = await db.net_reports.delete_one({"id": rid, "owner_id": user["id"]})
+    return {"deleted": r.deleted_count}
+
+
+@api.post("/analysis/{rid}/simulate")
+async def simulate_analysis(rid: str, body: SimulateIn, user: dict = Depends(get_current_user)):
+    d = await _report_for(user, rid)
+    costs = {}
+    for c in body.costs:
+        try:
+            if c.get("dir") in ("ab", "ba") and c.get("link_id") and int(c["cost"]) > 0:
+                costs[(c["link_id"], c["dir"])] = min(int(c["cost"]), 65535)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Custo inválido")
+    links = d["report"]["links"]
+    r = netanalysis.simulate(links, set(body.down_links), costs, set(body.down_nodes))
+    names = {n["id"]: n.get("name") for n in d.get("nodes", [])}
+    r["isolated_names"] = [names.get(n, n) for n in r["cut_nodes"]]
+    r["isolated_pairs"] = len(r["isolated_pairs"])
+    return r
+
+
+@api.get("/analysis/{rid}/html")
+async def analysis_html(rid: str, user: dict = Depends(get_current_user)):
+    d = await _report_for(user, rid)
+    return HTMLResponse(netreport.render(d), headers={"Content-Disposition": f'attachment; filename="analise-{rid}.html"'})
 
 
 # ---------- Enviar itens entre usuários / acesso do perfil View ----------

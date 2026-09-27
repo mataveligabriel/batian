@@ -85,6 +85,8 @@ function ValueTag({ x, y, text, sub, accent }) {
 
 export function MapCanvas({
   map, live, devices, editing, tool, selected, onSelect, onMoveNode, onMoveEnd, onConnect, onBendLink, fitSignal,
+  costs = null,   // análise: {linkId: {ab, ba, changed}} -> custo OSPF perto de cada ponta
+  marks = null,   // análise: {linkId: "crit" | "warn"} -> halo no enlace com problema
 }) {
   const wrapRef = useRef(null);
   const svgRef = useRef(null);
@@ -247,6 +249,7 @@ export function MapCanvas({
             const hoverOn = (e) => { if (drag) return; const r = wrapRef.current.getBoundingClientRect(); setHover({ linkId: l.id, x: e.clientX - r.left, y: e.clientY - r.top }); };
             return (
               <g key={l.id} data-testid={`link-${l.id}`}>
+                {marks?.[l.id] && <path d={toPath(g.full)} fill="none" stroke={marks[l.id] === "crit" ? STATUS.critical : STATUS.warning} strokeOpacity="0.3" strokeWidth="19" />}
                 {isSel && <path d={toPath(g.full)} fill="none" stroke="#F8FAFC" strokeOpacity="0.35" strokeWidth="15" />}
                 <Half pts={g.halfA} ux={g.ux} uy={g.uy} color={cAB} dashed={down || noData} />
                 <Half pts={g.halfB} ux={-g.ux} uy={-g.uy} color={cBA} dashed={down || noData} />
@@ -260,6 +263,19 @@ export function MapCanvas({
                   <ValueTag x={g.qB.x} y={g.qB.y} text={fmtBps(lv.ba_bps)} sub={lv.ba_pct != null ? `${lv.ba_pct}%` : null} accent={cBA} />
                 </>}
                 {down && <ValueTag x={g.m.x} y={g.m.y - 16} text="✕ DOWN" accent={STATUS.critical} />}
+                {costs?.[l.id] && [["ab", g.halfA], ["ba", g.halfB]].map(([k, pts]) => {
+                  const c = costs[l.id][k];
+                  if (c === null || c === undefined) return null;
+                  const p = pts[Math.min(4, pts.length - 1)];
+                  const w = 14 + String(c).length * 7;
+                  const hot = costs[l.id].changed?.[k];
+                  return (
+                    <g key={k} pointerEvents="none">
+                      <rect x={p.x - w / 2} y={p.y - 9} width={w} height="18" rx="9" fill="#0B111C" stroke={hot ? "#FAB219" : "#94A3B8"} strokeWidth={hot ? 2 : 1.2} />
+                      <text x={p.x} y={p.y + 4} textAnchor="middle" fontSize="11" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill={hot ? "#FAB219" : "#E2E8F0"}>{c}</text>
+                    </g>
+                  );
+                })}
                 {noData && !down && g.len > 90 && <ValueTag x={g.m.x} y={g.m.y - 16} text={lv?.error ? "⚠ SNMP" : l.from_if || l.to_if ? "coletando…" : "sem interface"} accent={NO_DATA} />}
                 {/* alça para curvar/afastar o enlace (modo edição) — duplo clique volta ao automático */}
                 {editing && tool === "select" && (

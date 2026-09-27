@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { TransferDialog } from "@/components/TransferDialog";
+import { NetAnalysis } from "@/components/maps/NetAnalysis";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
   Network, Plus, Pencil, Save, X, Trash2, Copy, Cable, Cloud, Type, Server, Loader2, MousePointer2,
-  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw, Send, Eye,
+  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw, Send, Eye, Stethoscope,
 } from "lucide-react";
 import { MapCanvas } from "@/components/maps/MapCanvas";
 import { LinkDialog } from "@/components/maps/LinkDialog";
@@ -185,6 +186,7 @@ export default function Maps() {
   const readOnly = user?.role === "viewer";          // perfil View: só olha
   const [params, setParams] = useSearchParams();
   const [sendOpen, setSendOpen] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
   const [tab, setTab] = useState("maps");
   const [maps, setMaps] = useState([]);
   const [devices, setDevices] = useState([]);
@@ -372,6 +374,8 @@ export default function Maps() {
                   </select>
                 ) : <div className="text-lg font-semibold text-slate-100 mr-2">{map.name}</div>}
                 {readOnly ? null : !editing ? <>
+                  <Button size="sm" variant="outline" onClick={() => setAnalysisOpen(true)} className={`${tb} border-[#007AFF]/50 text-[#4DA3FF]`} data-testid="map-analyze"
+                          title="Diagnóstico: custos OSPF, BGP, erros de interface e cenários de falha"><Stethoscope className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Analisar</span></Button>
                   <Button size="sm" variant="outline" onClick={startEdit} className={tb} data-testid="map-edit" title="Editar"><Pencil className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Editar</span></Button>
                   <Button size="sm" variant="outline" onClick={duplicate} className={`${tb} hidden md:inline-flex`}><Copy className="w-3.5 h-3.5 mr-1.5" /> Duplicar</Button>
                   <Button size="sm" variant="outline" onClick={() => setSendOpen(true)} className={`${tb} hidden md:inline-flex`} data-testid="map-send" title="Enviar este mapa (com os equipamentos) para outro usuário"><Send className="w-3.5 h-3.5 mr-1.5" /> Enviar</Button>
@@ -472,6 +476,7 @@ export default function Maps() {
         </div>
       )}
 
+      {analysisOpen && current && <NetAnalysis map={current} devices={devices} onClose={() => setAnalysisOpen(false)} />}
       {current && <TransferDialog open={sendOpen} onOpenChange={setSendOpen} preset={{ map_ids: [current.id], tab: "maps" }} />}
       {linkDlg && (
         <LinkDialog key={linkDlg.link?.id || `${linkDlg.from}-${linkDlg.to}`} open link={linkDlg.link}

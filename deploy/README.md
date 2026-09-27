@@ -162,3 +162,21 @@ não vê senhas nem outros menus; o bloqueio é feito no servidor (qualquer outr
   destino já tem com o mesmo IP:porta é reaproveitado. Operadores podem enviar para o administrador.
 - **Painel NOC:** cada usuário escolhe quais mapas e dashboards aparecem no painel (botão *Escolher painéis*),
   com abas, rotação automática e tela cheia para a TV do NOC.
+
+## 12. Análise de rede (experimental)
+Em **Mapas → Analisar**, o Bastion lê por SNMP cada equipamento do mapa e gera um diagnóstico com relatório:
+- **OSPF:** custo de cada ponta do enlace (mostrado no mapa), custo × banda (a referência que a sua rede usa é
+  descoberta sozinha), custo assimétrico, enlaces paralelos sem ECMP, área/tipo de rede/timers/MTU divergentes,
+  adjacência que não chega a FULL, router-ID duplicado, todos os custos = 1 (referência padrão de 100 Mbps).
+- **BGP:** sessões caídas (com o último erro: hold timer, AS errado, limite de prefixos…), reiniciadas há pouco, instáveis.
+- **Interfaces:** erros e descartes por segundo (duas leituras), interfaces descritas que estão DOWN, enlaces acima de 70/90%,
+  lanes ópticas apagadas ou desbalanceadas.
+- **Cenários:** para cada enlace, quem fica isolado se ele cair (ponto único de falha) e qual enlace congestiona com o
+  tráfego desviado; equipamentos que são ponto único de falha. Clicando no mapa dá para **simular** queda de enlace,
+  parada de equipamento ou **outro custo OSPF** e ver para onde vai o tráfego.
+- **Relatório:** botão *Relatório* baixa um HTML completo (abre em qualquer navegador; Ctrl+P salva em PDF).
+
+Sem custo: usa só SNMP v2c com MIBs padrão (OSPF-MIB, BGP4-MIB, IF-MIB, IP-MIB) e nada é alterado nos equipamentos.
+Limitações desta versão: BGP4-MIB traz só sessões IPv4 da instância principal (IPv6/VPN e contagem de prefixos
+dependem de MIB do fabricante); OSPFv3 não entra; no Huawei com mais de um processo OSPF, o SNMP mostra o processo
+ligado com `ospf mib-binding <processo>`. A estimativa de carga nos cenários é de 1ª ordem (sem NetFlow).
