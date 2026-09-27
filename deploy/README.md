@@ -148,3 +148,17 @@ Para ter HTTPS (certificado grátis e automático do Let's Encrypt):
 3. Portas **80 e 443** liberadas no firewall/VPS e rode `bash /opt/bastion/deploy/update.sh`.
    Em ~1 minuto o Caddy emite o certificado; acesse `https://…` e instale no celular por esse endereço.
 4. No app do Windows: menu **Bastion → Alterar servidor…** e informe o endereço `https://…`.
+
+## 11. Usuários, perfil View e envio de itens
+**Papéis:** *Administrador* (gerencia usuários e configurações), *Operador* (acesso completo aos próprios
+equipamentos) e **View** — só **Painel NOC, Dashboards e Mapas**, em modo leitura. O View não abre terminal,
+não vê senhas nem outros menus; o bloqueio é feito no servidor (qualquer outra rota responde 403).
+
+- **Liberar o que o View enxerga:** *Usuários → Acesso* (na linha do usuário View) → marque mapas e dashboards
+  de qualquer usuário. Ele vê ao vivo, sem cópia: o que você mudar no mapa aparece para ele.
+- **Enviar equipamentos, mapas e dashboards:** selecione equipamentos em *Equipamentos → Enviar para usuário*,
+  ou use **Enviar** em Mapas/Dashboards, ou *Usuários → Transferir* (admin: enviar para o usuário ou trazer dele).
+  É uma **cópia**: mapas e dashboards levam os equipamentos que usam (e a cadeia de agentes); equipamento que o
+  destino já tem com o mesmo IP:porta é reaproveitado. Operadores podem enviar para o administrador.
+- **Painel NOC:** cada usuário escolhe quais mapas e dashboards aparecem no painel (botão *Escolher painéis*),
+  com abas, rotação automática e tela cheia para a TV do NOC.

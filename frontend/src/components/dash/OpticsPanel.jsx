@@ -54,7 +54,7 @@ export function OpticsTestDialog({ open, onClose, deviceId, ifIndex, ifName, onD
 }
 
 /** Potência óptica por lane: valores atuais (tabela) + histórico de RX/TX. */
-export function OpticsPanel({ deviceId, ifIndex, ifName, minutes = 1440, warn, crit, compact = false, refreshKey, chartHeight }) {
+export function OpticsPanel({ deviceId, ifIndex, ifName, minutes = 1440, warn, crit, compact = false, refreshKey, chartHeight, readOnly = false }) {
   const [data, setData] = useState(null);
   const [which, setWhich] = useState("rx");
   const [testOpen, setTestOpen] = useState(false);
@@ -84,12 +84,12 @@ export function OpticsPanel({ deviceId, ifIndex, ifName, minutes = 1440, warn, c
       {data.live?.error && (
         <div className="text-[11px] font-mono text-amber-300 mb-2 flex items-center gap-2 flex-wrap">
           <AlertTriangle className="w-3.5 h-3.5" /> {data.live.error}
-          <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-slate-200 hover:bg-slate-800" onClick={() => setTestOpen(true)}><FlaskConical className="w-3 h-3 mr-1" /> Testar leitura</Button>
+          {!readOnly && <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-slate-200 hover:bg-slate-800" onClick={() => setTestOpen(true)}><FlaskConical className="w-3 h-3 mr-1" /> Testar leitura</Button>}
         </div>
       )}
       {!lanes.length && !data.live?.error && (
         <div className="text-[11px] font-mono text-slate-500 mb-2">Aguardando a 1ª leitura (a cada 5 min).
-          <button className="ml-2 underline text-slate-300" onClick={() => setTestOpen(true)}>testar agora</button></div>
+          {!readOnly && <button className="ml-2 underline text-slate-300" onClick={() => setTestOpen(true)}>testar agora</button>}</div>
       )}
       {lanes.length > 0 && (
         <table className="w-full text-xs font-mono mb-2" data-testid="optics-lanes">
@@ -122,7 +122,7 @@ export function OpticsPanel({ deviceId, ifIndex, ifName, minutes = 1440, warn, c
                      refLines={refs} emptyText="Histórico óptico aparece após algumas leituras (a cada 5 min)." />
         </>
       ) : null}
-      <OpticsTestDialog open={testOpen} onClose={() => setTestOpen(false)} deviceId={deviceId} ifIndex={ifIndex} ifName={ifName} onDone={() => setTick(t => t + 1)} />
+      {!readOnly && <OpticsTestDialog open={testOpen} onClose={() => setTestOpen(false)} deviceId={deviceId} ifIndex={ifIndex} ifName={ifName} onDone={() => setTick(t => t + 1)} />}
     </div>
   );
 }

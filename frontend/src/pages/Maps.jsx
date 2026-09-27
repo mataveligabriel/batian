@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { useAuth } from "@/context/AuthContext";
+import { TransferDialog } from "@/components/TransferDialog";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -9,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
   Network, Plus, Pencil, Save, X, Trash2, Copy, Cable, Cloud, Type, Server, Loader2, MousePointer2,
-  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw,
+  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw, Send, Eye,
 } from "lucide-react";
 import { MapCanvas } from "@/components/maps/MapCanvas";
 import { LinkDialog } from "@/components/maps/LinkDialog";
@@ -36,7 +38,7 @@ function Legend() {
   );
 }
 
-function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onMonitor, siblings = [], liveLinks, onPick, onAddParallel, onResetCurve }) {
+function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onMonitor, siblings = [], liveLinks, onPick, onAddParallel, onResetCurve, readOnly = false }) {
   const [range, setRange] = useState(60);
   const [points, setPoints] = useState([]);
   const a = nodes[link.from], b = nodes[link.to];
@@ -104,11 +106,11 @@ function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onM
       {[["A", a, link.from_if], ["B", b, link.to_if]].filter(([, n, i]) => n?.device_id && i).map(([k, n, i]) => (
         <div key={k} className="border-t border-[#1E293B] pt-2">
           <div className="text-[11px] uppercase tracking-widest text-slate-400 font-mono mb-1">Sinal óptico · {k} · {nameOf(n)} · {i.name}</div>
-          <OpticsPanel deviceId={n.device_id} ifIndex={i.index} ifName={i.name} minutes={1440} compact />
+          <OpticsPanel deviceId={n.device_id} ifIndex={i.index} ifName={i.name} minutes={1440} compact readOnly={readOnly} />
         </div>
       ))}
       <div className="flex flex-wrap gap-2 pt-1">
-        {(link.from_if || link.to_if) && (
+        {!readOnly && (link.from_if || link.to_if) && (
           <Button size="sm" variant="outline" onClick={onMonitor} className="h-7 text-xs border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="link-monitor">
             <BellRing className="w-3.5 h-3.5 mr-1" /> Alarmar queda no Telegram
           </Button>
@@ -179,6 +181,10 @@ function SettingsTab() {
 
 export default function Maps() {
   const nav = useNavigate();
+  const { user } = useAuth();
+  const readOnly = user?.role === "viewer";          // perfil View: só olha
+  const [params, setParams] = useSearchParams();
+  const [sendOpen, setSendOpen] = useState(false);
   const [tab, setTab] = useState("maps");
   const [maps, setMaps] = useState([]);
   const [devices, setDevices] = useState([]);
@@ -207,7 +213,12 @@ export default function Maps() {
     loadMaps().catch(() => {});
     api.get("/devices").then(r => setDevices(r.data)).catch(() => {});
   }, []);
-  useEffect(() => { if (!current && maps.length) openMap(maps[0].id); }, [maps]); // eslint-disable-line react-hooks/exhaustive-deps
+  // abre o mapa pedido no link (/maps?id=...) ou o primeiro da lista
+  useEffect(() => {
+    const want = params.get("id");
+    if (want && maps.some(m => m.id === want) && current?.id !== want) { openMap(want); setParams({}, { replace: true }); }
+    else if (!current && maps.length) openMap(maps[0].id);
+  }, [maps]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // tráfego ao vivo
   useEffect(() => {
@@ -313,8 +324,11 @@ export default function Maps() {
         <h1 className="hidden md:block font-heading text-2xl font-bold text-slate-100 mt-1">Mapas de rede</h1>
         <div className="flex gap-1 md:mt-4 border-b border-[#1E293B] overflow-x-auto whitespace-nowrap">
           <button className={tabBtn(tab === "maps")} onClick={() => setTab("maps")} data-testid="tab-maps"><Network className="w-4 h-4" /> Mapas</button>
-          <button className={tabBtn(tab === "alarms")} onClick={() => setTab("alarms")} data-testid="tab-alarms"><BellRing className="w-4 h-4" /> Alarmes de interface</button>
-          <button className={tabBtn(tab === "settings")} onClick={() => setTab("settings")} data-testid="tab-settings"><Settings2 className="w-4 h-4" /> Configurações</button>
+          {!readOnly && <>
+            <button className={tabBtn(tab === "alarms")} onClick={() => setTab("alarms")} data-testid="tab-alarms"><BellRing className="w-4 h-4" /> Alarmes de interface</button>
+            <button className={tabBtn(tab === "settings")} onClick={() => setTab("settings")} data-testid="tab-settings"><Settings2 className="w-4 h-4" /> Configurações</button>
+          </>}
+          {readOnly && <span className="ml-auto self-center text-[11px] font-mono text-amber-300 flex items-center gap-1"><Eye className="w-3.5 h-3.5" /> somente leitura</span>}
         </div>
       </div>
 
@@ -325,13 +339,13 @@ export default function Maps() {
         <div className="flex-1 min-h-0 flex gap-4 p-2 md:px-6 md:pb-6 md:pt-4">
           {/* lista de mapas (no celular: só quando nenhum mapa está aberto) */}
           <Card className={`bg-[#111722] border-[#1E293B] ${isMobile ? "w-full" : "w-60"} shrink-0 flex-col overflow-hidden ${isMobile && map ? "hidden" : "flex"}`}>
-            <div className="p-3 border-b border-[#1E293B] flex gap-1.5">
+            <div className={`p-3 border-b border-[#1E293B] flex gap-1.5 ${readOnly ? "hidden" : ""}`}>
               <Input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && createMap()}
                      placeholder="Novo mapa…" className="h-8 bg-[#05070A] border-[#1E293B] text-sm" data-testid="new-map-name" />
               <Button size="sm" onClick={createMap} disabled={!newName.trim()} className="h-8 px-2 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="new-map-btn"><Plus className="w-4 h-4" /></Button>
             </div>
             <div className="flex-1 overflow-y-auto divide-y divide-[#1E293B]">
-              {maps.length === 0 && <div className="p-4 text-xs text-slate-500 font-mono">Nenhum mapa. Crie o primeiro acima (ex.: "Backbone", "POP Cachoeiro").</div>}
+              {maps.length === 0 && <div className="p-4 text-xs text-slate-500 font-mono">{readOnly ? "Nenhum mapa liberado para você ainda. Peça ao administrador." : 'Nenhum mapa. Crie o primeiro acima (ex.: "Backbone", "POP Cachoeiro").'}</div>}
               {maps.map(m => (
                 <button key={m.id} onClick={() => openMap(m.id)} data-testid={`map-item-${m.id}`}
                         className={`w-full text-left px-3 py-2.5 hover:bg-slate-800/50 ${current?.id === m.id ? "bg-[#0B111C] border-l-2 border-[#007AFF]" : "border-l-2 border-transparent"}`}>
@@ -354,12 +368,13 @@ export default function Maps() {
                   <select value={map.id} onChange={e => (e.target.value === "__list" ? confirmDiscard() && (setCurrent(null), setDraft(null), setEditing(false), setSelected(null)) : openMap(e.target.value))}
                           className="h-9 flex-1 min-w-0 bg-[#0B111C] border border-[#1E293B] rounded px-2 text-sm text-slate-100 font-semibold" data-testid="mobile-map-select">
                     {maps.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                    <option value="__list">☰ Lista de mapas / novo…</option>
+                    <option value="__list">{readOnly ? "☰ Lista de mapas" : "☰ Lista de mapas / novo…"}</option>
                   </select>
                 ) : <div className="text-lg font-semibold text-slate-100 mr-2">{map.name}</div>}
-                {!editing ? <>
+                {readOnly ? null : !editing ? <>
                   <Button size="sm" variant="outline" onClick={startEdit} className={tb} data-testid="map-edit" title="Editar"><Pencil className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Editar</span></Button>
                   <Button size="sm" variant="outline" onClick={duplicate} className={`${tb} hidden md:inline-flex`}><Copy className="w-3.5 h-3.5 mr-1.5" /> Duplicar</Button>
+                  <Button size="sm" variant="outline" onClick={() => setSendOpen(true)} className={`${tb} hidden md:inline-flex`} data-testid="map-send" title="Enviar este mapa (com os equipamentos) para outro usuário"><Send className="w-3.5 h-3.5 mr-1.5" /> Enviar</Button>
                   <Button size="sm" variant="ghost" onClick={removeMap} className="h-8 text-xs text-red-400 hover:bg-red-950/40 hidden md:inline-flex"><Trash2 className="w-3.5 h-3.5 mr-1.5" /> Excluir</Button>
                 </> : <>
                   <div className="relative">
@@ -410,7 +425,7 @@ export default function Maps() {
                   {map.nodes.length === 0 && !editing ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-500 text-sm gap-3">
                       Mapa vazio.
-                      <Button size="sm" onClick={startEdit} className="bg-[#007AFF] hover:bg-[#0062CC]"><Pencil className="w-3.5 h-3.5 mr-1.5" /> Montar o mapa</Button>
+                      {!readOnly && <Button size="sm" onClick={startEdit} className="bg-[#007AFF] hover:bg-[#0062CC]"><Pencil className="w-3.5 h-3.5 mr-1.5" /> Montar o mapa</Button>}
                     </div>
                   ) : (
                     <MapCanvas map={map} live={live} devices={devices} editing={editing} tool={tool} selected={selected}
@@ -426,7 +441,7 @@ export default function Maps() {
                     {selLink && (
                       <LinkDetails link={selLink} live={live?.links?.[selLink.id]} nameOf={nameOf} nodes={nodesById} editing={editing}
                                    onEdit={() => setLinkDlg({ from: selLink.from, to: selLink.to, link: selLink })}
-                                   onDelete={deleteSelected} onMonitor={() => monitorLinkIfaces(selLink)}
+                                   onDelete={deleteSelected} onMonitor={() => monitorLinkIfaces(selLink)} readOnly={readOnly}
                                    siblings={selSiblings} liveLinks={live?.links} onPick={(id) => setSelected({ type: "link", id })}
                                    onAddParallel={() => setLinkDlg({ from: selLink.from, to: selLink.to })}
                                    onResetCurve={() => bendLink(selLink.id, null)} />
@@ -439,7 +454,7 @@ export default function Maps() {
                           <div className="text-xs font-mono">status: <span className={selDev.status === "online" ? "text-emerald-400" : selDev.status === "offline" ? "text-red-400" : "text-slate-400"}>{live?.nodes?.[selNode.id]?.status || selDev.status || "?"}</span></div>
                           {live?.nodes?.[selNode.id]?.snmp_error && <div className="text-xs text-amber-300 font-mono break-words">⚠ SNMP: {live.nodes[selNode.id].snmp_error}</div>}
                           <div className="text-[11px] text-slate-400">{map.links.filter(l => l.from === selNode.id || l.to === selNode.id).length} link(s) neste mapa</div>
-                          <Button size="sm" variant="outline" onClick={() => nav(`/terminal/${selDev.id}`)} className={tb}><TerminalSquare className="w-3.5 h-3.5 mr-1.5" /> Abrir terminal</Button>
+                          {!readOnly && <Button size="sm" variant="outline" onClick={() => nav(`/terminal/${selDev.id}`)} className={tb}><TerminalSquare className="w-3.5 h-3.5 mr-1.5" /> Abrir terminal</Button>}
                         </> : editing && (
                           <div><Label>Texto</Label>
                             <Input value={selNode.label || ""} onChange={e => patch(d => { d.nodes.find(n => n.id === selNode.id).label = e.target.value; return d; })}
@@ -457,6 +472,7 @@ export default function Maps() {
         </div>
       )}
 
+      {current && <TransferDialog open={sendOpen} onOpenChange={setSendOpen} preset={{ map_ids: [current.id], tab: "maps" }} />}
       {linkDlg && (
         <LinkDialog key={linkDlg.link?.id || `${linkDlg.from}-${linkDlg.to}`} open link={linkDlg.link}
                     nodeA={nodesById[linkDlg.from]} nodeB={nodesById[linkDlg.to]} nameOf={nameOf}

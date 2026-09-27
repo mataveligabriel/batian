@@ -11,7 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy } from "lucide-react";
+import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy, Send } from "lucide-react";
+import { TransferDialog } from "@/components/TransferDialog";
 import { ImportDevicesDialog } from "@/components/ImportDevicesDialog";
 import { ExportDevicesDialog } from "@/components/ExportDevicesDialog";
 import { BulkEditDevicesDialog } from "@/components/BulkEditDevicesDialog";
@@ -35,6 +36,7 @@ export default function Devices() {
   const [form, setForm] = useState(emptyDevice);
   const [importOpen, setImportOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [statusFilter, setStatusFilter] = useState("");
@@ -210,6 +212,7 @@ export default function Devices() {
       </div>
       <ImportDevicesDialog open={importOpen} onOpenChange={setImportOpen} onDone={load} />
       <ExportDevicesDialog open={exportOpen} onOpenChange={setExportOpen} total={devices.length} filteredIds={filteredIds} selectedIds={selectedIds} />
+      <TransferDialog open={sendOpen} onOpenChange={setSendOpen} preset={{ device_ids: [...selected], tab: "devices" }} />
       <BulkEditDevicesDialog open={bulkOpen} onOpenChange={setBulkOpen} deviceIds={selectedIds} agents={agents} deviceTypes={DEVICE_TYPES} onDone={load} />
 
       <div className="flex gap-3 mb-4 flex-wrap">
@@ -248,6 +251,9 @@ export default function Devices() {
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setBulkOpen(true)} data-testid="bulk-edit-btn" className="text-slate-200 hover:bg-slate-800">
             <Pencil className="w-4 h-4 mr-1.5" /> Editar em massa
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setSendOpen(true)} data-testid="bulk-send-btn" className="text-[#4DA3FF] hover:bg-[#007AFF]/15" title="Copiar para outro usuário">
+            <Send className="w-4 h-4 mr-1.5" /> Enviar para usuário
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setExportOpen(true)} data-testid="bulk-export-btn" className="text-slate-200 hover:bg-slate-800">
             <Download className="w-4 h-4 mr-1.5" /> Exportar

@@ -10,12 +10,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import {
   Gauge, Plus, Pencil, Save, X, Trash2, Copy, ChevronUp, ChevronDown, Activity, Radio, Search, Loader2,
-  FolderOpen, Settings2, RefreshCw, Columns2, Square, Sigma, Maximize2, Minimize, Maximize, PanelLeftClose, PanelLeftOpen,
+  FolderOpen, Settings2, RefreshCw, Send, Eye, Columns2, Square, Sigma, Maximize2, Minimize, Maximize, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 import { InterfacePicker } from "@/components/maps/InterfacePicker";
-import { TrafficWidget } from "@/components/dash/TrafficWidget";
 import { useIsMobile } from "@/lib/pwa";
-import { OpticsPanel } from "@/components/dash/OpticsPanel";
+import { WidgetBody, widgetIcon } from "@/components/dash/WidgetBody";
+import { useAuth } from "@/context/AuthContext";
+import { TransferDialog } from "@/components/TransferDialog";
+import { useSearchParams } from "react-router-dom";
 import { useTermPrefs } from "@/lib/termPrefs";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -41,15 +43,7 @@ function useFullscreen() {
   return [fs, toggle];
 }
 
-function WidgetBody({ w, minutes, refreshKey, height }) {
-  if (w.type === "optics") {
-    return <OpticsPanel deviceId={w.device_id} ifIndex={w.if_index} ifName={w.if_name} minutes={Math.max(minutes, 360)}
-                        warn={w.rx_warn_dbm} crit={w.rx_crit_dbm} refreshKey={refreshKey} chartHeight={height} />;
-  }
-  return <TrafficWidget widget={w} minutes={minutes} refreshKey={refreshKey} height={height} />;
-}
 
-const widgetIcon = (t) => (t === "aggregate" ? Sigma : t === "optics" ? Radio : Activity);
 
 function WidgetDialog({ initial, devices, onCancel, onSave }) {
   const [w, setW] = useState(initial || { id: uid(), type: "traffic", title: "", device_id: "", if_index: null, if_name: "", capacity_mbps: null, size: "full", rx_warn_dbm: null, rx_crit_dbm: null, sources: [] });
@@ -237,6 +231,10 @@ export default function Dashboards() {
   const focus = !!prefs.dashFocus;
   const vh = useVh();
   const isMobile = useIsMobile();
+  const { user } = useAuth();
+  const readOnly = user?.role === "viewer";          // perfil View: só olha
+  const [params, setParams] = useSearchParams();
+  const [sendOpen, setSendOpen] = useState(false);
   const [isFs, toggleFs] = useFullscreen();
   const hFull = clamp(vh * (focus ? 0.4 : 0.3), 170, 560);
   const hHalf = clamp(vh * (focus ? 0.28 : 0.2), 140, 380);
@@ -258,7 +256,12 @@ export default function Dashboards() {
 
   const loadList = async () => setList((await api.get("/dashboards")).data);
   useEffect(() => { loadList().catch(() => {}); api.get("/devices").then(r => setDevices(r.data)).catch(() => {}); }, []);
-  useEffect(() => { if (!current && list.length) open(list[0].id); }, [list]); // eslint-disable-line react-hooks/exhaustive-deps
+  // abre o dashboard pedido no link (/dashboards?id=...) ou o primeiro da lista
+  useEffect(() => {
+    const want = params.get("id");
+    if (want && list.some(d => d.id === want) && current?.id !== want) { open(want); setParams({}, { replace: true }); }
+    else if (!current && list.length) open(list[0].id);
+  }, [list]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const confirmDiscard = () => !dirty || window.confirm("Há alterações não salvas. Descartar?");
   const open = async (id) => {
@@ -301,7 +304,8 @@ export default function Dashboards() {
         <h1 className="hidden md:block font-heading text-2xl font-bold text-slate-100 mt-1">Dashboards</h1>
         <div className="flex gap-1 md:mt-4 border-b border-[#1E293B] overflow-x-auto whitespace-nowrap">
           <button className={tabBtn(tab === "dash")} onClick={() => setTab("dash")}><Gauge className="w-4 h-4" /> Dashboards</button>
-          <button className={tabBtn(tab === "optics")} onClick={() => setTab("optics")} data-testid="tab-optics-settings"><Settings2 className="w-4 h-4" /> Configurações da óptica</button>
+          {!readOnly && <button className={tabBtn(tab === "optics")} onClick={() => setTab("optics")} data-testid="tab-optics-settings"><Settings2 className="w-4 h-4" /> Configurações da óptica</button>}
+          {readOnly && <span className="ml-auto self-center text-[11px] font-mono text-amber-300 flex items-center gap-1"><Eye className="w-3.5 h-3.5" /> somente leitura</span>}
         </div>
       </div>
 
@@ -310,7 +314,7 @@ export default function Dashboards() {
       {tab === "dash" && (
         <div className={`flex-1 min-h-0 flex gap-3 ${focus ? "p-3" : "p-3 md:px-6 md:pb-6 md:pt-4"}`}>
           <Card className={`bg-[#111722] border-[#1E293B] ${isMobile ? "w-full" : "w-52"} shrink-0 flex-col overflow-hidden ${focus || (isMobile && dash) ? "hidden" : "flex"}`}>
-            <div className="p-3 border-b border-[#1E293B]">
+            <div className={`p-3 border-b border-[#1E293B] ${readOnly ? "hidden" : ""}`}>
               {!creating ? (
                 <Button size="sm" onClick={() => setCreating(true)} className="w-full h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="new-dash-btn"><Plus className="w-4 h-4 mr-1" /> Novo dashboard</Button>
               ) : (
@@ -324,7 +328,7 @@ export default function Dashboards() {
               )}
             </div>
             <div className="flex-1 overflow-y-auto">
-              {list.length === 0 && <div className="p-4 text-xs text-slate-500 font-mono">Nenhum dashboard. Crie um (ex.: grupo "Borda" → "Trânsitos").</div>}
+              {list.length === 0 && <div className="p-4 text-xs text-slate-500 font-mono">{readOnly ? "Nenhum dashboard liberado para você ainda. Peça ao administrador." : 'Nenhum dashboard. Crie um (ex.: grupo "Borda" → "Trânsitos").'}</div>}
               {groups.map(([g, ds]) => (
                 <div key={g}>
                   <div className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-widest text-slate-500 font-mono flex items-center gap-1.5"><FolderOpen className="w-3 h-3" /> {g}</div>
@@ -364,7 +368,7 @@ export default function Dashboards() {
                         {groups.map(([g, ds]) => (
                           <optgroup key={g} label={g}>{ds.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>
                         ))}
-                        {isMobile && <option value="__new">＋ Novo dashboard…</option>}
+                        {isMobile && !readOnly && <option value="__new">＋ Novo dashboard…</option>}
                       </select>
                     ) : (
                       <div className="mr-2"><div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">{dash.group}</div><div className="text-lg font-semibold text-slate-100 leading-tight">{dash.name}</div></div>
@@ -382,7 +386,8 @@ export default function Dashboards() {
                     <Button size="sm" variant="outline" onClick={() => toggleFs(() => setPrefs({ dashFocus: true }))} className={`${tb} hidden md:inline-flex`} title={isFs ? "Sair da tela cheia" : "Tela cheia"} data-testid="dash-fullscreen">
                       {isFs ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
                     </Button>
-                    <div className="ml-auto flex gap-2">
+                    <div className={`ml-auto flex gap-2 ${readOnly ? "hidden" : ""}`}>
+                      <Button size="sm" variant="outline" onClick={() => setSendOpen(true)} className={`${tb} hidden md:inline-flex`} data-testid="dash-send" title="Enviar este dashboard (com os equipamentos) para outro usuário"><Send className="w-3.5 h-3.5 mr-1.5" /> Enviar</Button>
                       <Button size="sm" variant="outline" onClick={() => { setDraft(JSON.parse(JSON.stringify(current))); setEditing(true); }} className={tb} data-testid="dash-edit"><Pencil className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Editar</span></Button>
                       <Button size="sm" variant="outline" onClick={duplicate} className={tb} title="Duplicar"><Copy className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Duplicar</span></Button>
                       <Button size="sm" variant="ghost" onClick={remove} className="h-8 text-xs text-red-400 hover:bg-red-950/40"><Trash2 className="w-3.5 h-3.5" /></Button>
@@ -394,7 +399,7 @@ export default function Dashboards() {
               {dash.widgets.length === 0 && (
                 <Card className="bg-[#111722] border-[#1E293B] p-10 text-center text-sm text-slate-500">
                   Nenhum gráfico ainda.
-                  {!editing ? <div className="mt-3"><Button size="sm" onClick={() => { setDraft(JSON.parse(JSON.stringify(current))); setEditing(true); setWdlg({}); }} className="bg-[#007AFF] hover:bg-[#0062CC]"><Plus className="w-3.5 h-3.5 mr-1" /> Adicionar gráfico</Button></div> : null}
+                  {!editing && !readOnly ? <div className="mt-3"><Button size="sm" onClick={() => { setDraft(JSON.parse(JSON.stringify(current))); setEditing(true); setWdlg({}); }} className="bg-[#007AFF] hover:bg-[#0062CC]"><Plus className="w-3.5 h-3.5 mr-1" /> Adicionar gráfico</Button></div> : null}
                 </Card>
               )}
               <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 28rem), 1fr))" }}>
@@ -421,7 +426,7 @@ export default function Dashboards() {
                         </div>
                       )}
                     </div>
-                    <WidgetBody w={w} minutes={minutes} refreshKey={refreshKey} height={w.size === "half" ? hHalf : hFull} />
+                    <WidgetBody w={w} minutes={minutes} refreshKey={refreshKey} height={w.size === "half" ? hHalf : hFull} readOnly={readOnly} />
                   </Card>
                 ))}
               </div>
@@ -452,6 +457,7 @@ export default function Dashboards() {
           </Card>
         </div>
       )}
+      {current && <TransferDialog open={sendOpen} onOpenChange={setSendOpen} preset={{ dashboard_ids: [current.id], tab: "dashboards" }} />}
       {wdlg && <WidgetDialog initial={wdlg.widget} devices={devices} onCancel={() => setWdlg(null)} onSave={saveWidget} />}
     </div>
   );

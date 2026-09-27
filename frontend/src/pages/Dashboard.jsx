@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Activity, Server, Radio, Clock, RefreshCw, Zap, ArrowUpRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/context/AuthContext";
+import { NocPanels } from "@/components/noc/NocPanels";
 
 const Stat = ({ label, value, sub, color, icon: Icon, testid }) => (
   <Card
@@ -26,6 +28,26 @@ const Stat = ({ label, value, sub, color, icon: Icon, testid }) => (
 );
 
 export default function Dashboard() {
+  const { user } = useAuth();
+  if (user?.role === "viewer") return <ViewerNoc user={user} />;
+  return <FullNoc />;
+}
+
+/** Perfil View: o Painel NOC é só os mapas e dashboards liberados. */
+function ViewerNoc({ user }) {
+  return (
+    <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="dashboard-page">
+      <div className="mb-4">
+        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Painel de Operações</div>
+        <h1 className="font-heading text-2xl sm:text-3xl font-bold text-slate-100 mt-1">NOC Console</h1>
+        <p className="text-slate-500 mt-1 text-xs">Olá, {user.name || user.email} — visualização dos mapas e dashboards liberados para você.</p>
+      </div>
+      <NocPanels big />
+    </div>
+  );
+}
+
+function FullNoc() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const nav = useNavigate();
@@ -60,7 +82,7 @@ export default function Dashboard() {
 
   return (
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="dashboard-page">
-      <div className="flex items-start justify-between flex-wrap gap-3 mb-8">
+      <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
         <div>
           <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Painel de Operações</div>
           <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">NOC Console</h1>
@@ -92,6 +114,8 @@ export default function Dashboard() {
               sub="terminal + lote"
               color="border-amber-500/30 bg-amber-500/10 text-amber-400" icon={Clock} />
       </div>
+
+      <div className="mt-6"><NocPanels /></div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-6">
         <Card className="bg-[#111722] border-[#1E293B] p-5 lg:col-span-2" data-testid="recent-sessions-card">

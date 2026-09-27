@@ -8,16 +8,90 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import {UserPlus, Trash2, Pencil } from "lucide-react";
+import { UserPlus, Trash2, Pencil, Eye, ArrowLeftRight, Loader2, Network, Gauge } from "lucide-react";
+import { TransferDialog } from "@/components/TransferDialog";
 import { useAuth } from "@/context/AuthContext";
 
 const empty = { name: "", email: "", password: "", role: "operator" };
+const ROLE = {
+  admin: { label: "Administrador", cls: "bg-[#007AFF]/15 text-[#4DA3FF] border-[#007AFF]/30" },
+  operator: { label: "Operador", cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
+  viewer: { label: "View", cls: "bg-amber-500/10 text-amber-300 border-amber-500/30" },
+};
+const RoleItems = () => (<>
+  <SelectItem value="operator">Operador — acesso completo aos próprios equipamentos</SelectItem>
+  <SelectItem value="admin">Administrador — gerencia usuários e configurações</SelectItem>
+  <SelectItem value="viewer">View — só Painel NOC, Dashboards e Mapas (leitura)</SelectItem>
+</>);
+
+/** Quais mapas e dashboards um usuário View enxerga (de qualquer dono). */
+function AccessDialog({ target, onClose }) {
+  const [cat, setCat] = useState(null);
+  const [maps, setMaps] = useState(new Set());
+  const [dashes, setDashes] = useState(new Set());
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!target) return;
+    setCat(null);
+    Promise.all([api.get("/access/catalog"), api.get(`/users/${target.id}/access`)]).then(([c, a]) => {
+      setCat(c.data); setMaps(new Set(a.data.map_ids)); setDashes(new Set(a.data.dashboard_ids));
+    }).catch(e => toast.error(formatApiError(e)));
+  }, [target]);
+  const tg = (set, setter) => (id) => { const n = new Set(set); n.has(id) ? n.delete(id) : n.add(id); setter(n); };
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.put(`/users/${target.id}/access`, { map_ids: [...maps], dashboard_ids: [...dashes] });
+      toast.success(`${target.name}: ${maps.size} mapa(s) e ${dashes.size} dashboard(s) liberados`); onClose();
+    } catch (e) { toast.error(formatApiError(e)); }
+    finally { setBusy(false); }
+  };
+  const List = ({ title, icon: Icon, items, sel, onT, onAll, sub }) => (
+    <div className="flex-1 min-w-0">
+      <div className="flex items-center gap-1.5 text-xs uppercase tracking-widest text-slate-400 font-mono mb-1.5">
+        <Icon className="w-3.5 h-3.5" /> {title}
+        <button className="ml-auto normal-case tracking-normal text-[11px] text-[#4DA3FF]" onClick={onAll}>{items.length && items.every(i => sel.has(i.id)) ? "nenhum" : "todos"}</button>
+      </div>
+      <div className="border border-[#1E293B] rounded-md max-h-80 overflow-y-auto divide-y divide-[#1E293B]">
+        {!items.length && <div className="px-3 py-6 text-center text-xs text-slate-500 font-mono">Nenhum criado ainda</div>}
+        {items.map(i => (
+          <label key={i.id} className={`flex items-start gap-2 px-3 py-2 cursor-pointer text-sm ${sel.has(i.id) ? "bg-[#007AFF]/10" : "hover:bg-slate-800/40"}`}>
+            <input type="checkbox" className="accent-[#007AFF] mt-1" checked={sel.has(i.id)} onChange={() => onT(i.id)} />
+            <span className="min-w-0"><span className="block truncate text-slate-100">{i.name}</span><span className="block text-[10px] font-mono text-slate-500 truncate">{sub(i)}</span></span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+  return (
+    <Dialog open={!!target} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-3xl" data-testid="access-dialog">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><Eye className="w-4 h-4 text-amber-300" /> O que {target?.name} pode ver</DialogTitle></DialogHeader>
+        <p className="text-xs text-slate-400">Usuário <b>View</b> só acessa Painel NOC, Dashboards e Mapas, em modo leitura e ao vivo. Marque o que ele enxerga — de qualquer usuário.</p>
+        {!cat ? <div className="py-8 text-center text-xs text-slate-500"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Carregando…</div> : (
+          <div className="flex gap-4 flex-col md:flex-row">
+            <List title="Mapas" icon={Network} items={cat.maps} sel={maps} onT={tg(maps, setMaps)} sub={i => `de ${i.owner_name}`}
+                  onAll={() => setMaps(cat.maps.every(i => maps.has(i.id)) ? new Set() : new Set(cat.maps.map(i => i.id)))} />
+            <List title="Dashboards" icon={Gauge} items={cat.dashboards} sel={dashes} onT={tg(dashes, setDashes)} sub={i => `${i.group} · de ${i.owner_name}`}
+                  onAll={() => setDashes(cat.dashboards.every(i => dashes.has(i.id)) ? new Set() : new Set(cat.dashboards.map(i => i.id)))} />
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+          <Button onClick={save} disabled={busy || !cat} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="access-save">Salvar acesso</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export default function Users() {
   const [users, setUsers] = useState([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty);
   const { user: current } = useAuth();
+  const [access, setAccess] = useState(null);     // usuário View cujo acesso está sendo editado
+  const [transfer, setTransfer] = useState(null); // usuário para enviar/trazer itens
 
   const load = async () => setUsers((await api.get("/users")).data);
   const [editing, setEditing] = useState(null);
@@ -25,9 +99,11 @@ export default function Users() {
   const openEdit = (u) => { setEditing(u); setEditForm({ name: u.name, role: u.role, password: "" }); };
   const saveEdit = async () => {
     try {
-      await api.put(`/users/${editing.id}`, { name: editForm.name, role: editForm.role, password: editForm.password || null });
+      const { data } = await api.put(`/users/${editing.id}`, { name: editForm.name, role: editForm.role, password: editForm.password || null });
       toast.success(editForm.password ? "Usuário atualizado e senha redefinida" : "Usuário atualizado");
+      const becameViewer = editing.role !== "viewer" && data.role === "viewer";
       setEditing(null); load();
+      if (becameViewer) setAccess(data);
     } catch (e) { toast.error(formatApiError(e)); }
   };
   useEffect(() => { load(); }, []);
@@ -35,8 +111,9 @@ export default function Users() {
   const save = async () => {
     if (!form.email || !form.password || !form.name) return toast.error("Preencha todos os campos");
     try {
-      await api.post("/users", form);
+      const { data } = await api.post("/users", form);
       toast.success("Usuário criado"); setForm(empty); setOpen(false); load();
+      if (data.role === "viewer") setAccess(data);   // já escolhe o que ele vai ver
     } catch (e) { toast.error(formatApiError(e)); }
   };
   const del = async (u) => {
@@ -73,12 +150,20 @@ export default function Users() {
                 <td className="px-4 py-3 text-slate-100">{u.name}</td>
                 <td className="px-4 py-3 font-mono text-slate-300">{u.email}</td>
                 <td className="px-4 py-3">
-                  <Badge className={u.role === "admin" ? "bg-[#007AFF]/15 text-[#4DA3FF] border-[#007AFF]/30" : "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"}>
-                    {u.role}
-                  </Badge>
+                  <Badge className={(ROLE[u.role] || ROLE.operator).cls}>{(ROLE[u.role] || ROLE.operator).label}</Badge>
+                  {u.role === "viewer" && <span className="ml-2 text-[10px] font-mono text-slate-500">{(u.view_maps || []).length} mapa(s) · {(u.view_dashboards || []).length} dash</span>}
                 </td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-400">{new Date(u.created_at).toLocaleString("pt-BR")}</td>
-                <td className="px-4 py-3 text-right">
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  {u.role === "viewer" ? (
+                    <Button size="sm" variant="ghost" onClick={() => setAccess(u)} data-testid={`access-user-${u.id}`} className="text-amber-300 hover:bg-amber-950/30" title="O que este usuário View pode ver">
+                      <Eye className="w-4 h-4 md:mr-1.5" /><span className="hidden md:inline">Acesso</span>
+                    </Button>
+                  ) : u.id !== current?.id && (
+                    <Button size="sm" variant="ghost" onClick={() => setTransfer(u)} data-testid={`transfer-user-${u.id}`} className="text-[#4DA3FF] hover:bg-[#007AFF]/15" title="Enviar ou trazer equipamentos, mapas e dashboards">
+                      <ArrowLeftRight className="w-4 h-4 md:mr-1.5" /><span className="hidden md:inline">Transferir</span>
+                    </Button>
+                  )}
                   <Button size="sm" variant="ghost" onClick={() => openEdit(u)} data-testid={`edit-user-${u.id}`} className="text-slate-300 hover:bg-slate-800">
                     <Pencil className="w-4 h-4" />
                   </Button>
@@ -103,10 +188,7 @@ export default function Users() {
               <Label>Papel</Label>
               <Select value={editForm.role} onValueChange={(v) => setEditForm({ ...editForm, role: v })} disabled={editing?.id === current?.id}>
                 <SelectTrigger data-testid="edit-user-role" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
-                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
-                  <SelectItem value="operator">operator</SelectItem>
-                  <SelectItem value="admin">admin</SelectItem>
-                </SelectContent>
+                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100"><RoleItems /></SelectContent>
               </Select>
             </div>
             <div>
@@ -121,6 +203,9 @@ export default function Users() {
         </DialogContent>
       </Dialog>
 
+      <AccessDialog target={access} onClose={() => { setAccess(null); load(); }} />
+      <TransferDialog open={!!transfer} onOpenChange={(v) => !v && setTransfer(null)} peer={transfer} />
+
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100">
           <DialogHeader><DialogTitle>Novo usuário</DialogTitle></DialogHeader>
@@ -132,10 +217,7 @@ export default function Users() {
               <Label>Papel</Label>
               <Select value={form.role} onValueChange={v => setForm({ ...form, role: v })}>
                 <SelectTrigger data-testid="user-form-role" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
-                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
-                  <SelectItem value="operator">Operador</SelectItem>
-                  <SelectItem value="admin">Administrador</SelectItem>
-                </SelectContent>
+                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100"><RoleItems /></SelectContent>
               </Select>
             </div>
           </div>

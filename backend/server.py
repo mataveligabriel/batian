@@ -40,6 +40,8 @@ from telnet_service import TelnetClientWrapper
 import vault
 import automation
 import webpush
+import sharing
+import auth as auth_mod
 import snmp_service
 import monitor as monitoring
 import optics as optics_mod
@@ -50,6 +52,12 @@ TUNNEL_BIND_HOST = os.environ.get("TUNNEL_BIND_HOST", "127.0.0.1")
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+
+async def _load_user(user_id: str):
+    return await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+
+auth_mod.USER_LOADER = _load_user   # papel/exclusão valem na hora + perfil View
 
 app = FastAPI(title="SSH Bastion Central")
 api = APIRouter(prefix="/api")
@@ -213,7 +221,7 @@ async def create_user(payload: UserCreate, _: dict = Depends(require_admin)):
         "email": payload.email.lower(),
         "password_hash": hash_password(payload.password),
         "name": payload.name,
-        "role": payload.role,
+        "role": payload.role if payload.role in auth_mod.ROLES else "operator",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(doc)
@@ -231,7 +239,7 @@ async def update_user(user_id: str, payload: UserUpdate, current: dict = Depends
     if payload.name and payload.name.strip():
         update["name"] = payload.name.strip()
     if payload.role:
-        if payload.role not in ("admin", "operator"):
+        if payload.role not in auth_mod.ROLES:
             raise HTTPException(status_code=400, detail="Papel inválido")
         if user_id == current["id"] and payload.role != "admin":
             raise HTTPException(status_code=400, detail="Você não pode remover seu próprio papel de administrador")
@@ -328,8 +336,12 @@ async def bastion_authorized_keys(token: str = Query(...)):
     if token != s["sync_token"]:
         raise HTTPException(status_code=403, detail="Token inválido")
     agents = await db.agents.find({"mode": "reverse", "agent_public_key": {"$ne": ""}}, {"_id": 0}).to_list(1000)
-    lines = []
-    for a in agents:
+    lines, seen = [], set()
+    for a in sorted(agents, key=lambda x: bool(x.get("copied_from"))):   # original antes das cópias
+        k = (a["agent_public_key"].strip(), a.get("tunnel_port"))
+        if k in seen:
+            continue
+        seen.add(k)
         opts = f'restrict,port-forwarding,permitlisten="{TUNNEL_BIND_HOST}:{a.get("tunnel_port")}"'
         lines.append(f'{opts} {a["agent_public_key"].strip()} bastion-agent-{a["id"]}')
     return PlainTextResponse("\n".join(lines) + "\n")
@@ -627,6 +639,23 @@ def _scope(user: dict) -> dict:
     return {"owner_id": user["id"]}
 
 
+def _is_viewer(user: dict) -> bool:
+    return user.get("role") == "viewer"
+
+
+async def _viewer_device_ids(user: dict) -> set:
+    return await sharing.viewer_device_ids(db, user.get("view_maps") or [], user.get("view_dashboards") or [])
+
+
+async def _check_view_device(user: dict, device_id: str):
+    """Leitura de tráfego/óptica: dono do equipamento ou View com o equipamento num mapa/dashboard liberado."""
+    if _is_viewer(user):
+        if device_id not in await _viewer_device_ids(user):
+            raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+        return
+    await _get_device_for(user, device_id)
+
+
 async def _get_device_for(user: dict, device_id: str) -> dict:
     d = await db.devices.find_one({"id": device_id, **_scope(user)}, {"_id": 0})
     if not d:
@@ -636,6 +665,10 @@ async def _get_device_for(user: dict, device_id: str) -> dict:
 
 @api.get("/devices")
 async def list_devices(user: dict = Depends(get_current_user)):
+    if _is_viewer(user):
+        ids = await _viewer_device_ids(user)
+        return await db.devices.find({"id": {"$in": list(ids)}}, {"_id": 0, "id": 1, "name": 1, "host": 1, "status": 1,
+                                                                   "latency_ms": 1, "device_type": 1}).to_list(5000)
     docs = await db.devices.find(_scope(user), {"_id": 0}).to_list(5000)
     return [_public(d) for d in docs]
 
@@ -867,10 +900,10 @@ async def ping_all_devices(payload: Optional[DeviceIdsPayload] = None, user: dic
 
 # ---------- SSH Key ----------
 @api.get("/ssh-key")
-async def get_ssh_key(_: dict = Depends(get_current_user)):
+async def get_ssh_key(user: dict = Depends(get_current_user)):
     doc = await db.config.find_one({"key": "ssh_key"}, {"_id": 0}) or {}
     return {
-        "private_key": doc.get("private_key", ""),
+        "private_key": doc.get("private_key", "") if user.get("role") == "admin" else "",
         "public_key": doc.get("public_key", ""),
         "default_username": doc.get("default_username", "root"),
         "has_key": bool(doc.get("private_key")),
@@ -1162,7 +1195,10 @@ async def device_snmp_test(device_id: str, user: dict = Depends(get_current_user
 
 # ----- mapas -----
 async def _map_for(user: dict, map_id: str) -> dict:
-    m = await db.maps.find_one({"id": map_id, "owner_id": user["id"]}, {"_id": 0})
+    if _is_viewer(user):
+        m = await db.maps.find_one({"id": map_id}, {"_id": 0}) if map_id in (user.get("view_maps") or []) else None
+    else:
+        m = await db.maps.find_one({"id": map_id, "owner_id": user["id"]}, {"_id": 0})
     if not m:
         raise HTTPException(status_code=404, detail="Mapa não encontrado")
     return m
@@ -1170,7 +1206,8 @@ async def _map_for(user: dict, map_id: str) -> dict:
 
 @api.get("/maps")
 async def list_maps(user: dict = Depends(get_current_user)):
-    maps = await db.maps.find({"owner_id": user["id"]}, {"_id": 0}).sort("name", 1).to_list(500)
+    q = {"id": {"$in": user.get("view_maps") or []}} if _is_viewer(user) else {"owner_id": user["id"]}
+    maps = await db.maps.find(q, {"_id": 0}).sort("name", 1).to_list(500)
     return [{"id": m["id"], "name": m["name"], "description": m.get("description", ""),
              "nodes": len(m.get("nodes", [])), "links": len(m.get("links", [])), "updated_at": m.get("updated_at")} for m in maps]
 
@@ -1399,7 +1436,7 @@ def _stats(vals: List[float]) -> dict:
 @api.get("/monitor/series")
 async def monitor_series(device_id: str, if_index: int, minutes: int = 60, points: int = 500,
                          user: dict = Depends(get_current_user)):
-    await _get_device_for(user, device_id)
+    await _check_view_device(user, device_id)
     s = await monitoring.get_settings(db)
     minutes = max(5, min(int(minutes), int(s.get("history_days") or 7) * 1440))
     since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
@@ -1436,7 +1473,7 @@ async def monitor_series(device_id: str, if_index: int, minutes: int = 60, point
 @api.post("/monitor/series-multi")
 async def monitor_series_multi(payload: SeriesMultiPayload, user: dict = Depends(get_current_user)):
     """Soma o tráfego de várias interfaces (de equipamentos diferentes): agregado de trânsitos, CDNs, PNIs…"""
-    mine = set(await _my_device_ids(user))
+    mine = await _viewer_device_ids(user) if _is_viewer(user) else set(await _my_device_ids(user))
     srcs = [s for s in payload.sources if s.device_id in mine][:60]
     if not srcs:
         raise HTTPException(status_code=400, detail="Nenhuma interface válida no agregado")
@@ -1516,7 +1553,7 @@ optics_collector = optics_mod.OpticsCollector(db, _connect_device)
 @api.get("/optics/series")
 async def optics_series(device_id: str, if_index: int, minutes: int = 1440, points: int = 300,
                         user: dict = Depends(get_current_user)):
-    await _get_device_for(user, device_id)
+    await _check_view_device(user, device_id)
     s = await monitoring.get_settings(db)
     minutes = max(30, min(int(minutes), int(s.get("history_days") or 7) * 1440))
     since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
@@ -1596,7 +1633,10 @@ async def optics_poll_now(_: dict = Depends(get_current_user)):
 
 # ---------- Dashboards ----------
 async def _dash_for(user: dict, dash_id: str) -> dict:
-    d = await db.dashboards.find_one({"id": dash_id, "owner_id": user["id"]}, {"_id": 0})
+    if _is_viewer(user):
+        d = await db.dashboards.find_one({"id": dash_id}, {"_id": 0}) if dash_id in (user.get("view_dashboards") or []) else None
+    else:
+        d = await db.dashboards.find_one({"id": dash_id, "owner_id": user["id"]}, {"_id": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Dashboard não encontrado")
     return d
@@ -1604,7 +1644,8 @@ async def _dash_for(user: dict, dash_id: str) -> dict:
 
 @api.get("/dashboards")
 async def list_dashboards(user: dict = Depends(get_current_user)):
-    rows = await db.dashboards.find({"owner_id": user["id"]}, {"_id": 0}).to_list(1000)
+    q = {"id": {"$in": user.get("view_dashboards") or []}} if _is_viewer(user) else {"owner_id": user["id"]}
+    rows = await db.dashboards.find(q, {"_id": 0}).to_list(1000)
     rows.sort(key=lambda d: ((d.get("group") or "Geral").lower(), d["name"].lower()))
     return [{"id": d["id"], "name": d["name"], "group": d.get("group") or "Geral", "widgets": len(d.get("widgets", [])),
              "updated_at": d.get("updated_at")} for d in rows]
@@ -1959,6 +2000,11 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
         return
     user_id = payload["sub"]
     user_email = payload["email"]
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1})
+    if not u or u.get("role") == "viewer":
+        await ws.send_json({"type": "error", "message": "Seu perfil não tem acesso ao terminal"})
+        await ws.close()
+        return
 
     dev = await db.devices.find_one({"id": device_id, "owner_id": user_id}, {"_id": 0})
     if not dev:
@@ -2037,6 +2083,154 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
             await ws.close()
         except Exception:
             pass
+
+
+# ---------- Enviar itens entre usuários / acesso do perfil View ----------
+class TransferIn(BaseModel):
+    target_user_id: str
+    source_user_id: Optional[str] = None      # admin pode trazer de outro usuário
+    device_ids: List[str] = []
+    map_ids: List[str] = []
+    dashboard_ids: List[str] = []
+    include_credentials: bool = True
+
+
+class AccessIn(BaseModel):
+    map_ids: List[str] = []
+    dashboard_ids: List[str] = []
+
+
+class NocLayoutIn(BaseModel):
+    maps: List[str] = []
+    dashboards: List[str] = []
+    rotate_sec: int = 0
+
+
+def _user_brief(u: dict) -> dict:
+    return {"id": u["id"], "name": u.get("name") or u["email"], "email": u["email"], "role": u.get("role") or "operator"}
+
+
+@api.get("/transfer/targets")
+async def transfer_targets(user: dict = Depends(get_current_user)):
+    """Para quem posso enviar: admin -> qualquer usuário; demais -> administradores."""
+    q = {"id": {"$ne": user["id"]}}
+    if user.get("role") != "admin":
+        q["role"] = "admin"
+    rows = await db.users.find(q, {"_id": 0, "password_hash": 0}).to_list(1000)
+    return sorted((_user_brief(u) for u in rows), key=lambda u: (u["role"] != "admin", u["name"].lower()))
+
+
+@api.get("/transfer/assets")
+async def transfer_assets(user_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    uid = user_id or user["id"]
+    if uid != user["id"] and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Só o administrador vê os itens de outro usuário")
+    devs = await db.devices.find({"owner_id": uid}, {"_id": 0, "id": 1, "name": 1, "host": 1, "port": 1, "protocol": 1, "tags": 1}).to_list(10000)
+    maps = await db.maps.find({"owner_id": uid}, {"_id": 0, "id": 1, "name": 1, "nodes": 1}).to_list(1000)
+    dashes = await db.dashboards.find({"owner_id": uid}, {"_id": 0, "id": 1, "name": 1, "group": 1, "widgets": 1}).to_list(1000)
+    return {
+        "devices": sorted(devs, key=lambda d: d["name"].lower()),
+        "maps": sorted(({"id": m["id"], "name": m["name"], "devices": len(set(sharing.map_device_ids(m)))} for m in maps), key=lambda m: m["name"].lower()),
+        "dashboards": sorted(({"id": d["id"], "name": d["name"], "group": d.get("group") or "Geral",
+                               "devices": len(set(sharing.dash_device_ids(d)))} for d in dashes), key=lambda d: (d["group"].lower(), d["name"].lower())),
+    }
+
+
+@api.post("/transfer")
+async def transfer(body: TransferIn, user: dict = Depends(get_current_user)):
+    is_admin = user.get("role") == "admin"
+    src_id = body.source_user_id or user["id"]
+    if src_id != user["id"] and not is_admin:
+        raise HTTPException(status_code=403, detail="Só o administrador pode trazer itens de outro usuário")
+    src = await db.users.find_one({"id": src_id}, {"_id": 0, "password_hash": 0})
+    dst = await db.users.find_one({"id": body.target_user_id}, {"_id": 0, "password_hash": 0})
+    if not src or not dst:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    if src_id == dst["id"]:
+        raise HTTPException(status_code=400, detail="Origem e destino são o mesmo usuário")
+    if src.get("role") == "viewer":
+        raise HTTPException(status_code=400, detail="Usuário View não tem itens próprios para enviar")
+    if not is_admin and dst.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Você só pode enviar para um administrador")
+    if not (body.device_ids or body.map_ids or body.dashboard_ids):
+        raise HTTPException(status_code=400, detail="Escolha pelo menos um item")
+
+    if dst.get("role") == "viewer":
+        # View não recebe cópia: passa a enxergar (ao vivo, só leitura) os mapas/dashboards escolhidos
+        maps = [m["id"] async for m in db.maps.find({"id": {"$in": body.map_ids}, "owner_id": src_id}, {"_id": 0, "id": 1})]
+        dashes = [d["id"] async for d in db.dashboards.find({"id": {"$in": body.dashboard_ids}, "owner_id": src_id}, {"_id": 0, "id": 1})]
+        if not maps and not dashes:
+            raise HTTPException(status_code=400, detail="Para usuário View, escolha mapas ou dashboards (equipamentos não se aplicam)")
+        vm = list(dict.fromkeys((dst.get("view_maps") or []) + maps))
+        vd = list(dict.fromkeys((dst.get("view_dashboards") or []) + dashes))
+        await db.users.update_one({"id": dst["id"]}, {"$set": {"view_maps": vm, "view_dashboards": vd}})
+        return {"mode": "shared", "maps": len(maps), "dashboards": len(dashes), "target": _user_brief(dst)}
+
+    res = await sharing.copy_assets(db, src_id, dst["id"], body.device_ids, body.map_ids, body.dashboard_ids,
+                                    include_credentials=body.include_credentials, src_label=src.get("name") or src["email"])
+    logger.info(f"transferência {src['email']} -> {dst['email']} por {user['email']}: {res}")
+    return {"mode": "copied", **res, "target": _user_brief(dst)}
+
+
+@api.get("/access/catalog")
+async def access_catalog(_: dict = Depends(require_admin)):
+    """Todos os mapas e dashboards (de todos os usuários) para liberar a um usuário View."""
+    owners = {u["id"]: (u.get("name") or u["email"]) async for u in db.users.find({}, {"_id": 0, "id": 1, "name": 1, "email": 1})}
+    maps = [{"id": m["id"], "name": m["name"], "owner_id": m["owner_id"], "owner_name": owners.get(m["owner_id"], "?")}
+            async for m in db.maps.find({}, {"_id": 0, "id": 1, "name": 1, "owner_id": 1})]
+    dashes = [{"id": d["id"], "name": d["name"], "group": d.get("group") or "Geral", "owner_id": d["owner_id"],
+               "owner_name": owners.get(d["owner_id"], "?")}
+              async for d in db.dashboards.find({}, {"_id": 0, "id": 1, "name": 1, "group": 1, "owner_id": 1})]
+    key = lambda x: (x["owner_name"].lower(), x["name"].lower())
+    return {"maps": sorted(maps, key=key), "dashboards": sorted(dashes, key=key)}
+
+
+@api.get("/users/{user_id}/access")
+async def get_user_access(user_id: str, _: dict = Depends(require_admin)):
+    u = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    return {"map_ids": u.get("view_maps") or [], "dashboard_ids": u.get("view_dashboards") or []}
+
+
+@api.put("/users/{user_id}/access")
+async def set_user_access(user_id: str, body: AccessIn, _: dict = Depends(require_admin)):
+    u = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    maps = [m["id"] async for m in db.maps.find({"id": {"$in": body.map_ids}}, {"_id": 0, "id": 1})]
+    dashes = [d["id"] async for d in db.dashboards.find({"id": {"$in": body.dashboard_ids}}, {"_id": 0, "id": 1})]
+    await db.users.update_one({"id": user_id}, {"$set": {"view_maps": maps, "view_dashboards": dashes}})
+    return {"map_ids": maps, "dashboard_ids": dashes}
+
+
+# ---------- Painel NOC: mapas e dashboards escolhidos por usuário ----------
+async def _accessible_ids(user: dict):
+    if _is_viewer(user):
+        return set(user.get("view_maps") or []), set(user.get("view_dashboards") or [])
+    maps = {m["id"] async for m in db.maps.find({"owner_id": user["id"]}, {"_id": 0, "id": 1})}
+    dashes = {d["id"] async for d in db.dashboards.find({"owner_id": user["id"]}, {"_id": 0, "id": 1})}
+    return maps, dashes
+
+
+@api.get("/noc/layout")
+async def get_noc_layout(user: dict = Depends(get_current_user)):
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "noc_layout": 1}) or {}
+    lay = u.get("noc_layout") or {}
+    maps, dashes = await _accessible_ids(user)
+    return {"maps": [i for i in lay.get("maps", []) if i in maps],
+            "dashboards": [i for i in lay.get("dashboards", []) if i in dashes],
+            "rotate_sec": int(lay.get("rotate_sec") or 0)}
+
+
+@api.put("/noc/layout")
+async def put_noc_layout(body: NocLayoutIn, user: dict = Depends(get_current_user)):
+    maps, dashes = await _accessible_ids(user)
+    lay = {"maps": [i for i in dict.fromkeys(body.maps) if i in maps][:12],
+           "dashboards": [i for i in dict.fromkeys(body.dashboards) if i in dashes][:12],
+           "rotate_sec": 0 if body.rotate_sec <= 0 else max(10, min(int(body.rotate_sec), 600))}
+    await db.users.update_one({"id": user["id"]}, {"$set": {"noc_layout": lay}})
+    return lay
 
 
 # ---------- Notificações push (PWA) ----------

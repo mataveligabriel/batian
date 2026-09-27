@@ -1,5 +1,6 @@
 """Auth utilities: bcrypt hashing + JWT + role checks."""
 import os
+import re
 import jwt
 import bcrypt
 from datetime import datetime, timezone, timedelta
@@ -54,6 +55,31 @@ def extract_token(request: Request) -> Optional[str]:
     return request.query_params.get("token")
 
 
+ROLES = ("admin", "operator", "viewer")
+
+# Carrega o usuário do banco a cada requisição (definido pelo server.py): papel alterado ou usuário
+# excluído vale na hora, sem esperar o token expirar.
+USER_LOADER = None
+
+# Perfil "viewer" (View): só Painel NOC, Dashboards e Mapas — e só leitura. Tudo fora desta lista é negado.
+VIEWER_ALLOW = [
+    ("GET", r"/api/auth/me"), ("POST", r"/api/auth/logout"), ("POST", r"/api/auth/change-password"),
+    ("GET", r"/api/stats"),
+    ("GET", r"/api/devices"),
+    ("GET", r"/api/maps"), ("GET", r"/api/maps/[\w-]+"), ("GET", r"/api/maps/[\w-]+/live"),
+    ("GET", r"/api/dashboards"), ("GET", r"/api/dashboards/[\w-]+"),
+    ("GET", r"/api/monitor/series"), ("POST", r"/api/monitor/series-multi"), ("GET", r"/api/optics/series"),
+    ("GET", r"/api/noc/layout"), ("PUT", r"/api/noc/layout"),
+    ("GET", r"/api/push/public-key"), ("POST", r"/api/push/subscribe"), ("POST", r"/api/push/unsubscribe"),
+    ("POST", r"/api/push/test"), ("GET", r"/api/push/devices"),
+]
+_VIEWER_RE = [(m, re.compile(p + r"/?$")) for m, p in VIEWER_ALLOW]
+
+
+def viewer_allowed(method: str, path: str) -> bool:
+    return any(m == method.upper() and rx.match(path) for m, rx in _VIEWER_RE)
+
+
 async def get_current_user(request: Request) -> dict:
     token = extract_token(request)
     if not token:
@@ -61,11 +87,20 @@ async def get_current_user(request: Request) -> dict:
     payload = decode_token(token)
     if payload.get("type") != "access":
         raise HTTPException(status_code=401, detail="Tipo de token inválido")
-    return {
+    user = {
         "id": payload["sub"],
         "email": payload["email"],
         "role": payload.get("role", "operator"),
     }
+    if USER_LOADER is not None:
+        u = await USER_LOADER(payload["sub"])
+        if not u:
+            raise HTTPException(status_code=401, detail="Usuário não existe mais")
+        user = {"id": u["id"], "email": u["email"], "name": u.get("name", ""), "role": u.get("role") or "operator",
+                "view_maps": u.get("view_maps") or [], "view_dashboards": u.get("view_dashboards") or []}
+    if user["role"] == "viewer" and not viewer_allowed(request.method, request.url.path):
+        raise HTTPException(status_code=403, detail="Perfil de visualização: acesso só ao Painel NOC, Dashboards e Mapas")
+    return user
 
 
 async def require_admin(user: dict = Depends(get_current_user)) -> dict:

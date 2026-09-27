@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
 import { TerminalWorkspace } from "@/components/TerminalWorkspace";
@@ -28,6 +28,9 @@ const NAV = [
   { to: "/users", icon: UsersIcon, label: "Usuários", adminOnly: true, testid: "nav-users" },
 ];
 
+// perfil View: só estas telas (o servidor também bloqueia o resto)
+const VIEWER_PATHS = ["/dashboard", "/dashboards", "/maps"];
+
 export default function Layout() {
   const { user, logout } = useAuth();
   const { tabs } = useTerminal();
@@ -48,9 +51,13 @@ export default function Layout() {
     return () => { vv.removeEventListener("resize", on); vv.removeEventListener("scroll", on); root.style.removeProperty("--app-h"); };
   }, [isMobile]);
   const mini = prefs.sidebarCollapsed && !isMobile;
-  const current = NAV.find(n => pathname.startsWith(n.to));
+  const isViewer = user?.role === "viewer";
+  const current = NAV.find(n => pathname === n.to || pathname.startsWith(n.to + "/"));
+  const nav = NAV.filter(n => (!n.adminOnly || user?.role === "admin") && (!isViewer || VIEWER_PATHS.includes(n.to)));
   const onDash = pathname.startsWith("/dashboards");
   const hidden = (onTerminal && prefs.focusMode) || (onDash && prefs.dashFocus);   // modo foco esconde o menu lateral
+
+  if (isViewer && !VIEWER_PATHS.some(p => pathname === p || pathname.startsWith(p + "/"))) return <Navigate to="/dashboard" replace />;
 
   return (
     <div className="h-[var(--app-h,100dvh)] flex flex-col md:flex-row bg-[#090D14] overflow-hidden">
@@ -90,7 +97,7 @@ export default function Layout() {
         </div>
 
         <nav className={`flex-1 space-y-0.5 overflow-y-auto ${mini ? "p-2" : "p-2"}`}>
-          {NAV.filter(n => !n.adminOnly || user?.role === "admin").map(item => (
+          {nav.map(item => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -120,7 +127,7 @@ export default function Layout() {
           <div className={`w-full px-2.5 py-1.5 rounded-md bg-[#111722] border border-[#1E293B] ${mini ? "hidden" : ""}`}>
             <div className="text-sm text-slate-100 font-medium truncate" data-testid="current-user-name">{user?.name}</div>
             <div className="text-[11px] text-slate-500 font-mono truncate" title={user?.email}>{user?.email}</div>
-            <div className="text-[10px] uppercase text-emerald-400 font-mono">{user?.role}</div>
+            <div className={`text-[10px] uppercase font-mono ${isViewer ? "text-amber-300" : "text-emerald-400"}`}>{isViewer ? "view · somente leitura" : user?.role}</div>
           </div>
           <button
             data-testid="change-password-btn"
@@ -148,7 +155,7 @@ export default function Layout() {
         <div className={`flex-1 min-h-0 flex flex-col ${onTerminal ? "hidden" : ""}`}>
           <Outlet />
         </div>
-        <TerminalWorkspace visible={onTerminal} />
+        {!isViewer && <TerminalWorkspace visible={onTerminal} />}
       </main>
       <Toaster theme="dark" richColors position={isMobile ? "top-center" : "top-right"} />
     </div>
