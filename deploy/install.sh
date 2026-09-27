@@ -25,6 +25,9 @@ systemctl enable --now docker >/dev/null
 echo ">> Firewall: liberando 22, 80 e 443…"
 ufw allow 22/tcp >/dev/null; ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null
 ufw --force enable >/dev/null
+# Flow (NetFlow/sFlow): as portas UDP 2055/6343 ficam fechadas; libere só para os IPs dos roteadores:
+#   ufw allow from IP_DO_ROTEADOR to any port 2055 proto udp
+echo "net.core.rmem_max=33554432" > /etc/sysctl.d/90-bastion-flow.conf; sysctl -q -p /etc/sysctl.d/90-bastion-flow.conf || true
 
 echo ">> Baixando o código…"
 if [ -d "$DIR/.git" ]; then

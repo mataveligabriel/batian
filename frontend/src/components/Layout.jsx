@@ -7,7 +7,7 @@ import { useTerminal } from "@/context/TerminalContext";
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X,
+  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { useIsMobile } from "@/lib/pwa";
@@ -19,6 +19,7 @@ const NAV = [
   { to: "/terminal", icon: TerminalSquare, label: "Terminal SSH", testid: "nav-terminal" },
   { to: "/maps", icon: Network, label: "Mapas de rede", testid: "nav-maps" },
   { to: "/dashboards", icon: Gauge, label: "Dashboards", testid: "nav-dashboards" },
+  { to: "/flow", icon: Waves, label: "Análise de Flow", testid: "nav-flow" },
   { to: "/batch", icon: Play, label: "Execução em Lote", testid: "nav-batch" },
   { to: "/agents", icon: Radio, label: "Agentes Remotos", testid: "nav-agents" },
   { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key" },

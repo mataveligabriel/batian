@@ -188,3 +188,116 @@ Sem custo: usa só SNMP v2c com MIBs padrão (OSPF-MIB, BGP4-MIB, IF-MIB, IP-MIB
 Limitações desta versão: BGP4-MIB traz só sessões IPv4 da instância principal (IPv6/VPN e contagem de prefixos
 dependem de MIB do fabricante); OSPFv3 não entra; no Huawei com mais de um processo OSPF, o SNMP mostra o processo
 ligado com `ospf mib-binding <processo>`. A estimativa de carga nos cenários é de 1ª ordem (sem NetFlow).
+
+## 13. Análise de Flow (NetFlow v5/v9, IPFIX e sFlow)
+Menu **Análise de Flow** (abaixo de Dashboards). Um coletor próprio (container `flow`, sem custo de licença) recebe
+os flows dos roteadores, e a tela mostra gráficos no estilo Kentik/Akvorado:
+- **Explorar:** escolha as interfaces (trânsitos, PNI, IX, CDN…) e agrupe por interface, AS de origem/destino,
+  prefixo, IP, protocolo, porta, interface par ou conteúdo. Filtro por ASN, porta ou **blocos de IP** (com a opção
+  "somar por bloco" para ver quanto cada bloco seu usa naquele trânsito). Tabela com média, p95, máximo e participação.
+- **Conteúdos:** cadastre um conteúdo com ASNs + blocos (ex.: Google = AS15169/36040 + o bloco do cache GGC) e veja,
+  interface por interface, quanto dele entra por **PNI × trânsito × IX** (conta exata, minuto a minuto). Há sugestões
+  prontas (Google, Meta, Netflix, Akamai, Cloudflare, Amazon, Microsoft, TikTok…) e a busca "IP → AS e bloco".
+  A conta exata começa quando o conteúdo é criado; para o período anterior use **Por AS (histórico)**.
+- **Ataques:** detector de DDoS por IP de destino (média de 30 s): volume (pps/bps), **amplificação** (NTP, DNS,
+  SSDP, Memcached, CLDAP… com limite próprio, bem menor) e **SYN flood**. Classifica o tipo, mostra AS de origem,
+  portas e por onde entrou, e manda alerta (Telegram/webhook/push do app) no início e no fim.
+- **Configuração:** exportadores vistos (tipo, amostragem, pacotes/s, erros), prefixos próprios (para o detector),
+  IPs ignorados (ex.: pool CGNAT de alto volume), limites, retenção e a base IP→ASN.
+
+### Como ligar
+1. `update.sh` já sobe o novo container `flow` (e aumenta o buffer UDP do Linux).
+2. Libere o UDP **só para os roteadores** (o `install.sh` deixa o firewall fechado):
+   ```bash
+   ufw allow from IP_DO_ROTEADOR to any port 2055 proto udp   # NetFlow v5/v9 e IPFIX
+   ufw allow from IP_DO_ROTEADOR to any port 6343 proto udp   # sFlow
+   ```
+3. Em **Análise de Flow → Configuração**, clique em **Atualizar base de ASN** (iptoasn.com, domínio público; se o
+   servidor não acessa a internet, baixe `ip2asn-combined.tsv.gz` em outro PC e use **Enviar arquivo**). Cadastre
+   os **prefixos próprios** para o detector de ataques.
+4. Configure o roteador (abaixo). Em **Interfaces**, escolha o equipamento: as interfaces que já estão mandando flow
+   aparecem marcadas como *flow ativo*; marque trânsitos/PNI/IX e dê um papel e um nome.
+
+Regras que evitam números errados: *active timeout* de 60 s (1 min), *inactive* de 15 s; amostragem **na entrada**
+das interfaces externas (o Bastion calcula a saída pela interface de saída do flow, igual ao Akvorado). Se o roteador
+também amostra na saída e informa a direção (campo 61 do v9/IPFIX), o Bastion percebe e conta cada ponto uma vez.
+A taxa de amostragem vem do próprio flow (cabeçalho do v5, *options* do v9/IPFIX, sFlow); se o seu equipamento não
+informar, coloque a **taxa fixa por exportador** na Configuração. O "exportador" é o IP de origem dos pacotes (use a
+loopback como origem e, se for diferente do IP de gerência cadastrado, informe-o ao escolher as interfaces).
+
+### Huawei (NetStream v9)
+```
+ip netstream sampler fix-packets 1000 inbound
+ip netstream export version 9 origin-as
+ip netstream export source 10.255.0.1
+ip netstream export host IP_DO_BASTION 2055
+ip netstream timeout active 1
+ip netstream timeout inactive 15
+interface 100GE0/0/1
+ ip netstream inbound
+```
+NE40E/ME60: em cada placa, `slot N` → `ip netstream sampler to slot self`. IPv6: os mesmos comandos com `ipv6 netstream`.
+
+### Juniper MX (inline-jflow, IPFIX)
+```
+set chassis fpc 0 sampling-instance BASTION
+set services flow-monitoring version-ipfix template V4 ipv4-template
+set services flow-monitoring version-ipfix template V4 flow-active-timeout 60
+set services flow-monitoring version-ipfix template V4 flow-inactive-timeout 15
+set services flow-monitoring version-ipfix template V6 ipv6-template
+set services flow-monitoring version-ipfix template V6 flow-active-timeout 60
+set services flow-monitoring version-ipfix template V6 flow-inactive-timeout 15
+set forwarding-options sampling instance BASTION input rate 1000
+set forwarding-options sampling instance BASTION family inet output flow-server IP_DO_BASTION port 2055 version-ipfix template V4
+set forwarding-options sampling instance BASTION family inet output inline-jflow source-address 10.255.0.1
+set forwarding-options sampling instance BASTION family inet6 output flow-server IP_DO_BASTION port 2055 version-ipfix template V6
+set forwarding-options sampling instance BASTION family inet6 output inline-jflow source-address 10.255.0.1
+set interfaces xe-0/0/1 unit 0 family inet sampling input
+set interfaces xe-0/0/1 unit 0 family inet6 sampling input
+```
+No Juniper o ifIndex do flow é o da **unidade lógica** (xe-0/0/1.0): escolha a unidade na lista de interfaces.
+
+### Cisco IOS-XE (Flexible NetFlow v9)
+```
+flow record BASTION
+ match ipv4 source address
+ match ipv4 destination address
+ match ipv4 protocol
+ match transport source-port
+ match transport destination-port
+ match interface input
+ match flow direction
+ collect interface output
+ collect transport tcp flags
+ collect routing source as
+ collect routing destination as
+ collect counter bytes long
+ collect counter packets long
+flow exporter BASTION
+ destination IP_DO_BASTION
+ source Loopback0
+ transport udp 2055
+ option sampler-table
+flow monitor BASTION
+ exporter BASTION
+ record BASTION
+ cache timeout active 60
+sampler S1000
+ mode random 1 out-of 1000
+interface TenGigabitEthernet0/0/1
+ ip flow monitor BASTION sampler S1000 input
+```
+IOS-XR: `flow exporter-map` (version v9, `options sampler-table`, transport udp 2055), `flow monitor-map` com
+`record ipv4` e `cache timeout active 60`, `sampler-map` `random 1 out-of 1000` e na interface
+`flow ipv4 monitor MAPA sampler S1000 ingress`.
+
+### Datacom DMOS e ZTE
+DMOS: use **sFlow** (coletor = IP do Bastion, porta 6343, agente = loopback, taxa 1:1000 a 1:4096 nas interfaces
+externas). ZTE ZXR10: NetFlow v9 ou IPFIX para a porta 2055 com a mesma lógica (amostragem na entrada, timeout ativo
+de 60 s). A sintaxe muda entre versões de firmware — confira no `?` do equipamento; a tela de Configuração mostra na
+hora se o exportador chegou, o tipo e a taxa de amostragem lida.
+
+Capacidade: o coletor processa ~40 mil flows/s por núcleo (com amostragem 1:1000 isso cobre centenas de Gb/s).
+Armazenamento: totais por minuto e detalhes de 5 min por 7 dias (ajustável) e a junção por hora por 90 dias.
+Limitação desta versão: nos detalhes cada dimensão é guardada separada (top-K), então dá para filtrar AS **ou**
+prefixo **ou** porta de cada vez; para cruzar AS + bloco com precisão, cadastre um **Conteúdo**.

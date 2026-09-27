@@ -21,6 +21,17 @@ services:
       mongo:
         condition: service_healthy
 
+  # coletor de NetFlow/IPFIX (UDP 2055) e sFlow (UDP 6343) — mesma imagem do backend
+  flow:
+    build: ../backend
+    command: ["python", "flowd.py"]
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
   frontend:
     build:
       context: ../frontend

@@ -7,6 +7,11 @@ cd "$DIR"
 echo ">> Baixando última versão…"
 git fetch -q origin && git reset -q --hard "origin/$BRANCH"
 cd deploy
+# buffer UDP maior para o coletor de flow não perder pacotes em rajadas
+if [ "$(id -u)" -eq 0 ] && [ ! -f /etc/sysctl.d/90-bastion-flow.conf ]; then
+  echo "net.core.rmem_max=33554432" > /etc/sysctl.d/90-bastion-flow.conf
+  sysctl -q -p /etc/sysctl.d/90-bastion-flow.conf || true
+fi
 echo ">> Reconstruindo containers…"
 docker compose up -d --build
 echo ">> Aguardando backend…"

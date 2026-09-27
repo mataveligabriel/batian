@@ -10,11 +10,12 @@ import os
 import re
 import asyncio
 import time
+import uuid
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -45,6 +46,9 @@ import sharing
 import netanalysis
 import mplscli
 import netreport
+import asndb
+import flowagg
+import flowstore
 import auth as auth_mod
 import snmp_service
 import monitor as monitoring
@@ -105,6 +109,12 @@ async def startup():
     assistant.start()
     net_monitor.start()
     optics_collector.start()
+    try:
+        await flowstore.ensure_indexes(db, await flowstore.get_settings(db))
+    except Exception as e:
+        logger.warning(f"índices do flow: {e}")
+    global _flow_asn_task
+    _flow_asn_task = asyncio.create_task(_flow_asn_loop())
 
 
 async def seed_admin():
@@ -2509,6 +2519,515 @@ async def push_test(user: dict = Depends(get_current_user)):
     return res
 
 
+# ---------- Flow (NetFlow / IPFIX / sFlow) ----------
+FLOW_PRESETS = [
+    {"name": "Google / YouTube", "asns": [15169, 36040, 43515, 36384, 36385, 139070, 396982]},
+    {"name": "Meta (Facebook, Instagram, WhatsApp)", "asns": [32934, 63293]},
+    {"name": "Netflix", "asns": [2906, 40027, 55095]},
+    {"name": "Akamai", "asns": [20940, 16625, 16702, 21342, 32787, 33905, 35994]},
+    {"name": "Cloudflare", "asns": [13335, 209242]},
+    {"name": "Amazon / AWS / Prime Video", "asns": [16509, 14618, 7224, 8987]},
+    {"name": "Microsoft (Azure, Xbox, Office)", "asns": [8075, 8068, 12076]},
+    {"name": "TikTok / ByteDance", "asns": [396986, 138699]},
+    {"name": "Apple", "asns": [714, 6185]},
+    {"name": "Fastly", "asns": [54113]},
+    {"name": "Valve / Steam", "asns": [32590]},
+    {"name": "Twitch", "asns": [46489]},
+]
+_asn_cache = {"db": None, "ver": None, "checked": 0.0}
+_flow_asn_task = None
+
+
+async def _asn_db():
+    if time.time() - _asn_cache["checked"] > 60:
+        _asn_cache["checked"] = time.time()
+        meta = await asndb.get_meta(db)
+        if meta and meta.get("ver") != _asn_cache["ver"]:
+            try:
+                _asn_cache["db"] = await asndb.load(db, meta)
+                _asn_cache["ver"] = meta["ver"]
+            except Exception as e:
+                logger.warning(f"base de ASN: {e}")
+    return _asn_cache["db"]
+
+
+def _no_viewer(user: dict):
+    if _is_viewer(user):
+        raise HTTPException(403, "Sem permissão")
+
+
+class FlowSettingsIn(BaseModel):
+    netflow_port: int = 2055
+    sflow_port: int = 6343
+    retention_days: int = 7
+    hourly_days: int = 90
+    own_prefixes: List[str] = []
+    ignore_prefixes: List[str] = []
+    sampling: dict = {}
+    attack: dict = {}
+    asn_auto: bool = True
+
+
+class FlowIfaceIn(BaseModel):
+    device_id: str
+    if_index: int
+    if_name: str = ""
+    exporter: str = ""
+    role: str = "transito"
+    label: str = ""
+
+
+class FlowIfaceUpd(BaseModel):
+    role: Optional[str] = None
+    label: Optional[str] = None
+    exporter: Optional[str] = None
+
+
+class FlowGroupIn(BaseModel):
+    name: str
+    asns: List[str] = []
+    prefixes: List[str] = []
+    color: str = ""
+
+
+class FlowFilter(BaseModel):
+    dim: Optional[str] = None
+    values: List[str] = []
+
+
+class FlowQueryIn(BaseModel):
+    interfaces: List[str] = []           # ids de flow_ifaces (vazio = todas as minhas)
+    minutes: int = 360
+    direction: str = "in"
+    group_by: str = "interface"
+    filter: FlowFilter = FlowFilter()
+    top: int = 10
+    unit: str = "bps"
+    by_block: bool = False
+
+
+async def _flow_ifaces_of(user: dict) -> List[dict]:
+    return await db.flow_ifaces.find({"owner_id": user["id"]}, {"_id": 0}).to_list(2000)
+
+
+def _valid_ip(s: str) -> str:
+    import ipaddress as _ipa
+    try:
+        return str(_ipa.ip_address(s.strip()))
+    except ValueError:
+        raise HTTPException(400, f"IP do exportador inválido: {s}")
+
+
+@api.get("/flow/settings")
+async def flow_get_settings(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    s = await flowstore.get_settings(db)
+    meta = await asndb.get_meta(db)
+    live = await db.flow_live.find_one({"_id": "live"}, {"_id": 0, "at": 1})
+    st = await db.config.find_one({"key": "flow_asn_status"}, {"_id": 0}) or {}
+    return {**s, "is_admin": user.get("role") == "admin", "roles": flowstore.ROLES, "dims": flowstore.DIMS,
+            "presets": FLOW_PRESETS, "attack_defaults": flowagg.ATTACK_DEFAULTS,
+            "asn": ({k: meta.get(k) for k in ("at", "source", "ranges_v4", "ranges_v6", "asns")} if meta else None),
+            "asn_status": st, "collector_at": (live or {}).get("at")}
+
+
+@api.put("/flow/settings")
+async def flow_put_settings(body: FlowSettingsIn, _: dict = Depends(require_admin)):
+    try:
+        own = flowstore.clean_prefixes(body.own_prefixes)
+        ign = flowstore.clean_prefixes(body.ignore_prefixes)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    for p in (body.netflow_port, body.sflow_port):
+        if not 1 <= p <= 65535:
+            raise HTTPException(400, "Porta inválida")
+    if body.netflow_port == body.sflow_port:
+        raise HTTPException(400, "NetFlow e sFlow precisam de portas diferentes")
+    samp = {}
+    for ip, rate in (body.sampling or {}).items():
+        try:
+            r = int(rate)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"Taxa de amostragem inválida para {ip}")
+        if r > 0:
+            samp[_valid_ip(ip)] = min(r, 1_000_000)
+    att = {**flowagg.ATTACK_DEFAULTS}
+    for k, v in (body.attack or {}).items():
+        if k not in att:
+            continue
+        if k == "enabled":
+            att[k] = bool(v)
+        else:
+            try:
+                att[k] = max(1, int(float(v)))
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"Valor inválido em {k}")
+    att["avg_windows"] = min(att["avg_windows"], 12)
+    data = {"netflow_port": body.netflow_port, "sflow_port": body.sflow_port,
+            "retention_days": max(1, min(body.retention_days, 60)), "hourly_days": max(7, min(body.hourly_days, 730)),
+            "own_prefixes": own, "ignore_prefixes": ign, "sampling": samp, "attack": att, "asn_auto": body.asn_auto}
+    await db.config.update_one({"key": "flow"}, {"$set": {"key": "flow", **data}}, upsert=True)
+    try:
+        await flowstore.ensure_indexes(db, data)
+    except Exception as e:
+        logger.warning(f"índices do flow: {e}")
+    return await flowstore.get_settings(db)
+
+
+@api.get("/flow/exporters")
+async def flow_exporters(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    exps = await db.flow_exporters.find({}, {"_id": 1, "kind": 1, "src": 1, "pps": 1, "fps": 1, "rate": 1, "last": 1,
+                                             "no_template": 1, "errors": 1, "last_error": 1, "bidir": 1, "ifs": 1}).to_list(5000)
+    if user.get("role") != "admin":
+        hosts = {d.get("host") async for d in db.devices.find(_scope(user), {"_id": 0, "host": 1})}
+        mine = {i["exporter"] for i in await _flow_ifaces_of(user)}
+        exps = [e for e in exps if e["_id"] in hosts or e["_id"] in mine or e.get("src") in hosts]
+    for e in exps:
+        e["ip"] = e.pop("_id")
+        e["n_ifs"] = len(e.get("ifs") or {})
+        e.pop("ifs", None)
+    return sorted(exps, key=lambda e: e.get("last") or "", reverse=True)
+
+
+@api.get("/flow/devices/{device_id}/candidates")
+async def flow_candidates(device_id: str, exporter: str = "", user: dict = Depends(get_current_user)):
+    """Interfaces do equipamento com o tráfego que o coletor está vendo (flow ativo) em cada uma."""
+    _no_viewer(user)
+    dev = await _get_device_for(user, device_id)
+    exps = await db.flow_exporters.find({}, {"_id": 1, "src": 1, "ifs": 1, "last": 1, "kind": 1}).to_list(5000)
+    match = [e for e in exps if e["_id"] == dev.get("host") or e.get("src") == dev.get("host")]
+    exp_ip = exporter.strip() or (match[0]["_id"] if match else dev.get("host", ""))
+    exp_doc = next((e for e in exps if e["_id"] == exp_ip), None)
+    ifs = (exp_doc or {}).get("ifs") or {}
+    cached = await db.device_ifaces.find_one({"device_id": device_id}, {"_id": 0}) or {}
+    mon = {(i["exporter"], int(i["if_index"])) for i in await _flow_ifaces_of(user) if i["device_id"] == device_id}
+    rows, seen = [], set()
+    for itf in cached.get("interfaces") or []:
+        r = ifs.get(str(itf["index"])) or [0, 0]
+        rows.append({"index": itf["index"], "name": itf.get("name"), "alias": itf.get("alias"), "speed_mbps": itf.get("speed_mbps"),
+                     "oper": itf.get("oper"), "in_bps": r[0], "out_bps": r[1], "active": bool(r[0] or r[1]),
+                     "monitored": (exp_ip, itf["index"]) in mon})
+        seen.add(itf["index"])
+    for idx, r in ifs.items():
+        if int(idx) not in seen:
+            rows.append({"index": int(idx), "name": None, "alias": "", "speed_mbps": None, "oper": None, "in_bps": r[0],
+                         "out_bps": r[1], "active": True, "monitored": (exp_ip, int(idx)) in mon})
+    rows.sort(key=lambda r: (not r["active"], -(r["in_bps"] + r["out_bps"]), r["index"]))
+    return {"device": {"id": dev["id"], "name": dev.get("name"), "host": dev.get("host")}, "exporter": exp_ip,
+            "exporter_seen": bool(exp_doc), "exporter_kind": (exp_doc or {}).get("kind"), "exporter_last": (exp_doc or {}).get("last"),
+            "suggested": [e["_id"] for e in match], "snmp_cached": bool(cached.get("interfaces")), "interfaces": rows}
+
+
+@api.get("/flow/interfaces")
+async def flow_list_ifaces(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    items = await _flow_ifaces_of(user)
+    live = (await db.flow_live.find_one({"_id": "live"}, {"_id": 0}) or {})
+    lv = live.get("ifaces") or {}
+    names = {d["id"]: d.get("name") async for d in db.devices.find(_scope(user), {"_id": 0, "id": 1, "name": 1})}
+    for i in items:
+        i["device_name"] = names.get(i["device_id"], "(equipamento removido)")
+        i["live"] = lv.get(i["key"]) or {}
+    items.sort(key=lambda i: (i["device_name"] or "", i["if_index"]))
+    return {"items": items, "live_at": live.get("at")}
+
+
+@api.post("/flow/interfaces")
+async def flow_add_iface(body: FlowIfaceIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    dev = await _get_device_for(user, body.device_id)
+    exp = _valid_ip(body.exporter or dev.get("host") or "")
+    if body.role not in flowstore.ROLES:
+        raise HTTPException(400, "Papel inválido")
+    key = flowstore.iface_key(exp, body.if_index)
+    if await db.flow_ifaces.find_one({"owner_id": user["id"], "key": key}):
+        raise HTTPException(409, "Essa interface já está sendo monitorada")
+    doc = {"id": str(uuid.uuid4()), "owner_id": user["id"], "device_id": dev["id"], "exporter": exp,
+           "if_index": int(body.if_index), "if_name": body.if_name.strip()[:80] or f"ifIndex {body.if_index}",
+           "key": key, "role": body.role, "label": body.label.strip()[:60],
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.flow_ifaces.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/flow/interfaces/{iid}")
+async def flow_upd_iface(iid: str, body: FlowIfaceUpd, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await db.flow_ifaces.find_one({"id": iid, "owner_id": user["id"]}, {"_id": 0})
+    if not cur:
+        raise HTTPException(404, "Interface não encontrada")
+    upd = {}
+    if body.role is not None:
+        if body.role not in flowstore.ROLES:
+            raise HTTPException(400, "Papel inválido")
+        upd["role"] = body.role
+    if body.label is not None:
+        upd["label"] = body.label.strip()[:60]
+    if body.exporter:
+        upd["exporter"] = _valid_ip(body.exporter)
+        upd["key"] = flowstore.iface_key(upd["exporter"], cur["if_index"])
+    if upd:
+        await db.flow_ifaces.update_one({"id": iid}, {"$set": upd})
+    return {**cur, **upd}
+
+
+@api.delete("/flow/interfaces/{iid}")
+async def flow_del_iface(iid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    r = await db.flow_ifaces.delete_one({"id": iid, "owner_id": user["id"]})
+    if not r.deleted_count:
+        raise HTTPException(404, "Interface não encontrada")
+    return {"ok": True}
+
+
+@api.get("/flow/groups")
+async def flow_list_groups(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return await db.flow_groups.find({"owner_id": user["id"]}, {"_id": 0}).sort("name", 1).to_list(1000)
+
+
+def _group_doc(body: FlowGroupIn) -> dict:
+    try:
+        asns = flowstore.clean_asns(body.asns)
+        pfx = flowstore.clean_prefixes(body.prefixes)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not body.name.strip():
+        raise HTTPException(400, "Dê um nome ao conteúdo")
+    if not asns and not pfx:
+        raise HTTPException(400, "Informe pelo menos um ASN ou um bloco")
+    return {"name": body.name.strip()[:60], "asns": asns[:200], "prefixes": pfx[:2000], "color": body.color[:16]}
+
+
+@api.post("/flow/groups")
+async def flow_add_group(body: FlowGroupIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    doc = {"id": str(uuid.uuid4()), "owner_id": user["id"], **_group_doc(body),
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.flow_groups.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/flow/groups/{gid}")
+async def flow_upd_group(gid: str, body: FlowGroupIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await db.flow_groups.find_one({"id": gid, "owner_id": user["id"]}, {"_id": 0})
+    if not cur:
+        raise HTTPException(404, "Conteúdo não encontrado")
+    doc = _group_doc(body)
+    if doc["asns"] != cur.get("asns") or doc["prefixes"] != cur.get("prefixes"):
+        doc["updated_at"] = datetime.now(timezone.utc).isoformat()      # a contagem nova vale daqui para frente
+    await db.flow_groups.update_one({"id": gid}, {"$set": doc})
+    return {"id": gid, **doc}
+
+
+@api.delete("/flow/groups/{gid}")
+async def flow_del_group(gid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    r = await db.flow_groups.delete_one({"id": gid, "owner_id": user["id"]})
+    if not r.deleted_count:
+        raise HTTPException(404, "Conteúdo não encontrado")
+    return {"ok": True}
+
+
+def _flow_if_namer(dev_ifaces: dict, exp_dev: dict):
+    def name(exp: str, idx: int):
+        dev = exp_dev.get(exp)
+        if not dev:
+            return None
+        for i in dev_ifaces.get(dev, []):
+            if i.get("index") == idx:
+                return i.get("name")
+        return None
+    return name
+
+
+@api.post("/flow/query")
+async def flow_query(body: FlowQueryIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    mine = await _flow_ifaces_of(user)
+    sel = [i for i in mine if not body.interfaces or i["id"] in body.interfaces or i["key"] in body.interfaces]
+    if not sel:
+        raise HTTPException(400, "Escolha pelo menos uma interface monitorada")
+    keys = list(dict.fromkeys(i["key"] for i in sel))
+    groups = await db.flow_groups.find({"owner_id": user["id"]}, {"_id": 0}).to_list(1000)
+    gname = {g["id"]: g["name"] for g in groups}
+    filt = body.filter.model_dump()
+    if filt.get("dim") == "group":
+        filt["values"] = [v for v in filt.get("values") or [] if v in gname]
+        if not filt["values"]:
+            raise HTTPException(400, "Escolha um conteúdo")
+    try:
+        res = await flowstore.query(db, keys=keys, minutes=body.minutes, direction=body.direction, group_by=body.group_by,
+                                    filt=filt, top=body.top, unit="pps" if body.unit == "pps" else "bps",
+                                    group_ids=list(gname), by_block=body.by_block)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    names = {d["id"]: d.get("name") async for d in db.devices.find(_scope(user), {"_id": 0, "id": 1, "name": 1})}
+    by_key = {}
+    for i in sel:
+        by_key.setdefault(i["key"], i)
+    asn = await _asn_db() if body.group_by in ("sas", "das") else None
+    exp_dev = {i["exporter"]: i["device_id"] for i in mine}
+    dev_ifaces = {}
+    if body.group_by == "peer":
+        async for d in db.device_ifaces.find({"device_id": {"$in": list(set(exp_dev.values()))}}, {"_id": 0, "device_id": 1, "interfaces": 1}):
+            dev_ifaces[d["device_id"]] = d.get("interfaces") or []
+    namer = _flow_if_namer(dev_ifaces, exp_dev)
+    for s in res["series"]:
+        if s.get("other"):
+            s["name"] = "Outros"
+        elif body.group_by == "interface":
+            k, _, d = s["raw"].partition("#")
+            i = by_key.get(k)
+            base = f"{names.get(i['device_id'], i['exporter'])} · {i['if_name']}" if i else k
+            s["name"] = base + (f" ({i['label']})" if i and i.get("label") else "") + ({"in": " ↓", "out": " ↑"}.get(d, ""))
+            s["role"] = (i or {}).get("role")
+            s["iface_id"] = (i or {}).get("id")
+        elif body.group_by == "group":
+            s["name"] = gname.get(s["raw"], s["raw"])
+        else:
+            raw = s["raw"]
+            if body.group_by in ("sas", "das", "proto", "sport", "dport"):
+                try:
+                    raw = int(raw)
+                except (TypeError, ValueError):
+                    pass
+            s["name"] = flowstore.dim_label(body.group_by, raw, asn.name if asn else None, namer)
+        s.pop("raw", None)
+    # conteúdo é contado na coleta: criado/alterado depois do início do período -> avisa desde quando vale
+    if filt.get("dim") == "group" or body.group_by == "group":
+        chosen = [g for g in groups if g["id"] in (filt.get("values") if filt.get("dim") == "group" else gname)]
+        newest = max((g.get("updated_at") or g.get("created_at") or "" for g in chosen), default="")
+        try:
+            res["counting_since"] = newest if newest and datetime.fromisoformat(newest).timestamp() * 1000 > res["ts"][0] else None
+        except (ValueError, IndexError):
+            res["counting_since"] = None
+    names_by_id = {s["id"]: s for s in res["series"]}
+    for row in res["table"]:
+        s = names_by_id.get(row["id"], {})
+        row["name"] = s.get("name", row["id"])
+        if s.get("role"):
+            row["role"] = s["role"]
+    return res
+
+
+@api.get("/flow/live")
+async def flow_live(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    live = await db.flow_live.find_one({"_id": "live"}, {"_id": 0}) or {}
+    keys = {i["key"] for i in await _flow_ifaces_of(user)}
+    return {"at": live.get("at"), "ifaces": {k: v for k, v in (live.get("ifaces") or {}).items() if k in keys}}
+
+
+@api.get("/flow/attacks")
+async def flow_attacks(status: str = "", limit: int = 100, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    q = {} if user.get("role") == "admin" else {"owners": user["id"]}
+    if status in ("active", "ended"):
+        q["status"] = status
+    items = await db.flow_attacks.find(q, {"_id": 0, "series": 0}).sort("start", -1).to_list(max(1, min(limit, 500)))
+    asn = await _asn_db()
+    for a in items:
+        a["src_as"] = [[x, b, (asn.name(x) if asn and x else "")] for x, b in a.get("src_as") or []]
+    return items
+
+
+@api.get("/flow/attacks/{aid}")
+async def flow_attack(aid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    q = {"id": aid} if user.get("role") == "admin" else {"id": aid, "owners": user["id"]}
+    a = await db.flow_attacks.find_one(q, {"_id": 0})
+    if not a:
+        raise HTTPException(404, "Ataque não encontrado")
+    asn = await _asn_db()
+    a["src_as"] = [[x, b, (asn.name(x) if asn and x else "")] for x, b in a.get("src_as") or []]
+    return a
+
+
+@api.get("/flow/asn/lookup")
+async def flow_asn_lookup(q: str = "", user: dict = Depends(get_current_user)):
+    """IP -> ASN e bloco; número do AS -> nome e prefixos; texto -> busca pelo nome."""
+    _no_viewer(user)
+    a = await _asn_db()
+    if not a:
+        raise HTTPException(400, "A base de ASN ainda não foi baixada (Flow → Configuração → Base de ASN)")
+    q = q.strip()
+    import ipaddress as _ipa
+    try:
+        _ipa.ip_address(q)
+        r = a.range_of(q)
+        if not r:
+            return {"kind": "ip", "ip": q, "asn": None}
+        return {"kind": "ip", "ip": q, "asn": r["asn"], "name": a.name(r["asn"]), "prefixes": r["prefixes"]}
+    except ValueError:
+        pass
+    s = q.upper().removeprefix("AS")
+    if s.isdigit():
+        p = await asyncio.to_thread(a.prefixes_of, int(s))
+        return {"kind": "asn", "asn": int(s), "name": a.name(int(s)), **p}
+    if len(q) < 2:
+        raise HTTPException(400, "Digite um IP, um ASN ou parte do nome")
+    return {"kind": "search", "results": a.search(q)}
+
+
+async def _flow_asn_update(source: str = "download", raw: Optional[bytes] = None) -> dict:
+    await db.config.update_one({"key": "flow_asn_status"}, {"$set": {"key": "flow_asn_status", "state": "atualizando",
+                                                                      "at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    try:
+        if raw is None:
+            raw = await asndb.download()
+        meta = await asndb.import_raw(db, raw, source)
+        _asn_cache["checked"] = 0
+        await db.config.update_one({"key": "flow_asn_status"}, {"$set": {"state": "ok", "error": None,
+                                                                          "at": datetime.now(timezone.utc).isoformat()}})
+        return meta
+    except Exception as e:
+        await db.config.update_one({"key": "flow_asn_status"}, {"$set": {"state": "erro", "error": str(e)[:300],
+                                                                          "at": datetime.now(timezone.utc).isoformat()}})
+        raise
+
+
+@api.post("/flow/asn/update")
+async def flow_asn_update(_: dict = Depends(require_admin)):
+    try:
+        return await _flow_asn_update("iptoasn.com")
+    except Exception as e:
+        raise HTTPException(502, f"Não consegui atualizar a base: {e}. Se o servidor não acessa iptoasn.com, baixe "
+                                 f"ip2asn-combined.tsv.gz em outro computador e envie pelo botão ao lado.")
+
+
+@api.post("/flow/asn/upload")
+async def flow_asn_upload(file: UploadFile = File(...), _: dict = Depends(require_admin)):
+    raw = await file.read()
+    if len(raw) > 200 * 1024 * 1024:
+        raise HTTPException(400, "Arquivo grande demais")
+    try:
+        return await _flow_asn_update(f"arquivo {file.filename}", raw)
+    except Exception as e:
+        raise HTTPException(400, f"Arquivo inválido: {e}")
+
+
+async def _flow_asn_loop():
+    """Atualiza a base de ASN uma vez por semana (se o Flow estiver em uso e a opção ligada)."""
+    await asyncio.sleep(120)
+    while True:
+        try:
+            s = await flowstore.get_settings(db)
+            if s.get("asn_auto") and await db.flow_ifaces.count_documents({}) > 0:
+                meta = await asndb.get_meta(db)
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(meta["at"])).total_seconds() if meta else 1e12
+                if age > 7 * 86400:
+                    await _flow_asn_update("iptoasn.com (automático)")
+        except Exception as e:
+            logger.warning(f"atualização automática da base de ASN: {e}")
+        await asyncio.sleep(6 * 3600)
+
+
+
 # ---------- Health ----------
 @api.get("/")
 async def root():
@@ -2532,5 +3051,7 @@ async def shutdown_db_client():
     assistant.stop()
     net_monitor.stop()
     optics_collector.stop()
+    if _flow_asn_task:
+        _flow_asn_task.cancel()
     await agent_pool.close_all()
     client.close()
