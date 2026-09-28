@@ -1812,13 +1812,33 @@ async def put_ai_settings(payload: AISettings, _: dict = Depends(require_admin))
     return await get_ai_settings(_)
 
 
+class AITestIn(BaseModel):
+    provider: str = ""
+    model: str = ""
+    base_url: str = ""
+    key: str = ""
+
+
 @api.post("/ai/test")
-async def test_ai(_: dict = Depends(require_admin)):
+async def test_ai(body: Optional[AITestIn] = None, _: dict = Depends(require_admin)):
+    """Testa com o que está no formulário (ainda não salvo); o que faltar vem do salvo."""
     s = await ai_assistant.get_ai_settings(db)
-    why = ai_assistant.ai_ready(s)
-    if why:
-        return {"ok": False, "error": why[0].upper() + why[1:]}
-    cfg = ai_assistant.llm_cfg(s)
+    b = body or AITestIn()
+    if b.provider and b.provider not in llm.PROVIDERS:
+        return {"ok": False, "error": "Provedor desconhecido"}
+    cfg = ai_assistant.llm_cfg(s, b.provider or None)
+    if b.model.strip():
+        cfg["model"] = b.model.strip()
+    if b.base_url.strip():
+        if not re.match(r"^https?://", b.base_url.strip()):
+            return {"ok": False, "error": "URL da API precisa começar com http:// ou https://"}
+        cfg["base_url"] = b.base_url.strip().rstrip("/")
+    if b.key.strip():
+        cfg["key"] = b.key.strip()
+    if llm.PROVIDERS.get(cfg["provider"], {}).get("key") and not cfg["key"]:
+        return {"ok": False, "error": "Falta a chave da API do provedor escolhido"}
+    if not cfg["model"]:
+        return {"ok": False, "error": "Falta escolher o modelo"}
     try:
         r = await llm.call(cfg, [{"role": "user", "content": "Responda apenas: OK"}],
                            [{"type": "text", "text": "Teste de conexão."}], max_tokens=10)

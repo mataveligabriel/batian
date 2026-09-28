@@ -70,7 +70,7 @@ export function AIAssistantCard() {
   const test = async () => {
     setTesting(true);
     try {
-      const { data } = await api.post("/ai/test");
+      const { data } = await api.post("/ai/test", { provider: prov, model, base_url: baseUrl, key: apiKey });
       data.ok ? toast.success(`O modelo respondeu (${data.model}): ${data.reply}`) : toast.error(data.error);
     } catch (e) { toast.error(formatApiError(e)); }
     finally { setTesting(false); }
