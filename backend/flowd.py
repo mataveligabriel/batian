@@ -315,6 +315,7 @@ class Collector:
 
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s flowd - %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)   # não grava o token do Telegram no log
     from motor.motor_asyncio import AsyncIOMotorClient
     import automation
     client = AsyncIOMotorClient(os.environ["MONGO_URL"])

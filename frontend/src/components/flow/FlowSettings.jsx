@@ -170,6 +170,14 @@ function AsnBase({ s, reload }) {
 /** Aba Configuração: exportadores, detector de ataques, prefixos, retenção, base de ASN e configuração dos roteadores. */
 export function FlowSettings({ settings, reload }) {
   const [f, setF] = useState(null);
+  const [live, setLive] = useState(null);     // estado do coletor, consultado sempre (a idade vem do relógio do servidor)
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.get("/flow/live").then(r => alive && setLive(r.data)).catch(() => {});
+    load();
+    const t = setInterval(load, 15000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
   const [busy, setBusy] = useState(false);
   const [vendor, setVendor] = useState("huawei");
   useEffect(() => {
@@ -206,7 +214,7 @@ export function FlowSettings({ settings, reload }) {
   const num = (label, val, on, hint, tid) => (
     <div><Label className="text-xs">{label}</Label><Input type="number" value={val} onChange={e => on(e.target.value)} disabled={ro} className={`${inputCls} h-8 font-mono text-sm`} data-testid={tid} />{hint && <div className="text-[10px] text-slate-500 mt-0.5">{hint}</div>}</div>
   );
-  const collectorOk = s.collector_at && Date.now() - new Date(s.collector_at).getTime() < 60000;
+  const collectorOk = live ? live.age_sec !== null && live.age_sec < 60 : !!s.collector_at;
   const snippet = SNIPPETS[vendor](host(), s.netflow_port, s.sflow_port);
 
   return (
@@ -214,7 +222,7 @@ export function FlowSettings({ settings, reload }) {
       <div className="flex items-center gap-2 text-sm" data-testid="collector-status">
         <span className="w-2.5 h-2.5 rounded-full" style={{ background: collectorOk ? STATUS.good : STATUS.critical }} />
         <b style={{ color: collectorOk ? STATUS.good : STATUS.critical }}>{collectorOk ? "Coletor ativo" : "Coletor parado"}</b>
-        <span className="text-xs text-slate-400">{collectorOk ? `última gravação ${ago(s.collector_at)}` : "o container flow não está gravando — no servidor: cd /opt/bastion/deploy && docker compose ps (e docker compose logs flow)"}</span>
+        <span className="text-xs text-slate-400">{collectorOk ? `última gravação há ${Math.max(0, Math.round(live?.age_sec ?? 0))} s` : "o container flow não está gravando — no servidor: cd /opt/bastion/deploy && docker compose ps (e docker compose logs flow)"}</span>
       </div>
       <Exporters s={s} onSampling={onSampling} />
 

@@ -72,6 +72,7 @@ app = FastAPI(title="SSH Bastion Central")
 api = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s - %(message)s')
+logging.getLogger("httpx").setLevel(logging.WARNING)   # a URL do Telegram leva o token do bot
 logger = logging.getLogger("bastion")
 
 
@@ -3077,7 +3078,12 @@ async def flow_live(user: dict = Depends(get_current_user)):
     _no_viewer(user)
     live = await db.flow_live.find_one({"_id": "live"}, {"_id": 0}) or {}
     keys = {i["key"] for i in await _flow_ifaces_of(user)}
-    return {"at": live.get("at"), "ifaces": {k: v for k, v in (live.get("ifaces") or {}).items() if k in keys}}
+    age = None
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(live["at"])).total_seconds()
+    except Exception:
+        pass
+    return {"at": live.get("at"), "age_sec": age, "ifaces": {k: v for k, v in (live.get("ifaces") or {}).items() if k in keys}}
 
 
 @api.get("/flow/attacks")
