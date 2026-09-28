@@ -42,6 +42,17 @@ export default function Agents() {
   const isAdmin = user?.role === "admin";
   const [vpnData, reloadVpns] = useVpns(true);
   const [params, setParams] = useSearchParams();
+  // quando uma VPN acaba de conectar, testa na hora os jumps que dependem dela (o status não fica "offline" velho)
+  const prevVpn = React.useRef({});
+  useEffect(() => {
+    const prev = prevVpn.current;
+    vpnData.items.forEach(v => {
+      if (v.status.state === "up" && prev[v.id] && prev[v.id] !== "up") {
+        agents.filter(a => a.vpn_id === v.id).forEach(a => api.post(`/agents/${a.id}/ping`).then(load).catch(() => {}));
+      }
+    });
+    prevVpn.current = Object.fromEntries(vpnData.items.map(v => [v.id, v.status.state]));
+  }, [vpnData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = async () => setAgents((await api.get("/agents")).data);
   useEffect(() => {

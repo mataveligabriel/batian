@@ -3205,7 +3205,7 @@ def _vpn_public(p: dict, st: Optional[dict]) -> dict:
     out = {k: v for k, v in p.items() if k not in ("password", "_id")}
     out["has_password"] = bool(p.get("password"))
     st = st or {}
-    out["status"] = {k: st.get(k) for k in ("state", "since", "iface", "ip", "routes", "error", "pending_cert", "prompt", "log", "updated")}
+    out["status"] = {k: st.get(k) for k in ("state", "since", "iface", "ip", "routes", "error", "pending_cert", "prompt", "log", "updated", "diag", "diag_at")}
     out["status"]["state"] = st.get("state") or "disconnected"
     return out
 
@@ -3331,6 +3331,17 @@ async def vpn_send_otp(vid: str, body: VpnConnectIn, user: dict = Depends(get_cu
         raise HTTPException(400, "Digite o token")
     await db.vpn_status.update_one({"_id": vid}, {"$set": {"state": "connecting", "prompt": None}})
     await _vpn_cmd(vid, "otp", otp)
+    return _vpn_public(p, await db.vpn_status.find_one({"_id": vid}))
+
+
+@api.post("/vpns/{vid}/diag")
+async def vpn_diag(vid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    p = await _get_vpn_for(user, vid)
+    if not await _vpn_daemon_ok():
+        raise HTTPException(503, "O serviço de VPN não está rodando no servidor")
+    await db.vpn_status.update_one({"_id": vid}, {"$set": {"diag": "rodando diagnóstico…", "diag_at": None}}, upsert=True)
+    await _vpn_cmd(vid, "diag")
     return _vpn_public(p, await db.vpn_status.find_one({"_id": vid}))
 
 

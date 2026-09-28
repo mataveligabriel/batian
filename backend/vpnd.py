@@ -80,10 +80,10 @@ class Tunnel:
         return self.prof["id"]
 
     async def publish(self):
-        await self.d.db.vpn_status.replace_one({"_id": self.pid}, {
-            "_id": self.pid, "state": self.state, "since": self.since, "iface": self.iface, "ip": self.ip,
+        await self.d.db.vpn_status.update_one({"_id": self.pid}, {"$set": {
+            "state": self.state, "since": self.since, "iface": self.iface, "ip": self.ip,
             "routes": self.routes, "error": self.error, "pending_cert": self.cert, "prompt": self.prompt, "log": list(self.lines)[-40:],
-            "updated": _now()}, upsert=True)
+            "updated": _now()}}, upsert=True)
 
     def _conf(self) -> Path:
         RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -145,23 +145,29 @@ class Tunnel:
             conf.unlink(missing_ok=True)
         if self.state == "up" or self.was_up:
             self.state = "down"
-            self.error = None if self.stopping else f"túnel encerrado (código {rc})"
+            why = next((l.split("ERROR:", 1)[-1].strip() for l in reversed(self.lines) if "ERROR" in l or "terminated" in l.lower()), "")
+            up_for = ""
+            try:
+                up_for = f" depois de {int((datetime.now(timezone.utc) - datetime.fromisoformat(self.since)).total_seconds())} s"
+            except Exception:
+                pass
+            self.error = None if self.stopping else f"túnel encerrado pelo gateway{up_for} (código {rc})" + (f": {why}" if why else "")
         elif self.state != "error":
             self.state = "error"
             self.error = self.error or f"openfortivpn saiu com código {rc} — veja o log"
         if self.stopping:
             self.state, self.error = "disconnected", None
         self.since = _now()
-        self.iface = None
+        self.iface, self.routes = None, []
         await self.publish()
         if self.was_up and not self.stopping:
             await self.d.alert_down(self.prof)
 
     async def _parse(self, line: str):
         low = line.lower()
-        m = re.search(r"interface (ppp\d+) is up", low)
+        m = re.search(r"interface (ppp\d+) is up|using interface (ppp\d+)|connect: (ppp\d+)", low)
         if m:
-            self.iface = m.group(1)
+            self.iface = next(g for g in m.groups() if g)
         m = re.search(r"got addresses: \[([\d.]+)\]", low)
         if m:
             self.ip = m.group(1)
@@ -177,8 +183,14 @@ class Tunnel:
             self.state, self.error = "error", "o container não tem acesso ao /dev/ppp ou ao NET_ADMIN (veja o README)"
         if "tunnel is up and running" in low:
             self.state, self.error, self.was_up, self.since = "up", None, True, _now()
-            if not self.iface:
+            for _ in range(8):                       # o ppp pode aparecer um instante depois do aviso
+                if self.iface:
+                    break
                 self.iface = await self.d.find_ppp()
+                if not self.iface:
+                    await asyncio.sleep(0.5)
+            if not self.iface:
+                self.lines.append(f"{datetime.now().strftime('%H:%M:%S')} AVISO: não achei a interface ppp — rotas não aplicadas")
             await self.apply_routes()
         await self.publish()
 
@@ -241,7 +253,8 @@ class VpnDaemon:
         self.tasks: set = set()
 
     async def sh(self, *args):
-        p = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        p = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                                                 stderr=asyncio.subprocess.STDOUT)
         out, _ = await p.communicate()
         return p.returncode, out.decode("utf-8", "replace")
 
@@ -267,6 +280,49 @@ class VpnDaemon:
                 pass      # nome DNS: cadastre a rede na VPN
         return out
 
+    async def diagnose(self, pid: str):
+        """Mostra, do ponto de vista do servidor: túnel, rotas, rota escolhida para cada jump e se a porta SSH abre."""
+        t = self.tunnels.get(pid)
+        out = [f"== diagnóstico {_now()[:19].replace('T', ' ')} UTC =="]
+        rc, v = await self.sh(OFV, "--version")
+        out.append(f"openfortivpn {v.strip() or '?'}")
+        if t and t.iface:
+            out.append(f"estado: {t.state} · interface {t.iface} · IP {t.ip}")
+            for args in (("-o", "addr", "show", "dev", t.iface), ("route", "show", "dev", t.iface)):
+                rc, o = await self.sh(IP, *args)
+                out.append(f"$ ip {' '.join(args)}\n{o.strip() or '(vazio)'}")
+            t.prof = await self.db.vpn_profiles.find_one({"id": pid}, {"_id": 0}) or t.prof
+            await t.apply_routes()
+        else:
+            out.append(f"estado: {t.state if t else 'sem túnel'} — conecte a VPN antes do diagnóstico")
+        targets = []
+        async for a in self.db.agents.find({"vpn_id": pid}, {"_id": 0, "name": 1, "host": 1, "port": 1, "mode": 1}):
+            if a.get("mode") != "reverse" and a.get("host"):
+                targets.append((a["name"], a["host"].strip(), int(a.get("port") or 22)))
+        if not targets:
+            out.append("nenhum agente marcado com esta VPN")
+        for name, host, port in targets:
+            rc, o = await self.sh(IP, "route", "get", host)
+            via = o.strip().splitlines()[0] if o.strip() else "?"
+            ok = "?"
+            t0 = time.monotonic()
+            try:
+                r, w = await asyncio.wait_for(asyncio.open_connection(host, port), 6)
+                ok = f"ABRE ({(time.monotonic() - t0) * 1000:.0f} ms)"
+                try:
+                    banner = await asyncio.wait_for(r.readline(), 3)
+                    ok += f" · {banner.decode(errors='replace').strip()[:60]}"
+                except asyncio.TimeoutError:
+                    pass
+                w.close()
+            except asyncio.TimeoutError:
+                ok = "SEM RESPOSTA em 6 s (pacote sai mas não volta: política/rota no FortiGate ou jump fora)"
+            except OSError as e:
+                ok = f"FALHOU: {e.strerror or e}"
+            warn = "" if (t and t.iface and t.iface in via) else "   <-- NÃO está saindo pela VPN"
+            out.append(f"{name} {host}:{port}\n   rota: {via}{warn}\n   SSH: {ok}")
+        await self.db.vpn_status.update_one({"_id": pid}, {"$set": {"diag": "\n".join(out), "diag_at": _now()}}, upsert=True)
+
     async def alert_down(self, prof: dict):
         if not self.alert:
             return
@@ -290,6 +346,9 @@ class VpnDaemon:
                 await t.stop()
             else:
                 await self.db.vpn_status.update_one({"_id": pid}, {"$set": {"state": "disconnected", "error": None, "updated": _now()}}, upsert=True)
+            return
+        if cmd.get("action") == "diag":
+            await self.diagnose(pid)
             return
         if cmd.get("action") == "otp":
             if t:
@@ -325,6 +384,8 @@ class VpnDaemon:
 
     async def refresh_routes(self):
         for t in self.tunnels.values():
+            if t.state == "up" and not t.iface:
+                t.iface = await self.find_ppp()
             if t.state == "up":
                 prof = await self.db.vpn_profiles.find_one({"id": t.pid}, {"_id": 0})
                 if prof:

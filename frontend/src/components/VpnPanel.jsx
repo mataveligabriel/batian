@@ -32,7 +32,7 @@ export function useVpns(enabled = true) {
   const load = useCallback(async () => {
     try { setData((await api.get("/vpns")).data); } catch { /* sem acesso / offline */ }
   }, []);
-  const connecting = data.items.some(v => ["connecting", "disconnecting", "need_otp"].includes(v.status.state));
+  const connecting = data.items.some(v => ["connecting", "disconnecting", "need_otp"].includes(v.status.state) || (v.status.diag && !v.status.diag_at));
   useEffect(() => {
     if (!enabled) return undefined;
     load();
@@ -65,6 +65,8 @@ export function VpnConnectDialog({ vpn, onClose, reload, daemon = true }) {
   const sendOtp = () => otp.trim() && call(async () => { await api.post(`/vpns/${vpn.id}/otp`, { otp }); setSent(true); setOtp(""); });
   const trust = () => call(async () => { await api.post(`/vpns/${vpn.id}/trust-cert`); setSent(false); toast.success("Certificado confiado — conecte de novo"); });
   const disconnect = () => call(() => api.post(`/vpns/${vpn.id}/disconnect`));
+  const diag = () => call(() => api.post(`/vpns/${vpn.id}/diag`));
+  const diagRunning = st.diag && !st.diag_at;
   const up = st.state === "up";
   const needOtp = st.state === "need_otp";
   const working = st.state === "connecting" || st.state === "disconnecting";
@@ -115,6 +117,16 @@ export function VpnConnectDialog({ vpn, onClose, reload, daemon = true }) {
               <div className="font-mono text-[11px] text-slate-100 break-all bg-[#05070A] p-1.5 rounded">{st.pending_cert}</div>
               <div className="text-slate-500">Confira com quem administra o FortiGate antes de confiar.</div>
               <Button size="sm" onClick={trust} className="h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="vpn-trust"><ShieldCheck className="w-4 h-4 mr-1" /> Confiar neste certificado</Button>
+            </div>
+          )}
+          {(up || st.diag) && (
+            <div className="text-[11px]" data-testid="vpn-diag">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-slate-500">Diagnóstico a partir do servidor</span>
+                <button onClick={diag} disabled={busy || diagRunning} className="ml-auto text-[#4DA3FF] hover:underline disabled:opacity-50" data-testid="vpn-diag-run">
+                  {diagRunning ? "rodando…" : "Testar rotas e SSH dos jumps"}</button>
+              </div>
+              {st.diag && <pre className="max-h-56 overflow-y-auto font-mono text-slate-300 bg-[#05070A] border border-[#1E293B] rounded p-2 whitespace-pre-wrap" data-testid="vpn-diag-out">{st.diag}</pre>}
             </div>
           )}
           {st.log?.length > 0 && (
@@ -229,7 +241,7 @@ export function VpnSection({ vpns, daemon, reload, openId, onOpened }) {
                   <button onClick={() => del(v)} className="text-slate-500 hover:text-red-400 p-1" title="Apagar"><Trash2 className="w-3.5 h-3.5" /></button>
                 </div>
               </div>
-              <div className="text-[11px] font-mono text-slate-500 mt-0.5">{v.username}@{v.host}:{v.port}{v.status.ip ? ` · ${v.status.iface} ${v.status.ip}` : ""}</div>
+              <div className="text-[11px] font-mono text-slate-500 mt-0.5">{v.username}@{v.host}:{v.port}{v.status.state === "up" && v.status.ip ? ` · ${v.status.iface || "ppp?"} ${v.status.ip}` : ""}</div>
               <div className="text-xs text-slate-400 mt-1">Agentes: {v.agents.length ? v.agents.join(", ") : <span className="text-slate-600">nenhum — edite o agente e escolha esta VPN</span>}</div>
               {v.status.error && v.status.state !== "up" && <div className="text-[11px] mt-1" style={{ color: STATUS.critical }}>{v.status.error}</div>}
               <div className="flex gap-2 mt-2">
