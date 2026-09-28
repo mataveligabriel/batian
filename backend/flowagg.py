@@ -28,6 +28,7 @@ TOPK = {"sas": 100, "das": 100, "spfx": 150, "dpfx": 150, "sip": 30, "dip": 30, 
         "peer": 25}
 DIM_CAP = 40000        # acima disso, uma dimensão descarta a metade menor (mantém os pesados, memória limitada)
 EXTERNAL_ROLES = ("transito", "pni", "ix", "cdn")
+CONTENT_PORTS = {80, 443, 8080, 8443, 1935}
 V6_48 = ~((1 << 80) - 1) & ((1 << 128) - 1)
 ATTACK_DEFAULTS = {"enabled": True, "pps": 200_000, "bps": 2_000_000_000, "amp_bps": 500_000_000, "syn_pps": 100_000,
                    "min_windows": 2, "end_windows": 6, "avg_windows": 3}
@@ -292,9 +293,12 @@ class Aggregator:
                         else:
                             c = self.win[vk] = [0, 0, 0, 0]
                     if c is not None:
-                        c[0] += b
-                        c[1] += p
                         sp, fl = f[F_SPORT], f[F_FLAGS]
+                        # resposta de conteúdo (HTTPS/HTTP com ACK, QUIC) não conta no limite de volume:
+                        # um IP de CGNAT ou cache recebe vários Gb/s legítimos de Google, Meta, Netflix…
+                        if not ((pr == 6 and sp in CONTENT_PORTS and fl & 0x10) or (pr == 17 and sp == 443)):
+                            c[0] += b
+                            c[1] += p
                         if pr == 17 and sp in AMP_PORTS:
                             c[2] += b
                         elif pr == 6 and fl & 0x02 and not fl & 0x10:
