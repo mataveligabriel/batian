@@ -346,7 +346,8 @@ aberto) e você só digita o **token** no sistema quando for conectar.
 2. **Agentes Remotos → VPNs no servidor → Nova VPN**: gateway e porta (os mesmos do "Gateway remoto" do FortiClient,
    geralmente 443 ou 10443), usuário e senha (guardada criptografada).
 3. Edite cada jump (ex.: jumpALT, JumpSempre): **Precisa de VPN no servidor = VPNJVE** e **Agente pai = Nenhum**.
-4. Clique em **Conectar com token** (ou no indicador "VPN" no menu lateral) e digite o código do FortiToken.
+4. Clique em **Conectar** (ou no indicador "VPN" no menu lateral). Token de app/FortiToken: digite antes de conectar.
+   **Token por e-mail ou SMS: deixe em branco e clique em Conectar** — o FortiGate envia o código e o campo aparece no Bastion.
    Na primeira vez o Bastion mostra a impressão digital do certificado do gateway: confira e clique em **Confiar**.
 
 Só os IPs dos agentes marcados (e as redes extras que você cadastrar) entram no túnel; a rota padrão do servidor nunca muda.

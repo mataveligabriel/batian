@@ -11,6 +11,7 @@ import { STATUS } from "@/lib/netfmt";
 
 const ST = {
   up: ["Conectada", STATUS.good, Lock], connecting: ["Conectando…", STATUS.warning, Loader2], disconnecting: ["Desconectando…", "#94A3B8", Loader2],
+  need_otp: ["Aguardando token", STATUS.warning, KeyRound],
   error: ["Erro", STATUS.critical, AlertTriangle], down: ["Caiu", STATUS.critical, AlertTriangle],
   disconnected: ["Desconectada", "#64748B", LockOpen],
 };
@@ -19,7 +20,7 @@ const inputCls = "bg-[#05070A] border-[#1E293B] font-mono";
 export function VpnState({ state, small = false }) {
   const [label, color, Icon] = ST[state] || ST.disconnected;
   return (
-    <span className={`inline-flex items-center gap-1 font-mono ${small ? "text-[10px]" : "text-xs"}`} style={{ color }} data-testid="vpn-state">
+    <span className={`inline-flex items-center gap-1 font-mono whitespace-nowrap ${small ? "text-[10px]" : "text-xs"}`} style={{ color }} data-testid="vpn-state">
       <Icon className={`${small ? "w-3 h-3" : "w-3.5 h-3.5"} ${Icon === Loader2 ? "animate-spin" : ""}`} /> {label}
     </span>
   );
@@ -31,7 +32,7 @@ export function useVpns(enabled = true) {
   const load = useCallback(async () => {
     try { setData((await api.get("/vpns")).data); } catch { /* sem acesso / offline */ }
   }, []);
-  const connecting = data.items.some(v => ["connecting", "disconnecting"].includes(v.status.state));
+  const connecting = data.items.some(v => ["connecting", "disconnecting", "need_otp"].includes(v.status.state));
   useEffect(() => {
     if (!enabled) return undefined;
     load();
@@ -41,59 +42,71 @@ export function useVpns(enabled = true) {
   return [data, load];
 }
 
-/** Digitar o token e conectar; mostra andamento, erro, certificado do gateway e o log. */
-export function VpnConnectDialog({ vpn, onClose, reload }) {
+/** Conectar: token antes (FortiToken/app) ou depois, quando o gateway manda por e-mail/SMS. Erros aparecem aqui mesmo. */
+export function VpnConnectDialog({ vpn, onClose, reload, daemon = true }) {
   const [otp, setOtp] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
+  const [err, setErr] = useState("");
   const ref = useRef(null);
   const st = vpn?.status || {};
-  useEffect(() => { setTimeout(() => ref.current?.focus(), 60); }, []);
+  useEffect(() => { setTimeout(() => ref.current?.focus(), 60); }, [st.state]);
   useEffect(() => {
     if (sent && st.state === "up") { toast.success(`VPN ${vpn.name} conectada`); onClose(); }
   }, [sent, st.state]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!vpn) return null;
-  const connect = async () => {
-    if (!otp.trim()) return;
-    setBusy(true);
-    try { await api.post(`/vpns/${vpn.id}/connect`, { otp }); setSent(true); setOtp(""); await reload(); }
-    catch (e) { toast.error(formatApiError(e)); }
+  const call = async (fn) => {
+    setBusy(true); setErr("");
+    try { await fn(); await reload(); }
+    catch (e) { setErr(formatApiError(e)); }
     finally { setBusy(false); }
   };
-  const trust = async () => {
-    try { await api.post(`/vpns/${vpn.id}/trust-cert`); toast.success("Certificado confiado — digite um token novo e conecte"); setSent(false); await reload(); ref.current?.focus(); }
-    catch (e) { toast.error(formatApiError(e)); }
-  };
-  const disconnect = async () => {
-    try { await api.post(`/vpns/${vpn.id}/disconnect`); await reload(); } catch (e) { toast.error(formatApiError(e)); }
-  };
+  const connect = () => call(async () => { await api.post(`/vpns/${vpn.id}/connect`, { otp }); setSent(true); setOtp(""); });
+  const sendOtp = () => otp.trim() && call(async () => { await api.post(`/vpns/${vpn.id}/otp`, { otp }); setSent(true); setOtp(""); });
+  const trust = () => call(async () => { await api.post(`/vpns/${vpn.id}/trust-cert`); setSent(false); toast.success("Certificado confiado — conecte de novo"); });
+  const disconnect = () => call(() => api.post(`/vpns/${vpn.id}/disconnect`));
   const up = st.state === "up";
+  const needOtp = st.state === "need_otp";
+  const working = st.state === "connecting" || st.state === "disconnecting";
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-md" data-testid="vpn-connect-dialog">
         <DialogHeader><DialogTitle className="flex items-center gap-2"><KeyRound className="w-4 h-4 text-[#4DA3FF]" /> VPN {vpn.name}</DialogTitle></DialogHeader>
         <div className="space-y-3">
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-mono text-slate-400">{vpn.username}@{vpn.host}:{vpn.port}</span>
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="font-mono text-slate-400 truncate">{vpn.username}@{vpn.host}:{vpn.port}</span>
             <VpnState state={st.state} />
           </div>
+          {!daemon && (
+            <div className="text-xs border rounded px-2.5 py-2 space-y-1" style={{ color: STATUS.critical, borderColor: `${STATUS.critical}66` }} data-testid="vpn-nodaemon">
+              <div className="flex gap-1.5"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />O serviço de VPN não está rodando no servidor — nada é enviado ao FortiGate enquanto isso.</div>
+              <pre className="font-mono text-[11px] text-slate-200 bg-[#05070A] rounded p-1.5 whitespace-pre-wrap">{"cd /opt/bastion/deploy\necho \"COMPOSE_PROFILES=vpn\" | sudo tee -a .env\nsudo bash update.sh\nsudo docker compose ps vpn"}</pre>
+            </div>
+          )}
           {up ? (
             <div className="text-sm text-slate-300 space-y-1">
               <div>Túnel <span className="font-mono">{st.iface}</span> com IP <span className="font-mono">{st.ip}</span>.</div>
               <div className="text-xs text-slate-400">Rotas pela VPN: <span className="font-mono">{(st.routes || []).join(", ") || "—"}</span></div>
             </div>
+          ) : needOtp ? (
+            <div className="space-y-1.5" data-testid="vpn-need-otp">
+              <div className="text-sm text-slate-100">O FortiGate pediu o token{st.prompt ? <>: <span className="text-slate-400">“{st.prompt}”</span></> : ""}.</div>
+              <div className="text-[11px] text-slate-400">Se ele chega por e-mail ou SMS, confira a caixa de entrada agora (vale por alguns minutos).</div>
+              <Input ref={ref} value={otp} onChange={e => setOtp(e.target.value)} onKeyDown={e => e.key === "Enter" && sendOtp()} inputMode="numeric" autoComplete="one-time-code"
+                     placeholder="código recebido" className={`${inputCls} text-lg tracking-widest`} data-testid="vpn-otp2" />
+            </div>
           ) : (
             <div>
-              <Label>Token</Label>
-              <Input ref={ref} value={otp} onChange={e => setOtp(e.target.value)} onKeyDown={e => e.key === "Enter" && connect()} inputMode="numeric" autoComplete="one-time-code"
-                     placeholder="código do FortiToken / autenticador" className={`${inputCls} text-lg tracking-widest`} data-testid="vpn-otp" disabled={st.state === "connecting"} />
-              <div className="text-[11px] text-slate-500 mt-1">A senha já está salva (criptografada). O token é usado uma vez e não fica guardado.</div>
+              <Label>Token (opcional)</Label>
+              <Input ref={ref} value={otp} onChange={e => setOtp(e.target.value)} onKeyDown={e => e.key === "Enter" && !working && connect()} inputMode="numeric" autoComplete="one-time-code"
+                     placeholder="FortiToken / app autenticador" className={`${inputCls} text-lg tracking-widest`} data-testid="vpn-otp" disabled={working} />
+              <div className="text-[11px] text-slate-500 mt-1">Token de app/FortiToken: digite e conecte. <b className="text-slate-400">Token por e-mail ou SMS: deixe em branco e clique em Conectar</b> — o FortiGate envia o código e o campo aparece aqui. A senha já está salva; o token não fica guardado.</div>
             </div>
           )}
-          {st.state === "connecting" && <div className="text-xs text-slate-400 flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /> conectando no gateway…</div>}
-          {(st.state === "error" || st.state === "down") && st.error && (
+          {working && <div className="text-xs text-slate-400 flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /> {st.state === "disconnecting" ? "desconectando…" : "conectando no gateway…"}</div>}
+          {(err || ((st.state === "error" || st.state === "down") && st.error)) && (
             <div className="text-xs border rounded px-2.5 py-2 flex gap-1.5" style={{ color: STATUS.critical, borderColor: `${STATUS.critical}66` }} data-testid="vpn-error">
-              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" /><span>{st.error}</span>
+              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" /><span>{err || st.error}</span>
             </div>
           )}
           {st.pending_cert && (
@@ -105,16 +118,23 @@ export function VpnConnectDialog({ vpn, onClose, reload }) {
             </div>
           )}
           {st.log?.length > 0 && (
-            <details className="text-[11px]"><summary className="cursor-pointer text-slate-500">Log da conexão</summary>
+            <details className="text-[11px]" open={st.state === "error"}><summary className="cursor-pointer text-slate-500">Log da conexão</summary>
               <pre className="mt-1 max-h-48 overflow-y-auto font-mono text-slate-400 bg-[#05070A] border border-[#1E293B] rounded p-2 whitespace-pre-wrap" data-testid="vpn-log">{st.log.join("\n")}</pre>
             </details>
           )}
         </div>
         <DialogFooter>
           {up ? (
-            <Button variant="outline" onClick={disconnect} className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="vpn-disconnect"><Unplug className="w-4 h-4 mr-1" /> Desconectar</Button>
+            <Button variant="outline" onClick={disconnect} disabled={busy} className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="vpn-disconnect"><Unplug className="w-4 h-4 mr-1" /> Desconectar</Button>
+          ) : needOtp ? (
+            <>
+              <Button variant="ghost" onClick={disconnect} disabled={busy} className="text-slate-400">Cancelar</Button>
+              <Button onClick={sendOtp} disabled={busy || !otp.trim()} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="vpn-send-otp">
+                {busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <KeyRound className="w-4 h-4 mr-1" />} Enviar token
+              </Button>
+            </>
           ) : (
-            <Button onClick={connect} disabled={busy || !otp.trim() || st.state === "connecting"} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="vpn-connect">
+            <Button onClick={connect} disabled={busy || working || !daemon} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="vpn-connect">
               {busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Plug className="w-4 h-4 mr-1" />} Conectar
             </Button>
           )}
@@ -215,7 +235,7 @@ export function VpnSection({ vpns, daemon, reload, openId, onOpened }) {
               <div className="flex gap-2 mt-2">
                 {v.status.state === "up"
                   ? <Button size="sm" variant="outline" onClick={() => disc(v)} className="h-8 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800"><Unplug className="w-4 h-4 mr-1" /> Desconectar</Button>
-                  : <Button size="sm" onClick={() => setConn(v.id)} className="h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid={`vpn-open-${v.id}`}><KeyRound className="w-4 h-4 mr-1" /> Conectar com token</Button>}
+                  : <Button size="sm" onClick={() => setConn(v.id)} className="h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid={`vpn-open-${v.id}`}><KeyRound className="w-4 h-4 mr-1" /> {v.status.state === "need_otp" ? "Digitar o token" : "Conectar"}</Button>}
                 {v.status.state === "up" && <Button size="sm" variant="ghost" onClick={() => setConn(v.id)} className="h-8 text-slate-400 hover:bg-slate-800">Detalhes</Button>}
               </div>
             </div>
@@ -223,7 +243,7 @@ export function VpnSection({ vpns, daemon, reload, openId, onOpened }) {
         </div>
       )}
       {form && <VpnForm initial={form.id ? form : null} onClose={() => setForm(null)} onSaved={() => { setForm(null); reload(); }} />}
-      {conn && <VpnConnectDialog vpn={vpns.find(v => v.id === conn)} onClose={() => setConn(null)} reload={reload} />}
+      {conn && <VpnConnectDialog vpn={vpns.find(v => v.id === conn)} onClose={() => setConn(null)} reload={reload} daemon={daemon} />}
     </div>
   );
 }
@@ -245,7 +265,7 @@ export function VpnIndicator({ mini = false }) {
           </button>
         );
       })}
-      {conn && <VpnConnectDialog vpn={data.items.find(v => v.id === conn)} onClose={() => setConn(null)} reload={reload} />}
+      {conn && <VpnConnectDialog vpn={data.items.find(v => v.id === conn)} onClose={() => setConn(null)} reload={reload} daemon={data.daemon} />}
     </div>
   );
 }

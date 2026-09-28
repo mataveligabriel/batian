@@ -26,6 +26,8 @@ OFV = os.environ.get("OPENFORTIVPN_BIN", "openfortivpn")
 IP = os.environ.get("VPN_IP_BIN", "ip")
 RUN_DIR = Path(os.environ.get("VPN_RUN_DIR", "/run/bastion-vpn"))
 CONNECT_TIMEOUT = 60
+OTP_WAIT = 300                      # e-mail/SMS podem demorar
+_OTP_PROMPT = re.compile(r"(two-factor|token|otp|one[- ]time|c[oó]digo|code)[^\n]*[:?]\s*$", re.I)
 _SECRET_RE = re.compile(r"(password|passwd|otp|token)(\s*[=:]\s*)\S+", re.I)
 
 
@@ -68,6 +70,10 @@ class Tunnel:
         self.since = _now()
         self.was_up = False
         self.stopping = False
+        self.prompt = None
+        self.secrets: list = []
+        self.deadline = time.monotonic() + CONNECT_TIMEOUT
+        self.otp_deadline = 0.0
 
     @property
     def pid(self):
@@ -76,7 +82,7 @@ class Tunnel:
     async def publish(self):
         await self.d.db.vpn_status.replace_one({"_id": self.pid}, {
             "_id": self.pid, "state": self.state, "since": self.since, "iface": self.iface, "ip": self.ip,
-            "routes": self.routes, "error": self.error, "pending_cert": self.cert, "log": list(self.lines)[-40:],
+            "routes": self.routes, "error": self.error, "pending_cert": self.cert, "prompt": self.prompt, "log": list(self.lines)[-40:],
             "updated": _now()}, upsert=True)
 
     def _conf(self) -> Path:
@@ -98,11 +104,11 @@ class Tunnel:
 
     async def run(self):
         conf = self._conf()
-        secrets = [vault.decrypt(self.prof.get("password", "")), self.otp]
+        self.secrets = [vault.decrypt(self.prof.get("password", "")), self.otp]
+        args = [OFV, "-c", str(conf)] + ([f"--otp={self.otp}"] if self.otp else [])
         try:
             self.proc = await asyncio.create_subprocess_exec(
-                OFV, "-c", str(conf), f"--otp={self.otp}", stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         except FileNotFoundError:
             self.state, self.error = "error", "openfortivpn não está instalado neste container"
             await self.publish()
@@ -112,16 +118,27 @@ class Tunnel:
         await self.publish()
         asyncio.get_running_loop().call_later(3, lambda: conf.unlink(missing_ok=True))   # senha não fica em disco
         watchdog = asyncio.create_task(self._watchdog())
+        buf = ""
         try:
             while True:
-                raw = await self.proc.stdout.readline()
-                if not raw:
+                chunk = await self.proc.stdout.read(4096)
+                if not chunk:
                     break
-                line = _redact(raw.decode("utf-8", "replace").rstrip(), secrets)
-                if not line.strip():
-                    continue
-                self.lines.append(f"{datetime.now().strftime('%H:%M:%S')} {line}")
-                await self._parse(line)
+                buf += chunk.decode("utf-8", "replace")
+                *lines, buf = buf.split("\n")
+                for raw in lines:
+                    line = _redact(raw.rstrip("\r"), self.secrets)
+                    if line.strip():
+                        self.lines.append(f"{datetime.now().strftime('%H:%M:%S')} {line}")
+                        await self._parse(line)
+                if buf.strip() and _OTP_PROMPT.search(buf) and self.state != "up":
+                    # o gateway pediu o token (FortiToken, e-mail ou SMS): espera o usuário digitar no Bastion
+                    self.lines.append(f"{datetime.now().strftime('%H:%M:%S')} {_redact(buf.strip(), self.secrets)}")
+                    self.prompt = buf.strip().rstrip(":").strip()
+                    buf = ""
+                    self.state, self.error = "need_otp", None
+                    self.otp_deadline = time.monotonic() + OTP_WAIT
+                    await self.publish()
         finally:
             watchdog.cancel()
             rc = await self.proc.wait()
@@ -180,12 +197,28 @@ class Tunnel:
             await self.d.sh(IP, "route", "del", r, "dev", self.iface)
             self.routes.remove(r)
 
+    async def send_otp(self, otp: str):
+        if self.state != "need_otp" or not self.proc or self.proc.returncode is not None:
+            return
+        self.secrets.append(otp)
+        self.proc.stdin.write((otp + "\n").encode())
+        await self.proc.stdin.drain()
+        self.state, self.prompt = "connecting", None
+        self.deadline = time.monotonic() + CONNECT_TIMEOUT
+        await self.publish()
+
     async def _watchdog(self):
-        await asyncio.sleep(CONNECT_TIMEOUT)
-        if self.state == "connecting":
-            self.error = "o gateway não respondeu em 60 s"
-            self.state = "error"
+        while True:
+            await asyncio.sleep(1)
+            now = time.monotonic()
+            if self.state == "connecting" and now > self.deadline:
+                self.state, self.error = "error", "o gateway não respondeu em 60 s"
+            elif self.state == "need_otp" and now > self.otp_deadline:
+                self.state, self.error = "error", "o token não foi informado a tempo (5 min) — conecte de novo"
+            else:
+                continue
             await self.stop(keep_state=True)
+            return
 
     async def stop(self, keep_state: bool = False):
         self.stopping = not keep_state
@@ -258,6 +291,10 @@ class VpnDaemon:
             else:
                 await self.db.vpn_status.update_one({"_id": pid}, {"$set": {"state": "disconnected", "error": None, "updated": _now()}}, upsert=True)
             return
+        if cmd.get("action") == "otp":
+            if t:
+                await t.send_otp(cmd.get("otp") or "")
+            return
         if cmd.get("action") == "connect":
             prof = await self.db.vpn_profiles.find_one({"id": pid}, {"_id": 0})
             if not prof:
@@ -297,7 +334,7 @@ class VpnDaemon:
 
     async def run(self):
         # nada fica "conectado" de uma execução anterior
-        await self.db.vpn_status.update_many({"state": {"$in": ["up", "connecting", "disconnecting"]}},
+        await self.db.vpn_status.update_many({"state": {"$in": ["up", "connecting", "disconnecting", "need_otp"]}},
                                              {"$set": {"state": "disconnected", "error": "serviço de VPN reiniciado", "iface": None}})
         n = 0
         while True:

@@ -3205,7 +3205,7 @@ def _vpn_public(p: dict, st: Optional[dict]) -> dict:
     out = {k: v for k, v in p.items() if k not in ("password", "_id")}
     out["has_password"] = bool(p.get("password"))
     st = st or {}
-    out["status"] = {k: st.get(k) for k in ("state", "since", "iface", "ip", "routes", "error", "pending_cert", "log", "updated")}
+    out["status"] = {k: st.get(k) for k in ("state", "since", "iface", "ip", "routes", "error", "pending_cert", "prompt", "log", "updated")}
     out["status"]["state"] = st.get("state") or "disconnected"
     return out
 
@@ -3309,12 +3309,28 @@ async def connect_vpn(vid: str, body: VpnConnectIn, user: dict = Depends(get_cur
     p = await _get_vpn_for(user, vid)
     if not await _vpn_daemon_ok():
         raise HTTPException(503, "O serviço de VPN não está rodando no servidor. Coloque COMPOSE_PROFILES=vpn no deploy/.env e rode o update.sh.")
+    otp = re.sub(r"\s", "", body.otp or "")      # vazio = o gateway manda o token (e-mail/SMS) e o Bastion pede depois
+    if len(otp) > 64:
+        raise HTTPException(400, "Token inválido")
+    await db.vpn_status.update_one({"_id": vid}, {"$set": {"state": "connecting", "error": None, "pending_cert": None, "prompt": None,
+                                                           "since": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    await _vpn_cmd(vid, "connect", otp)
+    return _vpn_public(p, await db.vpn_status.find_one({"_id": vid}))
+
+
+@api.post("/vpns/{vid}/otp")
+async def vpn_send_otp(vid: str, body: VpnConnectIn, user: dict = Depends(get_current_user)):
+    """Token pedido pelo gateway no meio da conexão (ex.: código enviado por e-mail)."""
+    _no_viewer(user)
+    p = await _get_vpn_for(user, vid)
+    st = await db.vpn_status.find_one({"_id": vid}) or {}
+    if st.get("state") != "need_otp":
+        raise HTTPException(400, "A VPN não está aguardando token agora — clique em Conectar de novo")
     otp = re.sub(r"\s", "", body.otp or "")
     if not otp or len(otp) > 64:
         raise HTTPException(400, "Digite o token")
-    await db.vpn_status.update_one({"_id": vid}, {"$set": {"state": "connecting", "error": None, "pending_cert": None,
-                                                           "since": datetime.now(timezone.utc).isoformat()}}, upsert=True)
-    await _vpn_cmd(vid, "connect", otp)
+    await db.vpn_status.update_one({"_id": vid}, {"$set": {"state": "connecting", "prompt": None}})
+    await _vpn_cmd(vid, "otp", otp)
     return _vpn_public(p, await db.vpn_status.find_one({"_id": vid}))
 
 
@@ -3322,7 +3338,7 @@ async def connect_vpn(vid: str, body: VpnConnectIn, user: dict = Depends(get_cur
 async def disconnect_vpn(vid: str, user: dict = Depends(get_current_user)):
     _no_viewer(user)
     p = await _get_vpn_for(user, vid)
-    await db.vpn_status.update_one({"_id": vid, "state": {"$in": ["up", "connecting"]}}, {"$set": {"state": "disconnecting"}})
+    await db.vpn_status.update_one({"_id": vid, "state": {"$in": ["up", "connecting", "need_otp"]}}, {"$set": {"state": "disconnecting"}})
     await _vpn_cmd(vid, "disconnect")
     return _vpn_public(p, await db.vpn_status.find_one({"_id": vid}))
 
