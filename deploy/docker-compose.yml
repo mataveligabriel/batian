@@ -32,6 +32,23 @@ services:
       mongo:
         condition: service_healthy
 
+  # opcional: VPN SSL da Fortinet (openfortivpn) para jumps que só respondem por VPN.
+  # Ative com COMPOSE_PROFILES=vpn no deploy/.env (o update.sh prepara o /dev/ppp).
+  vpn:
+    build: ../backend
+    command: ["python", "vpnd.py"]
+    profiles: ["vpn"]
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/ppp:/dev/ppp
+    depends_on:
+      mongo:
+        condition: service_healthy
+
   # opcional: modelo de IA local e grátis para o assistente (docker compose --profile ollama up -d)
   ollama:
     image: ollama/ollama:latest

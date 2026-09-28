@@ -12,6 +12,12 @@ if [ "$(id -u)" -eq 0 ] && [ ! -f /etc/sysctl.d/90-bastion-flow.conf ]; then
   echo "net.core.rmem_max=33554432" > /etc/sysctl.d/90-bastion-flow.conf
   sysctl -q -p /etc/sysctl.d/90-bastion-flow.conf || true
 fi
+# VPN (COMPOSE_PROFILES=vpn no .env): o container precisa do /dev/ppp do servidor
+if grep -Eq '^COMPOSE_PROFILES=.*vpn' .env 2>/dev/null && [ "$(id -u)" -eq 0 ]; then
+  modprobe ppp_generic 2>/dev/null || true
+  [ -e /dev/ppp ] || mknod /dev/ppp c 108 0 2>/dev/null || echo "!! /dev/ppp indisponível neste servidor (VPS OpenVZ/LXC?) — a VPN não vai subir"
+  grep -qx ppp_generic /etc/modules 2>/dev/null || echo ppp_generic >> /etc/modules
+fi
 echo ">> Reconstruindo containers…"
 docker compose up -d --build
 echo ">> Aguardando backend…"

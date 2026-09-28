@@ -1,0 +1,331 @@
+"""Serviço de VPN do Bastion — roda no container "vpn" (python vpnd.py), com NET_ADMIN e /dev/ppp.
+
+FortiGate SSL-VPN pelo openfortivpn: usuário + senha (do cadastro, criptografada) + token digitado na hora.
+O Bastion pede pela coleção vpn_cmds (connect/disconnect) e acompanha em vpn_status. Só as redes dos jumps que
+usam a VPN (e as que você cadastrar) entram no túnel: a rota padrão do servidor não muda.
+"""
+import asyncio
+import ipaddress
+import logging
+import os
+import re
+import time
+from collections import deque
+from datetime import datetime, timezone
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+
+import vault  # noqa: E402
+
+log = logging.getLogger("vpnd")
+OFV = os.environ.get("OPENFORTIVPN_BIN", "openfortivpn")
+IP = os.environ.get("VPN_IP_BIN", "ip")
+RUN_DIR = Path(os.environ.get("VPN_RUN_DIR", "/run/bastion-vpn"))
+CONNECT_TIMEOUT = 60
+_SECRET_RE = re.compile(r"(password|passwd|otp|token)(\s*[=:]\s*)\S+", re.I)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _redact(line: str, secrets) -> str:
+    for s in secrets:
+        if s and len(s) >= 3:
+            line = line.replace(s, "•••")
+    return _SECRET_RE.sub(r"\1\2•••", line)
+
+
+def _routes_for(prof: dict, hosts) -> list:
+    out = []
+    for r in list(prof.get("routes") or []) + [f"{h}/32" for h in hosts]:
+        try:
+            n = ipaddress.ip_network(str(r).strip(), strict=False)
+        except ValueError:
+            continue
+        if n.version == 4 and n.prefixlen > 0 and str(n) not in out:     # nunca a rota padrão
+            out.append(str(n))
+    return out
+
+
+class Tunnel:
+    def __init__(self, daemon, prof: dict, otp: str):
+        self.d = daemon
+        self.prof = prof
+        self.otp = otp
+        self.proc = None
+        self.state = "connecting"
+        self.iface = None
+        self.ip = None
+        self.error = None
+        self.cert = None
+        self.routes: list = []
+        self.lines = deque(maxlen=80)
+        self.since = _now()
+        self.was_up = False
+        self.stopping = False
+
+    @property
+    def pid(self):
+        return self.prof["id"]
+
+    async def publish(self):
+        await self.d.db.vpn_status.replace_one({"_id": self.pid}, {
+            "_id": self.pid, "state": self.state, "since": self.since, "iface": self.iface, "ip": self.ip,
+            "routes": self.routes, "error": self.error, "pending_cert": self.cert, "log": list(self.lines)[-40:],
+            "updated": _now()}, upsert=True)
+
+    def _conf(self) -> Path:
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(RUN_DIR, 0o700)
+        p = self.prof
+        lines = [f"host = {p['host']}", f"port = {int(p.get('port') or 443)}", f"username = {p['username']}",
+                 f"password = {vault.decrypt(p.get('password', ''))}", "set-routes = 0", "set-dns = 0",
+                 "pppd-use-peerdns = 0"]
+        if p.get("realm"):
+            lines.append(f"realm = {p['realm']}")
+        for c in p.get("trusted_certs") or []:
+            lines.append(f"trusted-cert = {c}")
+        path = RUN_DIR / f"{self.pid}.conf"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        return path
+
+    async def run(self):
+        conf = self._conf()
+        secrets = [vault.decrypt(self.prof.get("password", "")), self.otp]
+        try:
+            self.proc = await asyncio.create_subprocess_exec(
+                OFV, "-c", str(conf), f"--otp={self.otp}", stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        except FileNotFoundError:
+            self.state, self.error = "error", "openfortivpn não está instalado neste container"
+            await self.publish()
+            return
+        finally:
+            self.otp = ""
+        await self.publish()
+        asyncio.get_running_loop().call_later(3, lambda: conf.unlink(missing_ok=True))   # senha não fica em disco
+        watchdog = asyncio.create_task(self._watchdog())
+        try:
+            while True:
+                raw = await self.proc.stdout.readline()
+                if not raw:
+                    break
+                line = _redact(raw.decode("utf-8", "replace").rstrip(), secrets)
+                if not line.strip():
+                    continue
+                self.lines.append(f"{datetime.now().strftime('%H:%M:%S')} {line}")
+                await self._parse(line)
+        finally:
+            watchdog.cancel()
+            rc = await self.proc.wait()
+            conf.unlink(missing_ok=True)
+        if self.state == "up" or self.was_up:
+            self.state = "down"
+            self.error = None if self.stopping else f"túnel encerrado (código {rc})"
+        elif self.state != "error":
+            self.state = "error"
+            self.error = self.error or f"openfortivpn saiu com código {rc} — veja o log"
+        if self.stopping:
+            self.state, self.error = "disconnected", None
+        self.since = _now()
+        self.iface = None
+        await self.publish()
+        if self.was_up and not self.stopping:
+            await self.d.alert_down(self.prof)
+
+    async def _parse(self, line: str):
+        low = line.lower()
+        m = re.search(r"interface (ppp\d+) is up", low)
+        if m:
+            self.iface = m.group(1)
+        m = re.search(r"got addresses: \[([\d.]+)\]", low)
+        if m:
+            self.ip = m.group(1)
+        m = re.search(r"trusted-cert\s*=?\s*([0-9a-f]{64})", low)
+        if m:
+            self.cert = m.group(1)
+            self.state, self.error = "error", "certificado do gateway não confiável: confira a impressão digital e clique em Confiar"
+        elif "could not authenticate" in low or "authentication failed" in low or "permission denied" in low:
+            self.state, self.error = "error", "usuário, senha ou token recusados pelo gateway"
+        elif "could not resolve" in low or "connection refused" in low or "could not connect" in low:
+            self.state, self.error = "error", "não consegui chegar no gateway (endereço/porta)"
+        elif "/dev/ppp" in low or "operation not permitted" in low:
+            self.state, self.error = "error", "o container não tem acesso ao /dev/ppp ou ao NET_ADMIN (veja o README)"
+        if "tunnel is up and running" in low:
+            self.state, self.error, self.was_up, self.since = "up", None, True, _now()
+            if not self.iface:
+                self.iface = await self.d.find_ppp()
+            await self.apply_routes()
+        await self.publish()
+
+    async def apply_routes(self):
+        if self.state != "up" or not self.iface:
+            return
+        want = _routes_for(self.prof, await self.d.hosts_for(self.pid))
+        for r in want:
+            if r not in self.routes:
+                rc, out = await self.d.sh(IP, "route", "replace", r, "dev", self.iface)
+                if rc == 0:
+                    self.routes.append(r)
+                else:
+                    self.lines.append(f"{datetime.now().strftime('%H:%M:%S')} ERRO rota {r}: {out.strip()[:120]}")
+        for r in [x for x in self.routes if x not in want]:
+            await self.d.sh(IP, "route", "del", r, "dev", self.iface)
+            self.routes.remove(r)
+
+    async def _watchdog(self):
+        await asyncio.sleep(CONNECT_TIMEOUT)
+        if self.state == "connecting":
+            self.error = "o gateway não respondeu em 60 s"
+            self.state = "error"
+            await self.stop(keep_state=True)
+
+    async def stop(self, keep_state: bool = False):
+        self.stopping = not keep_state
+        if self.proc and self.proc.returncode is None:
+            try:
+                self.proc.terminate()
+                await asyncio.wait_for(self.proc.wait(), 10)
+            except (ProcessLookupError, asyncio.TimeoutError):
+                try:
+                    self.proc.kill()
+                except ProcessLookupError:
+                    pass
+
+
+class VpnDaemon:
+    def __init__(self, db, alert=None):
+        self.db = db
+        self.alert = alert
+        self.tunnels: dict = {}
+        self.tasks: set = set()
+
+    async def sh(self, *args):
+        p = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await p.communicate()
+        return p.returncode, out.decode("utf-8", "replace")
+
+    async def find_ppp(self):
+        rc, out = await self.sh(IP, "-o", "link", "show")
+        names = re.findall(r"\d+: (ppp\d+)", out)
+        return names[-1] if names else None
+
+    async def hosts_for(self, pid: str) -> list:
+        """IPs dos agentes (modo direto) e equipamentos que dependem desta VPN."""
+        hosts = []
+        async for a in self.db.agents.find({"vpn_id": pid}, {"_id": 0, "host": 1, "mode": 1}):
+            if a.get("mode") != "reverse" and a.get("host"):
+                hosts.append(a["host"])
+        async for d in self.db.devices.find({"vpn_id": pid}, {"_id": 0, "host": 1}):
+            if d.get("host"):
+                hosts.append(d["host"])
+        out = []
+        for h in hosts:
+            try:
+                out.append(str(ipaddress.ip_address(h.strip())))
+            except ValueError:
+                pass      # nome DNS: cadastre a rede na VPN
+        return out
+
+    async def alert_down(self, prof: dict):
+        if not self.alert:
+            return
+        try:
+            await self.alert(self.db, f"🔌 VPN {prof['name']} caiu",
+                             "Os jumps que dependem dela ficaram sem acesso. Abra o Bastion e informe o token para reconectar.",
+                             push_url=f"/agents?vpn={prof['id']}", push_tag=f"vpn-{prof['id']}")
+        except Exception as e:
+            log.warning(f"alerta: {e}")
+
+    def _spawn(self, coro):
+        t = asyncio.create_task(coro)
+        self.tasks.add(t)
+        t.add_done_callback(self.tasks.discard)
+
+    async def handle(self, cmd: dict):
+        pid = cmd.get("profile_id")
+        t = self.tunnels.get(pid)
+        if cmd.get("action") == "disconnect":
+            if t:
+                await t.stop()
+            else:
+                await self.db.vpn_status.update_one({"_id": pid}, {"$set": {"state": "disconnected", "error": None, "updated": _now()}}, upsert=True)
+            return
+        if cmd.get("action") == "connect":
+            prof = await self.db.vpn_profiles.find_one({"id": pid}, {"_id": 0})
+            if not prof:
+                return
+            if t and t.proc and t.proc.returncode is None:
+                await t.stop()
+            t = Tunnel(self, prof, cmd.get("otp") or "")
+            self.tunnels[pid] = t
+            self._spawn(t.run())
+
+    async def tick(self):
+        cmds = await self.db.vpn_cmds.find({}, {"_id": 0}).sort("at", 1).to_list(50)
+        for c in cmds:
+            await self.db.vpn_cmds.delete_one({"id": c["id"]})          # o token não fica guardado
+            if time.time() - c.get("ts", 0) > 120:                       # pedido velho: token já venceu
+                continue
+            try:
+                await self.handle(c)
+            except Exception as e:
+                log.exception(f"comando {c.get('action')}: {e}")
+        # perfis apagados
+        ids = {p["id"] async for p in self.db.vpn_profiles.find({}, {"_id": 0, "id": 1})}
+        for pid, t in list(self.tunnels.items()):
+            if pid not in ids:
+                await t.stop()
+                self.tunnels.pop(pid, None)
+                await self.db.vpn_status.delete_one({"_id": pid})
+
+    async def refresh_routes(self):
+        for t in self.tunnels.values():
+            if t.state == "up":
+                prof = await self.db.vpn_profiles.find_one({"id": t.pid}, {"_id": 0})
+                if prof:
+                    t.prof = prof
+                await t.apply_routes()
+                await t.publish()
+
+    async def run(self):
+        # nada fica "conectado" de uma execução anterior
+        await self.db.vpn_status.update_many({"state": {"$in": ["up", "connecting", "disconnecting"]}},
+                                             {"$set": {"state": "disconnected", "error": "serviço de VPN reiniciado", "iface": None}})
+        n = 0
+        while True:
+            try:
+                await self.db.vpn_status.replace_one({"_id": "_daemon"}, {"_id": "_daemon", "at": _now(), "bin": OFV}, upsert=True)
+                await self.tick()
+                n += 1
+                if n % 15 == 0:
+                    await self.refresh_routes()
+            except Exception as e:
+                log.warning(f"laço: {e}")
+            await asyncio.sleep(2)
+
+
+async def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s vpnd - %(message)s")
+    from motor.motor_asyncio import AsyncIOMotorClient
+    import automation
+    client = AsyncIOMotorClient(os.environ["MONGO_URL"])
+    db = client[os.environ["DB_NAME"]]
+    for attempt in range(60):
+        try:
+            await client.admin.command("ping")
+            break
+        except Exception:
+            await asyncio.sleep(2)
+    await VpnDaemon(db, automation.send_alert).run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

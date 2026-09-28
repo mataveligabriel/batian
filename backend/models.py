@@ -58,6 +58,7 @@ class AgentCreate(BaseModel):
     password: Optional[str] = None  # write-only; empty keeps existing
     clear_password: bool = False
     parent_agent_id: Optional[str] = None  # chain: this agent is only reachable through the parent
+    vpn_id: Optional[str] = None  # só alcançável com esta VPN (SSL-VPN no servidor) conectada
     owner_id: Optional[str] = None  # admin may assign; operators always own their agents
     description: str = ""
 

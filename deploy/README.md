@@ -331,3 +331,25 @@ Configuração em **Automação → Assistente IA** — escolha o provedor do mo
 
 Os planos grátis têm limite de requisições por minuto e por dia: se estourar, o chat avisa quanto tempo esperar.
 O mesmo assistente continua disponível no Telegram (chave "Bot do Telegram").
+
+## 15. VPN FortiGate (SSL-VPN) no servidor — jumps sem depender do seu PC
+Para jumps que só respondem dentro de uma VPN Fortinet: o Bastion conecta a VPN no próprio servidor (openfortivpn, código
+aberto) e você só digita o **token** no sistema quando for conectar.
+
+1. Ative o serviço (uma vez), no servidor:
+   ```bash
+   cd /opt/bastion/deploy
+   echo "COMPOSE_PROFILES=vpn" >> .env        # se já tiver (ex.: ollama): COMPOSE_PROFILES=vpn,ollama
+   sudo bash update.sh                         # prepara o /dev/ppp e sobe o container "vpn"
+   ```
+   Precisa de VPS KVM/VMware (em OpenVZ/LXC o /dev/ppp não existe e o update avisa).
+2. **Agentes Remotos → VPNs no servidor → Nova VPN**: gateway e porta (os mesmos do "Gateway remoto" do FortiClient,
+   geralmente 443 ou 10443), usuário e senha (guardada criptografada).
+3. Edite cada jump (ex.: jumpALT, JumpSempre): **Precisa de VPN no servidor = VPNJVE** e **Agente pai = Nenhum**.
+4. Clique em **Conectar com token** (ou no indicador "VPN" no menu lateral) e digite o código do FortiToken.
+   Na primeira vez o Bastion mostra a impressão digital do certificado do gateway: confira e clique em **Confiar**.
+
+Só os IPs dos agentes marcados (e as redes extras que você cadastrar) entram no túnel; a rota padrão do servidor nunca muda.
+O token é usado uma vez e não é guardado. Enquanto a VPN estiver desconectada, conectar num equipamento atrás desses jumps
+mostra "VPN desconectada — conecte informando o token". Se o túnel cair (ex.: tempo máximo de sessão do FortiGate),
+chega alerta no Telegram/app e é só digitar um token novo.

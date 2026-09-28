@@ -409,7 +409,11 @@ echo "Bastion pronto. Usuário $BASTION_USER aceita túneis reversos; chaves sin
 
 
 # ---------- Agents ----------
-async def _agent_chain(agent_id: str) -> List[dict]:
+class VpnDown(RuntimeError):
+    pass
+
+
+async def _agent_chain(agent_id: str, check_vpn: bool = True) -> List[dict]:
     """Return agents from the root (closest to bastion) down to agent_id."""
     chain, seen, cur = [], set(), agent_id
     while cur and cur not in seen:
@@ -420,6 +424,14 @@ async def _agent_chain(agent_id: str) -> List[dict]:
         chain.append(ag)
         cur = ag.get("parent_agent_id")
     chain.reverse()
+    if check_vpn:
+        for ag in chain:
+            if ag.get("vpn_id"):
+                st = await db.vpn_status.find_one({"_id": ag["vpn_id"]}, {"_id": 0, "state": 1}) or {}
+                if st.get("state") != "up":
+                    prof = await db.vpn_profiles.find_one({"id": ag["vpn_id"]}, {"_id": 0, "name": 1}) or {}
+                    raise VpnDown(f"VPN '{prof.get('name', '?')}' desconectada — o agente {ag['name']} depende dela. "
+                                  "Conecte informando o token (indicador VPN no menu ou Agentes Remotos → VPNs).")
     return chain
 
 
@@ -477,6 +489,9 @@ async def create_agent(payload: AgentCreate, user: dict = Depends(get_current_us
     if data.get("parent_agent_id") == "":
         data["parent_agent_id"] = None
     await _check_parent(user, data.get("parent_agent_id"))
+    data["vpn_id"] = data.get("vpn_id") or None
+    if data["vpn_id"]:
+        await _get_vpn_for(user, data["vpn_id"])
     a = Agent(**data)
     doc = a.model_dump()
     if doc["mode"] == "reverse":
@@ -498,6 +513,9 @@ async def update_agent(agent_id: str, payload: AgentCreate, user: dict = Depends
     if data.get("parent_agent_id") == "":
         data["parent_agent_id"] = None
     await _check_parent(user, data.get("parent_agent_id"))
+    data["vpn_id"] = data.get("vpn_id") or None
+    if data["vpn_id"]:
+        await _get_vpn_for(user, data["vpn_id"])
     if data["mode"] == "reverse":
         data["tunnel_port"] = int(data.get("tunnel_port") or existing.get("tunnel_port") or await _next_tunnel_port())
         if not existing.get("agent_public_key"):
@@ -517,7 +535,10 @@ async def delete_agent(agent_id: str, user: dict = Depends(get_current_user)):
 
 async def _ping_agent(ag: dict) -> Optional[float]:
     priv, _, _ = await _get_ssh_key()
-    chain = await _agent_chain(ag["id"])
+    try:
+        chain = await _agent_chain(ag["id"])
+    except VpnDown:
+        return None
     target = _agent_hop(chain[-1], priv)
     if len(chain) == 1:
         return await tcp_ping(target.host, target.port)
@@ -3162,6 +3183,163 @@ async def _flow_asn_loop():
             logger.warning(f"atualização automática da base de ASN: {e}")
         await asyncio.sleep(6 * 3600)
 
+
+
+# ---------- VPN SSL (FortiGate) no servidor ----------
+class VpnProfileIn(BaseModel):
+    name: str
+    host: str
+    port: int = 443
+    username: str
+    password: Optional[str] = None       # write-only; vazio mantém
+    realm: str = ""
+    routes: List[str] = []
+    trusted_certs: List[str] = []
+
+
+class VpnConnectIn(BaseModel):
+    otp: str = ""
+
+
+def _vpn_public(p: dict, st: Optional[dict]) -> dict:
+    out = {k: v for k, v in p.items() if k not in ("password", "_id")}
+    out["has_password"] = bool(p.get("password"))
+    st = st or {}
+    out["status"] = {k: st.get(k) for k in ("state", "since", "iface", "ip", "routes", "error", "pending_cert", "log", "updated")}
+    out["status"]["state"] = st.get("state") or "disconnected"
+    return out
+
+
+async def _vpn_daemon_ok() -> bool:
+    d = await db.vpn_status.find_one({"_id": "_daemon"}, {"_id": 0, "at": 1})
+    try:
+        return bool(d) and (datetime.now(timezone.utc) - datetime.fromisoformat(d["at"])).total_seconds() < 20
+    except Exception:
+        return False
+
+
+async def _get_vpn_for(user: dict, vid: str) -> dict:
+    p = await db.vpn_profiles.find_one({"id": vid, **_scope(user)}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "VPN não encontrada")
+    return p
+
+
+def _vpn_clean(body: VpnProfileIn) -> dict:
+    import ipaddress as _ipa
+    host = body.host.strip().removeprefix("https://").removeprefix("http://").split("/")[0]
+    if ":" in host and host.count(":") == 1:
+        host, port = host.split(":")
+        body.port = int(port) if port.isdigit() else body.port
+    if not host or not re.match(r"^[A-Za-z0-9.\-]+$", host):
+        raise HTTPException(400, "Gateway inválido (use o IP ou nome, ex.: vpn.empresa.com.br)")
+    if not 1 <= body.port <= 65535:
+        raise HTTPException(400, "Porta inválida")
+    if not body.name.strip() or not body.username.strip():
+        raise HTTPException(400, "Informe nome e usuário")
+    routes = []
+    for r in body.routes:
+        for part in str(r).replace(",", " ").split():
+            try:
+                n = _ipa.ip_network(part, strict=False)
+            except ValueError:
+                raise HTTPException(400, f"Rede inválida: {part}")
+            if n.prefixlen == 0 or n.version != 4:
+                raise HTTPException(400, f"Rede não permitida: {part} (rota padrão/IPv6 derrubariam o acesso ao servidor)")
+            routes.append(str(n))
+    certs = [c.strip().lower() for c in body.trusted_certs if re.fullmatch(r"[0-9a-fA-F]{64}", c.strip())]
+    return {"name": body.name.strip()[:60], "host": host, "port": int(body.port), "username": body.username.strip(),
+            "realm": body.realm.strip()[:60], "routes": list(dict.fromkeys(routes)), "trusted_certs": list(dict.fromkeys(certs))}
+
+
+@api.get("/vpns")
+async def list_vpns(user: dict = Depends(get_current_user)):
+    if _is_viewer(user):
+        return {"items": [], "daemon": False}
+    items = await db.vpn_profiles.find(_scope(user), {"_id": 0}).sort("name", 1).to_list(100)
+    st = {s["_id"]: s async for s in db.vpn_status.find({"_id": {"$in": [p["id"] for p in items]}})}
+    agents = await db.agents.find({**_scope(user), "vpn_id": {"$in": [p["id"] for p in items]}}, {"_id": 0, "name": 1, "vpn_id": 1}).to_list(500)
+    out = []
+    for p in items:
+        o = _vpn_public(p, st.get(p["id"]))
+        o["agents"] = [a["name"] for a in agents if a.get("vpn_id") == p["id"]]
+        out.append(o)
+    return {"items": out, "daemon": await _vpn_daemon_ok()}
+
+
+@api.post("/vpns")
+async def create_vpn(body: VpnProfileIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    if not body.password:
+        raise HTTPException(400, "Informe a senha da VPN")
+    doc = {"id": str(uuid.uuid4()), "owner_id": user["id"], **_vpn_clean(body), "password": vault.encrypt(body.password),
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.vpn_profiles.insert_one(doc)
+    return _vpn_public(doc, None)
+
+
+@api.put("/vpns/{vid}")
+async def update_vpn(vid: str, body: VpnProfileIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await _get_vpn_for(user, vid)
+    data = _vpn_clean(body)
+    if body.password:
+        data["password"] = vault.encrypt(body.password)
+    await db.vpn_profiles.update_one({"id": vid}, {"$set": data})
+    return _vpn_public({**cur, **data}, await db.vpn_status.find_one({"_id": vid}))
+
+
+@api.delete("/vpns/{vid}")
+async def delete_vpn(vid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _get_vpn_for(user, vid)
+    await db.vpn_profiles.delete_one({"id": vid})
+    await db.agents.update_many({"vpn_id": vid}, {"$set": {"vpn_id": None}})
+    return {"ok": True}
+
+
+async def _vpn_cmd(vid: str, action: str, otp: str = ""):
+    await db.vpn_cmds.insert_one({"id": uuid.uuid4().hex, "profile_id": vid, "action": action, "otp": otp,
+                                  "at": datetime.now(timezone.utc).isoformat(), "ts": time.time()})
+
+
+@api.post("/vpns/{vid}/connect")
+async def connect_vpn(vid: str, body: VpnConnectIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    p = await _get_vpn_for(user, vid)
+    if not await _vpn_daemon_ok():
+        raise HTTPException(503, "O serviço de VPN não está rodando no servidor. Coloque COMPOSE_PROFILES=vpn no deploy/.env e rode o update.sh.")
+    otp = re.sub(r"\s", "", body.otp or "")
+    if not otp or len(otp) > 64:
+        raise HTTPException(400, "Digite o token")
+    await db.vpn_status.update_one({"_id": vid}, {"$set": {"state": "connecting", "error": None, "pending_cert": None,
+                                                           "since": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    await _vpn_cmd(vid, "connect", otp)
+    return _vpn_public(p, await db.vpn_status.find_one({"_id": vid}))
+
+
+@api.post("/vpns/{vid}/disconnect")
+async def disconnect_vpn(vid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    p = await _get_vpn_for(user, vid)
+    await db.vpn_status.update_one({"_id": vid, "state": {"$in": ["up", "connecting"]}}, {"$set": {"state": "disconnecting"}})
+    await _vpn_cmd(vid, "disconnect")
+    return _vpn_public(p, await db.vpn_status.find_one({"_id": vid}))
+
+
+@api.post("/vpns/{vid}/trust-cert")
+async def trust_vpn_cert(vid: str, user: dict = Depends(get_current_user)):
+    """Confia no certificado que o gateway apresentou (impressão digital SHA-256 lida na última tentativa)."""
+    _no_viewer(user)
+    p = await _get_vpn_for(user, vid)
+    st = await db.vpn_status.find_one({"_id": vid}) or {}
+    fp = st.get("pending_cert")
+    if not fp:
+        raise HTTPException(400, "Nenhum certificado pendente")
+    certs = list(dict.fromkeys((p.get("trusted_certs") or []) + [fp]))
+    await db.vpn_profiles.update_one({"id": vid}, {"$set": {"trusted_certs": certs}})
+    await db.vpn_status.update_one({"_id": vid}, {"$set": {"pending_cert": None, "error": None, "state": "disconnected"}})
+    return {"trusted_certs": certs}
 
 
 # ---------- Health ----------

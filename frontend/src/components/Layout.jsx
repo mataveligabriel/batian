@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
+import { VpnIndicator } from "@/components/VpnPanel";
 import { useIsMobile } from "@/lib/pwa";
 import { useTermPrefs } from "@/lib/termPrefs";
 
@@ -123,6 +124,7 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
+        {!isViewer && <VpnIndicator mini={mini} />}
 
         <div className={`border-t border-[#1E293B] p-2 ${mini ? "space-y-1" : "flex flex-wrap gap-1"}`}>
           <PushToggle mini={mini} />

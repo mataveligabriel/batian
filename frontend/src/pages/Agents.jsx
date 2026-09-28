@@ -11,8 +11,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { Plus, Radio, Zap, Trash2, Pencil, Copy, Terminal as TerminalIco, Settings2, ShieldCheck, ArrowDownRight, Laptop, Route } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { useSearchParams } from "react-router-dom";
+import { VpnSection, VpnState, useVpns } from "@/components/VpnPanel";
 
-const empty = { name: "", location: "", mode: "direct", host: "", port: 22, tunnel_port: "", username: "", password: "", clear_password: false, parent_agent_id: "", owner_id: "", description: "" };
+const empty = { name: "", location: "", mode: "direct", host: "", port: 22, tunnel_port: "", username: "", password: "", clear_password: false, parent_agent_id: "", vpn_id: "", owner_id: "", description: "" };
 
 function CodeBlock({ code, testId }) {
   return (
@@ -38,6 +40,8 @@ export default function Agents() {
   const [testing, setTesting] = useState(null);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const [vpnData, reloadVpns] = useVpns(true);
+  const [params, setParams] = useSearchParams();
 
   const load = async () => setAgents((await api.get("/agents")).data);
   useEffect(() => {
@@ -48,7 +52,7 @@ export default function Agents() {
   const openNew = () => { setEditing(null); setForm(empty); setOpen(true); };
   const openEdit = (a) => {
     setEditing(a);
-    setForm({ ...empty, ...a, tunnel_port: a.tunnel_port ?? "", parent_agent_id: a.parent_agent_id || "", owner_id: a.owner_id || "", password: "", clear_password: false });
+    setForm({ ...empty, ...a, tunnel_port: a.tunnel_port ?? "", parent_agent_id: a.parent_agent_id || "", vpn_id: a.vpn_id || "", owner_id: a.owner_id || "", password: "", clear_password: false });
     setOpen(true);
   };
 
@@ -63,12 +67,13 @@ export default function Agents() {
       username: form.username.trim() || "root",
       password: form.password || null,
       parent_agent_id: form.parent_agent_id || null,
+      vpn_id: form.vpn_id || null,
     };
     try {
       if (editing) await api.put(`/agents/${editing.id}`, payload);
       else await api.post("/agents", payload);
       toast.success(editing ? "Agente atualizado" : "Agente cadastrado");
-      setOpen(false); load();
+      setOpen(false); load(); reloadVpns();
     } catch (e) { toast.error(formatApiError(e)); }
   };
   const del = async (a) => {
@@ -150,6 +155,8 @@ export default function Agents() {
         </div>
       )}
 
+      <VpnSection vpns={vpnData.items} daemon={vpnData.daemon} reload={reloadVpns} openId={params.get("vpn")} onOpened={() => setParams({}, { replace: true })} />
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {agents.map(a => (
           <Card key={a.id} data-testid={`agent-card-${a.id}`} className="bg-[#111722] border-[#1E293B] p-5 hover:border-[#334155] transition-colors">
@@ -178,6 +185,8 @@ export default function Agents() {
               {a.parent_agent_id && (
                 <div className="flex items-center gap-1 text-slate-500"><Route className="w-3 h-3" /> via <span className="text-slate-200">{chainOf(a).slice(0, -1).join(" → ")}</span></div>
               )}
+              {a.vpn_id && (() => { const v = vpnData.items.find(x => x.id === a.vpn_id); return v ? (
+                <div className="flex items-center gap-1.5 text-slate-500">VPN <span className="text-slate-200">{v.name}</span> <VpnState state={v.status.state} small /></div>) : null; })()}
               <div>latência: <span className="text-slate-200">{a.latency_ms != null ? `${a.latency_ms} ms` : "—"}</span></div>
             </div>
             <div className="flex gap-2 mt-4 flex-wrap">
@@ -257,6 +266,17 @@ export default function Agents() {
               </Select>
               <div className="text-[11px] text-slate-500 mt-1 font-mono">Ex.: jump host da VPN → pai = agente gateway da sua máquina.</div>
             </div>
+            {form.mode !== "reverse" && (
+              <div>
+                <Label>Precisa de VPN no servidor</Label>
+                <select value={form.vpn_id || ""} onChange={e => setForm({ ...form, vpn_id: e.target.value })} data-testid="agent-form-vpn"
+                        className="w-full h-9 rounded-md bg-[#05070A] border border-[#1E293B] text-slate-200 text-sm px-2 font-mono">
+                  <option value="">Não — alcançado sem VPN</option>
+                  {vpnData.items.map(v => <option key={v.id} value={v.id}>{v.name} ({v.host})</option>)}
+                </select>
+                <div className="text-[11px] text-slate-500 mt-1 font-mono">Com VPN: tire o agente pai (seu PC) — o Bastion sai direto pela VPN conectada no servidor.</div>
+              </div>
+            )}
             <div><Label>Descrição</Label><Textarea data-testid="agent-form-desc" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" /></div>
           </div>
           <DialogFooter>
