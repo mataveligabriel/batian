@@ -14,9 +14,9 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 PROVIDERS = {
     "groq": {"label": "Groq (grátis para começar)", "base_url": "https://api.groq.com/openai/v1",
-             "model": "llama-3.3-70b-versatile", "key": True, "free": True,
+             "model": "openai/gpt-oss-120b", "key": True, "free": True,
              "hint": "Crie a chave em console.groq.com (sem cartão). Plano grátis com limite por minuto e por dia.",
-             "suggest": ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3-32b"]},
+             "suggest": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]},
     "gemini": {"label": "Google Gemini (grátis para começar)", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
                "model": "gemini-2.5-flash", "key": True, "free": True,
                "hint": "Chave em aistudio.google.com. No plano grátis o Google pode usar as conversas para melhorar os modelos.",

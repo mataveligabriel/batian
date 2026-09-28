@@ -317,7 +317,7 @@ confere o resultado. Tudo fica em Histórico e em Automação → Assistente IA 
 
 Configuração em **Automação → Assistente IA** — escolha o provedor do modelo:
 - **Groq** (grátis para começar, recomendado para testar): chave em console.groq.com, sem cartão. Modelo padrão
-  `llama-3.3-70b-versatile`; o botão **Listar** mostra os modelos disponíveis na sua conta.
+  `openai/gpt-oss-120b`; o botão **Listar** mostra os modelos disponíveis na sua conta.
 - **Google Gemini** (grátis para começar): chave em aistudio.google.com. No plano grátis o Google pode usar as conversas
   para melhorar os modelos — evite colar senhas.
 - **Ollama no próprio servidor** (grátis e nada sai da rede):
