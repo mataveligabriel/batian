@@ -45,7 +45,18 @@ def tool_output_limit(provider: str) -> int:
 # ---------------------------------------------------------------------------------------------
 # Anthropic
 # ---------------------------------------------------------------------------------------------
+def _strip_extra(messages: list) -> list:
+    out = []
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list) and any(isinstance(b, dict) and "extra" in b for b in c):
+            m = {**m, "content": [{k: v for k, v in b.items() if k != "extra"} if isinstance(b, dict) else b for b in c]}
+        out.append(m)
+    return out
+
+
 async def _anthropic(http, key, model, messages, system, tools, max_tokens) -> dict:
+    messages = _strip_extra(messages)
     body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": messages}
     if tools:
         body["tools"] = tools
@@ -78,9 +89,15 @@ def to_openai(messages: list, system: list, tools: Optional[list]):
             continue
         if m["role"] == "assistant":
             text = "\n".join(b["text"] for b in c if b.get("type") == "text" and b.get("text"))
-            calls = [{"id": b["id"], "type": "function",
-                      "function": {"name": b["name"], "arguments": json.dumps(b.get("input") or {}, ensure_ascii=False)}}
-                     for b in c if b.get("type") == "tool_use"]
+            calls = []
+            for b in c:
+                if b.get("type") != "tool_use":
+                    continue
+                call = {"id": b["id"], "type": "function",
+                        "function": {"name": b["name"], "arguments": json.dumps(b.get("input") or {}, ensure_ascii=False)}}
+                if isinstance(b.get("extra"), dict) and b["extra"]:
+                    call["extra_content"] = b["extra"]      # Gemini 3: thought_signature precisa voltar igual
+                calls.append(call)
             msg = {"role": "assistant", "content": text or (None if calls else "(ok)")}
             if calls:
                 msg["tool_calls"] = calls
@@ -123,16 +140,66 @@ def from_openai(data: dict) -> dict:
                 args = json.loads(args) if args.strip() else {}
             except json.JSONDecodeError:
                 args = {"_raw": args}
-        content.append({"type": "tool_use", "id": tc.get("id") or f"call_{os.urandom(4).hex()}_{i}",
-                        "name": fn.get("name", ""), "input": args if isinstance(args, dict) else {}})
+        block = {"type": "tool_use", "id": tc.get("id") or f"call_{os.urandom(4).hex()}_{i}",
+                 "name": fn.get("name", ""), "input": args if isinstance(args, dict) else {}}
+        if isinstance(tc.get("extra_content"), dict) and tc["extra_content"]:
+            block["extra"] = tc["extra_content"]            # ex.: {"google": {"thought_signature": "..."}}
+        content.append(block)
     u = data.get("usage") or {}
     return {"content": content, "model": data.get("model"),
             "stop_reason": "tool_use" if any(b["type"] == "tool_use" for b in content) else "end_turn",
             "usage": {"input_tokens": u.get("prompt_tokens") or 0, "output_tokens": u.get("completion_tokens") or 0}}
 
 
-async def _openai(http, base_url, key, model, messages, system, tools, max_tokens, provider) -> dict:
+RETRY_STATUS = (429, 500, 502, 503, 504, 529)
+RETRY_BUDGET = 35          # segundos esperando o mesmo modelo antes de desistir (ou trocar de modelo)
+
+
+class LLMBusy(LLMError):
+    """Provedor sobrecarregado ou limite por minuto — vale tentar outro modelo."""
+
+
+def _err_msg(r) -> str:
+    try:
+        j = r.json()
+        if isinstance(j, list) and j:
+            j = j[0]
+        err = j.get("error") if isinstance(j, dict) else None
+        msg = (err.get("message") if isinstance(err, dict) else err) or r.text
+    except Exception:
+        msg = r.text
+    return str(msg)
+
+
+def _busy_text(name: str, model: str, status: int, provider: str, wait: float = 0) -> str:
+    if status == 429:
+        return (f"{name} ({model}): limite do plano atingido (HTTP 429)"
+                + (f". Aguarde {int(round(wait))} s" if wait else "")
+                + (" — no plano grátis há limite por minuto e por dia" if PROVIDERS.get(provider, {}).get("free") else ""))
+    return f"{name} ({model}) sobrecarregado (HTTP {status}) — costuma passar em alguns minutos"
+
+
+GEMINI_SKIP_SIGNATURE = "skip_thought_signature_validator"
+
+
+def _gemini_signatures(oa_msgs: list):
+    """Gemini 3 exige thought_signature na 1ª chamada de ferramenta de cada passo. Chamadas vindas de outro
+    provedor (ou de antes desta correção) não têm: usa o valor que o Google documenta para pular a validação."""
+    for m in oa_msgs:
+        calls = m.get("tool_calls") if m.get("role") == "assistant" else None
+        if calls and not any(((c.get("extra_content") or {}).get("google") or {}).get("thought_signature") for c in calls):
+            calls[0]["extra_content"] = {"google": {"thought_signature": GEMINI_SKIP_SIGNATURE}}
+
+
+async def _openai(http, base_url, key, model, messages, system, tools, max_tokens, provider,
+                  on_wait=None, budget: float = RETRY_BUDGET) -> dict:
     oa_msgs, oa_tools = to_openai(messages, system, tools)
+    if provider == "gemini":
+        _gemini_signatures(oa_msgs)
+    else:                                  # outros provedores podem recusar campos desconhecidos
+        for m in oa_msgs:
+            for c in m.get("tool_calls") or []:
+                c.pop("extra_content", None)
     body = {"model": model, "messages": oa_msgs, "max_tokens": max_tokens, "temperature": 0.2}
     if oa_tools:
         body["tools"] = oa_tools
@@ -142,46 +209,48 @@ async def _openai(http, base_url, key, model, messages, system, tools, max_token
         headers["authorization"] = f"Bearer {key}"
     url = base_url.rstrip("/") + "/chat/completions"
     name = PROVIDERS.get(provider, {}).get("label", provider).split(" (")[0]
-    for attempt in range(3):
+    waited, bad_tool = 0.0, 0
+    for attempt in range(8):
         try:
             r = await http.post(url, json=body, headers=headers, timeout=300 if provider == "ollama" else 120)
         except httpx.ConnectError as e:
             raise LLMError(f"Não consegui conectar em {url} ({e}). " +
-                           ("O Ollama está rodando? (docker compose --profile ollama up -d)" if provider == "ollama" else ""))
-        if r.status_code == 429:
-            wait = r.headers.get("retry-after")
-            try:
-                wait = float(wait)
-            except (TypeError, ValueError):
-                wait = 4.0 * (attempt + 1)
-            if attempt < 2 and wait <= 20:
-                await asyncio.sleep(wait)
-                continue
-            raise LLMError(f"{name}: limite do plano atingido (HTTP 429). Aguarde {int(wait)} s e tente de novo"
-                           + (" — no plano grátis há limite por minuto e por dia." if PROVIDERS.get(provider, {}).get("free") else "."))
-        if r.status_code == 400 and "tool_use_failed" in r.text and attempt < 2:
+                           ("O Ollama está rodando? (systemctl status ollama)" if provider == "ollama" else ""))
+        except httpx.TimeoutException:
+            raise LLMError(f"{name} ({model}) não respondeu a tempo")
+        if r.status_code == 200:
+            return from_openai(r.json())
+        if r.status_code == 400 and "tool_use_failed" in r.text and bad_tool < 2:
+            bad_tool += 1
             continue                       # Groq: o modelo gerou chamada de ferramenta malformada — tenta de novo
-        if r.status_code in (500, 502, 503) and attempt < 2:
-            await asyncio.sleep(3 * (attempt + 1))
+        if r.status_code in RETRY_STATUS:
+            wait = None
+            if r.status_code == 429:
+                try:
+                    wait = float(r.headers.get("retry-after"))
+                except (TypeError, ValueError):
+                    wait = None
+            wait = max(1.0, wait if wait is not None else min(5.0 * (2 ** attempt), 30.0))
+            if waited + wait > budget:
+                raise LLMBusy(_busy_text(name, model, r.status_code, provider, wait if r.status_code == 429 else 0))
+            if on_wait:
+                what = "limite por minuto" if r.status_code == 429 else "provedor sobrecarregado"
+                await on_wait(f"{name} ({model}): {what} — tentando de novo em {int(round(wait))} s")
+            await asyncio.sleep(wait)
+            waited += wait
             continue
-        if r.status_code != 200:
-            try:
-                j = r.json()
-                err = j.get("error")
-                msg = (err.get("message") if isinstance(err, dict) else err) or r.text
-            except Exception:
-                msg = r.text
-            if r.status_code == 404 and provider == "ollama":
-                msg += f" — baixe o modelo no servidor: docker compose exec ollama ollama pull {model}"
-            raise LLMError(f"{name} HTTP {r.status_code}: {str(msg)[:300]}")
-        return from_openai(r.json())
-    raise LLMError(f"{name} indisponível")
+        msg = _err_msg(r)
+        if r.status_code == 404 and provider == "ollama":
+            msg += f" — baixe o modelo no servidor: ollama pull {model}"
+        raise LLMError(f"{name} HTTP {r.status_code}: {msg[:300]}")
+    raise LLMBusy(f"{name} ({model}) indisponível no momento")
 
 
 # ---------------------------------------------------------------------------------------------
 async def call(cfg: dict, messages: list, system: list, tools: Optional[list] = None, max_tokens: int = 4096,
-               http: Optional[httpx.AsyncClient] = None) -> dict:
-    """cfg = {provider, model, key, base_url} -> resposta no formato Anthropic."""
+               http: Optional[httpx.AsyncClient] = None, on_wait=None) -> dict:
+    """cfg = {provider, model, key, base_url, fallbacks?} -> resposta no formato Anthropic.
+    Sobrecarga/limite: espera e tenta de novo; persistindo, tenta os modelos de cfg["fallbacks"]."""
     provider = cfg.get("provider") or "anthropic"
     own = http is None
     http = http or httpx.AsyncClient(timeout=300)
@@ -198,7 +267,20 @@ async def call(cfg: dict, messages: list, system: list, tools: Optional[list] = 
         if not cfg.get("model"):
             raise LLMError("Modelo não configurado")
         clean_tools = [{k: v for k, v in t.items() if k != "cache_control"} for t in tools] if tools else None
-        return await _openai(http, base, cfg.get("key"), cfg["model"], messages, system, clean_tools, max_tokens, provider)
+        models = [cfg["model"]] + [m for m in (cfg.get("fallbacks") or []) if m and m != cfg["model"]]
+        first_err = None
+        for i, model in enumerate(models):
+            if i and on_wait:
+                await on_wait(f"trocando para {model} enquanto {models[0]} está indisponível")
+            try:
+                return await _openai(http, base, cfg.get("key"), model, messages, system, clean_tools, max_tokens, provider,
+                                     on_wait=on_wait, budget=RETRY_BUDGET if i == 0 else 20)
+            except LLMBusy as e:
+                first_err = first_err or e
+                if i == len(models) - 1:
+                    msg = str(first_err) + (". Os modelos reserva também estão indisponíveis" if i else "")
+                    raise LLMBusy(msg + ("." if "Aguarde" in msg else ". Tente de novo em alguns minutos."))
+        raise first_err or LLMError("sem modelo")
     finally:
         if own:
             await http.aclose()

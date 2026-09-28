@@ -26,8 +26,9 @@ function RichText({ text }) {
         ? <pre key={i} className="text-[11px] font-mono bg-[#05070A] border border-[#1E293B] rounded p-2 overflow-x-auto whitespace-pre">{p.replace(/\n$/, "")}</pre>
         : p.trim() && (
           <div key={i} className="whitespace-pre-wrap break-words">
-            {p.replace(/^\n+|\n+$/g, "").split(/(\*\*[^*]+\*\*|`[^`\n]+`)/).map((seg, j) => (
+            {p.replace(/^\n+|\n+$/g, "").split(/(\*\*[^*]+\*\*|\*[^*\s](?:[^*\n]*[^*\s])?\*|`[^`\n]+`)/).map((seg, j) => (
               seg.startsWith("**") && seg.endsWith("**") ? <b key={j} className="text-slate-50">{seg.slice(2, -2)}</b>
+                : seg.length > 2 && seg.startsWith("*") && seg.endsWith("*") ? <b key={j} className="text-slate-50">{seg.slice(1, -1)}</b>
                 : seg.startsWith("`") && seg.endsWith("`") ? <code key={j} className="font-mono text-[12px] bg-[#05070A] px-1 rounded">{seg.slice(1, -1)}</code>
                   : <React.Fragment key={j}>{seg}</React.Fragment>
             ))}
@@ -173,6 +174,7 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
                 {conv.items.map(it => {
                   if (it.kind === "user") return <div key={it.id} className="flex justify-end"><div className="max-w-[85%] bg-[#007AFF]/20 border border-[#007AFF]/30 text-slate-100 text-sm rounded-lg rounded-br-sm px-3 py-2 whitespace-pre-wrap break-words" data-testid="msg-user">{it.text}</div></div>;
                   if (it.kind === "tool") return <div key={it.id} className="flex items-center gap-1.5 text-[11px] font-mono text-slate-500 pl-1" data-testid="msg-tool"><Wrench className="w-3 h-3 shrink-0" /><span className="truncate">{it.text}</span></div>;
+                  if (it.kind === "wait") return <div key={it.id} className="flex items-center gap-1.5 text-[11px] font-mono text-amber-300/80 pl-1" data-testid="msg-wait"><Clock className="w-3 h-3 shrink-0" /><span className="truncate" title={it.text}>{it.text}</span></div>;
                   if (it.kind === "proposal") return <Proposal key={it.id} it={it} onDecide={decide} busy={conv.busy} />;
                   if (it.kind === "error") return <div key={it.id} className="text-xs text-amber-300 border border-amber-400/30 bg-amber-400/5 rounded px-2.5 py-2 flex gap-1.5" data-testid="msg-error"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" /><span className="whitespace-pre-wrap">{it.text.replace(/^⚠️\s*/, "")}</span></div>;
                   return <div key={it.id} className="max-w-[95%] text-sm text-slate-200 bg-[#111722] border border-[#1E293B] rounded-lg rounded-bl-sm px-3 py-2" data-testid="msg-assistant"><RichText text={it.text} /></div>;

@@ -1827,6 +1827,7 @@ async def test_ai(body: Optional[AITestIn] = None, _: dict = Depends(require_adm
     if b.provider and b.provider not in llm.PROVIDERS:
         return {"ok": False, "error": "Provedor desconhecido"}
     cfg = ai_assistant.llm_cfg(s, b.provider or None)
+    cfg["fallbacks"] = []          # o teste é do modelo escolhido, sem reserva
     if b.model.strip():
         cfg["model"] = b.model.strip()
     if b.base_url.strip():

@@ -293,7 +293,9 @@ def llm_cfg(s: dict, provider: Optional[str] = None) -> dict:
     info = llm.PROVIDERS.get(p, {})
     return {"provider": p, "model": (s.get("ai_models") or {}).get(p) or info.get("model", ""),
             "key": vault.decrypt((s.get("ai_keys") or {}).get(p, "")),
-            "base_url": (s.get("ai_base_urls") or {}).get(p) or info.get("base_url", "")}
+            "base_url": (s.get("ai_base_urls") or {}).get(p) or info.get("base_url", ""),
+            # planos grátis: se o modelo escolhido estiver sobrecarregado/no limite, tenta os outros sugeridos
+            "fallbacks": list(info.get("suggest") or [])[:3] if p in ("gemini", "groq") else []}
 
 
 def ai_ready(s: dict) -> Optional[str]:
@@ -332,7 +334,10 @@ def _clean_assistant_content(content: list) -> list:
         if b.get("type") == "text" and b.get("text"):
             out.append({"type": "text", "text": b["text"]})
         elif b.get("type") == "tool_use":
-            out.append({"type": "tool_use", "id": b["id"], "name": b["name"], "input": b.get("input") or {}})
+            tu = {"type": "tool_use", "id": b["id"], "name": b["name"], "input": b.get("input") or {}}
+            if isinstance(b.get("extra"), dict) and b["extra"]:
+                tu["extra"] = b["extra"]          # assinatura do Gemini 3 (volta junto na próxima chamada)
+            out.append(tu)
     return out
 
 
@@ -430,6 +435,9 @@ class AgentCore:
     async def out_activity(self, ctx: dict, name: str, inp: dict):
         pass
 
+    async def out_wait(self, ctx: dict, text: str):
+        pass
+
     async def out_proposal(self, ctx: dict, pid: str, text: str, data: dict) -> dict:
         raise NotImplementedError
 
@@ -451,7 +459,8 @@ class AgentCore:
         ctx["out_limit"] = llm.tool_output_limit(cfg["provider"])
         try:
             for _ in range(MAX_STEPS):
-                resp = await llm.call(cfg, messages, self._system(ctx["user"], s), TOOLS, http=self.http)
+                resp = await llm.call(cfg, messages, self._system(ctx["user"], s), TOOLS, http=self.http,
+                                      on_wait=lambda txt: self.out_wait(ctx, txt))
                 await self._track_usage(resp.get("usage") or {}, cfg["provider"])
                 content = _clean_assistant_content(resp.get("content"))
                 if not content:
@@ -1200,6 +1209,9 @@ class WebAssistant(AgentCore):
     # ----- ganchos -----
     async def out_text(self, ctx: dict, text: str, final: bool):
         await self._push(ctx["user"]["id"], {"kind": "error" if text.startswith("⚠️") else "assistant", "text": text})
+
+    async def out_wait(self, ctx: dict, text: str):
+        await self._push(ctx["user"]["id"], {"kind": "wait", "text": text})
 
     async def out_activity(self, ctx: dict, name: str, inp: dict):
         if name != "propose_config_change":
