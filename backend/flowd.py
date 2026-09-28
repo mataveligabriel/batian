@@ -79,6 +79,7 @@ class Collector:
         self.labels: dict = {}              # chave -> "R1 · xe-0/0/1 (Trânsito X)"
         self.owners: dict = {}              # chave -> {owner_id}
         self._ret = None
+        self._tpl_sig = None
         self._bg = set()
 
     # ---------- recepção ----------
@@ -172,6 +173,19 @@ class Collector:
             self._ret = ret
 
     # ---------- gravação ----------
+    async def save_templates(self):
+        d = self.cache.dump()
+        sig = (len(d["t"]), len(d["o"]), tuple(sorted(d["s"].items())), hash(str(d["t"])))
+        if sig != self._tpl_sig:
+            await self.db.flow_templates.replace_one({"_id": "cache"}, {"_id": "cache", **d, "at": _iso(time.time())}, upsert=True)
+            self._tpl_sig = sig
+
+    async def load_templates(self):
+        doc = await self.db.flow_templates.find_one({"_id": "cache"})
+        if doc:
+            self.cache.load(doc)
+            log.info(f"templates NetFlow v9/IPFIX recuperados: {len(self.cache.templates)}")
+
     async def write_exporters(self, span: float):
         seen = self.agg.take_seen()
         per = {}
@@ -290,6 +304,7 @@ class Collector:
     async def run(self):
         await self.db.flow_attacks.update_many({"status": "active"},
                                                {"$set": {"status": "ended", "end": _iso(time.time()), "note": "coletor reiniciado"}})
+        await self._safe("templates", self.load_templates())
         await self._safe("config", self.reload())
         if self.ports is None:
             await self.bind((int(self.cfg["netflow_port"]), int(self.cfg["sflow_port"])))
@@ -308,6 +323,7 @@ class Collector:
                 self._spawn(self._safe("5min", self.tick300(now)))
             if t % 30 == 0:
                 await self._safe("status", self.write_exporters(30))
+                await self._safe("templates", self.save_templates())
                 await self._safe("config", self.reload())
             if t % 3600 == 120:
                 self._spawn(self._safe("1h", self.tick_hour(now)))

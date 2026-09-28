@@ -73,6 +73,21 @@ class TemplateCache:
         self.templates[key] = fields
         self.seen_at[key] = time.time()
 
+    def dump(self) -> dict:
+        """Para guardar no banco: sem isso, a cada reinício do coletor o NetFlow v9/IPFIX fica sem dados até o
+        roteador reenviar os templates (no Huawei o padrão é a cada 30 min)."""
+        return {"t": [[k[0], k[1], k[2], [list(f) for f in v]] for k, v in self.templates.items()],
+                "o": [[k[0], k[1], k[2], [list(f) for f in v]] for k, v in self.options.items()],
+                "s": dict(self.sampling)}
+
+    def load(self, d: dict):
+        for exp, dom, tid, fields in (d or {}).get("t") or []:
+            self.templates.setdefault((exp, dom, tid), [tuple(f) for f in fields])
+        for exp, dom, tid, fields in (d or {}).get("o") or []:
+            self.options.setdefault((exp, dom, tid), [tuple(f) for f in fields])
+        for exp, r in ((d or {}).get("s") or {}).items():
+            self.sampling.setdefault(exp, r)
+
     def missing(self) -> int:
         return 0
 
