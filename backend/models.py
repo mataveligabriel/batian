@@ -208,10 +208,14 @@ class AITelegramUser(BaseModel):
 
 
 class AISettings(BaseModel):
-    ai_enabled: bool = False
-    anthropic_api_key: Optional[str] = None  # write-only; vazio mantém
+    ai_enabled: bool = False                 # bot do Telegram
+    ai_web_enabled: bool = True              # chat dentro do Bastion
+    ai_provider: str = "groq"
+    api_key: Optional[str] = None            # write-only, do provedor escolhido; vazio mantém
+    anthropic_api_key: Optional[str] = None  # legado
     clear_api_key: bool = False
-    ai_model: str = "claude-sonnet-5"
+    ai_model: str = ""
+    ai_base_url: str = ""                    # Ollama / API compatível com OpenAI
     ai_allow_changes: bool = True
     ai_users: List[AITelegramUser] = []
 

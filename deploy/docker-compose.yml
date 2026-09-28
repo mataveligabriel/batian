@@ -32,6 +32,16 @@ services:
       mongo:
         condition: service_healthy
 
+  # opcional: modelo de IA local e grátis para o assistente (docker compose --profile ollama up -d)
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
   frontend:
     build:
       context: ../frontend
@@ -50,5 +60,6 @@ services:
 
 volumes:
   mongo_data:
+  ollama_data:
   caddy_data:
   caddy_config:

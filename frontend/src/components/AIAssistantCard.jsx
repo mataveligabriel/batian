@@ -12,7 +12,7 @@ import { Bot, Plus, Trash2, Loader2, PlugZap, ShieldCheck } from "lucide-react";
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR") : "—";
 const num = (n) => (n || 0).toLocaleString("pt-BR");
 
-/** Configuração do assistente Claude no Telegram (somente admin). */
+/** Configuração do assistente (chat no sistema + Telegram) — provedor, chave e modelo (somente admin). */
 export function AIAssistantCard() {
   const [s, setS] = useState(null);
   const [users, setUsers] = useState([]);
@@ -21,10 +21,21 @@ export function AIAssistantCard() {
   const [clearKey, setClearKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [prov, setProv] = useState("");
+  const [model, setModel] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [found, setFound] = useState([]);
+  const [listing, setListing] = useState(false);
 
   const load = async () => {
     const [a, u, l] = await Promise.all([api.get("/ai/settings"), api.get("/users"), api.get("/ai/audit", { params: { limit: 30 } })]);
     setS(a.data); setUsers(u.data); setAudit(l.data);
+    pick(a.data, a.data.ai_provider);
+  };
+  const pick = (st, p) => {
+    const info = st.providers?.[p] || {};
+    setProv(p); setModel(st.ai_models?.[p] || info.model || ""); setBaseUrl(st.ai_base_urls?.[p] || info.base_url || "");
+    setFound([]); setApiKey(""); setClearKey(false);
   };
   useEffect(() => { load().catch(e => toast.error(formatApiError(e))); }, []);
 
@@ -37,21 +48,30 @@ export function AIAssistantCard() {
     setBusy(true);
     try {
       const { data } = await api.put("/ai/settings", {
-        ai_enabled: s.ai_enabled, ai_model: s.ai_model, ai_allow_changes: s.ai_allow_changes,
-        ai_users: s.ai_users.filter(u => String(u.telegram_id).trim()),
-        anthropic_api_key: apiKey || null, clear_api_key: clearKey,
+        ai_enabled: s.ai_enabled, ai_web_enabled: s.ai_web_enabled !== false, ai_provider: prov, ai_model: model, ai_base_url: baseUrl,
+        ai_allow_changes: s.ai_allow_changes, ai_users: s.ai_users.filter(u => String(u.telegram_id).trim()),
+        api_key: apiKey || null, clear_api_key: clearKey,
       });
-      setS(data); setApiKey(""); setClearKey(false);
+      setS(data); pick(data, data.ai_provider);
       toast.success("Assistente salvo");
     } catch (e) { toast.error(formatApiError(e)); }
     finally { setBusy(false); }
+  };
+
+  const listModels = async () => {
+    setListing(true);
+    try {
+      const { data } = await api.get("/ai/models", { params: { provider: prov, key: apiKey || undefined, base_url: baseUrl || undefined } });
+      setFound(data.models); toast.success(`${data.models.length} modelo(s) disponíveis`);
+    } catch (e) { toast.error(formatApiError(e)); }
+    finally { setListing(false); }
   };
 
   const test = async () => {
     setTesting(true);
     try {
       const { data } = await api.post("/ai/test");
-      data.ok ? toast.success(`Claude respondeu (${data.model}): ${data.reply}`) : toast.error(data.error);
+      data.ok ? toast.success(`O modelo respondeu (${data.model}): ${data.reply}`) : toast.error(data.error);
     } catch (e) { toast.error(formatApiError(e)); }
     finally { setTesting(false); }
   };
@@ -64,41 +84,61 @@ export function AIAssistantCard() {
       <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
         <div className="flex items-center gap-2">
           <Bot className="w-4 h-4 text-[#4DA3FF]" />
-          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Assistente IA no Telegram (Claude)</div>
+          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Assistente IA — chat no sistema e Telegram</div>
         </div>
-        <div className="text-[11px] font-mono">bot: <span className={statusColor} data-testid="ai-bot-status">{s.bot_status}</span></div>
+        <div className="text-[11px] font-mono">bot do Telegram: <span className={statusColor} data-testid="ai-bot-status">{s.bot_status}</span></div>
       </div>
       <p className="text-xs text-slate-400 mb-4 max-w-3xl">
-        Converse com o bot do Telegram configurado acima para consultar e operar os equipamentos em linguagem natural.
-        Comandos de leitura rodam direto; <b>qualquer alteração exige clique em ✅ Confirmar</b> no próprio Telegram.
-        Cada usuário do Telegram só enxerga os equipamentos do usuário do Bastion vinculado a ele.
-        {!s.has_telegram_token && <span className="text-amber-400"> Configure o token do bot em Notificações primeiro.</span>}
+        Converse em linguagem natural pelo botão <b>Assistente</b> (canto inferior direito de qualquer tela) ou pelo bot do Telegram.
+        Consultas rodam direto; <b>qualquer alteração exige clique em Confirmar</b>. Cada usuário só enxerga os próprios equipamentos.
+        Para começar sem custo use <b>Groq</b> ou <b>Gemini</b> (chave grátis) ou o <b>Ollama</b> no próprio servidor.
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <Label>Assistente ativo</Label>
+            <Label>Chat no sistema</Label>
+            <Switch data-testid="ai-web-enabled" checked={s.ai_web_enabled !== false} onCheckedChange={v => setS({ ...s, ai_web_enabled: v })} />
+          </div>
+          <div className="flex items-center justify-between">
+            <div><Label>Bot do Telegram</Label>{!s.has_telegram_token && <div className="text-[11px] text-amber-400">configure o token do bot em Notificações</div>}</div>
             <Switch data-testid="ai-enabled" checked={s.ai_enabled} onCheckedChange={v => setS({ ...s, ai_enabled: v })} />
           </div>
           <div>
-            <Label>Chave da API da Anthropic</Label>
-            <Input data-testid="ai-api-key" type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-                   placeholder={s.has_api_key ? "•••••••• (mantida — digite para trocar)" : "sk-ant-… (console.anthropic.com)"} className={inputCls} />
-            {s.has_api_key && (
-              <label className="flex items-center gap-2 mt-1 text-[11px] text-slate-400 cursor-pointer">
-                <input type="checkbox" checked={clearKey} onChange={e => setClearKey(e.target.checked)} /> remover chave
-              </label>
-            )}
+            <Label>Provedor do modelo</Label>
+            <select value={prov} onChange={e => pick(s, e.target.value)} data-testid="ai-provider"
+                    className="w-full h-9 rounded-md bg-[#05070A] border border-[#1E293B] text-slate-200 text-sm px-2">
+              {Object.entries(s.providers || {}).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+            </select>
+            <div className="text-[11px] text-slate-500 mt-1">{s.providers?.[prov]?.hint}</div>
           </div>
+          {s.providers?.[prov]?.key && (
+            <div>
+              <Label>Chave da API</Label>
+              <Input data-testid="ai-api-key" type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                     placeholder={s.has_keys?.[prov] ? "•••••••• (mantida — digite para trocar)" : prov === "groq" ? "gsk_…" : prov === "gemini" ? "AIza…" : prov === "anthropic" ? "sk-ant-…" : "chave"} className={inputCls} />
+              {s.has_keys?.[prov] && (
+                <label className="flex items-center gap-2 mt-1 text-[11px] text-slate-400 cursor-pointer">
+                  <input type="checkbox" checked={clearKey} onChange={e => setClearKey(e.target.checked)} /> remover chave
+                </label>
+              )}
+            </div>
+          )}
+          {(prov === "ollama" || prov === "openai") && (
+            <div>
+              <Label>URL da API</Label>
+              <Input data-testid="ai-base-url" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder={s.providers?.[prov]?.base_url} className={inputCls} />
+            </div>
+          )}
           <div>
             <Label>Modelo</Label>
-            <Select value={s.ai_model} onValueChange={v => setS({ ...s, ai_model: v })}>
-              <SelectTrigger data-testid="ai-model" className={inputCls}><SelectValue /></SelectTrigger>
-              <SelectContent className={content}>
-                {(s.models || []).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <div className="flex gap-1.5">
+              <Input data-testid="ai-model" list="ai-model-list" value={model} onChange={e => setModel(e.target.value)} className={inputCls} />
+              <Button size="sm" variant="outline" onClick={listModels} disabled={listing} className="h-9 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800 text-xs" title="Buscar os modelos disponíveis no provedor">
+                {listing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Listar"}</Button>
+            </div>
+            <datalist id="ai-model-list">{[...new Set([...(s.providers?.[prov]?.suggest || []), ...found])].map(m => <option key={m} value={m} />)}</datalist>
+            {prov === "ollama" && <div className="text-[11px] text-slate-500 mt-1">No servidor: <code>docker compose --profile ollama up -d</code> e <code>docker compose exec ollama ollama pull {model || "qwen2.5:7b"}</code></div>}
           </div>
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -149,7 +189,7 @@ export function AIAssistantCard() {
 
       <div className="flex justify-end gap-2 mt-4">
         <Button variant="outline" onClick={test} disabled={testing} data-testid="ai-test-btn" className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">
-          {testing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <PlugZap className="w-4 h-4 mr-2" />} Testar Claude
+          {testing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <PlugZap className="w-4 h-4 mr-2" />} Testar conexão
         </Button>
         <Button onClick={save} disabled={busy} data-testid="ai-save-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
           {busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Salvar assistente

@@ -1,8 +1,8 @@
-"""Assistente de operações via Telegram usando o Claude (API da Anthropic).
+"""Assistente de operações do Bastion: chat dentro do sistema e bot do Telegram.
 
-Fluxo:
-  Telegram (long polling) -> usuário autorizado -> loop de ferramentas do Claude ->
-  - leitura (show/display/ping...) roda direto no equipamento
+Modelo: Claude (Anthropic) ou qualquer API compatível com OpenAI — Groq e Gemini (grátis para começar), Ollama local…
+Fluxo: pergunta -> loop de ferramentas do modelo ->
+  - leitura (SNMP, show/display, óptica, flow) roda direto
   - qualquer alteração vira uma PROPOSTA com botões Confirmar/Cancelar; só executa após o clique
 Tudo que roda nos equipamentos fica em ai_audit (e em sessions, kind="ia").
 """
@@ -12,27 +12,26 @@ import logging
 import os
 import re
 from datetime import datetime, timezone, timedelta
-from typing import Awaitable, Callable, List, Optional
+import time
+from typing import Awaitable, Callable, List, Optional, Tuple
 
 import httpx
 
+import llm
+import snmp_service
 import vault
 
 logger = logging.getLogger("bastion.ai")
 
-ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_VERSION = "2023-06-01"
-MODELS = [
-    ["claude-sonnet-5", "Claude Sonnet 5 (recomendado)"],
-    ["claude-opus-5-5", "Claude Opus 5.5 (mais capaz, mais caro)"],
-    ["claude-haiku-4-5-20251001", "Claude Haiku 4.5 (mais barato)"],
-]
+MODELS = [[m, m] for m in llm.PROVIDERS["anthropic"]["suggest"]]
 AI_DEFAULTS = {
-    "ai_enabled": False,
-    "anthropic_api_key": "",
+    "ai_enabled": False,          # bot do Telegram
+    "ai_web_enabled": True,       # chat dentro do Bastion
+    "anthropic_api_key": "",      # legado (hoje fica em ai_keys["anthropic"])
     "ai_model": "claude-sonnet-5",
     "ai_allow_changes": True,
     "ai_users": [],  # [{telegram_id, user_id, label}]
+    "ai_keys": {}, "ai_models": {}, "ai_base_urls": {},
 }
 
 MAX_STEPS = 16              # chamadas ao Claude por mensagem do usuário
@@ -116,28 +115,35 @@ def _truncate(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
 # ---------------------------------------------------------------------------
 # Prompt e ferramentas
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """Você é o assistente de operações de rede do Bastion. Conversa pelo Telegram com engenheiros de rede de um provedor de internet e acessa os equipamentos cadastrados no Bastion (Huawei, Juniper, Cisco, Datacom DmOS, ZTE OLT/switch, Mikrotik, Linux) através das ferramentas.
+SYSTEM_PROMPT = """Você é o assistente de operações de rede do Bastion. Conversa com engenheiros de rede de um provedor de internet e acessa os equipamentos cadastrados no Bastion (Huawei, Juniper, Cisco, Datacom DmOS, ZTE OLT/switch, Mikrotik, Linux) através das ferramentas.
 
 Regras obrigatórias:
-1. Nunca invente saídas, nomes de interface, IDs de ONU, estados ou valores. Consulte o equipamento com run_show_commands antes de afirmar algo ou propor qualquer alteração.
+1. Nunca invente saídas, nomes de interface, IDs de ONU, estados ou valores. Consulte antes de afirmar algo ou propor qualquer alteração.
 2. Para achar equipamentos use list_devices (busca em nome, IP, descrição e tags — cidade/POP costuma estar no nome ou nas tags). Se houver mais de um candidato plausível, pergunte ao usuário qual, listando as opções.
-3. run_show_commands só aceita comandos de leitura (show/display/ping/traceroute; Mikrotik "/... print"). Use o parâmetro filter (regex) para reduzir saídas grandes, e rode vários equipamentos em paralelo quando fizer sentido.
-4. Toda alteração (configuração, shutdown/undo shutdown, apagar ONU, BGP, clear/reset, save/commit, reboot) vai SOMENTE por propose_config_change, que mostra os comandos exatos ao usuário com botões Confirmar/Cancelar. Nunca diga que alterou algo antes de receber o resultado da execução. Confirmação digitada em texto ("sim", "pode") NÃO executa nada: o usuário precisa tocar no botão.
-5. Em propose_config_change escreva a sequência COMPLETA exatamente como digitada no CLI, com entrada e saída do modo de configuração e commit quando o fabricante exigir. Referência: Huawei VRP "system-view" ... "quit"/"return" (e "commit" em equipamentos two-stage, ex.: NE com commit ativo); Juniper "configure" ... "commit and-quit"; Cisco IOS "configure terminal" ... "end"; Datacom DmOS "config" ... "commit" ... "end"; ZTE "configure terminal" ... "exit". Se o CLI pedir confirmação [y/n] ou [Y/N], inclua a resposta como a linha seguinte. Não inclua salvar configuração (save / write memory / copy running-config startup-config) a menos que o usuário peça — pergunte ao final se deseja salvar. Agrupe todas as mudanças de um mesmo pedido em uma única proposta.
-6. No summary da proposta explique em uma ou duas linhas o que muda e o impacto (ex.: "derruba a sessão BGP com AS X"). Para mudanças de risco (BGP, uplinks, muitas ONUs) preencha rollback.
-7. Depois que o usuário confirmar e você receber a saída da execução, confira se houve erro na saída e verifique o resultado com comandos de leitura.
-8. Responda em português do Brasil, curto e direto, em texto simples (sem Markdown, sem tabelas largas): o usuário lê no celular. Mostre só o essencial das saídas.
-9. Se um comando falhar por sintaxe (versões de firmware variam), tente a variação equivalente antes de desistir.
+3. Prefira as ferramentas prontas, que são rápidas e já vêm organizadas: get_interfaces (lista de interfaces com status, velocidade e tráfego atual, via SNMP), get_bgp_sessions (sessões BGP via SNMP), get_optical_signal (RX/TX por lane da porta) e get_flow_top (quem está consumindo nas interfaces com Flow). Se falharem (sem SNMP, dado ausente) ou precisar de detalhe, use run_show_commands.
+4. run_show_commands só aceita comandos de leitura (show/display/ping/traceroute; Mikrotik "/... print"). Use o parâmetro filter (regex) para reduzir saídas grandes.
+5. Toda alteração (configuração, shutdown/undo shutdown, desativar/ativar porta, apagar ONU, BGP, clear/reset, save/commit, reboot) vai SOMENTE por propose_config_change, que mostra os comandos exatos ao usuário com botões Confirmar/Cancelar. Nunca diga que alterou algo antes de receber o resultado da execução. Confirmação digitada em texto ("sim", "pode") NÃO executa nada: o usuário precisa clicar no botão.
+6. Em propose_config_change escreva a sequência COMPLETA exatamente como digitada no CLI, com entrada e saída do modo de configuração e commit quando o fabricante exigir. Referência: Huawei VRP "system-view" / "interface X" / "shutdown" (reativar: "undo shutdown") / "quit" / "return" (e "commit" em equipamentos two-stage, ex.: NE com commit ativo); Juniper "configure" / "set interfaces X disable" (reativar: "delete interfaces X disable") / "commit and-quit"; Cisco IOS "configure terminal" / "interface X" / "shutdown" (reativar: "no shutdown") / "end"; Datacom DmOS "config" / "interface X" / "shutdown" / "commit" / "end"; ZTE "configure terminal" / "interface X" / "shutdown" / "exit" / "end". Se o CLI pedir confirmação [y/n] ou [Y/N], inclua a resposta como a linha seguinte. Não inclua salvar configuração (save / write memory) a menos que o usuário peça — pergunte ao final se deseja salvar. Agrupe as mudanças de um pedido em uma única proposta.
+7. Antes de propor desativar uma porta, confira o nome exato e o estado atual dela (get_interfaces). No summary diga o impacto (ex.: "derruba o trânsito X — o tráfego vai para Y", "cliente Z fica sem link"). Para mudanças de risco (BGP, uplinks, muitas ONUs) preencha rollback.
+8. Depois que o usuário confirmar e você receber a saída da execução, confira se houve erro e verifique o resultado com uma consulta.
+9. Responda em português do Brasil, curto e direto. Mostre só o essencial das saídas.
+10. Se um comando falhar por sintaxe (versões de firmware variam), tente a variação equivalente antes de desistir.
 
 Dicas por fabricante (confirme a sintaxe da versão do equipamento):
-- Huawei VRP: display interface brief | display interface X | display bgp peer | display bgp routing-table peer X advertised-routes | display transceiver interface X verbose (níveis ópticos) | display current-configuration configuration bgp. MAC no formato xxxx-xxxx-xxxx.
-- Juniper: show interfaces terse | show bgp summary | show bgp neighbor X | show route advertising-protocol bgp X | show interfaces diagnostics optics X | show configuration protocols bgp | display set. Desativar interface: set interfaces X disable (reativar: delete interfaces X disable).
+- Huawei VRP: display interface brief | display interface X | display bgp peer | display bgp routing-table peer X advertised-routes | display transceiver interface X verbose | display current-configuration configuration bgp. MAC no formato xxxx-xxxx-xxxx.
+- Juniper: show interfaces terse | show bgp summary | show bgp neighbor X | show route advertising-protocol bgp X | show interfaces diagnostics optics X | show configuration protocols bgp | display set.
 - Cisco IOS/XE: show ip interface brief | show ip bgp summary | show interfaces transceiver | show running-config | section router bgp.
 - Datacom DmOS: show interface link | show running-config router bgp | show bgp summary (varia por versão).
 - ZTE OLT (C300/C320/C600/C650): show gpon onu state gpon-olt_R/S/P | show gpon onu detail-info gpon-onu_R/S/P:ID | show pon power attenuation gpon-onu_R/S/P:ID | show pon power onu-rx gpon-olt_R/S/P | show mac ... (MAC no formato xxxx.xxxx.xxxx; nos C6xx a interface pode ser gpon_olt-R/S/P e gpon_onu-R/S/P:ID). Remover ONU: configure terminal / interface gpon-olt_R/S/P / no onu ID / exit.
-- Mikrotik: /interface print | /routing bgp session print (v7) ou /routing bgp peer print (v6) | /interface ethernet monitor X once.
+- Mikrotik: /interface print | /routing bgp session print (v7) ou /routing bgp peer print (v6) | /interface ethernet monitor X once. Desativar: /interface disable X.
 """
+CHANNEL_PROMPT = {
+    "telegram": "Canal: Telegram. Texto simples, sem Markdown e sem tabelas largas: o usuário lê no celular.",
+    "web": ("Canal: chat dentro do Bastion (navegador). Pode usar listas curtas e blocos ``` para trechos de CLI; "
+            "evite tabelas largas. As propostas aparecem como um cartão com os botões Confirmar/Cancelar."),
+}
 
+_DEV = {"type": "string", "description": "Nome exato (ou id) do equipamento, como retornado por list_devices."}
 TOOLS = [
     {
         "name": "list_devices",
@@ -152,14 +158,63 @@ TOOLS = [
         },
     },
     {
+        "name": "get_interfaces",
+        "description": ("Interfaces de um equipamento via SNMP: nome, descrição, estado admin/oper, velocidade e o tráfego ATUAL "
+                        "(entrada/saída medido agora em ~5 s). Use query para filtrar (ex.: '100GE', 'TRANSITO', '0/0/1')."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device": _DEV,
+                "query": {"type": "string", "description": "Palavras que devem aparecer no nome/descrição/índice (vazio = todas)."},
+                "only_up": {"type": "boolean", "description": "Só interfaces operacionalmente UP."},
+                "only_down": {"type": "boolean", "description": "Só interfaces DOWN (admin up e oper down)."},
+                "with_traffic": {"type": "boolean", "description": "Medir tráfego atual (padrão true; até 40 interfaces)."},
+            },
+            "required": ["device"],
+        },
+    },
+    {
+        "name": "get_bgp_sessions",
+        "description": ("Sessões BGP do equipamento via SNMP (BGP4-MIB, IPv4 da instância principal): peer, AS remoto, estado, há quanto "
+                        "tempo está estabelecida, nº de quedas e último erro. Para IPv6/VPN, rotas recebidas/anunciadas use run_show_commands."),
+        "input_schema": {
+            "type": "object",
+            "properties": {"device": _DEV,
+                           "only_problems": {"type": "boolean", "description": "Só sessões que não estão established ou caíram há pouco."}},
+            "required": ["device"],
+        },
+    },
+    {
+        "name": "get_optical_signal",
+        "description": "Potência óptica RX/TX (dBm) de uma porta, por lane, lida na CLI do equipamento.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"device": _DEV, "interface": {"type": "string", "description": "Nome da interface (ex.: 100GE0/0/1, xe-0/0/1)."}},
+            "required": ["device", "interface"],
+        },
+    },
+    {
+        "name": "get_flow_top",
+        "description": ("Análise de Flow (NetFlow/sFlow) das interfaces monitoradas: quem está consumindo. Agrupa por interface, AS de "
+                        "origem/destino, prefixo de destino, porta ou protocolo, na janela pedida. Também lista os ataques DDoS ativos."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "interface": {"type": "string", "description": "Texto que casa com o nome/rótulo das interfaces monitoradas (vazio = todas)."},
+                "group_by": {"type": "string", "enum": ["interface", "sas", "das", "dpfx", "spfx", "dport", "sport", "proto", "group"]},
+                "direction": {"type": "string", "enum": ["in", "out"], "description": "in = entrando pela interface (padrão)."},
+                "minutes": {"type": "integer", "description": "Janela em minutos (padrão 60)."},
+            },
+        },
+    },
+    {
         "name": "run_show_commands",
         "description": "Executa comandos SOMENTE DE LEITURA em um equipamento e devolve a saída. Comandos de alteração são recusados — use propose_config_change.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "device": {"type": "string", "description": "Nome exato (ou id) do equipamento, como retornado por list_devices."},
-                "commands": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10,
-                             "description": "Comandos, um por item, executados em sequência na mesma sessão."},
+                "device": _DEV,
+                "commands": {"type": "array", "items": {"type": "string"}, "description": "Comandos (1 a 10), um por item, executados em sequência na mesma sessão."},
                 "filter": {"type": "string", "description": "Regex opcional (case-insensitive): devolve só as linhas que casam. Útil para saídas grandes."},
                 "timeout": {"type": "integer", "description": "Timeout em segundos por comando (padrão 60, máx. 240)."},
             },
@@ -171,28 +226,25 @@ TOOLS = [
         "description": "Lê o último backup de configuração salvo pelo Bastion (sem acessar o equipamento). Bom para analisar configuração de BGP, interfaces etc. Pode estar desatualizado — a data vem no resultado.",
         "input_schema": {
             "type": "object",
-            "properties": {
-                "device": {"type": "string", "description": "Nome exato (ou id) do equipamento."},
-                "filter": {"type": "string", "description": "Regex opcional para devolver só as linhas que casam."},
-            },
+            "properties": {"device": _DEV, "filter": {"type": "string", "description": "Regex opcional para devolver só as linhas que casam."}},
             "required": ["device"],
         },
     },
     {
         "name": "propose_config_change",
-        "description": "Propõe uma alteração em um ou mais equipamentos. NÃO executa: envia os comandos ao usuário com botões Confirmar/Cancelar. A execução só acontece após o clique, e o resultado volta para você na conversa.",
+        "description": "Propõe uma alteração em um ou mais equipamentos (inclusive desativar/ativar porta). NÃO executa: mostra os comandos ao usuário com botões Confirmar/Cancelar. A execução só acontece após o clique, e o resultado volta para você na conversa.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "summary": {"type": "string", "description": "O que muda e o impacto, em 1-2 linhas."},
                 "risk": {"type": "string", "enum": ["baixo", "medio", "alto"]},
                 "changes": {
-                    "type": "array", "minItems": 1, "maxItems": 20,
+                    "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
                             "device": {"type": "string"},
-                            "commands": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200},
+                            "commands": {"type": "array", "items": {"type": "string"}},
                         },
                         "required": ["device", "commands"],
                     },
@@ -209,7 +261,8 @@ HELP_TEXT = (
     "Sou o assistente do Bastion. Exemplos:\n"
     "• verifica o nível de sinal da porta 100GE0/0/1 da BORDA Huawei Cachoeiro\n"
     "• mostra as sessões BGP da borda X e o que estamos anunciando para o peer Y\n"
-    "• na OLT ZTE de Guaçuí, em quais PONs está a ONU com MAC aa:bb:cc:dd:ee:ff? remove de todas\n"
+    "• quais interfaces estão down no switch S5732-Caxixe?\n"
+    "• o que está consumindo o trânsito A agora?\n"
     "• desativa a interface GE0/0/5 do switch S5732-Caxixe\n\n"
     "Leitura roda direto. Qualquer alteração eu mostro os comandos e só executo depois do botão ✅.\n\n"
     "/novo — começa uma conversa nova\n/id — mostra seu ID do Telegram\n/ajuda — esta mensagem"
@@ -220,46 +273,57 @@ class AIError(Exception):
     pass
 
 
-# ---------------------------------------------------------------------------
-# Settings
-# ---------------------------------------------------------------------------
 async def get_ai_settings(db) -> dict:
     doc = await db.config.find_one({"key": "ai"}, {"_id": 0}) or {}
-    return {**AI_DEFAULTS, **{k: v for k, v in doc.items() if k != "key"}}
+    s = {**AI_DEFAULTS, **{k: v for k, v in doc.items() if k != "key"}}
+    if not doc.get("ai_provider"):          # instalação antiga com chave do Claude continua no Claude
+        s["ai_provider"] = "anthropic" if doc.get("anthropic_api_key") else "groq"
+    s["ai_keys"] = dict(s.get("ai_keys") or {})
+    if s.get("anthropic_api_key") and not s["ai_keys"].get("anthropic"):
+        s["ai_keys"]["anthropic"] = s["anthropic_api_key"]
+    s["ai_models"] = dict(s.get("ai_models") or {})
+    if doc.get("ai_model") and not s["ai_models"].get("anthropic"):
+        s["ai_models"]["anthropic"] = doc["ai_model"]
+    s["ai_base_urls"] = dict(s.get("ai_base_urls") or {})
+    return s
+
+
+def llm_cfg(s: dict, provider: Optional[str] = None) -> dict:
+    p = provider or s.get("ai_provider") or "groq"
+    info = llm.PROVIDERS.get(p, {})
+    return {"provider": p, "model": (s.get("ai_models") or {}).get(p) or info.get("model", ""),
+            "key": vault.decrypt((s.get("ai_keys") or {}).get(p, "")),
+            "base_url": (s.get("ai_base_urls") or {}).get(p) or info.get("base_url", "")}
+
+
+def ai_ready(s: dict) -> Optional[str]:
+    """None = pronto; senão, o motivo."""
+    c = llm_cfg(s)
+    if llm.PROVIDERS.get(c["provider"], {}).get("key") and not c["key"]:
+        return "falta a chave da API do provedor escolhido"
+    if not c["model"]:
+        return "falta escolher o modelo"
+    return None
 
 
 def public_ai_settings(s: dict) -> dict:
-    out = {k: v for k, v in s.items() if k != "anthropic_api_key"}
-    out["has_api_key"] = bool(s.get("anthropic_api_key"))
-    out["models"] = MODELS
+    out = {k: v for k, v in s.items() if k not in ("anthropic_api_key", "ai_keys")}
+    out["has_keys"] = {p: bool(v) for p, v in (s.get("ai_keys") or {}).items()}
+    out["has_api_key"] = bool((s.get("ai_keys") or {}).get(s.get("ai_provider")))
+    out["providers"] = llm.PROVIDERS
+    out["models"] = [[m, m] for m in llm.PROVIDERS["anthropic"]["suggest"]]
+    out["current"] = {k: v for k, v in llm_cfg(s).items() if k != "key"}
+    out["ready_error"] = ai_ready(s)
     return out
 
 
 async def call_claude(api_key: str, model: str, messages: list, system: list, tools: Optional[list] = None,
                       max_tokens: int = 4096, http: Optional[httpx.AsyncClient] = None) -> dict:
-    body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": messages}
-    if tools:
-        body["tools"] = tools
-    headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json"}
-    own = http is None
-    http = http or httpx.AsyncClient(timeout=180)
+    """Compatibilidade: chamada direta ao Claude."""
     try:
-        for attempt in range(3):
-            r = await http.post(ANTHROPIC_URL, json=body, headers=headers, timeout=180)
-            if r.status_code in (429, 500, 502, 503, 529) and attempt < 2:
-                await asyncio.sleep(3 * (attempt + 1))
-                continue
-            if r.status_code != 200:
-                try:
-                    msg = r.json().get("error", {}).get("message") or r.text
-                except Exception:
-                    msg = r.text
-                raise AIError(f"API do Claude HTTP {r.status_code}: {msg[:300]}")
-            return r.json()
-    finally:
-        if own:
-            await http.aclose()
-    raise AIError("API do Claude indisponível")
+        return await llm.call({"provider": "anthropic", "model": model, "key": api_key}, messages, system, tools, max_tokens, http)
+    except llm.LLMError as e:
+        raise AIError(str(e))
 
 
 def _clean_assistant_content(content: list) -> list:
@@ -303,19 +367,523 @@ def compact_history(messages: list) -> list:
     return msgs
 
 
+def _fmt_bps(v) -> str:
+    if v is None:
+        return "?"
+    for u, d in (("Gbps", 1e9), ("Mbps", 1e6), ("Kbps", 1e3)):
+        if v >= d:
+            return f"{v / d:.2f} {u}" if u == "Gbps" else f"{v / d:.1f} {u}"
+    return f"{v:.0f} bps"
+
+
+def _fmt_age(sec) -> str:
+    if not isinstance(sec, int):
+        return "?"
+    d, r = divmod(sec, 86400)
+    h, r = divmod(r, 3600)
+    return f"{d}d{h}h" if d else f"{h}h{r // 60}min"
+
+
+def describe_tool(name: str, inp: dict) -> str:
+    """Linha curta mostrada no chat enquanto a ferramenta roda."""
+    dev = inp.get("device") or ""
+    if name == "list_devices":
+        return f"buscando equipamentos {('“' + inp['query'] + '”') if inp.get('query') else ''}".strip()
+    if name == "get_interfaces":
+        return f"interfaces de {dev}" + (f" ({inp['query']})" if inp.get("query") else "") + " via SNMP"
+    if name == "get_bgp_sessions":
+        return f"sessões BGP de {dev} via SNMP"
+    if name == "get_optical_signal":
+        return f"sinal óptico de {inp.get('interface', '')} em {dev}"
+    if name == "get_flow_top":
+        return f"flow: {inp.get('group_by') or 'interface'} {('em ' + inp['interface']) if inp.get('interface') else ''}".strip()
+    if name == "run_show_commands":
+        cmds = inp.get("commands") or []
+        return f"{dev}: " + " ; ".join(str(c) for c in cmds[:3]) + (" …" if len(cmds) > 3 else "")
+    if name == "get_config_backup":
+        return f"backup de configuração de {dev}"
+    if name == "propose_config_change":
+        return "preparando proposta de alteração"
+    return name
+
+
 # ---------------------------------------------------------------------------
-# Assistente
+# Núcleo: ferramentas + loop (independente do canal)
 # ---------------------------------------------------------------------------
-class TelegramAssistant:
-    def __init__(self, db, connect_device: Callable[[dict], Awaitable], get_telegram_token: Callable[[], Awaitable[str]]):
+class AgentCore:
+    channel = "?"
+
+    def __init__(self, db, connect_device: Callable[[dict], Awaitable], snmp_client: Optional[Callable] = None,
+                 flow_query: Optional[Callable] = None):
         self.db = db
         self.connect_device = connect_device
-        self.get_telegram_token = get_telegram_token
-        self._task: Optional[asyncio.Task] = None
-        self._token = ""
+        self.snmp_client = snmp_client
+        self.flow_query = flow_query
         self.http: Optional[httpx.AsyncClient] = None
         self._locks: dict = {}
         self._sem = asyncio.Semaphore(6)
+
+    # ----- ganchos do canal -----
+    async def out_text(self, ctx: dict, text: str, final: bool):
+        raise NotImplementedError
+
+    async def out_activity(self, ctx: dict, name: str, inp: dict):
+        pass
+
+    async def out_proposal(self, ctx: dict, pid: str, text: str, data: dict) -> dict:
+        raise NotImplementedError
+
+    async def save_conv(self, ctx: dict, messages: list):
+        raise NotImplementedError
+
+    def _system(self, user: dict, s: dict) -> list:
+        now = datetime.now().strftime("%d/%m/%Y %H:%M")
+        ctx = (f"Data/hora do servidor: {now}. Usuário do Bastion: {user.get('name') or user.get('email')}. "
+               + ("Alterações permitidas (sempre via propose_config_change)." if s.get("ai_allow_changes")
+                  else "ALTERAÇÕES DESATIVADAS pelo administrador: apenas consultas. Se pedirem mudança, explique e mostre os comandos como sugestão em texto, sem propor."))
+        return [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": CHANNEL_PROMPT.get(self.channel, "") + " " + ctx}]
+
+    async def run_agent(self, ctx: dict, messages: list):
+        s = ctx["settings"]
+        snapshot = json.loads(json.dumps(messages))
+        cfg = llm_cfg(s)
+        ctx["out_limit"] = llm.tool_output_limit(cfg["provider"])
+        try:
+            for _ in range(MAX_STEPS):
+                resp = await llm.call(cfg, messages, self._system(ctx["user"], s), TOOLS, http=self.http)
+                await self._track_usage(resp.get("usage") or {}, cfg["provider"])
+                content = _clean_assistant_content(resp.get("content"))
+                if not content:
+                    content = [{"type": "text", "text": "(sem resposta)"}]
+                messages.append({"role": "assistant", "content": content})
+                text = "\n".join(b["text"] for b in content if b["type"] == "text").strip()
+                tool_uses = [b for b in content if b["type"] == "tool_use"]
+                if resp.get("stop_reason") != "tool_use" or not tool_uses:
+                    await self.out_text(ctx, text or "Pronto.", True)
+                    break
+                if text:
+                    await self.out_text(ctx, text, False)  # "vou verificar..." — retorno enquanto trabalha
+                for tu in tool_uses:
+                    await self.out_activity(ctx, tu["name"], tu.get("input") or {})
+                results = await asyncio.gather(*[self._exec_tool(tu, ctx) for tu in tool_uses])
+                messages.append({"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": tu["id"], "content": out, **({"is_error": True} if err else {})}
+                    for tu, (out, err) in zip(tool_uses, results)]})
+            else:
+                await self.out_text(ctx, "Parei aqui: atingi o limite de passos para um único pedido. Me diga como seguir.", True)
+                _append_user(messages, "[Sistema] Limite de passos atingido; aguarde nova instrução do usuário.")
+                messages.append({"role": "assistant", "content": [{"type": "text", "text": "Ok, aguardando."}]})
+            await self.save_conv(ctx, messages)
+        except (AIError, llm.LLMError) as e:
+            await self.out_text(ctx, f"⚠️ {e}", True)
+            await self.save_conv(ctx, snapshot)  # termina com a msg do usuário: a próxima é mesclada nela
+        except Exception as e:
+            logger.exception("falha no agente")
+            await self.out_text(ctx, f"⚠️ Erro interno: {e}", True)
+            await self.save_conv(ctx, snapshot)
+
+    async def _track_usage(self, usage: dict, provider: str = ""):
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        inc = {
+            "requests": 1,
+            "input_tokens": int(usage.get("input_tokens") or 0),
+            "output_tokens": int(usage.get("output_tokens") or 0),
+            "cache_read_tokens": int(usage.get("cache_read_input_tokens") or 0),
+            "cache_write_tokens": int(usage.get("cache_creation_input_tokens") or 0),
+        }
+        await self.db.ai_usage.update_one({"month": month}, {"$inc": inc}, upsert=True)
+
+    # ----- ferramentas -----
+    async def _find_device(self, user: dict, ref: str):
+        ref = (ref or "").strip()
+        scope = {"owner_id": user["id"]}
+        d = await self.db.devices.find_one({**scope, "id": ref}, {"_id": 0})
+        if d:
+            return d, None
+        devs = await self.db.devices.find(scope, {"_id": 0}).to_list(10000)
+        exact = [x for x in devs if x["name"].strip().lower() == ref.lower()]
+        if len(exact) == 1:
+            return exact[0], None
+        part = [x for x in devs if ref.lower() in x["name"].lower() or ref == x.get("host")]
+        if len(part) == 1:
+            return part[0], None
+        if not part:
+            return None, f"Nenhum equipamento chamado '{ref}'. Use list_devices para buscar."
+        names = ", ".join(x["name"] for x in part[:15])
+        return None, f"'{ref}' é ambíguo ({len(part)} equipamentos): {names}. Use o nome exato."
+
+    async def _exec_tool(self, tu: dict, ctx: dict):
+        name, inp = tu["name"], tu.get("input") or {}
+        try:
+            if name == "list_devices":
+                return await self._tool_list(ctx["user"], inp), False
+            if name == "get_interfaces":
+                return await self._tool_interfaces(ctx, inp)
+            if name == "get_bgp_sessions":
+                return await self._tool_bgp(ctx, inp)
+            if name == "get_optical_signal":
+                return await self._tool_optics(ctx, inp)
+            if name == "get_flow_top":
+                return await self._tool_flow(ctx, inp)
+            if name == "run_show_commands":
+                return await self._tool_show(ctx, inp)
+            if name == "get_config_backup":
+                return await self._tool_backup(ctx, inp)
+            if name == "propose_config_change":
+                return await self._tool_propose(ctx, inp)
+            return f"Ferramenta desconhecida: {name}", True
+        except Exception as e:
+            logger.exception(f"tool {name}")
+            return f"Erro ao executar {name}: {e}", True
+
+    def _cut(self, ctx: dict, text: str) -> str:
+        return _truncate(text, ctx.get("out_limit") or MAX_TOOL_OUTPUT)
+
+    async def _tool_list(self, user: dict, inp: dict) -> str:
+        q = {"owner_id": user["id"]}
+        if inp.get("device_type"):
+            q["device_type"] = inp["device_type"]
+        devs = await self.db.devices.find(q, {"_id": 0, "password": 0}).sort("name", 1).to_list(10000)
+        words = [w.lower() for w in (inp.get("query") or "").split() if w.strip()]
+        if words:
+            def hay(d):
+                return " ".join([d.get("name", ""), d.get("host", ""), d.get("description", ""), " ".join(d.get("tags") or [])]).lower()
+            devs = [d for d in devs if all(w in hay(d) for w in words)]
+        try:
+            limit = max(1, min(int(inp.get("limit") or 50), 300))
+        except (TypeError, ValueError):
+            limit = 50
+        agents = {a["id"]: a["name"] for a in await self.db.agents.find({"owner_id": user["id"]}, {"_id": 0, "id": 1, "name": 1}).to_list(1000)}
+        lines = [f"{len(devs)} equipamento(s) encontrado(s)" + (f", mostrando {limit}" if len(devs) > limit else "") + ":"]
+        for d in devs[:limit]:
+            parts = [d["name"], f"{d['host']}:{d.get('port', 22)}/{d.get('protocol') or 'ssh'}",
+                     DEVICE_TYPE_NAMES.get(d.get("device_type") or "linux", d.get("device_type")),
+                     f"status={d.get('status') or '?'}"]
+            if d.get("tags"):
+                parts.append("tags=" + ",".join(d["tags"]))
+            if d.get("agent_id"):
+                parts.append("via " + agents.get(d["agent_id"], "agente"))
+            if d.get("description"):
+                parts.append(d["description"][:80])
+            lines.append(" | ".join(parts))
+        return "\n".join(lines)
+
+    async def _snmp(self, dev: dict):
+        if not self.snmp_client:
+            raise RuntimeError("SNMP indisponível neste canal")
+        return await self.snmp_client(dev)
+
+    async def _iface_list(self, dev: dict, client, refresh: bool = False) -> List[dict]:
+        cached = await self.db.device_ifaces.find_one({"device_id": dev["id"]}, {"_id": 0})
+        fresh = False
+        if cached and not refresh:
+            try:
+                fresh = datetime.now(timezone.utc) - datetime.fromisoformat(cached["at"]) < timedelta(hours=12)
+            except Exception:
+                fresh = False
+        if fresh:
+            return cached.get("interfaces") or []
+        info = await asyncio.wait_for(snmp_service.discover_interfaces(client), timeout=90)
+        doc = {"device_id": dev["id"], "at": datetime.now(timezone.utc).isoformat(), **info}
+        await self.db.device_ifaces.update_one({"device_id": dev["id"]}, {"$set": doc}, upsert=True)
+        return info["interfaces"]
+
+    async def _tool_interfaces(self, ctx: dict, inp: dict):
+        dev, err = await self._find_device(ctx["user"], inp.get("device", ""))
+        if err:
+            return err, True
+        try:
+            client = await self._snmp(dev)
+            ifaces = await self._iface_list(dev, client)
+        except Exception as e:
+            return (f"SNMP falhou em {dev['name']}: {e}. Use run_show_commands (ex.: display interface brief / "
+                    "show interfaces terse)."), True
+        words = [w.lower() for w in (inp.get("query") or "").split() if w.strip()]
+        rows = [i for i in ifaces if all(w in f"{i.get('name')} {i.get('alias')} {i.get('descr')} #{i.get('index')}".lower() for w in words)]
+        total = len(rows)
+        with_traffic = inp.get("with_traffic", True) is not False
+        live = {}
+        if rows and len(rows) <= 40:
+            idx = [i["index"] for i in rows]
+            try:
+                a = await asyncio.wait_for(snmp_service.poll_counters(client, idx), timeout=40)
+                if with_traffic:
+                    t0 = time.monotonic()
+                    await asyncio.sleep(5)
+                    b = await asyncio.wait_for(snmp_service.poll_counters(client, idx), timeout=40)
+                    dt = time.monotonic() - t0
+                else:
+                    b, dt = a, 0
+                for i in idx:
+                    x, y = a.get(i, {}), b.get(i, {})
+                    rate = lambda k: ((y[k] - x[k]) % 2 ** 64) * 8 / dt if dt and isinstance(x.get(k), int) and isinstance(y.get(k), int) else None  # noqa: E731
+                    live[i] = {"oper": y.get("oper"), "admin": y.get("admin"), "in": rate("in_octets"), "out": rate("out_octets")}
+            except Exception as e:
+                live = {"_err": str(e)}
+        if inp.get("only_up"):
+            rows = [r for r in rows if (live.get(r["index"], {}).get("oper") or r.get("oper")) == "up"]
+        if inp.get("only_down"):
+            rows = [r for r in rows if (live.get(r["index"], {}).get("oper") or r.get("oper")) != "up"
+                    and (live.get(r["index"], {}).get("admin") or r.get("admin")) == "up"]
+        lines = [f"== {dev['name']}: {len(rows)} interface(s)" + (f" (de {total} que casam)" if len(rows) != total else "")
+                 + (" · tráfego medido agora em ~5 s" if live and "_err" not in live and with_traffic else "") + " =="]
+        if "_err" in live:
+            lines.append(f"(não consegui ler os contadores agora: {live['_err']})")
+        if total > 40:
+            lines.append("(muitas interfaces: sem medição de tráfego — refine com query)")
+        for r in rows[:150]:
+            lv = live.get(r["index"], {}) if isinstance(live, dict) else {}
+            spd = r.get("speed_mbps") or 0
+            util = ""
+            if lv.get("in") is not None and spd:
+                util = f" ({max(lv['in'], lv.get('out') or 0) / (spd * 1e6) * 100:.0f}% da porta)"
+            traffic = f" | ↓{_fmt_bps(lv.get('in'))} ↑{_fmt_bps(lv.get('out'))}{util}" if lv.get("in") is not None else ""
+            lines.append(f"{r.get('name')} (#{r['index']}) | admin {lv.get('admin') or r.get('admin')} / oper {lv.get('oper') or r.get('oper')}"
+                         f" | {('%gG' % (spd / 1000)) if spd >= 1000 else (str(spd) + 'M') if spd else '?'}"
+                         f"{(' | ' + r['alias']) if r.get('alias') else ''}{traffic}")
+        if len(rows) > 150:
+            lines.append(f"... mais {len(rows) - 150}")
+        return self._cut(ctx, "\n".join(lines)), False
+
+    async def _tool_bgp(self, ctx: dict, inp: dict):
+        import netanalysis
+        dev, err = await self._find_device(ctx["user"], inp.get("device", ""))
+        if err:
+            return err, True
+        try:
+            client = await self._snmp(dev)
+            bgp = await asyncio.wait_for(netanalysis.collect_bgp(client), timeout=60)
+        except Exception as e:
+            return f"SNMP falhou em {dev['name']}: {e}. Use run_show_commands (display bgp peer / show bgp summary).", True
+        peers = bgp.get("peers") or []
+        if not peers:
+            return (f"{dev['name']}: nenhuma sessão na BGP4-MIB (AS local {bgp.get('local_as') or '?'}). Pode não ter BGP IPv4 na "
+                    "instância principal ou a MIB não está exposta — confira com run_show_commands."), False
+        if inp.get("only_problems"):
+            peers = [p for p in peers if p["state"] != "established" or (isinstance(p.get("established_sec"), int) and p["established_sec"] < 3600)]
+        up = sum(1 for p in bgp["peers"] if p["state"] == "established")
+        lines = [f"== {dev['name']} · AS {bgp.get('local_as') or '?'} · {up}/{len(bgp['peers'])} sessões established =="]
+        for p in sorted(peers, key=lambda p: (p["state"] == "established", p["ip"])):
+            extra = []
+            if p["state"] == "established":
+                extra.append(f"há {_fmt_age(p.get('established_sec'))}")
+            elif not p.get("admin_up"):
+                extra.append("desativada (admin)")
+            if p.get("transitions"):
+                extra.append(f"{p['transitions']} transições")
+            if p.get("last_error"):
+                extra.append(f"último erro: {p['last_error']}")
+            lines.append(f"{p['ip']} | AS {p.get('remote_as')} | {p['state']} | " + " | ".join(extra))
+        return self._cut(ctx, "\n".join(lines)), False
+
+    async def _tool_optics(self, ctx: dict, inp: dict):
+        import optics as optics_mod
+        dev, err = await self._find_device(ctx["user"], inp.get("device", ""))
+        if err:
+            return err, True
+        ifname = str(inp.get("interface") or "").strip()
+        if not ifname:
+            return "Informe a interface.", True
+        cached = await self.db.device_ifaces.find_one({"device_id": dev["id"]}, {"_id": 0, "interfaces": 1}) or {}
+        norm = lambda x: re.sub(r"\s+", "", str(x or "")).lower()  # noqa: E731
+        names = [i.get("name") for i in cached.get("interfaces") or []]
+        exact = [n for n in names if norm(n) == norm(ifname)]
+        if not exact:
+            ends = [n for n in names if norm(n).endswith(norm(ifname))]
+            if len(ends) == 1:
+                ifname = ends[0]
+            elif len(ends) > 1:
+                return f"'{ifname}' casa com várias interfaces: {', '.join(ends[:10])}. Use o nome completo.", True
+        s = await optics_mod.get_settings(self.db)
+        try:
+            async with self._sem:
+                client = await self.connect_device(dev)
+                try:
+                    session = await client.shell()
+                    try:
+                        parsed, cmd, raw = await optics_mod.read_optics(session, dev.get("device_type") or "other", ifname, s)
+                    finally:
+                        await session.close()
+                finally:
+                    await client.close()
+        except Exception as e:
+            await self._audit(ctx, dev, "read", [f"(óptica) {ifname}"], False, str(e))
+            return f"Falha ao ler a óptica em {dev['name']}: {e}", True
+        await self._audit(ctx, dev, "read", [cmd or f"(óptica) {ifname}"], parsed["ok"], raw)
+        if not parsed["ok"]:
+            return self._cut(ctx, f"Não consegui interpretar a óptica de {ifname}. Saída bruta:\n{raw}"), False
+        lines = [f"== {dev['name']} · {ifname} ({cmd}) =="]
+        for ln in parsed["lanes"]:
+            rx = "sem luz" if ln["rx"] is not None and ln["rx"] <= optics_mod.NO_LIGHT else (f"{ln['rx']} dBm" if ln["rx"] is not None else "?")
+            lines.append(f"lane {ln.get('lane', 0)}: RX {rx} | TX {ln['tx'] if ln['tx'] is not None else '?'} dBm")
+        lines.append(f"RX mínimo: {parsed['rx_min']} dBm")
+        return "\n".join(lines), False
+
+    async def _tool_flow(self, ctx: dict, inp: dict):
+        if not self.flow_query:
+            return "Análise de Flow indisponível.", True
+        try:
+            minutes = int(inp.get("minutes") or 60)
+        except (TypeError, ValueError):
+            minutes = 60
+        text = await self.flow_query(ctx["user"], str(inp.get("interface") or ""), inp.get("group_by") or "interface",
+                                     inp.get("direction") or "in", max(5, min(minutes, 43200)))
+        return self._cut(ctx, text), False
+
+    async def _run_on_device(self, dev: dict, commands: List[str], timeout: int, idle: float) -> dict:
+        async with self._sem:
+            client = await self.connect_device(dev)
+            try:
+                res = await client.run_command("\n".join(commands), timeout=timeout, idle=idle)
+            finally:
+                await client.close()
+        out = res.get("stdout") or ""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        err = res.get("stderr") or ""
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
+        return {"ok": bool(res.get("ok")), "output": (out + ("\n[stderr]\n" + err if err.strip() else "")).strip()}
+
+    async def _audit(self, ctx: dict, dev: dict, kind: str, commands: List[str], ok: bool, output: str,
+                     proposal_id: Optional[str] = None):
+        now = datetime.now(timezone.utc).isoformat()
+        user = ctx["user"]
+        await self.db.ai_audit.insert_one({
+            "id": os.urandom(8).hex(), "at": now, "user_id": user["id"], "user_email": user.get("email"),
+            "channel": self.channel, "telegram_id": str(ctx["telegram_id"]) if ctx.get("telegram_id") else None,
+            "device_id": dev["id"], "device_name": dev["name"],
+            "kind": kind, "commands": commands, "ok": ok, "output": (output or "")[:4000], "proposal_id": proposal_id,
+        })
+        await self.db.sessions.insert_one({
+            "id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user.get("email"),
+            "device_id": dev["id"], "device_name": dev["name"], "started_at": now, "ended_at": now,
+            "duration_seconds": 0, "kind": "ia" if kind == "read" else "ia-alteracao",
+        })
+
+    async def _tool_show(self, ctx: dict, inp: dict):
+        dev, err = await self._find_device(ctx["user"], inp.get("device", ""))
+        if err:
+            return err, True
+        commands = [str(c).strip() for c in (inp.get("commands") or []) if str(c).strip()][:10]
+        if not commands:
+            return "Nenhum comando informado.", True
+        dtype = dev.get("device_type") or "linux"
+        blocked = [c for c in commands if not is_read_only(c, dtype)]
+        if blocked:
+            return ("Recusado — não são comandos de leitura: " + " ; ".join(blocked) +
+                    ". Para alterações use propose_config_change."), True
+        try:
+            timeout = max(10, min(int(inp.get("timeout") or 60), 240))
+        except (TypeError, ValueError):
+            timeout = 60
+        try:
+            r = await self._run_on_device(dev, commands, timeout, idle=4.0)
+        except Exception as e:
+            await self._audit(ctx, dev, "read", commands, False, str(e))
+            return f"Falha ao conectar/executar em {dev['name']}: {e}", True
+        await self._audit(ctx, dev, "read", commands, r["ok"], r["output"])
+        out = self._cut(ctx, _filter_output(r["output"], inp.get("filter")))
+        return f"== {dev['name']} ({dev['host']}) ==\n{out or '(saída vazia)'}", False
+
+    async def _tool_backup(self, ctx: dict, inp: dict):
+        dev, err = await self._find_device(ctx["user"], inp.get("device", ""))
+        if err:
+            return err, True
+        b = await self.db.backups.find_one({"device_id": dev["id"], "ok": True}, {"_id": 0}, sort=[("created_at", -1)])
+        if not b:
+            return f"Não há backup salvo de {dev['name']}. Use run_show_commands para ler a configuração.", True
+        when = b.get("created_at", "")[:16].replace("T", " ")
+        out = self._cut(ctx, _filter_output(b.get("content", ""), inp.get("filter")))
+        return f"== Backup de {dev['name']} em {when} UTC ==\n{out}", False
+
+    async def _tool_propose(self, ctx: dict, inp: dict):
+        s = ctx["settings"]
+        if not s.get("ai_allow_changes"):
+            return "Alterações estão desativadas pelo administrador. Mostre os comandos ao usuário apenas como sugestão.", True
+        changes = []
+        for ch in (inp.get("changes") or [])[:20]:
+            dev, err = await self._find_device(ctx["user"], ch.get("device", ""))
+            if err:
+                return err, True
+            cmds = [str(c).rstrip() for c in ch.get("commands") or [] if str(c).strip()][:200]
+            if not cmds:
+                return f"Sem comandos para {dev['name']}.", True
+            changes.append({"device_id": dev["id"], "device_name": dev["name"], "host": dev["host"], "commands": cmds})
+        if not changes:
+            return "Nenhuma alteração informada.", True
+        pid = os.urandom(4).hex()
+        risk = inp.get("risk") if inp.get("risk") in ("baixo", "medio", "alto") else "medio"
+        icon = {"baixo": "🟢", "medio": "🟡", "alto": "🔴"}.get(risk, "🟡")
+        lines = [f"{icon} Proposta de alteração #{pid} (risco {risk})", "", (inp.get("summary") or "").strip(), ""]
+        for c in changes:
+            lines.append(f"▶ {c['device_name']} ({c['host']})")
+            lines.extend(f"  {x}" for x in c["commands"])
+            lines.append("")
+        if inp.get("rollback"):
+            lines += ["Rollback:", str(inp["rollback"]).strip(), ""]
+        lines.append(f"Válida por {PENDING_TTL_MIN} min. Nada foi executado ainda.")
+        text = "\n".join(lines)
+        now = datetime.now(timezone.utc)
+        doc = {"id": pid, "channel": self.channel, "user_id": ctx["user"]["id"], "changes": changes,
+               "summary": inp.get("summary"), "risk": risk, "rollback": inp.get("rollback") or "",
+               "status": "pending", "created_at": now.isoformat(),
+               "expires_at": (now + timedelta(minutes=PENDING_TTL_MIN)).isoformat()}
+        extra = await self.out_proposal(ctx, pid, text, doc)
+        await self.db.ai_pending.insert_one({**doc, **(extra or {}), "message_text": text})
+        return (f"Proposta #{pid} enviada ao usuário com botões Confirmar/Cancelar. NADA foi executado. "
+                "Encerre sua resposta avisando que aguarda a confirmação pelo botão."), False
+
+    async def claim_proposal(self, pid: str, user_id: str) -> Tuple[Optional[dict], str]:
+        """Confirmação atômica: só uma execução por proposta, e só se ainda estiver válida."""
+        now = datetime.now(timezone.utc)
+        r = await self.db.ai_pending.update_one(
+            {"id": pid, "user_id": user_id, "status": "pending", "expires_at": {"$gt": now.isoformat()}},
+            {"$set": {"status": "running", "decided_at": now.isoformat()}})
+        if not r.modified_count:
+            cur = await self.db.ai_pending.find_one({"id": pid}, {"_id": 0, "status": 1})
+            why = "expirou — peça de novo" if cur and cur.get("status") == "pending" else f"já está '{cur.get('status') if cur else '?'}'"
+            return None, why
+        return await self.db.ai_pending.find_one({"id": pid}, {"_id": 0}), ""
+
+    async def execute_proposal(self, p: dict, ctx: dict) -> Tuple[bool, str]:
+        async def _one(ch):
+            dev = await self.db.devices.find_one({"id": ch["device_id"], "owner_id": p["user_id"]}, {"_id": 0})
+            if not dev:
+                return ch, False, "Equipamento não encontrado (removido?)"
+            try:
+                res = await self._run_on_device(dev, ch["commands"], timeout=120, idle=4.0)
+                await self._audit(ctx, dev, "change", ch["commands"], res["ok"], res["output"], p["id"])
+                return ch, res["ok"], res["output"]
+            except Exception as e:
+                await self._audit(ctx, dev, "change", ch["commands"], False, str(e), p["id"])
+                return ch, False, f"Falha ao conectar/executar: {e}"
+
+        results = await asyncio.gather(*[_one(c) for c in p["changes"]])
+        all_ok = all(ok for _, ok, _ in results)
+        await self.db.ai_pending.update_one({"id": p["id"]}, {"$set": {"status": "done" if all_ok else "failed",
+                                                                       "finished_at": datetime.now(timezone.utc).isoformat()}})
+        report = [f"== {ch['device_name']} ({'ok' if ok else 'FALHA'}) ==\n{_truncate(out, 6000)}" for ch, ok, out in results]
+        feedback = (f"[Sistema] O usuário CONFIRMOU a proposta #{p['id']} e os comandos foram executados. "
+                    f"Saída da execução:\n\n" + "\n\n".join(report) +
+                    "\n\nAnalise a saída procurando erros, verifique o resultado com uma consulta se fizer sentido "
+                    "e informe o usuário em poucas linhas.")
+        return all_ok, feedback
+
+
+# ---------------------------------------------------------------------------
+# Canal Telegram
+# ---------------------------------------------------------------------------
+class TelegramAssistant(AgentCore):
+    channel = "telegram"
+
+    def __init__(self, db, connect_device: Callable[[dict], Awaitable], get_telegram_token: Callable[[], Awaitable[str]],
+                 snmp_client: Optional[Callable] = None, flow_query: Optional[Callable] = None):
+        super().__init__(db, connect_device, snmp_client, flow_query)
+        self.get_telegram_token = get_telegram_token
+        self._task: Optional[asyncio.Task] = None
+        self._token = ""
         self.status = "parado"
 
     # ---------- ciclo de vida ----------
@@ -336,8 +904,10 @@ class TelegramAssistant:
                 try:
                     s = await get_ai_settings(self.db)
                     token = await self.get_telegram_token()
-                    if not (s["ai_enabled"] and token and s.get("anthropic_api_key")):
-                        self.status = "desativado" if not s["ai_enabled"] else "falta configurar token do Telegram ou chave da API"
+                    not_ready = ai_ready(s)
+                    if not (s["ai_enabled"] and token and not not_ready):
+                        self.status = ("desativado" if not s["ai_enabled"] else
+                                       "falta configurar o token do Telegram" if not token else not_ready)
                         await asyncio.sleep(15)
                         continue
                     if token != self._token:
@@ -394,6 +964,31 @@ class TelegramAssistant:
             except asyncio.TimeoutError:
                 pass
 
+    # ---------- ganchos ----------
+    async def out_text(self, ctx: dict, text: str, final: bool):
+        await self.send(ctx["chat_id"], text)
+
+    async def out_proposal(self, ctx: dict, pid: str, text: str, data: dict) -> dict:
+        if len(text) > TG_LIMIT:
+            text = text[:TG_LIMIT - 60] + "\n[... lista longa cortada na mensagem, mas será executada completa ...]"
+        kb = {"inline_keyboard": [[{"text": "✅ Confirmar", "callback_data": f"ok:{pid}"},
+                                   {"text": "❌ Cancelar", "callback_data": f"no:{pid}"}]]}
+        sent = await self.send(ctx["chat_id"], text, reply_markup=kb)
+        return {"chat_id": str(ctx["chat_id"]), "telegram_id": str(ctx["telegram_id"]),
+                "message_id": (sent.get("result") or {}).get("message_id")}
+
+    async def save_conv(self, ctx: dict, messages: list):
+        await self._save_conv(ctx["chat_id"], messages)
+
+    async def run_agent(self, ctx: dict, messages: list):
+        stop = asyncio.Event()
+        typing = asyncio.create_task(self._typing(ctx["chat_id"], stop))
+        try:
+            await super().run_agent(ctx, messages)
+        finally:
+            stop.set()
+            typing.cancel()
+
     # ---------- roteamento ----------
     async def _safe_handle(self, upd: dict):
         try:
@@ -437,7 +1032,7 @@ class TelegramAssistant:
         async with lock:
             messages = await self._load_conv(chat_id)
             _append_user(messages, text)
-            await self._run_agent(chat_id, from_id, user, s, messages)
+            await self.run_agent({"chat_id": chat_id, "telegram_id": from_id, "user": user, "settings": s}, messages)
 
     # ---------- conversa ----------
     async def _load_conv(self, chat_id) -> list:
@@ -458,234 +1053,6 @@ class TelegramAssistant:
             {"$set": {"messages": compact_history(messages), "updated_at": datetime.now(timezone.utc).isoformat()}},
             upsert=True)
 
-    def _system(self, user: dict, s: dict) -> list:
-        now = datetime.now().strftime("%d/%m/%Y %H:%M")
-        ctx = (f"Data/hora do servidor: {now}. Usuário do Bastion: {user.get('name') or user.get('email')}. "
-               + ("Alterações permitidas (sempre via propose_config_change)." if s.get("ai_allow_changes")
-                  else "ALTERAÇÕES DESATIVADAS pelo administrador: apenas consultas. Se pedirem mudança, explique e mostre os comandos como sugestão em texto, sem propor."))
-        return [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": ctx}]
-
-    async def _run_agent(self, chat_id, telegram_id, user: dict, s: dict, messages: list):
-        snapshot = json.loads(json.dumps(messages))
-        api_key = vault.decrypt(s.get("anthropic_api_key", ""))
-        stop = asyncio.Event()
-        typing = asyncio.create_task(self._typing(chat_id, stop))
-        ctx = {"chat_id": chat_id, "telegram_id": telegram_id, "user": user, "settings": s}
-        try:
-            for _ in range(MAX_STEPS):
-                resp = await call_claude(api_key, s.get("ai_model") or AI_DEFAULTS["ai_model"], messages,
-                                         self._system(user, s), TOOLS, http=self.http)
-                await self._track_usage(resp.get("usage") or {})
-                content = _clean_assistant_content(resp.get("content"))
-                if not content:
-                    content = [{"type": "text", "text": "(sem resposta)"}]
-                messages.append({"role": "assistant", "content": content})
-                text = "\n".join(b["text"] for b in content if b["type"] == "text").strip()
-                tool_uses = [b for b in content if b["type"] == "tool_use"]
-                if resp.get("stop_reason") != "tool_use" or not tool_uses:
-                    await self.send(chat_id, text or "Pronto.")
-                    break
-                if text:
-                    await self.send(chat_id, text)  # "vou verificar..." — feedback enquanto trabalha
-                results = await asyncio.gather(*[self._exec_tool(tu, ctx) for tu in tool_uses])
-                messages.append({"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": tu["id"], "content": out, **({"is_error": True} if err else {})}
-                    for tu, (out, err) in zip(tool_uses, results)]})
-            else:
-                await self.send(chat_id, "Parei aqui: atingi o limite de passos para um único pedido. Me diga como seguir.")
-                _append_user(messages, "[Sistema] Limite de passos atingido; aguarde nova instrução do usuário.")
-                messages.append({"role": "assistant", "content": [{"type": "text", "text": "Ok, aguardando."}]})
-            await self._save_conv(chat_id, messages)
-        except AIError as e:
-            await self.send(chat_id, f"⚠️ {e}")
-            await self._save_conv(chat_id, snapshot)  # termina com a msg do usuário: a próxima é mesclada nela
-        except Exception as e:
-            logger.exception("falha no agente")
-            await self.send(chat_id, f"⚠️ Erro interno: {e}")
-            await self._save_conv(chat_id, snapshot)
-        finally:
-            stop.set()
-            typing.cancel()
-
-    async def _track_usage(self, usage: dict):
-        month = datetime.now(timezone.utc).strftime("%Y-%m")
-        inc = {
-            "requests": 1,
-            "input_tokens": int(usage.get("input_tokens") or 0),
-            "output_tokens": int(usage.get("output_tokens") or 0),
-            "cache_read_tokens": int(usage.get("cache_read_input_tokens") or 0),
-            "cache_write_tokens": int(usage.get("cache_creation_input_tokens") or 0),
-        }
-        await self.db.ai_usage.update_one({"month": month}, {"$inc": inc}, upsert=True)
-
-    # ---------- ferramentas ----------
-    async def _find_device(self, user: dict, ref: str):
-        ref = (ref or "").strip()
-        scope = {"owner_id": user["id"]}
-        d = await self.db.devices.find_one({**scope, "id": ref}, {"_id": 0})
-        if d:
-            return d, None
-        devs = await self.db.devices.find(scope, {"_id": 0}).to_list(10000)
-        exact = [x for x in devs if x["name"].strip().lower() == ref.lower()]
-        if len(exact) == 1:
-            return exact[0], None
-        part = [x for x in devs if ref.lower() in x["name"].lower() or ref == x.get("host")]
-        if len(part) == 1:
-            return part[0], None
-        if not part:
-            return None, f"Nenhum equipamento chamado '{ref}'. Use list_devices para buscar."
-        names = ", ".join(x["name"] for x in part[:15])
-        return None, f"'{ref}' é ambíguo ({len(part)} equipamentos): {names}. Use o nome exato."
-
-    async def _exec_tool(self, tu: dict, ctx: dict):
-        name, inp = tu["name"], tu.get("input") or {}
-        try:
-            if name == "list_devices":
-                return await self._tool_list(ctx["user"], inp), False
-            if name == "run_show_commands":
-                return await self._tool_show(ctx, inp)
-            if name == "get_config_backup":
-                return await self._tool_backup(ctx["user"], inp)
-            if name == "propose_config_change":
-                return await self._tool_propose(ctx, inp)
-            return f"Ferramenta desconhecida: {name}", True
-        except Exception as e:
-            logger.exception(f"tool {name}")
-            return f"Erro ao executar {name}: {e}", True
-
-    async def _tool_list(self, user: dict, inp: dict) -> str:
-        q = {"owner_id": user["id"]}
-        if inp.get("device_type"):
-            q["device_type"] = inp["device_type"]
-        devs = await self.db.devices.find(q, {"_id": 0, "password": 0}).sort("name", 1).to_list(10000)
-        words = [w.lower() for w in (inp.get("query") or "").split() if w.strip()]
-        if words:
-            def hay(d):
-                return " ".join([d.get("name", ""), d.get("host", ""), d.get("description", ""), " ".join(d.get("tags") or [])]).lower()
-            devs = [d for d in devs if all(w in hay(d) for w in words)]
-        limit = max(1, min(int(inp.get("limit") or 50), 300))
-        agents = {a["id"]: a["name"] for a in await self.db.agents.find({"owner_id": user["id"]}, {"_id": 0, "id": 1, "name": 1}).to_list(1000)}
-        lines = [f"{len(devs)} equipamento(s) encontrado(s)" + (f", mostrando {limit}" if len(devs) > limit else "") + ":"]
-        for d in devs[:limit]:
-            parts = [d["name"], f"{d['host']}:{d.get('port', 22)}/{d.get('protocol') or 'ssh'}",
-                     DEVICE_TYPE_NAMES.get(d.get("device_type") or "linux", d.get("device_type")),
-                     f"status={d.get('status') or '?'}"]
-            if d.get("tags"):
-                parts.append("tags=" + ",".join(d["tags"]))
-            if d.get("agent_id"):
-                parts.append("via " + agents.get(d["agent_id"], "agente"))
-            if d.get("description"):
-                parts.append(d["description"][:80])
-            lines.append(" | ".join(parts))
-        return "\n".join(lines)
-
-    async def _run_on_device(self, dev: dict, commands: List[str], timeout: int, idle: float) -> dict:
-        async with self._sem:
-            client = await self.connect_device(dev)
-            try:
-                res = await client.run_command("\n".join(commands), timeout=timeout, idle=idle)
-            finally:
-                await client.close()
-        out = res.get("stdout") or ""
-        if isinstance(out, bytes):
-            out = out.decode("utf-8", "replace")
-        err = res.get("stderr") or ""
-        if isinstance(err, bytes):
-            err = err.decode("utf-8", "replace")
-        return {"ok": bool(res.get("ok")), "output": (out + ("\n[stderr]\n" + err if err.strip() else "")).strip()}
-
-    async def _audit(self, ctx: dict, dev: dict, kind: str, commands: List[str], ok: bool, output: str,
-                     proposal_id: Optional[str] = None):
-        now = datetime.now(timezone.utc).isoformat()
-        user = ctx["user"]
-        await self.db.ai_audit.insert_one({
-            "id": os.urandom(8).hex(), "at": now, "user_id": user["id"], "user_email": user.get("email"),
-            "telegram_id": str(ctx.get("telegram_id")), "device_id": dev["id"], "device_name": dev["name"],
-            "kind": kind, "commands": commands, "ok": ok, "output": output[:4000], "proposal_id": proposal_id,
-        })
-        await self.db.sessions.insert_one({
-            "id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user.get("email"),
-            "device_id": dev["id"], "device_name": dev["name"], "started_at": now, "ended_at": now,
-            "duration_seconds": 0, "kind": "ia" if kind == "read" else "ia-alteracao",
-        })
-
-    async def _tool_show(self, ctx: dict, inp: dict):
-        dev, err = await self._find_device(ctx["user"], inp.get("device", ""))
-        if err:
-            return err, True
-        commands = [c.strip() for c in (inp.get("commands") or []) if str(c).strip()]
-        if not commands:
-            return "Nenhum comando informado.", True
-        dtype = dev.get("device_type") or "linux"
-        blocked = [c for c in commands if not is_read_only(c, dtype)]
-        if blocked:
-            return ("Recusado — não são comandos de leitura: " + " ; ".join(blocked) +
-                    ". Para alterações use propose_config_change."), True
-        timeout = max(10, min(int(inp.get("timeout") or 60), 240))
-        try:
-            r = await self._run_on_device(dev, commands, timeout, idle=4.0)
-        except Exception as e:
-            await self._audit(ctx, dev, "read", commands, False, str(e))
-            return f"Falha ao conectar/executar em {dev['name']}: {e}", True
-        await self._audit(ctx, dev, "read", commands, r["ok"], r["output"])
-        out = _truncate(_filter_output(r["output"], inp.get("filter")))
-        return f"== {dev['name']} ({dev['host']}) ==\n{out or '(saída vazia)'}", False
-
-    async def _tool_backup(self, user: dict, inp: dict):
-        dev, err = await self._find_device(user, inp.get("device", ""))
-        if err:
-            return err, True
-        b = await self.db.backups.find_one({"device_id": dev["id"], "ok": True}, {"_id": 0}, sort=[("created_at", -1)])
-        if not b:
-            return f"Não há backup salvo de {dev['name']}. Use run_show_commands para ler a configuração.", True
-        when = b.get("created_at", "")[:16].replace("T", " ")
-        out = _truncate(_filter_output(b.get("content", ""), inp.get("filter")))
-        return f"== Backup de {dev['name']} em {when} UTC ==\n{out}", False
-
-    async def _tool_propose(self, ctx: dict, inp: dict):
-        s = ctx["settings"]
-        if not s.get("ai_allow_changes"):
-            return "Alterações estão desativadas pelo administrador. Mostre os comandos ao usuário apenas como sugestão.", True
-        changes = []
-        for ch in inp.get("changes") or []:
-            dev, err = await self._find_device(ctx["user"], ch.get("device", ""))
-            if err:
-                return err, True
-            cmds = [str(c).rstrip() for c in ch.get("commands") or [] if str(c).strip()]
-            if not cmds:
-                return f"Sem comandos para {dev['name']}.", True
-            changes.append({"device_id": dev["id"], "device_name": dev["name"], "host": dev["host"], "commands": cmds})
-        if not changes:
-            return "Nenhuma alteração informada.", True
-        pid = os.urandom(4).hex()
-        risk = inp.get("risk") or "medio"
-        icon = {"baixo": "🟢", "medio": "🟡", "alto": "🔴"}.get(risk, "🟡")
-        lines = [f"{icon} Proposta de alteração #{pid} (risco {risk})", "", (inp.get("summary") or "").strip(), ""]
-        for c in changes:
-            lines.append(f"▶ {c['device_name']} ({c['host']})")
-            lines.extend(f"  {x}" for x in c["commands"])
-            lines.append("")
-        if inp.get("rollback"):
-            lines += ["Rollback:", str(inp["rollback"]).strip(), ""]
-        lines.append(f"Válida por {PENDING_TTL_MIN} min. Nada foi executado ainda.")
-        text = "\n".join(lines)
-        if len(text) > TG_LIMIT:
-            text = text[:TG_LIMIT - 60] + "\n[... lista longa cortada na mensagem, mas será executada completa ...]"
-        kb = {"inline_keyboard": [[{"text": "✅ Confirmar", "callback_data": f"ok:{pid}"},
-                                   {"text": "❌ Cancelar", "callback_data": f"no:{pid}"}]]}
-        sent = await self.send(ctx["chat_id"], text, reply_markup=kb)
-        now = datetime.now(timezone.utc)
-        await self.db.ai_pending.insert_one({
-            "id": pid, "chat_id": str(ctx["chat_id"]), "telegram_id": str(ctx["telegram_id"]),
-            "user_id": ctx["user"]["id"], "changes": changes, "summary": inp.get("summary"), "risk": risk,
-            "status": "pending", "created_at": now.isoformat(),
-            "expires_at": (now + timedelta(minutes=PENDING_TTL_MIN)).isoformat(),
-            "message_id": (sent.get("result") or {}).get("message_id"), "message_text": text,
-        })
-        return (f"Proposta #{pid} enviada ao usuário com botões Confirmar/Cancelar. NADA foi executado. "
-                "Encerre sua resposta avisando que aguarda a confirmação pelo botão."), False
-
     async def _on_callback(self, cq: dict):
         data = cq.get("data") or ""
         from_id = str((cq.get("from") or {}).get("id"))
@@ -693,9 +1060,9 @@ class TelegramAssistant:
         chat_id = (msg.get("chat") or {}).get("id")
         action, _, pid = data.partition(":")
         p = await self.db.ai_pending.find_one({"id": pid}, {"_id": 0})
-        if not p:
+        if not p or p.get("channel", "telegram") != "telegram":
             return await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Proposta não encontrada.")
-        if from_id != p["telegram_id"]:
+        if from_id != p.get("telegram_id"):
             return await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Só quem pediu a alteração pode confirmar.", show_alert=True)
         s = await get_ai_settings(self.db)
         link = self._auth(s, from_id)
@@ -715,47 +1082,19 @@ class TelegramAssistant:
             return
         if action != "ok":
             return await self._tg("answerCallbackQuery", callback_query_id=cq["id"])
-        # confirmação atômica: só uma execução por proposta, e só se ainda estiver válida
-        r = await self.db.ai_pending.update_one(
-            {"id": pid, "status": "pending", "expires_at": {"$gt": now.isoformat()}},
-            {"$set": {"status": "running", "decided_at": now.isoformat()}})
-        if not r.modified_count:
-            cur = await self.db.ai_pending.find_one({"id": pid}, {"_id": 0, "status": 1})
-            why = "expirou — peça de novo" if cur and cur.get("status") == "pending" else f"já está '{cur.get('status') if cur else '?'}'"
+        p2, why = await self.claim_proposal(pid, p["user_id"])
+        if not p2:
             return await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text=f"Proposta {why}.", show_alert=True)
         await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Executando…")
         await self._edit_status(p, "⏳ Confirmada — executando…")
         user = await self.db.users.find_one({"id": p["user_id"]}, {"_id": 0, "password_hash": 0})
         ctx = {"chat_id": chat_id, "telegram_id": from_id, "user": user, "settings": s}
-
-        async def _one(ch):
-            dev = await self.db.devices.find_one({"id": ch["device_id"], "owner_id": p["user_id"]}, {"_id": 0})
-            if not dev:
-                return ch, False, "Equipamento não encontrado (removido?)"
-            try:
-                res = await self._run_on_device(dev, ch["commands"], timeout=120, idle=4.0)
-                await self._audit(ctx, dev, "change", ch["commands"], res["ok"], res["output"], pid)
-                return ch, res["ok"], res["output"]
-            except Exception as e:
-                await self._audit(ctx, dev, "change", ch["commands"], False, str(e), pid)
-                return ch, False, f"Falha ao conectar/executar: {e}"
-
-        results = await asyncio.gather(*[_one(c) for c in p["changes"]])
-        all_ok = all(ok for _, ok, _ in results)
-        await self.db.ai_pending.update_one({"id": pid}, {"$set": {"status": "done" if all_ok else "failed",
-                                                                   "finished_at": datetime.now(timezone.utc).isoformat()}})
+        all_ok, feedback = await self.execute_proposal(p2, ctx)
         await self._edit_status(p, "✅ Executada." if all_ok else "⚠️ Executada com falhas.")
-        report = []
-        for ch, ok, out in results:
-            report.append(f"== {ch['device_name']} ({'ok' if ok else 'FALHA'}) ==\n{_truncate(out, 6000)}")
-        feedback = (f"[Sistema] O usuário CONFIRMOU a proposta #{pid} e os comandos foram executados. "
-                    f"Saída da execução:\n\n" + "\n\n".join(report) +
-                    "\n\nAnalise a saída procurando erros, verifique o resultado com comandos de leitura se fizer sentido "
-                    "e informe o usuário em poucas linhas.")
         async with self._locks.setdefault(str(chat_id), asyncio.Lock()):
             msgs = await self._load_conv(chat_id)
             _append_user(msgs, feedback)
-            await self._run_agent(chat_id, from_id, user, s, msgs)
+            await self.run_agent(ctx, msgs)
 
     async def _edit_status(self, p: dict, status: str):
         if not p.get("message_id"):
@@ -763,3 +1102,172 @@ class TelegramAssistant:
         text = (p.get("message_text") or "").replace(f"Válida por {PENDING_TTL_MIN} min. Nada foi executado ainda.", "").rstrip()
         await self._tg("editMessageText", chat_id=p["chat_id"], message_id=p["message_id"],
                        text=f"{text}\n\n{status}"[:4096], disable_web_page_preview=True)
+
+
+# ---------------------------------------------------------------------------
+# Canal web (chat dentro do Bastion)
+# ---------------------------------------------------------------------------
+WEB_DISPLAY_MAX = 200
+
+
+class WebAssistant(AgentCore):
+    """Uma conversa por usuário, guardada em ai_web: mensagens da API + o que aparece na tela (display)."""
+    channel = "web"
+
+    def __init__(self, db, connect_device, snmp_client=None, flow_query=None):
+        super().__init__(db, connect_device, snmp_client, flow_query)
+        self._docs: dict = {}
+        self._tasks: set = set()
+
+    # ----- estado -----
+    async def _doc(self, uid: str) -> dict:
+        d = self._docs.get(uid)
+        if d is None:
+            d = await self.db.ai_web.find_one({"user_id": uid}, {"_id": 0}) or {"user_id": uid, "messages": [], "display": []}
+            d["busy"] = False               # tarefa que morreu com o processo não fica "trabalhando" para sempre
+            self._docs[uid] = d
+        return d
+
+    async def _persist(self, d: dict):
+        d["display"] = d["display"][-WEB_DISPLAY_MAX:]
+        d["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await self.db.ai_web.update_one({"user_id": d["user_id"]}, {"$set": {k: v for k, v in d.items() if k != "_id"}}, upsert=True)
+
+    async def _push(self, uid: str, item: dict):
+        d = await self._doc(uid)
+        item = {"id": os.urandom(6).hex(), "at": datetime.now(timezone.utc).isoformat(), **item}
+        d["display"].append(item)
+        d["rev"] = d.get("rev", 0) + 1
+        await self._persist(d)
+        return item
+
+    async def view(self, uid: str) -> dict:
+        d = await self._doc(uid)
+        now = datetime.now(timezone.utc).isoformat()
+        for it in d["display"]:        # propostas vencidas aparecem como expiradas
+            if it.get("kind") == "proposal" and it.get("status") == "pending" and it.get("expires_at", "") < now:
+                it["status"] = "expired"
+        return {"busy": d.get("busy", False), "rev": d.get("rev", 0), "items": [dict(i) for i in d["display"]]}
+
+    async def reset(self, uid: str):
+        d = await self._doc(uid)
+        if d.get("busy"):
+            raise AIError("Aguarde terminar o pedido atual")
+        d.update({"messages": [], "display": [], "rev": d.get("rev", 0) + 1})
+        await self._persist(d)
+
+    def _spawn(self, coro):
+        t = asyncio.create_task(coro)
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
+        return t
+
+    # ----- entrada -----
+    async def post(self, user: dict, text: str) -> dict:
+        s = await get_ai_settings(self.db)
+        why = ai_ready(s)
+        if not s.get("ai_web_enabled", True):
+            raise AIError("O chat está desativado (Automação → Assistente IA)")
+        if why:
+            raise AIError(f"Assistente não configurado: {why} (Automação → Assistente IA)")
+        text = (text or "").strip()[:4000]
+        if not text:
+            raise AIError("Mensagem vazia")
+        d = await self._doc(user["id"])
+        if d.get("busy"):
+            raise AIError("Ainda estou trabalhando no pedido anterior")
+        d["busy"] = True
+        await self._push(user["id"], {"kind": "user", "text": text})
+        self._spawn(self._run(user, s, text))
+        return await self.view(user["id"])
+
+    async def _run(self, user: dict, s: dict, text: str, feedback: bool = False):
+        d = await self._doc(user["id"])
+        try:
+            msgs = d.get("messages") or []
+            try:
+                if msgs and datetime.now(timezone.utc) - datetime.fromisoformat(d.get("updated_at")) > timedelta(hours=CONV_TTL_HOURS * 4):
+                    msgs = []
+            except Exception:
+                pass
+            _append_user(msgs, text)
+            await self.run_agent({"user": user, "settings": s}, msgs)
+        finally:
+            d["busy"] = False
+            d["rev"] = d.get("rev", 0) + 1
+            await self._persist(d)
+
+    # ----- ganchos -----
+    async def out_text(self, ctx: dict, text: str, final: bool):
+        await self._push(ctx["user"]["id"], {"kind": "error" if text.startswith("⚠️") else "assistant", "text": text})
+
+    async def out_activity(self, ctx: dict, name: str, inp: dict):
+        if name != "propose_config_change":
+            await self._push(ctx["user"]["id"], {"kind": "tool", "tool": name, "text": describe_tool(name, inp)})
+
+    async def out_proposal(self, ctx: dict, pid: str, text: str, data: dict) -> dict:
+        await self._push(ctx["user"]["id"], {"kind": "proposal", "pid": pid, "summary": data["summary"], "risk": data["risk"],
+                                             "rollback": data.get("rollback") or "", "expires_at": data["expires_at"],
+                                             "status": "pending",
+                                             "changes": [{k: c[k] for k in ("device_name", "host", "commands")} for c in data["changes"]]})
+        return {}
+
+    async def save_conv(self, ctx: dict, messages: list):
+        d = await self._doc(ctx["user"]["id"])
+        d["messages"] = compact_history(messages)
+        await self._persist(d)
+
+    async def _set_prop_status(self, uid: str, pid: str, status: str, note: str = ""):
+        d = await self._doc(uid)
+        for it in d["display"]:
+            if it.get("kind") == "proposal" and it.get("pid") == pid:
+                it["status"] = status
+                if note:
+                    it["note"] = note
+        d["rev"] = d.get("rev", 0) + 1
+        await self._persist(d)
+
+    # ----- confirmar / cancelar -----
+    async def decide(self, user: dict, pid: str, action: str) -> dict:
+        p = await self.db.ai_pending.find_one({"id": pid, "user_id": user["id"], "channel": "web"}, {"_id": 0})
+        if not p:
+            raise AIError("Proposta não encontrada")
+        d = await self._doc(user["id"])
+        if action == "cancel":
+            r = await self.db.ai_pending.update_one({"id": pid, "status": "pending"},
+                                                    {"$set": {"status": "cancelled", "decided_at": datetime.now(timezone.utc).isoformat()}})
+            if not r.modified_count:
+                raise AIError("Essa proposta já foi decidida")
+            await self._set_prop_status(user["id"], pid, "cancelled")
+            msgs = d.get("messages") or []
+            _append_user(msgs, f"[Sistema] O usuário CANCELOU a proposta #{pid}. Nada foi executado.")
+            msgs.append({"role": "assistant", "content": [{"type": "text", "text": "Ok, proposta cancelada."}]})
+            d["messages"] = msgs
+            await self._persist(d)
+            return await self.view(user["id"])
+        if action != "confirm":
+            raise AIError("Ação inválida")
+        if d.get("busy"):
+            raise AIError("Aguarde terminar o pedido atual")
+        s = await get_ai_settings(self.db)
+        if not s.get("ai_allow_changes"):
+            raise AIError("Alterações estão desativadas pelo administrador")
+        p2, why = await self.claim_proposal(pid, user["id"])
+        if not p2:
+            if "expirou" in why:
+                await self._set_prop_status(user["id"], pid, "expired")
+            raise AIError(f"Proposta {why}")
+        d["busy"] = True
+        await self._set_prop_status(user["id"], pid, "running")
+        self._spawn(self._execute(user, s, p2))
+        return await self.view(user["id"])
+
+    async def _execute(self, user: dict, s: dict, p: dict):
+        ctx = {"user": user, "settings": s}
+        try:
+            all_ok, feedback = await self.execute_proposal(p, ctx)
+        except Exception as e:
+            logger.exception("execução da proposta")
+            all_ok, feedback = False, f"[Sistema] Falha ao executar a proposta #{p['id']}: {e}"
+        await self._set_prop_status(user["id"], p["id"], "done" if all_ok else "failed")
+        await self._run(user, s, feedback)      # o modelo confere a saída e responde (busy segue até o fim)

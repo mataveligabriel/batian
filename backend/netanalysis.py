@@ -200,20 +200,7 @@ async def collect_device(client, sample_sec: float = 10) -> dict:
                      "ifindex": ifidx})
 
     # BGP
-    local_as = None
-    try:
-        local_as = (await client.get([BGP_LOCAL_AS])).get(BGP_LOCAL_AS)
-    except S.SnmpError:
-        pass
-    bgp_rows = await _table(client, BGP_PEER, {2: "state", 3: "admin", 9: "remote_as", 10: "in_updates", 14: "last_error",
-                                               15: "transitions", 16: "established_sec"})
-    peers = []
-    for ip, row in bgp_rows.items():
-        code = _bgp_err_code(row.get("last_error"))
-        peers.append({"ip": ip, "state": BGP_STATE.get(row.get("state"), str(row.get("state"))), "admin_up": row.get("admin") == 2,
-                      "remote_as": row.get("remote_as"), "in_updates": row.get("in_updates"),
-                      "transitions": row.get("transitions"), "established_sec": row.get("established_sec"),
-                      "last_error": (BGP_ERR.get(code) or BGP_ERR.get((code[0], 0)) or f"código {code[0]}/{code[1]}") if code else None})
+    bgp = await collect_bgp(client)
 
     # erros/descartes: duas leituras
     t0 = time.monotonic()
@@ -232,7 +219,26 @@ async def collect_device(client, sample_sec: float = 10) -> dict:
 
     return {"ok": True, "sys_name": info.get("sys_name"), "sys_descr": info.get("sys_descr"), "router_id": rid,
             "ifaces": ifaces, "ospf": {"enabled": bool(ospf_ifs), "ifaces": ospf_ifs, "nbrs": nbrs},
-            "bgp": {"local_as": local_as if isinstance(local_as, int) else None, "peers": peers}, "sample_sec": round(dt, 1)}
+            "bgp": bgp, "sample_sec": round(dt, 1)}
+
+
+async def collect_bgp(client) -> dict:
+    """Sessões BGP da BGP4-MIB (IPv4 da instância principal): estado, AS remoto, tempo estabelecida, último erro."""
+    local_as = None
+    try:
+        local_as = (await client.get([BGP_LOCAL_AS])).get(BGP_LOCAL_AS)
+    except S.SnmpError:
+        pass
+    bgp_rows = await _table(client, BGP_PEER, {2: "state", 3: "admin", 9: "remote_as", 10: "in_updates", 14: "last_error",
+                                               15: "transitions", 16: "established_sec"})
+    peers = []
+    for ip, row in bgp_rows.items():
+        code = _bgp_err_code(row.get("last_error"))
+        peers.append({"ip": ip, "state": BGP_STATE.get(row.get("state"), str(row.get("state"))), "admin_up": row.get("admin") == 2,
+                      "remote_as": row.get("remote_as"), "in_updates": row.get("in_updates"),
+                      "transitions": row.get("transitions"), "established_sec": row.get("established_sec"),
+                      "last_error": (BGP_ERR.get(code) or BGP_ERR.get((code[0], 0)) or f"código {code[0]}/{code[1]}") if code else None})
+    return {"local_as": local_as if isinstance(local_as, int) else None, "peers": peers}
 
 
 # =====================================================================================

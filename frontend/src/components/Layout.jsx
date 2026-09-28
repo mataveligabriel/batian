@@ -10,6 +10,7 @@ import {
   History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
+import { AssistantChat } from "@/components/AssistantChat";
 import { useIsMobile } from "@/lib/pwa";
 import { useTermPrefs } from "@/lib/termPrefs";
 
@@ -158,6 +159,7 @@ export default function Layout() {
         </div>
         {!isViewer && <TerminalWorkspace visible={onTerminal} />}
       </main>
+      {!isViewer && <AssistantChat hideButton={onTerminal || hidden} isAdmin={user?.role === "admin"} />}
       <Toaster theme="dark" richColors position={isMobile ? "top-center" : "top-right"} />
     </div>
   );

@@ -37,6 +37,7 @@ from models import (
     AutomationSettings, BackupRunPayload, AISettings, BackupIdsPayload, BackupCleanupPayload,
 )
 import ai_assistant
+import llm
 from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES
 from telnet_service import TelnetClientWrapper
 import vault
@@ -1154,7 +1155,11 @@ async def _telegram_token() -> str:
     s = await automation.get_settings(db)
     return vault.decrypt(s.get("telegram_bot_token", ""))
 
-assistant = ai_assistant.TelegramAssistant(db, _connect_device, _telegram_token)
+assistant = ai_assistant.TelegramAssistant(db, _connect_device, _telegram_token,
+                                           snmp_client=lambda dev: _snmp_client(dev),
+                                           flow_query=lambda *a: _flow_for_ai(*a))
+web_assistant = ai_assistant.WebAssistant(db, _connect_device, snmp_client=lambda dev: _snmp_client(dev),
+                                          flow_query=lambda *a: _flow_for_ai(*a))
 
 
 # ---------- Mapas (weathermap) e monitoramento de interfaces por SNMP ----------
@@ -1728,7 +1733,7 @@ async def duplicate_dashboard(dash_id: str, user: dict = Depends(get_current_use
 
 
 
-# ---------- Assistente IA (Claude via Telegram) ----------
+# ---------- Assistente IA (chat no sistema + Telegram) ----------
 @api.get("/ai/settings")
 async def get_ai_settings(_: dict = Depends(require_admin)):
     s = await ai_assistant.get_ai_settings(db)
@@ -1745,9 +1750,27 @@ async def get_ai_settings(_: dict = Depends(require_admin)):
 async def put_ai_settings(payload: AISettings, _: dict = Depends(require_admin)):
     existing = await ai_assistant.get_ai_settings(db)
     data = payload.model_dump()
+    prov = data.pop("ai_provider")
+    if prov not in llm.PROVIDERS:
+        raise HTTPException(status_code=400, detail="Provedor inválido")
+    key = (data.pop("api_key", None) or data.pop("anthropic_api_key", None) or "").strip()
+    data.pop("anthropic_api_key", None)
     clear = data.pop("clear_api_key", False)
-    key = (data.pop("anthropic_api_key", None) or "").strip()
-    data["anthropic_api_key"] = "" if clear else (vault.encrypt(key) if key else existing.get("anthropic_api_key", ""))
+    keys = dict(existing.get("ai_keys") or {})
+    if clear:
+        keys.pop(prov, None)
+    elif key:
+        keys[prov] = vault.encrypt(key)
+    models = dict(existing.get("ai_models") or {})
+    model = (data.pop("ai_model") or "").strip()
+    if model:
+        models[prov] = model[:120]
+    urls = dict(existing.get("ai_base_urls") or {})
+    base = (data.pop("ai_base_url") or "").strip().rstrip("/")
+    if base and not re.match(r"^https?://", base):
+        raise HTTPException(status_code=400, detail="URL da API precisa começar com http:// ou https://")
+    if prov in ("ollama", "openai"):
+        urls[prov] = base
     valid_users = {u["id"] for u in await db.users.find({}, {"_id": 0, "id": 1}).to_list(1000)}
     seen, users = set(), []
     for u in data.get("ai_users") or []:
@@ -1759,8 +1782,10 @@ async def put_ai_settings(payload: AISettings, _: dict = Depends(require_admin))
         seen.add(tid)
         users.append({"telegram_id": tid, "user_id": u["user_id"], "label": (u.get("label") or "").strip()})
     data["ai_users"] = users
-    if data["ai_model"] not in {m[0] for m in ai_assistant.MODELS}:
-        raise HTTPException(status_code=400, detail="Modelo inválido")
+    data.update({"ai_provider": prov, "ai_keys": keys, "ai_models": models, "ai_base_urls": urls,
+                 "anthropic_api_key": keys.get("anthropic", "")})
+    if prov == "anthropic" and models.get("anthropic"):
+        data["ai_model"] = models["anthropic"]
     await db.config.update_one({"key": "ai"}, {"$set": data}, upsert=True)
     return await get_ai_settings(_)
 
@@ -1768,16 +1793,88 @@ async def put_ai_settings(payload: AISettings, _: dict = Depends(require_admin))
 @api.post("/ai/test")
 async def test_ai(_: dict = Depends(require_admin)):
     s = await ai_assistant.get_ai_settings(db)
-    key = vault.decrypt(s.get("anthropic_api_key", ""))
-    if not key:
-        return {"ok": False, "error": "Chave da API não configurada"}
+    why = ai_assistant.ai_ready(s)
+    if why:
+        return {"ok": False, "error": why[0].upper() + why[1:]}
+    cfg = ai_assistant.llm_cfg(s)
     try:
-        r = await ai_assistant.call_claude(key, s["ai_model"], [{"role": "user", "content": "Responda apenas: OK"}],
-                                           [{"type": "text", "text": "Teste de conexão."}], max_tokens=10)
+        r = await llm.call(cfg, [{"role": "user", "content": "Responda apenas: OK"}],
+                           [{"type": "text", "text": "Teste de conexão."}], max_tokens=10)
         text = "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text").strip()
-        return {"ok": True, "model": r.get("model"), "reply": text}
+        return {"ok": True, "model": r.get("model") or cfg["model"], "reply": text}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@api.get("/ai/models")
+async def ai_models(provider: str = "", key: str = "", base_url: str = "", _: dict = Depends(require_admin)):
+    """Modelos disponíveis no provedor (usa a chave digitada ou a salva)."""
+    s = await ai_assistant.get_ai_settings(db)
+    cfg = ai_assistant.llm_cfg(s, provider or None)
+    if key:
+        cfg["key"] = key
+    if base_url:
+        cfg["base_url"] = base_url
+    try:
+        return {"models": await llm.list_models(cfg)}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui listar os modelos: {e}")
+
+
+# ---------- Chat do assistente dentro do sistema ----------
+class ChatIn(BaseModel):
+    text: str
+
+
+def _chat_user(user: dict):
+    if _is_viewer(user):
+        raise HTTPException(403, "Sem permissão")
+
+
+@api.get("/assistant/status")
+async def assistant_status(user: dict = Depends(get_current_user)):
+    if _is_viewer(user):
+        return {"enabled": False, "reason": "perfil View"}
+    s = await ai_assistant.get_ai_settings(db)
+    why = None if s.get("ai_web_enabled", True) else "chat desativado pelo administrador"
+    why = why or ai_assistant.ai_ready(s)
+    cfg = ai_assistant.llm_cfg(s)
+    return {"enabled": why is None, "reason": why, "provider": llm.PROVIDERS.get(cfg["provider"], {}).get("label", cfg["provider"]).split(" (")[0],
+            "model": cfg["model"], "allow_changes": bool(s.get("ai_allow_changes")), "is_admin": user.get("role") == "admin"}
+
+
+@api.get("/assistant/conversation")
+async def assistant_conversation(user: dict = Depends(get_current_user)):
+    _chat_user(user)
+    return await web_assistant.view(user["id"])
+
+
+@api.post("/assistant/messages")
+async def assistant_message(body: ChatIn, user: dict = Depends(get_current_user)):
+    _chat_user(user)
+    try:
+        return await web_assistant.post(user, body.text)
+    except ai_assistant.AIError as e:
+        raise HTTPException(409 if "trabalhando" in str(e) else 400, str(e))
+
+
+@api.post("/assistant/proposals/{pid}/{action}")
+async def assistant_decide(pid: str, action: str, user: dict = Depends(get_current_user)):
+    _chat_user(user)
+    try:
+        return await web_assistant.decide(user, pid, action)
+    except ai_assistant.AIError as e:
+        raise HTTPException(400, str(e))
+
+
+@api.post("/assistant/reset")
+async def assistant_reset(user: dict = Depends(get_current_user)):
+    _chat_user(user)
+    try:
+        await web_assistant.reset(user["id"])
+    except ai_assistant.AIError as e:
+        raise HTTPException(409, str(e))
+    return await web_assistant.view(user["id"])
 
 
 @api.get("/ai/audit")
@@ -2848,6 +2945,10 @@ def _flow_if_namer(dev_ifaces: dict, exp_dev: dict):
 @api.post("/flow/query")
 async def flow_query(body: FlowQueryIn, user: dict = Depends(get_current_user)):
     _no_viewer(user)
+    return await _flow_query_run(body, user)
+
+
+async def _flow_query_run(body: FlowQueryIn, user: dict) -> dict:
     mine = await _flow_ifaces_of(user)
     sel = [i for i in mine if not body.interfaces or i["id"] in body.interfaces or i["key"] in body.interfaces]
     if not sel:
@@ -2913,6 +3014,41 @@ async def flow_query(body: FlowQueryIn, user: dict = Depends(get_current_user)):
         if s.get("role"):
             row["role"] = s["role"]
     return res
+
+
+async def _flow_for_ai(user: dict, iface_text: str, group_by: str, direction: str, minutes: int) -> str:
+    """Resumo em texto do Flow para o assistente."""
+    mine = await _flow_ifaces_of(user)
+    if not mine:
+        return "Nenhuma interface com Flow monitorada por este usuário (Análise de Flow → Interfaces)."
+    names = {d["id"]: d.get("name") async for d in db.devices.find(_scope(user), {"_id": 0, "id": 1, "name": 1})}
+    words = [w.lower() for w in iface_text.split() if w.strip()]
+    hay = lambda i: f"{names.get(i['device_id'], '')} {i.get('if_name')} {i.get('label')} {i.get('role')}".lower()  # noqa: E731
+    sel = [i for i in mine if all(w in hay(i) for w in words)]
+    if not sel:
+        return ("Nenhuma interface monitorada casa com '" + iface_text + "'. Monitoradas: " +
+                "; ".join(f"{names.get(i['device_id'], '?')} {i['if_name']} ({i.get('label') or i['role']})" for i in mine[:30]))
+    gb = group_by if group_by in ("interface", "group", *flowstore.DIMS) else "interface"
+    try:
+        res = await _flow_query_run(FlowQueryIn(interfaces=[i["id"] for i in sel], minutes=minutes, direction=direction,
+                                                group_by=gb, top=12), user)
+    except HTTPException as e:
+        return f"Flow: {e.detail}"
+    step = res["step"]
+    lines = [f"Flow {'entrada' if direction == 'in' else 'saída'} · últimos {minutes} min · agrupado por "
+             f"{'interface' if gb == 'interface' else 'conteúdo' if gb == 'group' else flowstore.DIMS[gb]} · resolução {step // 60} min · "
+             f"interfaces: " + ", ".join(f"{names.get(i['device_id'], '?')} {i['if_name']}" + (f" ({i['label']})" if i.get("label") else "") for i in sel[:8])]
+    for r in res["table"]:
+        lines.append(f"{r['name']}: média {netanalysis.fmt_bps(r['avg'])}, p95 {netanalysis.fmt_bps(r['p95'])}, "
+                     f"máx {netanalysis.fmt_bps(r['max'])}, agora {netanalysis.fmt_bps(r['last'])}, {r['share'] * 100:.0f}%")
+    if not res["table"]:
+        lines.append("(sem dados no período)")
+    act = await db.flow_attacks.find({"status": "active", **({} if user.get("role") == "admin" else {"owners": user["id"]})},
+                                     {"_id": 0, "victim": 1, "type": 1, "cur_bps": 1, "peak_bps": 1, "start": 1}).to_list(20)
+    if act:
+        lines.append("ATAQUES EM ANDAMENTO: " + "; ".join(f"{a['victim']} {a['type']} agora {netanalysis.fmt_bps(a.get('cur_bps'))} "
+                                                       f"(pico {netanalysis.fmt_bps(a.get('peak_bps'))}, desde {a['start'][11:16]} UTC)" for a in act))
+    return "\n".join(lines)
 
 
 @api.get("/flow/live")

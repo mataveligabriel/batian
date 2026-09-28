@@ -301,3 +301,33 @@ Capacidade: o coletor processa ~40 mil flows/s por núcleo (com amostragem 1:100
 Armazenamento: totais por minuto e detalhes de 5 min por 7 dias (ajustável) e a junção por hora por 90 dias.
 Limitação desta versão: nos detalhes cada dimensão é guardada separada (top-K), então dá para filtrar AS **ou**
 prefixo **ou** porta de cada vez; para cruzar AS + bloco com precisão, cadastre um **Conteúdo**.
+
+## 14. Assistente no sistema (chat) — com opção grátis
+Botão **Assistente** no canto inferior direito de qualquer tela (admin e operador; o perfil View não vê). Você pede em
+português e ele consulta os seus equipamentos:
+- **interfaces** (SNMP): estado, velocidade e tráfego medido na hora — "quais interfaces estão down no S5732-Caxixe?";
+- **BGP** (SNMP): sessões, AS, há quanto tempo estão de pé, último erro — "e o BGP da BORDA?";
+- **sinal óptico** por lane (CLI) — "qual o sinal da 100GE0/0/1 da BORDA?";
+- **Flow**: quem está consumindo cada trânsito/PNI e ataques em andamento — "o que está enchendo o trânsito A?";
+- qualquer `display`/`show` (só leitura) e o último backup de configuração.
+
+**Alterações** (desativar/ativar porta, BGP, ONU…) viram um cartão com os comandos exatos, o risco e como desfazer;
+só executam quando você clica em **Confirmar e executar** (vale 15 min, uma vez só, só para quem pediu). Depois o assistente
+confere o resultado. Tudo fica em Histórico e em Automação → Assistente IA → últimas ações.
+
+Configuração em **Automação → Assistente IA** — escolha o provedor do modelo:
+- **Groq** (grátis para começar, recomendado para testar): chave em console.groq.com, sem cartão. Modelo padrão
+  `llama-3.3-70b-versatile`; o botão **Listar** mostra os modelos disponíveis na sua conta.
+- **Google Gemini** (grátis para começar): chave em aistudio.google.com. No plano grátis o Google pode usar as conversas
+  para melhorar os modelos — evite colar senhas.
+- **Ollama no próprio servidor** (grátis e nada sai da rede):
+  ```bash
+  cd /opt/bastion/deploy
+  docker compose --profile ollama up -d
+  docker compose exec ollama ollama pull qwen2.5:7b
+  ```
+  Sem GPU as respostas demoram e modelos de 7-8B erram mais nas ferramentas; com 16 GB de RAM dá para `qwen2.5:14b`.
+- **Claude** (pago, o mais capaz com ferramentas) ou qualquer API compatível com OpenAI (OpenRouter etc.).
+
+Os planos grátis têm limite de requisições por minuto e por dia: se estourar, o chat avisa quanto tempo esperar.
+O mesmo assistente continua disponível no Telegram (chave "Bot do Telegram").
