@@ -196,6 +196,7 @@ class AutomationSettings(BaseModel):
     backup_hour: int = 3  # local server hour (0-23)
     notify_agents: bool = True
     notify_devices: bool = False
+    notify_config_changes: bool = True
     telegram_bot_token: Optional[str] = None  # write-only; empty keeps existing
     clear_telegram_token: bool = False
     telegram_chat_id: str = ""

@@ -42,6 +42,7 @@ from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES
 from telnet_service import TelnetClientWrapper
 import vault
 import automation
+import configsearch
 import webpush
 import sharing
 import netanalysis
@@ -92,6 +93,8 @@ async def startup():
     await seed_admin()
     await seed_sample_data()
     await db.backups.create_index([("device_id", 1), ("created_at", -1)])
+    await db.backups.create_index("id")
+    await db.sessions.create_index([("device_id", 1), ("started_at", 1)])
     admin = await db.users.find_one({"email": os.environ["ADMIN_EMAIL"].lower()}, {"_id": 0, "id": 1})
     if admin:
         for col in (db.devices, db.agents):
@@ -1973,7 +1976,40 @@ async def run_backups(payload: BackupRunPayload, user: dict = Depends(get_curren
     if not payload.device_ids:
         return {"results": []}
     results = await _backup_many(payload.device_ids)
+    if any(r.get("changed") and r.get("prev_id") for r in results):
+        _bg(automation.notify_config_changes(db, results, f"backup manual por {user.get('email')}"))
     return {"results": results}
+
+
+_BG_TASKS: set = set()
+
+
+def _bg(coro):
+    """Dispara em segundo plano sem perder a referência (o asyncio só guarda referência fraca)."""
+    task = asyncio.create_task(coro)
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+    return task
+
+
+# ---------- Busca em todas as configs ----------
+@api.get("/configs/search")
+async def configs_search(q: str = "", mode: str = "word", case: bool = False, context: int = 1,
+                         device_type: str = "", device: str = "", user: dict = Depends(get_current_user)):
+    """Procura em último backup OK de cada equipamento do usuário. mode: text | word | regex."""
+    if mode not in ("text", "word", "regex"):
+        mode = "word"
+    dq = dict(_scope(user))
+    if device_type:
+        dq["device_type"] = device_type
+    devs = await db.devices.find(dq, {"_id": 0, "id": 1, "name": 1, "device_type": 1, "host": 1}).to_list(10000)
+    if device.strip():
+        w = device.strip().lower()
+        devs = [d for d in devs if w in (d.get("name") or "").lower() or w in (d.get("host") or "").lower()]
+    try:
+        return await configsearch.search(db, devs, q, mode, case, context)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @api.get("/backups")

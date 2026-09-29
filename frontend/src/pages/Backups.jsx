@@ -1,11 +1,28 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Archive, Play, Loader2, Eye, GitCompare, CheckCircle2, XCircle, Download, Server, HardDrive } from "lucide-react";
+import { Archive, Play, Loader2, Eye, GitCompare, CheckCircle2, XCircle, Download, Server, HardDrive, FileSearch } from "lucide-react";
 import { BackupsManager } from "@/components/BackupsManager";
+import { ConfigSearch } from "@/components/ConfigSearch";
+
+function NumberedConfig({ content, focus }) {
+  const ref = useRef(null);
+  useEffect(() => { ref.current?.scrollIntoView({ block: "center" }); }, [focus, content]);
+  return (
+    <div className="bg-[#05070A] border border-[#1E293B] rounded p-3 text-xs font-mono text-slate-300 max-h-[65vh] overflow-auto" data-testid="backup-content">
+      {(content || "").split("\n").map((l, i) => (
+        <div key={i} ref={i + 1 === focus ? ref : null} className={`flex gap-3 ${i + 1 === focus ? "bg-amber-400/15 text-amber-100" : ""}`}>
+          <span className="w-12 shrink-0 text-right text-slate-600 select-none">{i + 1}</span>
+          <span className="whitespace-pre">{l || " "}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR") : "—";
 
@@ -30,12 +47,31 @@ export default function Backups() {
   const [viewing, setViewing] = useState(null);
   const [diffSel, setDiffSel] = useState([]);
   const [diff, setDiff] = useState(null);
-  const [tab, setTab] = useState("devices");
+  const [params] = useSearchParams();
+  const [tab, setTab] = useState(params.get("tab") || "devices");
+  const wantDevice = useRef(params.get("device"));
+  const wantDiff = useRef(params.get("diff"));
 
   const loadSummary = async () => setSummary((await api.get("/backups/summary")).data);
   const loadVersions = async (deviceId) => setVersions((await api.get("/backups", { params: { device_id: deviceId } })).data);
   useEffect(() => { loadSummary(); }, []);
   useEffect(() => { if (selected) { loadVersions(selected.device_id); setDiffSel([]); setDiff(null); } }, [selected]);
+  // link do alerta de config alterada: /backups?device=ID&diff=BACKUP_ID abre o diff com a versão anterior
+  useEffect(() => {
+    if (!wantDevice.current || !summary.length) return;
+    const s = summary.find(x => x.device_id === wantDevice.current);
+    wantDevice.current = null;
+    if (s) setSelected(s);
+  }, [summary]);
+  useEffect(() => {
+    const id = wantDiff.current;
+    if (!id || !versions.length) return;
+    const v = versions.find(x => x.id === id);
+    wantDiff.current = null;
+    if (!v?.prev_id) return;
+    setDiffSel([v.prev_id, v.id]);
+    api.get(`/backups/${v.id}/diff/${v.prev_id}`).then(({ data }) => setDiff(data)).catch(() => {});
+  }, [versions]);
 
   const runAll = async (deviceIds) => {
     setRunning(true);
@@ -52,7 +88,10 @@ export default function Backups() {
     finally { setRunning(false); }
   };
 
-  const view = async (b) => setViewing((await api.get(`/backups/${b.id}`)).data);
+  const view = async (b, line) => {
+    try { setViewing({ ...(await api.get(`/backups/${b.id}`)).data, focusLine: line || null }); }
+    catch (e) { toast.error(formatApiError(e)); }
+  };
   const toggleDiff = (id) => {
     setDiffSel(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev.slice(-1), id]);
     setDiff(null);
@@ -84,13 +123,15 @@ export default function Backups() {
       </div>
 
       <div className="flex gap-1 mb-4 border-b border-[#1E293B]" data-testid="backups-tabs">
-        {[["devices", "Por equipamento", Server], ["manage", "Todos os backups / limpeza", HardDrive]].map(([v, l, Icon]) => (
+        {[["devices", "Por equipamento", Server], ["search", "Buscar nas configs", FileSearch], ["manage", "Todos os backups / limpeza", HardDrive]].map(([v, l, Icon]) => (
           <button key={v} onClick={() => setTab(v)} data-testid={`backups-tab-${v}`}
             className={`flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${tab === v ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`}>
             <Icon className="w-4 h-4" /> {l}
           </button>
         ))}
       </div>
+
+      {tab === "search" && <ConfigSearch initialQuery={params.get("q") || ""} onView={(id, line) => view({ id }, line)} />}
 
       {tab === "manage" && (
         <BackupsManager onView={view} onChanged={async () => { await loadSummary(); if (selected) await loadVersions(selected.device_id); }} />
@@ -144,7 +185,8 @@ export default function Backups() {
                     <div className="text-sm font-mono text-slate-200">{fmt(v.created_at)}</div>
                     <div className="text-[11px] font-mono text-slate-500">
                       {v.ok ? `${v.lines} linhas · ${(v.size / 1024).toFixed(1)} KB` : <span className="text-red-400">{v.error}</span>}
-                      {v.ok && v.changed && <span className="ml-2 text-amber-400">alterado</span>}
+                      {v.ok && v.changed && !v.first && <span className="ml-2 text-amber-400">alterado{v.diff_stats ? ` (+${v.diff_stats.added} −${v.diff_stats.removed})` : ""}</span>}
+                      {v.ok && v.first && <span className="ml-2 text-slate-400">primeiro backup</span>}
                     </div>
                   </div>
                   {v.ok && (
@@ -169,7 +211,9 @@ export default function Backups() {
               <Download className="w-3.5 h-3.5 mr-1" /> Baixar
             </Button>
           </div>
-          <pre className="bg-[#05070A] border border-[#1E293B] rounded p-3 text-xs font-mono text-slate-300 max-h-[65vh] overflow-auto whitespace-pre-wrap" data-testid="backup-content">{viewing?.content}</pre>
+          {viewing?.focusLine
+            ? <NumberedConfig content={viewing.content} focus={viewing.focusLine} />
+            : <pre className="bg-[#05070A] border border-[#1E293B] rounded p-3 text-xs font-mono text-slate-300 max-h-[65vh] overflow-auto whitespace-pre-wrap" data-testid="backup-content">{viewing?.content}</pre>}
         </DialogContent>
       </Dialog>
     </div>

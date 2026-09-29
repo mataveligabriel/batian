@@ -100,6 +100,13 @@ export default function Automation() {
             <Label>Equipamento caiu / voltou e falhas de backup</Label>
             <Switch data-testid="notify-devices" checked={s.notify_devices} onCheckedChange={v => setS({ ...s, notify_devices: v })} disabled={!isAdmin} />
           </div>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <Label>Configuração alterada</Label>
+              <div className="text-[11px] text-slate-500">diff + quem esteve no equipamento, a cada backup que detectar mudança</div>
+            </div>
+            <Switch data-testid="notify-config-changes" checked={s.notify_config_changes !== false} onCheckedChange={v => setS({ ...s, notify_config_changes: v })} disabled={!isAdmin} />
+          </div>
           <Label>Telegram — token do bot</Label>
           <Input data-testid="telegram-token" type="password" value={token} onChange={e => setToken(e.target.value)} disabled={!isAdmin}
                  placeholder={s.has_telegram_token ? "•••••••• (mantido — digite para trocar)" : "123456:ABC-DEF… (via @BotFather)"} className={inputCls} />

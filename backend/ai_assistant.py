@@ -17,6 +17,7 @@ from typing import Awaitable, Callable, List, Optional, Tuple
 
 import httpx
 
+import configsearch
 import llm
 import snmp_service
 import vault
@@ -231,6 +232,23 @@ TOOLS = [
         },
     },
     {
+        "name": "search_configs",
+        "description": ("Procura um texto em TODAS as configurações salvas (último backup de cada equipamento) e diz em qual "
+                        "equipamento, linha e bloco aparece. Use para 'onde está a VLAN X', 'quem tem o peer Y', 'qual VSI/VRF "
+                        "leva o cliente Z', 'onde o IP W está configurado'. Muito mais rápido que abrir equipamento por equipamento."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "O que procurar (ex.: 1302, 187.16.216.95, CLIENTE-ACME)."},
+                "mode": {"type": "string", "enum": ["word", "text", "regex"],
+                         "description": "word = palavra/número inteiro (padrão; 1302 não casa 13020); text = qualquer trecho; regex."},
+                "device_type": {"type": "string", "description": "Opcional: só um fabricante (huawei, juniper, datacom, zte, cisco, mikrotik)."},
+                "device": {"type": "string", "description": "Opcional: parte do nome do equipamento para limitar a busca."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "propose_config_change",
         "description": "Propõe uma alteração em um ou mais equipamentos (inclusive desativar/ativar porta). NÃO executa: mostra os comandos ao usuário com botões Confirmar/Cancelar. A execução só acontece após o clique, e o resultado volta para você na conversa.",
         "input_schema": {
@@ -407,6 +425,8 @@ def describe_tool(name: str, inp: dict) -> str:
         return f"{dev}: " + " ; ".join(str(c) for c in cmds[:3]) + (" …" if len(cmds) > 3 else "")
     if name == "get_config_backup":
         return f"backup de configuração de {dev}"
+    if name == "search_configs":
+        return f"procurando “{inp.get('query', '')}” em todas as configs"
     if name == "propose_config_change":
         return "preparando proposta de alteração"
     return name
@@ -539,6 +559,8 @@ class AgentCore:
                 return await self._tool_show(ctx, inp)
             if name == "get_config_backup":
                 return await self._tool_backup(ctx, inp)
+            if name == "search_configs":
+                return await self._tool_search_configs(ctx, inp)
             if name == "propose_config_change":
                 return await self._tool_propose(ctx, inp)
             return f"Ferramenta desconhecida: {name}", True
@@ -806,6 +828,20 @@ class AgentCore:
         when = b.get("created_at", "")[:16].replace("T", " ")
         out = self._cut(ctx, _filter_output(b.get("content", ""), inp.get("filter")))
         return f"== Backup de {dev['name']} em {when} UTC ==\n{out}", False
+
+    async def _tool_search_configs(self, ctx: dict, inp: dict):
+        q = {"owner_id": ctx["user"]["id"]}
+        if inp.get("device_type"):
+            q["device_type"] = str(inp["device_type"]).lower()
+        devs = await self.db.devices.find(q, {"_id": 0, "id": 1, "name": 1, "device_type": 1, "host": 1}).to_list(10000)
+        w = str(inp.get("device") or "").strip().lower()
+        if w:
+            devs = [d for d in devs if w in (d.get("name") or "").lower()]
+        try:
+            res = await configsearch.search(self.db, devs, str(inp.get("query") or ""), inp.get("mode") or "word", False, 0, per_device=20)
+        except ValueError as e:
+            return str(e), True
+        return self._cut(ctx, configsearch.as_text(res)), False
 
     async def _tool_propose(self, ctx: dict, inp: dict):
         s = ctx["settings"]

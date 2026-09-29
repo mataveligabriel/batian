@@ -381,3 +381,22 @@ sudo bash /opt/bastion/deploy/restore.sh /opt/bastion-backups/bastion-....tar.gz
 sudo bash /opt/bastion/deploy/restore.sh /opt/bastion-backups/bastion-....tar.gz --com-env  # usa o .env do backup
 ```
 O restore pede que você digite `RESTAURAR`, para os serviços, troca o banco e sobe tudo de novo.
+
+## 17. Busca em todas as configs e alerta de configuração alterada
+
+**Backups → Buscar nas configs** procura no último backup de cada equipamento seu: VLAN, IP, peer, VSI, VRF,
+nome de cliente. Para cada linha mostra o bloco em que ela está (ex.: `bgp 65000 › ipv4-family vpn-instance IX`)
+e, ao clicar, abre a config inteira já na linha.
+- **Palavra inteira** (padrão): `1302` não casa `13020` nem `Vlanif1302`; `10.0.0.1` não casa `10.0.0.10`.
+- **Trecho**: qualquer pedaço do texto. **Regex**: expressão regular (Python).
+- O assistente também usa essa busca ("onde está a VLAN 1302?", "quem tem o peer 187.16.216.95?").
+
+**Alerta de configuração alterada** (Automação → Alertas, ligado por padrão): sempre que um backup (o diário ou um
+manual) encontra diferença em relação ao anterior, vai para o Telegram/push:
+- quantas linhas entraram e saíram, e o trecho do diff;
+- quem esteve no equipamento pelo Bastion no período (terminal, lote, assistente) — "ninguém" indica alteração
+  feita direto no equipamento; no Junos também aparece o autor do último commit;
+- o link abre o diff pronto em Backups.
+
+Linhas que mudam sozinhas a cada coleta (carimbo de hora, "Last configuration was updated at…", `## Last commit`,
+cabeçalho do `/export` do MikroTik, `ntp clock-period`) não contam como alteração.
