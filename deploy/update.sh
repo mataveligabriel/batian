@@ -18,11 +18,37 @@ if grep -Eq '^COMPOSE_PROFILES=.*vpn' .env 2>/dev/null && [ "$(id -u)" -eq 0 ]; 
   [ -e /dev/ppp ] || mknod /dev/ppp c 108 0 2>/dev/null || echo "!! /dev/ppp indisponível neste servidor (VPS OpenVZ/LXC?) — a VPN não vai subir"
   grep -qx ppp_generic /etc/modules 2>/dev/null || echo ppp_generic >> /etc/modules
 fi
-echo ">> Reconstruindo containers…"
-docker compose up -d --build
+# 1) compila tudo ANTES de mexer nos containers: enquanto isso o sistema continua no ar com a versão
+#    anterior, e se a compilação falhar (rede, erro no código) nada é derrubado.
+echo ">> Compilando a versão nova (o Bastion continua no ar)…"
+if ! docker compose build; then
+  echo "!! A compilação falhou — os containers atuais continuam rodando a versão anterior."
+  echo "   Mande as linhas de erro acima para análise."
+  exit 1
+fi
+# 2) troca os containers (poucos segundos fora do ar)
+echo ">> Trocando os containers…"
+docker compose up -d --remove-orphans
 echo ">> Aguardando backend…"
 for i in $(seq 1 30); do
   curl -fsS http://127.0.0.1:8001/api/ >/dev/null 2>&1 && { echo "OK: backend respondendo"; break; }
   sleep 3
 done
+# 3) confere se todos os serviços ficaram de pé (ex.: o frontend/Caddy) e tenta subir de novo o que faltar
+sleep 3
+missing=""
+for svc in $(docker compose config --services); do
+  docker compose ps --status running --services 2>/dev/null | grep -qx "$svc" || missing="$missing $svc"
+done
+if [ -n "$missing" ]; then
+  echo "!! Não subiram:$missing — tentando de novo…"
+  docker compose up -d $missing || true
+  sleep 5
+  for svc in $missing; do
+    if ! docker compose ps --status running --services 2>/dev/null | grep -qx "$svc"; then
+      echo "!! $svc continua parado. Últimas linhas do log:"
+      docker compose logs --tail 30 "$svc" || true
+    fi
+  done
+fi
 docker compose ps
