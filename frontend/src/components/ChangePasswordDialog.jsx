@@ -5,18 +5,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { useAuth } from "@/context/AuthContext";
 
 export function ChangePasswordDialog({ open, onOpenChange }) {
   const [form, setForm] = useState({ current: "", next: "", confirm: "" });
   const [busy, setBusy] = useState(false);
+  const { applySession } = useAuth();
 
   const submit = async () => {
     if (form.next.length < 6) return toast.error("A nova senha deve ter pelo menos 6 caracteres");
     if (form.next !== form.confirm) return toast.error("A confirmação não confere");
     setBusy(true);
     try {
-      await api.post("/auth/change-password", { current_password: form.current, new_password: form.next });
-      toast.success("Senha alterada com sucesso");
+      const { data } = await api.post("/auth/change-password", { current_password: form.current, new_password: form.next });
+      await applySession(data);            // esta sessão continua; as dos outros aparelhos caem
+      toast.success("Senha alterada. Sessões em outros aparelhos foram encerradas.");
       setForm({ current: "", next: "", confirm: "" });
       onOpenChange(false);
     } catch (e) { toast.error(formatApiError(e)); }

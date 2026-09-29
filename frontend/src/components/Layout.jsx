@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TerminalWorkspace } from "@/components/TerminalWorkspace";
 import { useTerminal } from "@/context/TerminalContext";
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
+import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
   History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves,
@@ -40,6 +41,8 @@ export default function Layout() {
   const { pathname } = useLocation();
   const onTerminal = pathname.startsWith("/terminal");
   const [cpOpen, setCpOpen] = useState(false);
+  const [secOpen, setSecOpen] = useState(false);
+  const mustEnroll = !!(user?.require_2fa && !user?.totp_enabled);
   const [prefs, setPrefs] = useTermPrefs();
   const isMobile = useIsMobile();
   const [drawer, setDrawer] = useState(false);            // celular: menu em gaveta
@@ -142,6 +145,15 @@ export default function Layout() {
             <KeyRound className="w-3.5 h-3.5" /> {!mini && "Trocar senha"}
           </button>
           <ChangePasswordDialog open={cpOpen} onOpenChange={setCpOpen} />
+          <button
+            data-testid="account-security-btn"
+            onClick={() => setSecOpen(true)}
+            title="Segurança da conta: 2FA, sessões e últimos acessos"
+            className={`${mini ? "w-full" : "flex-1"} flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-wider font-mono ${user?.totp_enabled ? "text-slate-400" : "text-amber-300"} hover:text-[#4DA3FF] px-2 py-1.5 rounded-md hover:bg-slate-800/60 transition-colors border border-transparent hover:border-[#1E293B]`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" /> {!mini && "Segurança"}
+          </button>
+          <AccountSecurity open={secOpen || mustEnroll} onOpenChange={setSecOpen} forced={mustEnroll} />
           <button
             data-testid="logout-btn"
             onClick={logout}

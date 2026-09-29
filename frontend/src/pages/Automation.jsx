@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { Activity, Archive, BellRing, Send, Zap, Loader2 } from "lucide-react";
+import { Activity, Archive, BellRing, Send, Zap, Loader2, ClipboardList, Eye } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { AIAssistantCard } from "@/components/AIAssistantCard";
 
@@ -32,6 +32,7 @@ export default function Automation() {
     try {
       const { data } = await api.put("/automation/settings", {
         ...s, ping_interval_min: Number(s.ping_interval_min) || 5, backup_hour: Number(s.backup_hour) || 0,
+        daily_report_hour: Number(s.daily_report_hour ?? 8) || 0,
         telegram_bot_token: token || null, clear_telegram_token: clearToken,
       });
       setS(prev => ({ ...prev, ...data })); setToken(""); setClearToken(false);
@@ -47,6 +48,24 @@ export default function Automation() {
       (parts.every(p => p.endsWith("ok")) ? toast.success : toast.warning)(parts.join(" · "));
       load();
     } catch (e) { toast.error(formatApiError(e)); }
+  };
+  const [report, setReport] = useState(null);
+  const [repBusy, setRepBusy] = useState(false);
+  const previewReport = async () => {
+    setRepBusy(true);
+    try { setReport((await api.get("/automation/daily-report")).data); } catch (e) { toast.error(formatApiError(e)); }
+    finally { setRepBusy(false); }
+  };
+  const sendReport = async () => {
+    setRepBusy(true);
+    try {
+      const { data } = await api.post("/automation/daily-report/send");
+      setReport(data);
+      const r = data.results || {};
+      if (r.error) toast.error(r.error);
+      else toast.success(["Resumo enviado", r.telegram && `Telegram: ${r.telegram}`, r.push && `push: ${r.push}`].filter(Boolean).join(" · "));
+    } catch (e) { toast.error(formatApiError(e)); }
+    finally { setRepBusy(false); }
   };
   const pingNow = async () => {
     const { data } = await api.post("/automation/ping-now");
@@ -106,6 +125,30 @@ export default function Automation() {
               <div className="text-[11px] text-slate-500">diff + quem esteve no equipamento, a cada backup que detectar mudança</div>
             </div>
             <Switch data-testid="notify-config-changes" checked={s.notify_config_changes !== false} onCheckedChange={v => setS({ ...s, notify_config_changes: v })} disabled={!isAdmin} />
+          </div>
+          <div className="border border-[#1E293B] rounded-md p-2.5 mb-3" data-testid="daily-report">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5"><ClipboardList className="w-3.5 h-3.5 text-slate-400" /><Label>Resumo diário</Label></div>
+              <Switch data-testid="daily-report-enabled" checked={s.daily_report_enabled !== false} onCheckedChange={v => setS({ ...s, daily_report_enabled: v })} disabled={!isAdmin} />
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">Equipamentos e interfaces caídos, sinal óptico caindo, picos, ataques, configs alteradas e acessos das últimas 24 h.</div>
+            <div className="flex items-center gap-2 mt-2">
+              <span className="text-[11px] text-slate-400">às</span>
+              <Input data-testid="daily-report-hour" type="number" min={0} max={23} value={s.daily_report_hour ?? 8}
+                     onChange={e => setS({ ...s, daily_report_hour: e.target.value })} className={`${inputCls} h-8 w-16`} disabled={!isAdmin} />
+              <span className="text-[11px] text-slate-400">h</span>
+              <Button size="sm" variant="ghost" onClick={previewReport} disabled={repBusy} className="ml-auto h-7 text-xs text-slate-300 hover:bg-slate-800" data-testid="daily-report-preview">
+                {repBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Eye className="w-3.5 h-3.5 mr-1" />} Prévia
+              </Button>
+              {isAdmin && (
+                <Button size="sm" variant="ghost" onClick={sendReport} disabled={repBusy} className="h-7 text-xs text-[#4DA3FF] hover:bg-[#007AFF]/15" data-testid="daily-report-send">
+                  <Send className="w-3.5 h-3.5 mr-1" /> Enviar agora
+                </Button>
+              )}
+            </div>
+            {report && (
+              <pre className="mt-2 text-[11px] font-mono text-slate-300 bg-[#05070A] border border-[#1E293B] rounded p-2 whitespace-pre-wrap max-h-72 overflow-y-auto" data-testid="daily-report-text">{report.title + "\n\n" + report.text}</pre>
+            )}
           </div>
           <Label>Telegram — token do bot</Label>
           <Input data-testid="telegram-token" type="password" value={token} onChange={e => setToken(e.target.value)} disabled={!isAdmin}

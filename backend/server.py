@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -43,6 +43,9 @@ from telnet_service import TelnetClientWrapper
 import vault
 import automation
 import configsearch
+import dailyreport
+import qrgen
+import security
 import webpush
 import sharing
 import netanalysis
@@ -64,8 +67,11 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 
+USER_PUBLIC = {"_id": 0, "password_hash": 0, "totp_secret": 0, "totp_pending": 0, "totp_recovery": 0}
+
+
 async def _load_user(user_id: str):
-    return await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    return await db.users.find_one({"id": user_id}, USER_PUBLIC)
 
 auth_mod.USER_LOADER = _load_user   # papel/exclusão valem na hora + perfil View
 
@@ -93,6 +99,7 @@ async def startup():
     await seed_admin()
     await seed_sample_data()
     await db.backups.create_index([("device_id", 1), ("created_at", -1)])
+    await security.ensure_indexes(db)
     await db.backups.create_index("id")
     await db.sessions.create_index([("device_id", 1), ("started_at", 1)])
     admin = await db.users.find_one({"email": os.environ["ADMIN_EMAIL"].lower()}, {"_id": 0, "id": 1})
@@ -198,19 +205,62 @@ async def seed_sample_data():
 
 
 # ---------- Auth ----------
+async def _security_settings() -> dict:
+    doc = await db.config.find_one({"key": "security"}, {"_id": 0}) or {}
+    return {"require_2fa": bool(doc.get("require_2fa"))}
+
+
+def _session_payload(user: dict) -> dict:
+    token = create_access_token(user["id"], user["email"], user.get("role", "operator"), user.get("token_version", 0))
+    return {"token": token, "user": {"id": user["id"], "email": user["email"], "name": user.get("name", ""),
+                                     "role": user.get("role", "operator")}}
+
+
 @api.post("/auth/login")
-async def login(payload: LoginPayload):
-    user = await db.users.find_one({"email": payload.email.lower()})
+async def login(payload: LoginPayload, request: Request):
+    email = payload.email.lower()
+    ip = security.client_ip(request)
+    ua = request.headers.get("user-agent", "")
+    wait = await security.locked_for(db, email, ip)
+    if wait:
+        await security.log_event(db, email, ip, ua, False, "bloqueado")
+        raise HTTPException(status_code=429, detail=f"Muitas tentativas. Tente de novo em {max(1, round(wait / 60))} min.")
+
+    async def fail(reason: str, detail: str, user_id: Optional[str] = None):
+        n = await security.record_fail(db, email, ip)
+        await security.log_event(db, email, ip, ua, False, reason, user_id)
+        if n == security.MAX_FAILS_EMAIL:
+            try:
+                await automation.send_alert(db, "🔐 Login bloqueado por tentativas",
+                                            f"{email}: {n} tentativas erradas em 15 min (último IP {ip}). Liberado em 15 min.",
+                                            push_url="/users")
+            except Exception as e:
+                logger.warning(f"alerta de login bloqueado: {e}")
+        raise HTTPException(status_code=401, detail=detail)
+
+    user = await db.users.find_one({"email": email})
     if not user or not verify_password(payload.password, user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Credenciais inválidas")
-    token = create_access_token(user["id"], user["email"], user.get("role", "operator"))
-    return {
-        "token": token,
-        "user": {
-            "id": user["id"], "email": user["email"],
-            "name": user.get("name", ""), "role": user.get("role", "operator"),
-        },
-    }
+        await fail("senha", "Credenciais inválidas", user["id"] if user else None)
+    if user.get("totp_enabled"):
+        code = (payload.totp or "").strip()
+        if not code:
+            return {"need_totp": True}                   # senha certa: o front pede o código
+        secret = vault.decrypt(user.get("totp_secret", ""))
+        step = security.verify_totp(secret, code, int(user.get("totp_last_step", -1)))
+        if step is not None:
+            await db.users.update_one({"id": user["id"]}, {"$set": {"totp_last_step": step}})
+        else:
+            used = security.match_recovery(code, user.get("totp_recovery") or [])
+            if not used:
+                await fail("2fa", "Código inválido", user["id"])
+            await db.users.update_one({"id": user["id"]}, {"$pull": {"totp_recovery": used}})
+            left = len(user.get("totp_recovery") or []) - 1
+            await automation.send_alert(db, "🔑 Código de recuperação usado",
+                                        f"{email} entrou com um código de recuperação (restam {left}). IP {ip}.", push_url="/")
+    await security.clear_fails(db, email)
+    await security.log_event(db, email, ip, ua, True, "", user["id"])
+    await db.users.update_one({"id": user["id"]}, {"$set": {"last_login_at": datetime.now(timezone.utc).isoformat(), "last_login_ip": ip}})
+    return _session_payload(user)
 
 
 @api.get("/auth/me")
@@ -218,7 +268,142 @@ async def me(user: dict = Depends(get_current_user)):
     u = await db.users.find_one({"id": user["id"]})
     if not u:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
-    return {"id": u["id"], "email": u["email"], "name": u.get("name", ""), "role": u.get("role", "operator")}
+    sec = await _security_settings()
+    return {"id": u["id"], "email": u["email"], "name": u.get("name", ""), "role": u.get("role", "operator"),
+            "totp_enabled": bool(u.get("totp_enabled")), "require_2fa": sec["require_2fa"]}
+
+
+# ---------- 2FA (app autenticador) e sessões ----------
+class TotpCode(BaseModel):
+    code: str = ""
+    password: str = ""
+
+
+@api.get("/auth/2fa")
+async def twofa_status(user: dict = Depends(get_current_user)):
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    sec = await _security_settings()
+    return {"enabled": bool(u.get("totp_enabled")), "recovery_left": len(u.get("totp_recovery") or []),
+            "enabled_at": u.get("totp_enabled_at"), "require_2fa": sec["require_2fa"]}
+
+
+@api.post("/auth/2fa/setup")
+async def twofa_setup(user: dict = Depends(get_current_user)):
+    """Gera um segredo novo (ainda não ativo) e o QR para o app (Google Authenticator, Authy, Microsoft…)."""
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    if u.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA já está ativo. Desative antes de configurar outro celular.")
+    secret = security.new_secret()
+    await db.users.update_one({"id": user["id"]}, {"$set": {"totp_pending": vault.encrypt(secret)}})
+    uri = security.otpauth_uri(secret, u["email"])
+    return {"secret": secret, "uri": uri, "qr_svg": qrgen.svg(uri, scale=5)}
+
+
+@api.post("/auth/2fa/enable")
+async def twofa_enable(body: TotpCode, user: dict = Depends(get_current_user)):
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    secret = vault.decrypt(u.get("totp_pending", ""))
+    if not secret:
+        raise HTTPException(status_code=400, detail="Gere o QR code primeiro")
+    step = security.verify_totp(secret, body.code)
+    if step is None:
+        raise HTTPException(status_code=400, detail="Código não confere. Confira a hora do celular e digite o código atual.")
+    codes, hashes = security.new_recovery_codes()
+    await db.users.update_one({"id": user["id"]}, {
+        "$set": {"totp_enabled": True, "totp_secret": vault.encrypt(secret), "totp_last_step": step,
+                 "totp_recovery": hashes, "totp_enabled_at": datetime.now(timezone.utc).isoformat()},
+        "$unset": {"totp_pending": ""}})
+    return {"enabled": True, "recovery_codes": codes}
+
+
+async def _check_password_and_code(user_id: str, body: TotpCode) -> dict:
+    u = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not u or not verify_password(body.password, u.get("password_hash", "")):
+        raise HTTPException(status_code=400, detail="Senha incorreta")
+    if u.get("totp_enabled"):
+        ok = security.verify_totp(vault.decrypt(u.get("totp_secret", "")), body.code) is not None \
+            or security.match_recovery(body.code, u.get("totp_recovery") or [])
+        if not ok:
+            raise HTTPException(status_code=400, detail="Código inválido")
+    return u
+
+
+@api.post("/auth/2fa/disable")
+async def twofa_disable(body: TotpCode, user: dict = Depends(get_current_user)):
+    sec = await _security_settings()
+    if sec["require_2fa"]:
+        raise HTTPException(status_code=400, detail="O administrador exige 2FA para todos. Para trocar de celular, peça para ele zerar o seu 2FA.")
+    u = await _check_password_and_code(user["id"], body)
+    tv = int(u.get("token_version", 0)) + 1
+    await db.users.update_one({"id": user["id"]}, {
+        "$set": {"totp_enabled": False, "token_version": tv},
+        "$unset": {"totp_secret": "", "totp_recovery": "", "totp_last_step": "", "totp_pending": ""}})
+    return _session_payload({**u, "token_version": tv})
+
+
+@api.post("/auth/2fa/recovery-codes")
+async def twofa_new_codes(body: TotpCode, user: dict = Depends(get_current_user)):
+    u = await _check_password_and_code(user["id"], body)
+    if not u.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA não está ativo")
+    codes, hashes = security.new_recovery_codes()
+    await db.users.update_one({"id": user["id"]}, {"$set": {"totp_recovery": hashes}})
+    return {"recovery_codes": codes}
+
+
+@api.post("/auth/logout-all")
+async def logout_all(user: dict = Depends(get_current_user)):
+    """Encerra as sessões em todos os aparelhos; esta continua com um token novo."""
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    tv = int(u.get("token_version", 0)) + 1
+    await db.users.update_one({"id": user["id"]}, {"$set": {"token_version": tv}})
+    return _session_payload({**u, "token_version": tv})
+
+
+@api.get("/auth/logins")
+async def my_logins(user: dict = Depends(get_current_user), limit: int = 20):
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "email": 1})
+    rows = await db.login_events.find({"email": u["email"]}, {"_id": 0, "ts": 0}).sort("at", -1).to_list(min(max(limit, 1), 100))
+    return rows
+
+
+@api.post("/users/{user_id}/2fa/reset")
+async def admin_reset_2fa(user_id: str, current: dict = Depends(require_admin)):
+    u = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    await db.users.update_one({"id": user_id}, {
+        "$set": {"totp_enabled": False, "token_version": int(u.get("token_version", 0)) + 1},
+        "$unset": {"totp_secret": "", "totp_recovery": "", "totp_last_step": "", "totp_pending": ""}})
+    logger.info("2FA de %s zerado por %s", u["email"], current.get("email"))
+    return {"ok": True}
+
+
+@api.get("/security/settings")
+async def get_security_settings(_: dict = Depends(require_admin)):
+    s = await _security_settings()
+    users = await db.users.find({}, {"_id": 0, "email": 1, "totp_enabled": 1}).to_list(1000)
+    s["users_without_2fa"] = sorted(x["email"] for x in users if not x.get("totp_enabled"))
+    return s
+
+
+class SecuritySettingsIn(BaseModel):
+    require_2fa: bool = False
+
+
+@api.put("/security/settings")
+async def put_security_settings(body: SecuritySettingsIn, current: dict = Depends(require_admin)):
+    me_ = await db.users.find_one({"id": current["id"]}, {"_id": 0, "totp_enabled": 1})
+    if body.require_2fa and not me_.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="Ative o 2FA na sua conta antes de exigir de todos")
+    await db.config.update_one({"key": "security"}, {"$set": {"require_2fa": body.require_2fa}}, upsert=True)
+    return await get_security_settings(current)
+
+
+@api.get("/security/logins")
+async def all_logins(_: dict = Depends(require_admin), limit: int = 100, failed: bool = False):
+    q = {"ok": False} if failed else {}
+    return await db.login_events.find(q, {"_id": 0, "ts": 0}).sort("at", -1).to_list(min(max(limit, 1), 500))
 
 
 @api.post("/auth/logout")
@@ -229,7 +414,7 @@ async def logout(user: dict = Depends(get_current_user)):
 # ---------- Users (admin) ----------
 @api.get("/users")
 async def list_users(_: dict = Depends(require_admin)):
-    docs = await db.users.find({}, {"password_hash": 0, "_id": 0}).to_list(500)
+    docs = await db.users.find({}, USER_PUBLIC).to_list(500)
     return docs
 
 
@@ -269,9 +454,10 @@ async def update_user(user_id: str, payload: UserUpdate, current: dict = Depends
         if len(payload.password) < 6:
             raise HTTPException(status_code=400, detail="A senha deve ter pelo menos 6 caracteres")
         update["password_hash"] = hash_password(payload.password)
+        update["token_version"] = int(u.get("token_version", 0)) + 1     # a senha trocada derruba as sessões dele
     if update:
         await db.users.update_one({"id": user_id}, {"$set": update})
-    return await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    return await db.users.find_one({"id": user_id}, USER_PUBLIC)
 
 
 @api.post("/auth/change-password")
@@ -283,8 +469,9 @@ async def change_password(payload: ChangePasswordPayload, current: dict = Depend
         raise HTTPException(status_code=400, detail="A nova senha deve ter pelo menos 6 caracteres")
     if payload.new_password == payload.current_password:
         raise HTTPException(status_code=400, detail="A nova senha deve ser diferente da atual")
-    await db.users.update_one({"id": current["id"]}, {"$set": {"password_hash": hash_password(payload.new_password)}})
-    return {"ok": True}
+    tv = int(u.get("token_version", 0)) + 1
+    await db.users.update_one({"id": current["id"]}, {"$set": {"password_hash": hash_password(payload.new_password), "token_version": tv}})
+    return {"ok": True, **_session_payload({**u, "token_version": tv})}
 
 
 @api.delete("/users/{user_id}")
@@ -1173,7 +1360,17 @@ async def _backup_many(device_ids: Optional[List[str]] = None) -> List[dict]:
     return [{k: v for k, v in r.items() if k != "content"} for r in results]
 
 
-scheduler = automation.Scheduler(db, _ping_everything, _backup_many)
+async def _optics_names():
+    return await optics_collector.targets()
+
+
+async def _send_daily_report() -> dict:
+    title, text, data = await dailyreport.build(db, _optics_names)
+    res = await automation.send_alert(db, title, text[:3800], push_url="/", push_tag="daily-report")
+    return {"title": title, "text": text, "data": data, "results": res}
+
+
+scheduler = automation.Scheduler(db, _ping_everything, _backup_many, _send_daily_report)
 
 
 async def _telegram_token() -> str:
@@ -1946,8 +2143,20 @@ async def put_automation_settings(payload: AutomationSettings, _: dict = Depends
     data["telegram_bot_token"] = "" if clear else (vault.encrypt(tok) if tok else existing.get("telegram_bot_token", ""))
     data["ping_interval_min"] = max(1, int(data["ping_interval_min"]))
     data["backup_hour"] = min(23, max(0, int(data["backup_hour"])))
+    data["daily_report_hour"] = min(23, max(0, int(data["daily_report_hour"])))
     await db.config.update_one({"key": "automation"}, {"$set": data}, upsert=True)
     return automation.public_settings(await automation.get_settings(db))
+
+
+@api.get("/automation/daily-report")
+async def preview_daily_report(_: dict = Depends(require_admin)):
+    title, text, data = await dailyreport.build(db, _optics_names)
+    return {"title": title, "text": text, "data": data}
+
+
+@api.post("/automation/daily-report/send")
+async def send_daily_report(_: dict = Depends(require_admin)):
+    return await _send_daily_report()
 
 
 @api.post("/automation/test-alert")
@@ -2192,7 +2401,11 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
         return
     user_id = payload["sub"]
     user_email = payload["email"]
-    u = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1})
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1, "token_version": 1})
+    if u and int(payload.get("tv", 0)) != int(u.get("token_version", 0)):
+        await ws.send_json({"type": "error", "message": "Sessão encerrada — entre novamente"})
+        await ws.close()
+        return
     if not u or u.get("role") == "viewer":
         await ws.send_json({"type": "error", "message": "Seu perfil não tem acesso ao terminal"})
         await ws.close()
@@ -2524,7 +2737,7 @@ async def transfer_targets(user: dict = Depends(get_current_user)):
     q = {"id": {"$ne": user["id"]}}
     if user.get("role") != "admin":
         q["role"] = "admin"
-    rows = await db.users.find(q, {"_id": 0, "password_hash": 0}).to_list(1000)
+    rows = await db.users.find(q, USER_PUBLIC).to_list(1000)
     return sorted((_user_brief(u) for u in rows), key=lambda u: (u["role"] != "admin", u["name"].lower()))
 
 
@@ -2550,8 +2763,8 @@ async def transfer(body: TransferIn, user: dict = Depends(get_current_user)):
     src_id = body.source_user_id or user["id"]
     if src_id != user["id"] and not is_admin:
         raise HTTPException(status_code=403, detail="Só o administrador pode trazer itens de outro usuário")
-    src = await db.users.find_one({"id": src_id}, {"_id": 0, "password_hash": 0})
-    dst = await db.users.find_one({"id": body.target_user_id}, {"_id": 0, "password_hash": 0})
+    src = await db.users.find_one({"id": src_id}, USER_PUBLIC)
+    dst = await db.users.find_one({"id": body.target_user_id}, USER_PUBLIC)
     if not src or not dst:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
     if src_id == dst["id"]:

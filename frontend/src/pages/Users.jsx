@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { UserPlus, Trash2, Pencil, Eye, ArrowLeftRight, Loader2, Network, Gauge } from "lucide-react";
+import { UserPlus, Trash2, Pencil, Eye, ArrowLeftRight, Loader2, Network, Gauge, ShieldCheck, ShieldAlert, ShieldOff, XCircle } from "lucide-react";
 import { TransferDialog } from "@/components/TransferDialog";
 import { useAuth } from "@/context/AuthContext";
 
@@ -85,6 +85,54 @@ function AccessDialog({ target, onClose }) {
   );
 }
 
+const REASON = { senha: "senha errada", "2fa": "código errado", bloqueado: "bloqueado" };
+
+function SecurityCard({ onChanged }) {
+  const [s, setS] = useState(null);
+  const [fails, setFails] = useState([]);
+  const load = async () => {
+    const [a, b] = await Promise.all([api.get("/security/settings"), api.get("/security/logins", { params: { failed: true, limit: 8 } })]);
+    setS(a.data); setFails(b.data);
+  };
+  useEffect(() => { load().catch(() => {}); }, []);
+  const toggle = async () => {
+    try { setS((await api.put("/security/settings", { require_2fa: !s.require_2fa })).data); onChanged?.(); toast.success(!s.require_2fa ? "2FA agora é obrigatório" : "2FA deixou de ser obrigatório"); }
+    catch (e) { toast.error(formatApiError(e)); }
+  };
+  if (!s) return null;
+  return (
+    <Card className="bg-[#111722] border-[#1E293B] p-4 mb-4 grid gap-4 md:grid-cols-2" data-testid="security-card">
+      <div>
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-[#4DA3FF]" />
+          <div className="text-sm font-medium text-slate-100">Exigir 2FA de todos os usuários</div>
+          <label className="ml-auto flex items-center gap-2 text-xs cursor-pointer">
+            <input type="checkbox" checked={s.require_2fa} onChange={toggle} data-testid="require-2fa" /> {s.require_2fa ? "exigido" : "opcional"}
+          </label>
+        </div>
+        <p className="text-[11px] text-slate-500 mt-1">Com 2FA exigido, quem ainda não ativou é levado à tela de ativação no próximo acesso. Login também bloqueia por 15 min após 5 senhas erradas.</p>
+        {s.users_without_2fa.length > 0
+          ? <div className="text-[11px] text-amber-300 mt-2" data-testid="users-without-2fa">Sem 2FA: {s.users_without_2fa.join(", ")}</div>
+          : <div className="text-[11px] text-emerald-400 mt-2">Todos os usuários com 2FA.</div>}
+      </div>
+      <div>
+        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono mb-2">Últimas tentativas recusadas</div>
+        {fails.length === 0 && <div className="text-[11px] text-slate-500">Nenhuma.</div>}
+        <div className="space-y-0.5" data-testid="failed-logins">
+          {fails.map(f => (
+            <div key={f.id} className="flex gap-2 text-[11px] font-mono">
+              <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+              <span className="text-slate-400 w-24 shrink-0">{new Date(f.at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+              <span className="text-slate-300 truncate">{f.email}</span>
+              <span className="text-slate-500 truncate ml-auto">{f.ip} · {REASON[f.reason] || f.reason}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 export default function Users() {
   const [users, setUsers] = useState([]);
   const [open, setOpen] = useState(false);
@@ -116,6 +164,11 @@ export default function Users() {
       if (data.role === "viewer") setAccess(data);   // já escolhe o que ele vai ver
     } catch (e) { toast.error(formatApiError(e)); }
   };
+  const reset2fa = async (u) => {
+    if (!window.confirm(`Zerar o 2FA de ${u.email}? Ele entra só com a senha e precisa ativar de novo (se for exigido, é levado à ativação). As sessões dele são encerradas.`)) return;
+    try { await api.post(`/users/${u.id}/2fa/reset`); toast.success("2FA zerado"); load(); }
+    catch (e) { toast.error(formatApiError(e)); }
+  };
   const del = async (u) => {
     if (!window.confirm(`Excluir ${u.email}?`)) return;
     try { await api.delete(`/users/${u.id}`); load(); toast.success("Excluído"); }
@@ -133,13 +186,15 @@ export default function Users() {
           <UserPlus className="w-4 h-4 mr-2" /> Novo Usuário
         </Button>
       </div>
-      <Card className="bg-[#111722] border-[#1E293B] overflow-hidden">
+      <SecurityCard onChanged={load} />
+      <Card className="bg-[#111722] border-[#1E293B] overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-xs uppercase tracking-widest text-slate-500 font-mono bg-[#0B111C]">
             <tr>
               <th className="text-left px-4 py-3">Nome</th>
               <th className="text-left px-4 py-3">Email</th>
               <th className="text-left px-4 py-3">Papel</th>
+              <th className="text-left px-4 py-3">2FA</th>
               <th className="text-left px-4 py-3">Criado em</th>
               <th className="text-right px-4 py-3">Ações</th>
             </tr>
@@ -153,6 +208,11 @@ export default function Users() {
                   <Badge className={(ROLE[u.role] || ROLE.operator).cls}>{(ROLE[u.role] || ROLE.operator).label}</Badge>
                   {u.role === "viewer" && <span className="ml-2 text-[10px] font-mono text-slate-500">{(u.view_maps || []).length} mapa(s) · {(u.view_dashboards || []).length} dash</span>}
                 </td>
+                <td className="px-4 py-3" data-testid={`user-2fa-${u.id}`}>
+                  {u.totp_enabled
+                    ? <span className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-400"><ShieldCheck className="w-3.5 h-3.5" /> ativo</span>
+                    : <span className="inline-flex items-center gap-1 text-[11px] font-mono text-amber-400"><ShieldAlert className="w-3.5 h-3.5" /> não</span>}
+                </td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-400">{new Date(u.created_at).toLocaleString("pt-BR")}</td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   {u.role === "viewer" ? (
@@ -162,6 +222,11 @@ export default function Users() {
                   ) : u.id !== current?.id && (
                     <Button size="sm" variant="ghost" onClick={() => setTransfer(u)} data-testid={`transfer-user-${u.id}`} className="text-[#4DA3FF] hover:bg-[#007AFF]/15" title="Enviar ou trazer equipamentos, mapas e dashboards">
                       <ArrowLeftRight className="w-4 h-4 md:mr-1.5" /><span className="hidden md:inline">Transferir</span>
+                    </Button>
+                  )}
+                  {u.totp_enabled && (
+                    <Button size="sm" variant="ghost" onClick={() => reset2fa(u)} data-testid={`reset-2fa-${u.id}`} className="text-amber-300 hover:bg-amber-950/30" title="Zerar 2FA (celular perdido/trocado)">
+                      <ShieldOff className="w-4 h-4" />
                     </Button>
                   )}
                   <Button size="sm" variant="ghost" onClick={() => openEdit(u)} data-testid={`edit-user-${u.id}`} className="text-slate-300 hover:bg-slate-800">

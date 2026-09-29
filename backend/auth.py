@@ -26,12 +26,13 @@ def _secret() -> str:
     return os.environ["JWT_SECRET"]
 
 
-def create_access_token(user_id: str, email: str, role: str) -> str:
+def create_access_token(user_id: str, email: str, role: str, token_version: int = 0) -> str:
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
         "type": "access",
+        "tv": int(token_version or 0),   # sobe ao trocar senha / 2FA / "encerrar sessões": tokens antigos deixam de valer
         "exp": datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXP_HOURS),
         "iat": datetime.now(timezone.utc),
     }
@@ -64,6 +65,8 @@ USER_LOADER = None
 # Perfil "viewer" (View): só Painel NOC, Dashboards e Mapas — e só leitura. Tudo fora desta lista é negado.
 VIEWER_ALLOW = [
     ("GET", r"/api/auth/me"), ("POST", r"/api/auth/logout"), ("POST", r"/api/auth/change-password"),
+    ("GET", r"/api/auth/2fa"), ("POST", r"/api/auth/2fa/(setup|enable|disable|recovery-codes)"),
+    ("POST", r"/api/auth/logout-all"), ("GET", r"/api/auth/logins"),
     ("GET", r"/api/stats"),
     ("GET", r"/api/devices"),
     ("GET", r"/api/maps"), ("GET", r"/api/maps/[\w-]+"), ("GET", r"/api/maps/[\w-]+/live"),
@@ -96,6 +99,8 @@ async def get_current_user(request: Request) -> dict:
         u = await USER_LOADER(payload["sub"])
         if not u:
             raise HTTPException(status_code=401, detail="Usuário não existe mais")
+        if int(payload.get("tv", 0)) != int(u.get("token_version", 0)):
+            raise HTTPException(status_code=401, detail="Sessão encerrada — entre novamente")
         user = {"id": u["id"], "email": u["email"], "name": u.get("name", ""), "role": u.get("role") or "operator",
                 "view_maps": u.get("view_maps") or [], "view_dashboards": u.get("view_dashboards") or []}
     if user["role"] == "viewer" and not viewer_allowed(request.method, request.url.path):

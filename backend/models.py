@@ -44,6 +44,7 @@ class UserOut(BaseModel):
 class LoginPayload(BaseModel):
     email: EmailStr
     password: str
+    totp: Optional[str] = None      # código do app autenticador ou código de recuperação (xxxx-xxxx)
 
 
 # ---------- Agents (Bastion proxies) ----------
@@ -197,6 +198,8 @@ class AutomationSettings(BaseModel):
     notify_agents: bool = True
     notify_devices: bool = False
     notify_config_changes: bool = True
+    daily_report_enabled: bool = True
+    daily_report_hour: int = 8
     telegram_bot_token: Optional[str] = None  # write-only; empty keeps existing
     clear_telegram_token: bool = False
     telegram_chat_id: str = ""

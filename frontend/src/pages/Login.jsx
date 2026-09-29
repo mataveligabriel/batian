@@ -14,6 +14,8 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [step, setStep] = useState("password");     // password | totp
+  const [code, setCode] = useState("");
 
   if (loading) return null;
   if (user) return <Navigate to="/dashboard" replace />;
@@ -22,9 +24,11 @@ export default function Login() {
     e.preventDefault();
     setSubmitting(true);
     try {
-      await login(email.trim(), password);
+      const r = await login(email.trim(), password, step === "totp" ? code.trim() : undefined);
+      if (r?.need_totp) { setStep("totp"); setCode(""); }
     } catch (err) {
       toast.error(formatApiError(err));
+      if (step === "totp") setCode("");
     } finally {
       setSubmitting(false);
     }
@@ -42,6 +46,16 @@ export default function Login() {
         </div>
 
         <form onSubmit={onSubmit} data-testid="login-form" className="bg-[#0B111C] border border-[#1E293B] rounded-xl p-6 space-y-4">
+          {step === "totp" ? (
+            <div data-testid="login-totp-step">
+              <Label htmlFor="totp" className="text-xs uppercase tracking-widest text-slate-400 font-mono">Código do app autenticador</Label>
+              <Input id="totp" required autoFocus inputMode="numeric" autoComplete="one-time-code" data-testid="login-totp-input"
+                     value={code} onChange={e => setCode(e.target.value)} placeholder="123456"
+                     className="mt-1 bg-[#05070A] border-[#1E293B] font-mono text-slate-100 text-center text-xl tracking-[0.4em]" />
+              <p className="text-[11px] text-slate-500 mt-2">Abra o Google Authenticator / Authy / Microsoft Authenticator. Sem o celular? Use um código de recuperação (xxxx-xxxx).</p>
+              <button type="button" onClick={() => { setStep("password"); setCode(""); }} className="text-[11px] text-[#4DA3FF] mt-1 hover:underline">voltar</button>
+            </div>
+          ) : (<>
           <div>
             <Label htmlFor="email" className="text-xs uppercase tracking-widest text-slate-400 font-mono">Email</Label>
             <Input id="email" type="email" required autoFocus autoComplete="username" data-testid="login-email-input"
@@ -54,6 +68,7 @@ export default function Login() {
                    value={password} onChange={e => setPassword(e.target.value)}
                    className="mt-1 bg-[#05070A] border-[#1E293B] font-mono text-slate-100" />
           </div>
+          </>)}
           <Button type="submit" disabled={submitting} data-testid="login-submit-btn" className="w-full bg-[#007AFF] hover:bg-[#0062CC] h-10">
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Entrar"}
           </Button>

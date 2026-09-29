@@ -400,3 +400,31 @@ manual) encontra diferença em relação ao anterior, vai para o Telegram/push:
 
 Linhas que mudam sozinhas a cada coleta (carimbo de hora, "Last configuration was updated at…", `## Last commit`,
 cabeçalho do `/export` do MikroTik, `ntp clock-period`) não contam como alteração.
+
+## 18. Login seguro (2FA) e resumo diário
+
+**Verificação em duas etapas (2FA)** — botão **Segurança** no rodapé do menu:
+- **Ativar 2FA**: leia o QR code no Google Authenticator / Authy / Microsoft Authenticator e digite o código.
+  Aparecem 10 **códigos de recuperação** (cada um entra uma vez, se perder o celular) — guarde.
+- A partir daí o login pede senha **e** o código de 6 dígitos.
+- **Encerrar outras sessões**: derruba o Bastion aberto em outros computadores/celulares (esta continua).
+  Trocar a senha também derruba as outras sessões.
+- **Últimos acessos**: data, IP e navegador de cada login (e tentativas recusadas).
+
+Em **Usuários** (admin): coluna 2FA, **Exigir 2FA de todos** (quem não tem é levado à ativação no próximo acesso),
+**zerar o 2FA** de alguém que perdeu o celular e a lista das últimas tentativas recusadas.
+
+**Limite de tentativas**: 5 senhas/códigos errados em 15 min bloqueiam aquele e-mail por 15 min (e 20 por IP),
+com alerta no Telegram. O IP registrado é o real do cliente (repassado pelo Caddy).
+
+**Resumo diário** (Automação → Notificações, às 8 h por padrão): equipamentos/agentes offline, interfaces
+monitoradas caídas e que oscilaram, portas com sinal óptico caindo (média de 24 h ≥ 2 dB pior que a semana
+anterior, ou abaixo de −25 dBm), maiores picos de tráfego, ataques DDoS, configs alteradas, falhas de backup,
+logins e usuários sem 2FA. **Prévia** mostra o texto na tela; **Enviar agora** manda na hora.
+
+Perdeu o celular **e** os códigos de recuperação, e é o único admin? No servidor:
+```bash
+cd /opt/bastion/deploy
+sudo docker compose exec mongo mongosh bastion --quiet --eval \
+  'db.users.updateOne({email:"SEU@EMAIL"},{$set:{totp_enabled:false},$unset:{totp_secret:"",totp_recovery:""}})'
+```

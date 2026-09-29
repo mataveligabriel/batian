@@ -32,6 +32,7 @@ DEFAULTS = {
     "ping_enabled": True, "ping_interval_min": 5,
     "backup_enabled": True, "backup_hour": 3,
     "notify_agents": True, "notify_devices": False, "notify_config_changes": True,
+    "daily_report_enabled": True, "daily_report_hour": 8,
     "telegram_bot_token": "", "telegram_chat_id": "", "webhook_url": "",
 }
 
@@ -266,10 +267,13 @@ def unified_diff(a: str, b: str, label_a: str, label_b: str) -> str:
 class Scheduler:
     """Single background loop: periodic ping-through-chain with alerts, and daily config backup."""
 
-    def __init__(self, db, ping_all: Callable[[], Awaitable[list]], backup_all: Callable[[], Awaitable[list]]):
+    def __init__(self, db, ping_all: Callable[[], Awaitable[list]], backup_all: Callable[[], Awaitable[list]],
+                 daily_report: Optional[Callable[[], Awaitable[dict]]] = None):
         self.db = db
         self.ping_all = ping_all
         self.backup_all = backup_all
+        self.daily_report = daily_report
+        self.last_report_day: Optional[str] = None
         self._task: Optional[asyncio.Task] = None
         self.last_ping: Optional[datetime] = None
         self.last_backup_day: Optional[str] = None
@@ -306,6 +310,16 @@ class Scheduler:
                 self.busy = False
         local_hour = datetime.now().hour
         today = datetime.now().date().isoformat()
+        if (self.daily_report and s.get("daily_report_enabled", True) and local_hour == int(s.get("daily_report_hour", 8))
+                and self.last_report_day != today):
+            st = await self.db.config.find_one({"key": "report_state"}) or {}
+            self.last_report_day = today
+            if st.get("last_day") != today:
+                await self.db.config.update_one({"key": "report_state"}, {"$set": {"last_day": today}}, upsert=True)
+                try:
+                    await self.daily_report()
+                except Exception as e:
+                    logger.warning(f"resumo diário falhou: {e}")
         if s["backup_enabled"] and local_hour == int(s["backup_hour"]) and self.last_backup_day != today:
             last = await self.db.config.find_one({"key": "backup_state"}) or {}
             if last.get("last_day") != today:
