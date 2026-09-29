@@ -279,13 +279,26 @@ class Collector:
                 await self._alert(f"🚨 Ataque DDoS: {a['victim']}",
                                   f"{a['type']} · {flowstore.fmt_bps(a['peak_bps'])} / {flowstore.fmt_pps(a['peak_pps'])}"
                                   f" · entrando por {self._where(a['ifaces'])}" + (f" · origem: {src}" if src else ""),
-                                  f"ddos-{a['victim']}")
+                                  f"ddos-{a['victim']}", await self._mit_buttons(self.attack_ids.get(a["victim"], "")))
 
-    async def _alert(self, title: str, text: str, tag: str):
+    async def _mit_buttons(self, attack_id: str):
+        """Botão 'Mitigar' no Telegram quando a mitigação está ligada e o bot do assistente está ativo."""
+        try:
+            bgp = await self.db.config.find_one({"key": "bgp"}, {"_id": 0}) or {}
+            ai = await self.db.config.find_one({"key": "ai"}, {"_id": 0, "ai_enabled": 1}) or {}
+            if not (bgp.get("enabled") and bgp.get("peers") and ai.get("ai_enabled")):
+                return None
+            mins = int(bgp.get("default_minutes") or 30)
+            return [[{"text": f"🛡️ Mitigar ({mins} min de blackhole)", "callback_data": f"mit:{attack_id}:{mins}"}]]
+        except Exception:
+            return None
+
+    async def _alert(self, title: str, text: str, tag: str, buttons=None):
         if not self.alert:
             return
         try:
-            await self.alert(self.db, title, text, push_url="/flow?tab=ataques", push_tag=tag)
+            kw = {"buttons": buttons} if buttons else {}
+            await self.alert(self.db, title, text, push_url="/flow?tab=ataques", push_tag=tag, **kw)
         except Exception as e:
             log.warning(f"alerta: {e}")
 

@@ -52,7 +52,8 @@ def backup_command_for(dev: dict) -> str:
     return (dev.get("backup_command") or BACKUP_COMMANDS.get(dev.get("device_type") or "linux", "")).strip()
 
 
-async def send_alert(db, title: str, text: str, push_url: str = "/", push_tag: str = None) -> dict:
+async def send_alert(db, title: str, text: str, push_url: str = "/", push_tag: str = None, buttons: list = None) -> dict:
+    """buttons: teclado inline do Telegram ([[{text, callback_data}]]), tratado pelo bot do assistente."""
     s = await get_settings(db)
     token = vault.decrypt(s.get("telegram_bot_token", ""))
     chat = (s.get("telegram_chat_id") or "").strip()
@@ -74,8 +75,10 @@ async def send_alert(db, title: str, text: str, push_url: str = "/", push_tag: s
     async with httpx.AsyncClient(timeout=15) as client:
         if token and chat:
             try:
-                r = await client.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                                      json={"chat_id": chat, "text": f"{title}\n{text}"})
+                body = {"chat_id": chat, "text": f"{title}\n{text}"}
+                if buttons:
+                    body["reply_markup"] = {"inline_keyboard": buttons}
+                r = await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json=body)
                 results["telegram"] = "ok" if r.status_code == 200 else f"HTTP {r.status_code}: {r.text[:200]}"
             except Exception as e:
                 results["telegram"] = f"erro: {e}"

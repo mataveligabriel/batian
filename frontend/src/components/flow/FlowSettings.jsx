@@ -192,6 +192,7 @@ export function FlowSettings({ settings, reload }) {
     netflow_port: Number(f.netflow_port), sflow_port: Number(f.sflow_port), retention_days: Number(f.retention_days), hourly_days: Number(f.hourly_days),
     own_prefixes: f.own_txt.split(/[\s,;]+/).filter(Boolean), ignore_prefixes: f.ign_txt.split(/[\s,;]+/).filter(Boolean),
     sampling: f.sampling || {}, asn_auto: !!f.asn_auto,
+    own_asn: Number(String(f.own_asn || 0).replace(/^AS/i, "")) || 0, auto_discover: !!f.auto_discover, discover_min_mbps: Number(f.discover_min_mbps) || 5,
     attack: { enabled: !!f.att.enabled, pps: Number(f.att.pps), bps: Math.round(Number(f.att.bps_g) * 1e9), amp_bps: Math.round(Number(f.att.amp_m) * 1e6),
               syn_pps: Number(f.att.syn_pps), min_windows: Number(f.att.min_windows), end_windows: Number(f.att.end_windows), avg_windows: Number(f.att.avg_windows) },
     ...over,
@@ -258,6 +259,11 @@ export function FlowSettings({ settings, reload }) {
               {num("Dias da junção por hora", f.hourly_days, v => setF({ ...f, hourly_days: v }), "7 a 730")}
             </div>
             <label className="flex items-center gap-2 text-xs text-slate-300"><Switch checked={!!f.asn_auto} onCheckedChange={v => setF({ ...f, asn_auto: v })} disabled={ro} /> atualizar a base de ASN sozinho toda semana</label>
+            <div className="grid grid-cols-2 gap-3 pt-1 border-t border-[#1E293B]">
+              {num("Seu AS", f.own_asn || "", v => setF({ ...f, own_asn: v }), "para a sugestão de peering achar os IXs em comum", "own-asn")}
+              {num("Descoberta: mínimo (Mb/s)", f.discover_min_mbps ?? 5, v => setF({ ...f, discover_min_mbps: v }), "interfaces abaixo disso não aparecem")}
+            </div>
+            <label className="flex items-center gap-2 text-xs text-slate-300"><Switch checked={!!f.auto_discover} onCheckedChange={v => setF({ ...f, auto_discover: v })} disabled={ro} data-testid="auto-discover" /> descoberta automática: a cada 6 h adiciona interfaces novas com flow (quando a descrição indica o papel) e avisa</label>
           </div>
           <AsnBase s={s} reload={reload} />
         </div>

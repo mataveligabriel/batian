@@ -32,6 +32,18 @@ services:
       mongo:
         condition: service_healthy
 
+  # mitigação de DDoS: BGP do Bastion anuncia o /32 atacado para as bordas (blackhole). Fica parado até
+  # ser ligado em Flow → Mitigação. Sai do ar = as bordas retiram o blackhole sozinhas (sessão cai).
+  bgp:
+    build: ../backend
+    command: ["python", "bgpd.py"]
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
   # opcional: VPN SSL da Fortinet (openfortivpn) para jumps que só respondem por VPN.
   # Ative com COMPOSE_PROFILES=vpn no deploy/.env (o update.sh prepara o /dev/ppp).
   vpn:

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
-import { ShieldAlert, ShieldCheck, ChevronDown, ChevronRight, Siren, Info } from "lucide-react";
+import { ShieldAlert, ShieldCheck, ChevronDown, ChevronRight, Siren, Info, ShieldBan } from "lucide-react";
+import { MitigateDialog } from "@/components/flow/FlowMitigation";
 import { StackedChart } from "@/components/flow/StackedChart";
 import { STATUS } from "@/lib/netfmt";
 import { ago, fmtDur, fmtRate, SERIES } from "@/components/flow/flowlib";
@@ -10,7 +11,7 @@ const PROTO = { 1: "ICMP", 6: "TCP", 17: "UDP", 47: "GRE", 58: "ICMPv6" };
 function hint(a) {
   const t = a.type || "";
   const sp = a.sport?.[0]?.[0];
-  const out = [`RTBH do ${a.victim}${a.victim.includes(":") ? "/128" : "/32"} nos trânsitos (community 65535:666, se o trânsito aceitar) — derruba o ataque e o IP junto.`];
+  const out = [`Botão Mitigar: blackhole (RTBH) do ${a.victim}${a.victim.includes(":") ? "/128" : "/32"} nas suas bordas (BGP do Bastion) — derruba o ataque e o IP junto.`];
   if (t.startsWith("Amplificação") && sp !== undefined) out.push(`Filtro/Flowspec no upstream: UDP porta de origem ${sp} → ${a.victim} (tráfego legítimo com essa porta de origem é raro).`);
   if (t === "UDP fragmentado") out.push("Filtro de fragmentos UDP para o IP atacado no upstream (Flowspec fragment).");
   if (t.includes("SYN")) out.push("SYN cookies / limite de SYN no servidor; no upstream, Flowspec TCP flags SYN para o destino.");
@@ -68,8 +69,12 @@ export function FlowAttacks({ settings, onCount }) {
   const [items, setItems] = useState(null);
   const [err, setErr] = useState("");
   const [open, setOpen] = useState(null);
+  const [mit, setMit] = useState(null);          // ataque sendo mitigado (diálogo)
+  const [blackholed, setBlackholed] = useState({});  // ip -> mitigação ativa
+  const loadMit = () => api.get("/flow/mitigation/status").then(r => setBlackholed(Object.fromEntries((r.data.active || []).map(m => [m.prefix.split("/")[0], m])))).catch(() => {});
   useEffect(() => {
     let alive = true;
+    loadMit();
     const load = () => api.get("/flow/attacks", { params: { limit: 200 } })
       .then(r => { if (alive) { setItems(r.data); setErr(""); onCount?.(r.data.filter(a => a.status === "active").length); } })
       .catch(e => alive && setErr(formatApiError(e)));
@@ -92,7 +97,8 @@ export function FlowAttacks({ settings, onCount }) {
           </div>
         ) : act.map(a => (
           <div key={a.id} className="border rounded mb-2" style={{ borderColor: STATUS.critical }} data-testid="attack-active">
-            <button className="w-full text-left px-3 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1" onClick={() => setOpen(open === a.id ? null : a.id)}>
+            <div className="flex flex-wrap items-center">
+            <button className="flex-1 text-left px-3 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1" onClick={() => setOpen(open === a.id ? null : a.id)}>
               <span className="flex items-center gap-1.5 text-xs font-mono font-bold uppercase tracking-widest" style={{ color: STATUS.critical }}><Siren className="w-4 h-4 animate-pulse" /> Em andamento</span>
               <span className="font-mono text-lg text-slate-50">{a.victim}</span>
               <span className="text-sm text-slate-200">{a.type}</span>
@@ -100,11 +106,17 @@ export function FlowAttacks({ settings, onCount }) {
               <span className="text-xs font-mono text-slate-400">pico {fmtRate(a.peak_bps)} · começou {ago(a.start)}</span>
               <span className="text-xs text-slate-400 truncate">entrando por {where(a)}</span>
             </button>
+            {blackholed[a.victim]
+              ? <span className="mx-3 text-xs font-mono flex items-center gap-1" style={{ color: STATUS.warning }} data-testid="attack-blackholed"><ShieldBan className="w-4 h-4" /> em blackhole até {new Date(blackholed[a.victim].expires_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span>
+              : <button onClick={() => setMit(a)} data-testid="attack-mitigate" className="mx-3 my-2 px-3 py-1.5 rounded text-xs font-medium text-white flex items-center gap-1.5 hover:opacity-90" style={{ background: STATUS.critical }}>
+                  <ShieldBan className="w-4 h-4" /> Mitigar</button>}
+            </div>
             {open === a.id && <AttackDetail a={a} />}
           </div>
         ))}
       </div>
 
+      {mit && <MitigateDialog target={mit} onClose={() => setMit(null)} onDone={loadMit} />}
       <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono mb-1">Histórico</div>
       {items && past.length === 0 && <div className="text-xs text-slate-500 mb-3">Nenhum ataque registrado.</div>}
       {past.length > 0 && (

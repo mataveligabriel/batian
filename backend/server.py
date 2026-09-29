@@ -43,6 +43,9 @@ from telnet_service import TelnetClientWrapper
 import vault
 import automation
 import configsearch
+import flowdiscover
+import mitigation
+import peering
 import dailyreport
 import qrgen
 import security
@@ -127,6 +130,9 @@ async def startup():
         logger.warning(f"índices do flow: {e}")
     global _flow_asn_task
     _flow_asn_task = asyncio.create_task(_flow_asn_loop())
+    _bg(_auto_discover_loop())
+    await db.flow_mitigations.create_index([("status", 1), ("created_at", -1)])
+    await db.flow_mitigations.create_index("id")
 
 
 async def seed_admin():
@@ -2955,6 +2961,9 @@ class FlowSettingsIn(BaseModel):
     sampling: dict = {}
     attack: dict = {}
     asn_auto: bool = True
+    own_asn: int = 0
+    auto_discover: bool = False
+    discover_min_mbps: float = 5
 
 
 class FlowIfaceIn(BaseModel):
@@ -3054,7 +3063,9 @@ async def flow_put_settings(body: FlowSettingsIn, _: dict = Depends(require_admi
     att["avg_windows"] = min(att["avg_windows"], 12)
     data = {"netflow_port": body.netflow_port, "sflow_port": body.sflow_port,
             "retention_days": max(1, min(body.retention_days, 60)), "hourly_days": max(7, min(body.hourly_days, 730)),
-            "own_prefixes": own, "ignore_prefixes": ign, "sampling": samp, "attack": att, "asn_auto": body.asn_auto}
+            "own_prefixes": own, "ignore_prefixes": ign, "sampling": samp, "attack": att, "asn_auto": body.asn_auto,
+            "own_asn": body.own_asn if 0 <= body.own_asn < 2 ** 32 else 0, "auto_discover": body.auto_discover,
+            "discover_min_mbps": max(0.1, min(float(body.discover_min_mbps or 5), 100000))}
     await db.config.update_one({"key": "flow"}, {"$set": {"key": "flow", **data}}, upsert=True)
     try:
         await flowstore.ensure_indexes(db, data)
@@ -3379,6 +3390,213 @@ async def flow_attack(aid: str, user: dict = Depends(get_current_user)):
     asn = await _asn_db()
     a["src_as"] = [[x, b, (asn.name(x) if asn and x else "")] for x, b in a.get("src_as") or []]
     return a
+
+
+# ---------- Mitigação de DDoS (blackhole via BGP do Bastion) ----------
+class MitigationSettingsIn(BaseModel):
+    enabled: bool = False
+    local_as: int = 0
+    router_id: str = ""
+    local_address: str = ""
+    hold_time: int = 90
+    next_hop: str = "192.0.2.1"
+    communities: List[str] = []
+    no_export: bool = True
+    local_pref: int = 200
+    peers: List[dict] = []
+    default_minutes: int = 30
+    max_minutes: int = 1440
+    max_active: int = 20
+    protect: List[str] = []
+
+
+class MitigateIn(BaseModel):
+    prefix: str = ""
+    attack_id: str = ""
+    minutes: int = 0
+    reason: str = ""
+
+
+class MitigationMinutes(BaseModel):
+    minutes: int = 30
+
+
+def _mit_err(e: Exception):
+    raise HTTPException(400, str(e))
+
+
+@api.get("/flow/mitigation/settings")
+async def mit_get_settings(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    s = await mitigation.get_settings(db)
+    fs = await flowstore.get_settings(db)
+    return {**s, "is_admin": user.get("role") == "admin", "durations": mitigation.DURATIONS,
+            "own_prefixes": fs.get("own_prefixes") or []}
+
+
+@api.put("/flow/mitigation/settings")
+async def mit_put_settings(body: MitigationSettingsIn, _: dict = Depends(require_admin)):
+    try:
+        data = mitigation.clean_settings(body.model_dump())
+    except mitigation.MitigationError as e:
+        _mit_err(e)
+    await db.config.update_one({"key": "bgp"}, {"$set": {"key": "bgp", **data}}, upsert=True)
+    return await mit_get_settings(_)
+
+
+@api.get("/flow/mitigation/status")
+async def mit_status(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    st = await db.bgp_status.find_one({"_id": "status"}, {"_id": 0}) or {}
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(st["at"])).total_seconds() if st.get("at") else None
+    except ValueError:
+        age = None
+    active = await db.flow_mitigations.find({"status": "active"}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {**st, "daemon_age": age, "daemon_ok": age is not None and age < 30, "active": active}
+
+
+@api.get("/flow/mitigations")
+async def mit_list(user: dict = Depends(get_current_user), limit: int = 100):
+    _no_viewer(user)
+    return await db.flow_mitigations.find({}, {"_id": 0}).sort("created_at", -1).to_list(min(max(limit, 1), 500))
+
+
+@api.post("/flow/mitigations")
+async def mit_create(body: MitigateIn, user: dict = Depends(get_current_user)):
+    try:
+        m = await mitigation.create(db, user, prefix=body.prefix or None, attack_id=body.attack_id or None,
+                                    minutes=body.minutes or None, reason=body.reason, channel="web")
+    except mitigation.MitigationError as e:
+        _mit_err(e)
+    if not m.get("extended"):
+        _bg(automation.send_alert(db, f"🛡️ Mitigação ATIVADA: {m['prefix']}",
+                                  f"Blackhole na borda por {mitigation.fmt_minutes(m['minutes'])} (por {user.get('email')}).\n"
+                                  "O IP fica sem tráfego nenhum até o prazo acabar ou alguém remover.", push_url="/flow?tab=mitigacao"))
+    return m
+
+
+@api.post("/flow/mitigations/{mid}/extend")
+async def mit_extend(mid: str, body: MitigationMinutes, user: dict = Depends(get_current_user)):
+    try:
+        return await mitigation.extend(db, user, mid, body.minutes)
+    except mitigation.MitigationError as e:
+        _mit_err(e)
+
+
+@api.post("/flow/mitigations/{mid}/withdraw")
+async def mit_withdraw(mid: str, user: dict = Depends(get_current_user)):
+    try:
+        m = await mitigation.withdraw(db, user, mid)
+    except mitigation.MitigationError as e:
+        _mit_err(e)
+    _bg(automation.send_alert(db, f"🟢 Mitigação removida: {m['prefix']}", f"Removida por {user.get('email')}.", push_url="/flow?tab=mitigacao"))
+    return m
+
+
+@api.get("/flow/mitigation/router-config")
+async def mit_router_config(vendor: str = "huawei", bastion_ip: str = "", user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    s = await mitigation.get_settings(db)
+    fs = await flowstore.get_settings(db)
+    return {"vendor": vendor, "config": mitigation.router_config(s, vendor, bastion_ip.strip(), fs.get("own_prefixes") or [])}
+
+
+# ---------- Sugestão de peering ----------
+@api.get("/flow/peering")
+async def flow_peering(days: int = 7, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    mine = await _flow_ifaces_of(user)
+    tr = list(dict.fromkeys(i["key"] for i in mine if i.get("role") == "transito"))
+    ix = list(dict.fromkeys(i["key"] for i in mine if i.get("role") in ("ix", "pni", "cdn")))
+    if not tr:
+        raise HTTPException(400, "Marque as interfaces de trânsito (papel 'Trânsito') na aba Interfaces")
+    fs = await flowstore.get_settings(db)
+    asn = await _asn_db()
+    return await peering.suggestions(db, transit_keys=tr, ix_keys=ix, days=days, own_asn=int(fs.get("own_asn") or 0),
+                                     asn_name=asn.name if asn else None)
+
+
+# ---------- Descoberta de interfaces ----------
+async def _discover_for(user: dict, refresh_snmp: bool = False) -> dict:
+    fs = await flowstore.get_settings(db)
+    exps = await db.flow_exporters.find({}, {"_id": 1, "src": 1, "ifs": 1, "last": 1, "kind": 1}).to_list(5000)
+    devs = await db.devices.find(_scope(user), {"_id": 0, "id": 1, "name": 1, "host": 1, "flow_exporter": 1}).to_list(10000)
+    hosts = {e["_id"] for e in exps} | {e.get("src") for e in exps}
+    caches, snmp_errors = {}, {}
+    for d in devs:
+        if d.get("host") not in hosts and d.get("flow_exporter") not in hosts:
+            continue
+        c = await db.device_ifaces.find_one({"device_id": d["id"]}, {"_id": 0, "interfaces": 1})
+        if (not c or refresh_snmp):
+            try:
+                c = await device_interfaces(d["id"], True, user)
+            except HTTPException as e:
+                snmp_errors[d["name"]] = str(e.detail)
+        caches[d["id"]] = (c or {}).get("interfaces") or []
+    monitored = {(i["exporter"], int(i["if_index"])) for i in await _flow_ifaces_of(user)}
+    res = flowdiscover.build(exps, devs, caches, monitored, float(fs.get("discover_min_mbps") or 5) * 1e6)
+    res["snmp_errors"] = snmp_errors
+    res["min_mbps"] = fs.get("discover_min_mbps") or 5
+    return res
+
+
+@api.get("/flow/discover")
+async def flow_discover(refresh: bool = False, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return await _discover_for(user, refresh)
+
+
+class DiscoverItem(BaseModel):
+    device_id: str
+    exporter: str
+    if_index: int
+    if_name: str = ""
+    role: str = "outro"
+    label: str = ""
+
+
+class DiscoverApplyIn(BaseModel):
+    items: List[DiscoverItem] = []
+
+
+@api.post("/flow/discover/apply")
+async def flow_discover_apply(body: DiscoverApplyIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    added, skipped = [], []
+    for it in body.items[:500]:
+        try:
+            doc = await flow_add_iface(FlowIfaceIn(device_id=it.device_id, if_index=it.if_index, if_name=it.if_name,
+                                                   exporter=it.exporter, role=it.role if it.role in flowstore.ROLES else "outro",
+                                                   label=it.label), user)
+            added.append(doc)
+        except HTTPException as e:
+            skipped.append({"if_name": it.if_name, "reason": str(e.detail)})
+    return {"added": len(added), "skipped": skipped}
+
+
+async def _auto_discover_loop():
+    """Com 'descoberta automática' ligada: a cada 6 h adiciona interfaces novas com papel sugerido."""
+    await asyncio.sleep(120)
+    while True:
+        try:
+            fs = await flowstore.get_settings(db)
+            if fs.get("auto_discover"):
+                for u in await db.users.find({"role": {"$in": ["admin", "operator"]}}, {"_id": 0, "id": 1, "email": 1, "role": 1}).to_list(1000):
+                    res = await _discover_for(u)
+                    items = [DiscoverItem(device_id=d["device_id"], exporter=r["exporter"], if_index=r["if_index"], if_name=r["if_name"],
+                                          role=r["role"], label=r["alias"])
+                             for d in res["devices"] for r in d["items"] if r["role"]]
+                    if items:
+                        out = await flow_discover_apply(DiscoverApplyIn(items=items), u)
+                        if out["added"]:
+                            names = ", ".join(f"{i.if_name} ({flowstore.ROLES.get(i.role, i.role)})" for i in items[:10])
+                            await automation.send_alert(db, f"🔎 Flow: {out['added']} interface(s) nova(s) monitorada(s)",
+                                                        f"Adicionadas sozinhas para {u['email']}: {names}. Revise em Flow → Interfaces.",
+                                                        push_url="/flow?tab=interfaces")
+        except Exception as e:
+            logger.warning(f"descoberta automática de flow: {e}")
+        await asyncio.sleep(6 * 3600)
 
 
 @api.get("/flow/asn/lookup")

@@ -26,6 +26,9 @@ DEFAULTS = {
     "sampling": {},               # ip do exportador -> taxa fixa (quando o roteador não informa)
     "attack": dict(flowagg.ATTACK_DEFAULTS),
     "asn_auto": True,
+    "own_asn": 0,                 # seu AS (sugestão de peering: IXs em comum no PeeringDB)
+    "auto_discover": False,       # adiciona sozinho interfaces novas com flow (com o papel sugerido)
+    "discover_min_mbps": 5,       # abaixo disso a interface não aparece na descoberta
 }
 ROLES = {"transito": "Trânsito", "pni": "PNI", "ix": "IX / PTT", "cdn": "CDN / cache", "cliente": "Cliente", "outro": "Outro"}
 DIMS = {"sas": "AS de origem", "das": "AS de destino", "spfx": "Prefixo de origem", "dpfx": "Prefixo de destino",

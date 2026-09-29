@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Plus, Trash2, Search, Loader2, RefreshCw, Radio, Check } from "lucide-react";
+import { Plus, Trash2, Search, Loader2, RefreshCw, Radio, Check, Wand2 } from "lucide-react";
 import { ago, fmtRate, ROLE_LABEL, selCls, inputCls } from "@/components/flow/flowlib";
 
 function AddDialog({ devices, onClose, onAdded }) {
@@ -112,10 +112,91 @@ function AddDialog({ devices, onClose, onAdded }) {
   );
 }
 
+/** Descoberta: interfaces que já mandam flow e não estão monitoradas, com papel sugerido pela descrição. */
+function DiscoverDialog({ onClose, onAdded }) {
+  const [res, setRes] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [sel, setSel] = useState({});
+  const [role, setRole] = useState({});
+  const [label, setLabel] = useState({});
+  const k = (r) => `${r.exporter}|${r.if_index}`;
+  const load = async (refresh = false) => {
+    setBusy(true);
+    try {
+      const { data } = await api.get("/flow/discover", { params: { refresh } });
+      setRes(data);
+      const s = {}, ro = {}, la = {};
+      data.devices.forEach(d => d.items.forEach(r => { s[k(r)] = !!r.role; ro[k(r)] = r.role || "outro"; la[k(r)] = r.alias || ""; }));
+      setSel(s); setRole(ro); setLabel(la);
+    } catch (e) { toast.error(formatApiError(e)); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const apply = async () => {
+    const items = [];
+    (res?.devices || []).forEach(d => d.items.forEach(r => {
+      if (sel[k(r)]) items.push({ device_id: d.device_id, exporter: r.exporter, if_index: r.if_index, if_name: r.if_name, role: role[k(r)], label: label[k(r)] });
+    }));
+    if (!items.length) return toast.error("Marque pelo menos uma interface");
+    setBusy(true);
+    try {
+      const { data } = await api.post("/flow/discover/apply", { items });
+      toast.success(`${data.added} interface(s) monitorada(s)` + (data.skipped.length ? ` · ${data.skipped.length} já estavam` : ""));
+      onAdded(); onClose();
+    } catch (e) { toast.error(formatApiError(e)); }
+    finally { setBusy(false); }
+  };
+  const count = Object.values(sel).filter(Boolean).length;
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-5xl max-h-[90vh] overflow-y-auto" data-testid="discover-dialog">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><Wand2 className="w-5 h-5 text-[#4DA3FF]" /> Descobrir interfaces com flow</DialogTitle></DialogHeader>
+        {!res ? <Loader2 className="w-5 h-5 animate-spin text-slate-500" /> : (
+          <div className="space-y-3">
+            <div className="text-xs text-slate-400">Interfaces que os roteadores já estão exportando (acima de {res.min_mbps} Mb/s) e ainda não estão monitoradas.
+              O papel vem da descrição da interface (SNMP) — confira antes de adicionar.
+              <button onClick={() => load(true)} disabled={busy} className="ml-2 text-[#4DA3FF] hover:underline inline-flex items-center gap-1"><RefreshCw className="w-3 h-3" /> reler nomes via SNMP</button></div>
+            {res.total === 0 && <div className="text-sm text-slate-400 p-4 border border-dashed border-[#1E293B] rounded" data-testid="discover-empty">Nada novo: tudo que manda flow já está monitorado.</div>}
+            {res.devices.map(d => (
+              <div key={d.device_id + d.exporter} className="border border-[#1E293B] rounded" data-testid="discover-device">
+                <div className="px-3 py-1.5 text-sm text-slate-100 border-b border-[#1E293B] flex gap-2">{d.device_name}<span className="text-xs font-mono text-slate-500">{d.exporter}</span>
+                  {!d.snmp_cached && <span className="text-[11px] text-amber-300 ml-auto">sem nomes via SNMP</span>}</div>
+                <table className="w-full text-xs font-mono">
+                  <tbody>
+                    {d.items.map(r => (
+                      <tr key={k(r)} className="border-t border-[#1E293B]/60" data-testid="discover-row">
+                        <td className="pl-3 py-1 w-6"><input type="checkbox" checked={!!sel[k(r)]} onChange={e => setSel({ ...sel, [k(r)]: e.target.checked })} /></td>
+                        <td className="pr-2"><div className="text-slate-100">{r.if_name}</div><div className="text-[10px] text-slate-500">{r.alias || "sem descrição"} · ifIndex {r.if_index}</div></td>
+                        <td className="text-right text-slate-200 whitespace-nowrap pr-3">↓ {fmtRate(r.in_bps)} <span className="text-slate-500">↑ {fmtRate(r.out_bps)}</span></td>
+                        <td className="pr-2"><select value={role[k(r)]} onChange={e => setRole({ ...role, [k(r)]: e.target.value })} className={selCls} data-testid="discover-role">
+                          {Object.entries(ROLE_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+                          <div className="text-[10px] text-slate-500 mt-0.5">{r.role ? `sugerido: ${r.why}` : "sem sugestão"}</div></td>
+                        <td className="pr-3"><Input value={label[k(r)]} onChange={e => setLabel({ ...label, [k(r)]: e.target.value })} className={`${inputCls} h-8 text-xs w-44`} placeholder="nome" /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+            {res.orphans.length > 0 && <div className="text-[11px] text-amber-300" data-testid="discover-orphans">Exportadores sem equipamento cadastrado: {res.orphans.map(o => o.exporter).join(", ")} — cadastre o equipamento com esse IP (ou o IP de gerência) para descobrir as interfaces dele.</div>}
+            {Object.keys(res.snmp_errors || {}).length > 0 && <div className="text-[11px] text-slate-500">SNMP: {Object.entries(res.snmp_errors).map(([n, e]) => `${n}: ${e}`).join(" · ")}</div>}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={onClose}>Fechar</Button>
+              <Button onClick={apply} disabled={busy || !count} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="discover-apply">
+                {busy && <Loader2 className="w-4 h-4 mr-1 animate-spin" />} Adicionar {count} interface(s)</Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** Aba Interfaces: o que está monitorado, papel (trânsito, PNI, IX…), nome e tráfego ao vivo. */
 export function FlowInterfaces({ ifaces, liveAt, reload }) {
   const [devices, setDevices] = useState([]);
   const [dlg, setDlg] = useState(false);
+  const [disc, setDisc] = useState(false);
   useEffect(() => { api.get("/devices").then(r => setDevices(r.data)).catch(() => {}); }, []);
   const upd = async (i, p) => {
     try { await api.put(`/flow/interfaces/${i.id}`, p); await reload(); } catch (e) { toast.error(formatApiError(e)); }
@@ -127,7 +208,8 @@ export function FlowInterfaces({ ifaces, liveAt, reload }) {
   return (
     <div data-testid="flow-ifaces">
       <div className="flex items-center gap-2 mb-3">
-        <Button size="sm" onClick={() => setDlg(true)} className="h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="flow-add-iface"><Plus className="w-4 h-4 mr-1" /> Adicionar interfaces</Button>
+        <Button size="sm" onClick={() => setDisc(true)} className="h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="flow-discover"><Wand2 className="w-4 h-4 mr-1" /> Descobrir interfaces</Button>
+        <Button size="sm" variant="outline" onClick={() => setDlg(true)} className="h-8 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="flow-add-iface"><Plus className="w-4 h-4 mr-1" /> Adicionar manualmente</Button>
         <span className="text-[11px] text-slate-500 font-mono ml-auto">ao vivo: média de 60 s · {liveAt ? `atualizado ${ago(liveAt)}` : "coletor sem dados"}</span>
       </div>
       {ifaces.length === 0 ? (
@@ -156,6 +238,7 @@ export function FlowInterfaces({ ifaces, liveAt, reload }) {
         </div>
       )}
       {dlg && <AddDialog devices={devices} onClose={() => setDlg(false)} onAdded={reload} />}
+      {disc && <DiscoverDialog onClose={() => setDisc(false)} onAdded={reload} />}
     </div>
   );
 }

@@ -1098,8 +1098,52 @@ class TelegramAssistant(AgentCore):
             {"$set": {"messages": compact_history(messages), "updated_at": datetime.now(timezone.utc).isoformat()}},
             upsert=True)
 
+    async def _on_mitigation_cb(self, cq: dict, data: str):
+        """Botão do alerta de ataque: mit:<ataque>:<min> pede confirmação; mitok:<ataque>:<min> aplica."""
+        import mitigation
+        from_id = str((cq.get("from") or {}).get("id"))
+        msg = cq.get("message") or {}
+        chat_id = (msg.get("chat") or {}).get("id")
+        parts = data.split(":")
+        if len(parts) != 3 or not parts[2].isdigit():
+            return await self._tg("answerCallbackQuery", callback_query_id=cq["id"])
+        action, aid, mins = parts[0], parts[1], int(parts[2])
+        if action == "mitno":
+            await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Cancelado — nada foi anunciado.")
+            return await self._tg("editMessageReplyMarkup", chat_id=chat_id, message_id=msg.get("message_id"), reply_markup={"inline_keyboard": []})
+        s = await get_ai_settings(self.db)
+        link = self._auth(s, from_id)
+        user = await self.db.users.find_one({"id": link["user_id"]}, {"_id": 0, "password_hash": 0}) if link else None
+        if not user or user.get("role") == "viewer":
+            return await self._tg("answerCallbackQuery", callback_query_id=cq["id"], show_alert=True,
+                                  text=f"Seu Telegram ({from_id}) não está liberado para mitigar. Libere em Automação → Assistente IA.")
+        att = await self.db.flow_attacks.find_one({"id": aid}, {"_id": 0, "victim": 1, "type": 1, "peak_bps": 1, "status": 1})
+        if not att:
+            return await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Ataque não encontrado.", show_alert=True)
+        if action == "mit":
+            await self._tg("answerCallbackQuery", callback_query_id=cq["id"])
+            kb = {"inline_keyboard": [[{"text": "✅ Confirmar blackhole", "callback_data": f"mitok:{aid}:{mins}"},
+                                       {"text": "❌ Cancelar", "callback_data": f"mitno:{aid}:{mins}"}]]}
+            return await self.send(chat_id, f"Confirma o blackhole de {att['victim']} por {mitigation.fmt_minutes(mins)}?\n"
+                                            "O IP fica SEM tráfego nenhum (inclusive o legítimo) até o prazo acabar ou alguém remover.",
+                                   reply_markup=kb)
+        if action != "mitok":
+            return await self._tg("answerCallbackQuery", callback_query_id=cq["id"])
+        try:
+            m = await mitigation.create(self.db, user, attack_id=aid, minutes=mins, channel="telegram")
+        except mitigation.MitigationError as e:
+            await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Não foi possível mitigar", show_alert=False)
+            return await self.send(chat_id, f"⚠️ {e}")
+        await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Blackhole anunciado")
+        await self._tg("editMessageReplyMarkup", chat_id=chat_id, message_id=msg.get("message_id"), reply_markup={"inline_keyboard": []})
+        exp = datetime.fromisoformat(m["expires_at"]).astimezone().strftime("%H:%M")
+        await self.send(chat_id, f"🛡️ {m['prefix']} em blackhole nas bordas até {exp} ({'prazo estendido' if m.get('extended') else 'por ' + (user.get('email') or '')}).\n"
+                                 "Remover antes: Flow → Mitigação no Bastion.")
+
     async def _on_callback(self, cq: dict):
         data = cq.get("data") or ""
+        if data.startswith(("mit:", "mitok:", "mitno:")):
+            return await self._on_mitigation_cb(cq, data)
         from_id = str((cq.get("from") or {}).get("id"))
         msg = cq.get("message") or {}
         chat_id = (msg.get("chat") or {}).get("id")

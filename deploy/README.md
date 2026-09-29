@@ -428,3 +428,33 @@ cd /opt/bastion/deploy
 sudo docker compose exec mongo mongosh bastion --quiet --eval \
   'db.users.updateOne({email:"SEU@EMAIL"},{$set:{totp_enabled:false},$unset:{totp_secret:"",totp_recovery:""}})'
 ```
+
+## 19. Mitigação de DDoS (blackhole na borda), peering e descoberta de interfaces
+
+### Mitigação — Flow → Mitigação
+O Bastion tem um BGP próprio (container `bgp`) que abre iBGP com as suas bordas e anuncia o /32 atacado com
+next-hop de descarte (192.0.2.1 → NULL0), a community escolhida e **NO_EXPORT** — o descarte é só na sua borda,
+nada vai para trânsito/IX.
+
+1. Em **Flow → Configuração**, cadastre os **blocos próprios** (só IP deles pode sofrer blackhole).
+2. Em **Flow → Mitigação**: ligue, informe o AS (o mesmo das bordas), o Router-ID (IP do servidor), a community
+   (`65535:666`, ou com AS de 4 bytes a forma grande `263009:666:0`) e as bordas. Salve.
+3. Copie a **Configuração da borda** (Huawei ou Juniper) e aplique em cada borda. Ela aceita só /32 dos seus
+   blocos com essa community e não manda nada para o Bastion (export deny). Libere TCP/179 vindo do servidor.
+4. Confira as sessões ficando **Established** e faça um teste com um IP seu que não esteja em uso
+   (`display bgp routing-table 177.x.x.x 32` na borda; tem que aparecer com next-hop 192.0.2.1).
+
+Para mitigar: botão **Mitigar** no ataque (aba Ataques), no alerta do Telegram (se o bot do assistente estiver
+ligado e o seu Telegram liberado) ou **Mitigar IP** na aba Mitigação. Sempre com confirmação e prazo (15 min a 24 h);
+sai sozinho no fim. Nunca: IP fora dos seus blocos, bloco inteiro, IPs da lista "nunca fazer blackhole".
+Se o container `bgp` parar, a sessão cai e as bordas retiram o blackhole sozinhas.
+
+### Peering — Flow → Peering
+ASNs que mais chegam pelos **trânsitos**, quanto já vem por PTT/PNI, onde cada um está (PeeringDB) e os IXs em
+comum com o **seu AS** (informe em Configuração). Mostra quanto do trânsito poderia sair e o que fazer
+(sessão bilateral, route server, PNI ou programa de cache: GGC, OCA, FNA, AANP…).
+
+### Descoberta de interfaces — Flow → Interfaces → Descobrir interfaces
+Lista o que os roteadores já exportam e ainda não está monitorado (acima do mínimo em Mb/s), com nome e descrição
+via SNMP e papel sugerido pela descrição (IX, trânsito, CDN, cliente…). Marque e adicione. Com **descoberta
+automática** ligada (Configuração), a cada 6 h as interfaces novas com papel claro entram sozinhas e chega um aviso.

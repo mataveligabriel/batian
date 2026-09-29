@@ -1,17 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
-import { Compass, Layers, ShieldAlert, Cable, Settings2 } from "lucide-react";
+import { Compass, Layers, ShieldAlert, Cable, Settings2, ShieldBan, Handshake } from "lucide-react";
 import { FlowExplorer } from "@/components/flow/FlowExplorer";
 import { FlowContents } from "@/components/flow/FlowContents";
 import { FlowAttacks } from "@/components/flow/FlowAttacks";
 import { FlowInterfaces } from "@/components/flow/FlowInterfaces";
 import { FlowSettings } from "@/components/flow/FlowSettings";
+import { FlowMitigation } from "@/components/flow/FlowMitigation";
+import { FlowPeering } from "@/components/flow/FlowPeering";
 import { STATUS } from "@/lib/netfmt";
 import { fixedColors } from "@/components/flow/flowlib";
 
 const tabBtn = (on) => `flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${on ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`;
 const TABS = [["explorar", "Explorar", Compass], ["conteudos", "Conteúdos", Layers], ["ataques", "Ataques", ShieldAlert],
+              ["mitigacao", "Mitigação", ShieldBan], ["peering", "Peering", Handshake],
               ["interfaces", "Interfaces", Cable], ["config", "Configuração", Settings2]];
 
 export default function Flow() {
@@ -64,6 +67,8 @@ export default function Flow() {
         {tab === "explorar" && <FlowExplorer ifaces={ifaces} groups={groups} ifColors={ifColors} groupColors={groupColors} />}
         {tab === "conteudos" && <FlowContents ifaces={ifaces} groups={groups} presets={settings?.presets || []} reload={loadGroups} ifColors={ifColors} groupColors={groupColors} />}
         {tab === "ataques" && <FlowAttacks settings={settings} onCount={setActive} />}
+        {tab === "mitigacao" && <FlowMitigation />}
+        {tab === "peering" && <FlowPeering goConfig={() => setTab("config")} goIfaces={() => setTab("interfaces")} />}
         {tab === "interfaces" && <FlowInterfaces ifaces={ifaces} liveAt={liveAt} reload={loadIfaces} />}
         {tab === "config" && <FlowSettings settings={settings} reload={loadSettings} />}
       </div>
