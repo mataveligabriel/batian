@@ -354,3 +354,30 @@ Só os IPs dos agentes marcados (e as redes extras que você cadastrar) entram n
 O token é usado uma vez e não é guardado. Enquanto a VPN estiver desconectada, conectar num equipamento atrás desses jumps
 mostra "VPN desconectada — conecte informando o token". Se o túnel cair (ex.: tempo máximo de sessão do FortiGate),
 chega alerta no Telegram/app e é só digitar um token novo.
+
+## 16. Backup e restauração do Bastion
+
+O backup leva o banco inteiro (equipamentos, usuários, backups de config, mapas, flow, conversas do assistente),
+o `deploy/.env` e os certificados do Caddy. O código já está no GitHub; o arquivo guarda o commit em uso.
+
+```bash
+sudo bash /opt/bastion/deploy/backup.sh              # tudo
+sudo bash /opt/bastion/deploy/backup.sh --sem-flow   # sem o histórico de flow (bem menor)
+```
+
+Gera `/opt/bastion-backups/bastion-AAAAMMDD-HHMMSS.tar.gz` (só o root lê) e mantém os 14 últimos (`KEEP=30` muda).
+
+**O `.env` tem o `JWT_SECRET`, que criptografa as senhas dos equipamentos.** Sem ele o backup restaura tudo,
+mas as senhas não abrem. Por isso o arquivo é sensível: copie para fora do servidor, em local protegido.
+
+Backup diário às 03:10 (`sudo crontab -e`):
+```
+10 3 * * * bash /opt/bastion/deploy/backup.sh >> /var/log/bastion-backup.log 2>&1
+```
+
+Restaurar (no mesmo servidor ou num novo, depois do `install.sh`):
+```bash
+sudo bash /opt/bastion/deploy/restore.sh /opt/bastion-backups/bastion-....tar.gz            # mantém o .env atual
+sudo bash /opt/bastion/deploy/restore.sh /opt/bastion-backups/bastion-....tar.gz --com-env  # usa o .env do backup
+```
+O restore pede que você digite `RESTAURAR`, para os serviços, troca o banco e sobe tudo de novo.
