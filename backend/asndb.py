@@ -204,7 +204,13 @@ async def import_raw(db, raw: bytes, source: str) -> dict:
 
 async def download(url: str = URL, timeout: float = 180) -> bytes:
     import httpx
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        return r.content
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            r = await client.get(url)
+    except httpx.ConnectError:
+        # servidor com IPv6 configurado mas sem rota: tenta de novo só por IPv4
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True,
+                                     transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0")) as client:
+            r = await client.get(url)
+    r.raise_for_status()
+    return r.content

@@ -22,7 +22,13 @@ CACHE_PROGRAMS = {
 
 
 async def _pdb_get(http: httpx.AsyncClient, path: str, params: dict) -> List[dict]:
-    r = await http.get(f"{PDB}/{path}", params=params, headers={"User-Agent": "Bastion-NOC (peering suggestions)"}, timeout=25)
+    kw = dict(params=params, headers={"User-Agent": "Bastion-NOC (peering suggestions)"}, timeout=25)
+    try:
+        r = await http.get(f"{PDB}/{path}", **kw)
+    except httpx.ConnectError:
+        # IPv6 sem rota no servidor: tenta de novo só por IPv4
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0")) as v4:
+            r = await v4.get(f"{PDB}/{path}", **kw)
     r.raise_for_status()
     return r.json().get("data") or []
 
