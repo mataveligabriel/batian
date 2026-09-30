@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy, Send } from "lucide-react";
+import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy, Send, Globe } from "lucide-react";
 import { TransferDialog } from "@/components/TransferDialog";
 import { ImportDevicesDialog } from "@/components/ImportDevicesDialog";
 import { ExportDevicesDialog } from "@/components/ExportDevicesDialog";
@@ -347,6 +347,9 @@ export default function Devices() {
                       </Button>
                       <Button size="sm" variant="ghost" onClick={() => nav(`/terminal/${d.id}`)} data-testid={`connect-ssh-${d.id}`} className="text-[#4DA3FF] hover:bg-[#007AFF]/15">
                         <TerminalSquare className="w-4 h-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => nav(`/web?device=${d.id}`)} data-testid={`open-web-${d.id}`} className="text-[#4DA3FF] hover:bg-[#007AFF]/15" title="Abrir página web (http/https)">
+                        <Globe className="w-4 h-4" />
                       </Button>
                       <Button size="sm" variant="ghost" onClick={() => openEdit(d)} data-testid={`edit-device-${d.id}`} className="text-slate-300 hover:bg-slate-800" title="Editar">
                         <Pencil className="w-4 h-4" />

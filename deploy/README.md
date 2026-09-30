@@ -458,3 +458,32 @@ comum com o **seu AS** (informe em Configuração). Mostra quanto do trânsito p
 Lista o que os roteadores já exportam e ainda não está monitorado (acima do mínimo em Mb/s), com nome e descrição
 via SNMP e papel sugerido pela descrição (IX, trânsito, CDN, cliente…). Marque e adicione. Com **descoberta
 automática** ligada (Configuração), a cada 6 h as interfaces novas com papel claro entram sozinhas e chega um aviso.
+
+## 20. Acesso Web — abrir a página http/https dos equipamentos pelo Bastion
+
+Menu **Acesso Web** (ou o ícone 🌐 na lista de **Equipamentos**): abre a interface web do equipamento (OLT,
+switch, rádio, J-Web, Winbox web, etc.) **dentro do app**, pelo mesmo caminho do terminal:
+- **Equipamento**: sai pela cadeia de agentes dele (túnel SSH até o agente → equipamento). O endereço sugerido é
+  `http://IP/`; os atalhos `https:443`, `http:8080`, `https:8443` trocam a porta. O último endereço usado fica salvo.
+- **Endereço por agente**: qualquer URL saindo por um agente escolhido (ex.: a página de um rádio que não está
+  cadastrado). Administradores também podem sair **direto do servidor** (endereços do próprio servidor são bloqueados).
+
+Como funciona: cada página aberta ganha uma porta do Bastion (**8090 a 8099**, até 10 ao mesmo tempo) e o site do
+equipamento aparece inteiro nessa porta — por isso funciona com telas antigas e modernas sem adaptação.
+- Só quem abriu usa a porta (link com token → cookie daquela porta; sem ele a porta responde "Acesso negado").
+- Redirecionamento de `http` para `https` do equipamento é seguido sozinho; certificado autoassinado e TLS antigo são aceitos.
+- A sessão fecha sozinha após **30 min** sem uso, ou no **X** da aba. Fica registrada em **Histórico** (tipo `web`).
+
+**Liberar as portas** no firewall do servidor (o navegador acessa `IP_DO_BASTION:8090`…):
+```bash
+sudo ufw allow 8090:8099/tcp        # ou só da rede do NOC: ufw allow from 10.0.0.0/8 to any port 8090:8099 proto tcp
+```
+Outras portas: `WEB_PROXY_PORTS=9000-9009` no `deploy/.env` (e rode o `update.sh`). Tempo de inatividade:
+`WEB_PROXY_IDLE_MIN=30`.
+
+Bastion aberto por **HTTPS** (domínio): o navegador não mostra uma página `http` dentro de outra `https`, então a
+página do equipamento abre **numa aba separada** (botão **Abrir**). Por `http://IP:porta` ela aparece dentro do app.
+
+Limitações: páginas que usam WebSocket (raras em equipamentos de rede) não funcionam por aqui; links fixos para
+**outro** IP (ex.: a OLT que abre a página de uma ONU em outro endereço) saem do Bastion — abra esse outro endereço
+por "Endereço por agente".

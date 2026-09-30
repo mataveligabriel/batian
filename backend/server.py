@@ -49,6 +49,7 @@ import peering
 import dailyreport
 import qrgen
 import security
+import webproxy
 import webpush
 import sharing
 import netanalysis
@@ -133,6 +134,10 @@ async def startup():
     _bg(_auto_discover_loop())
     await db.flow_mitigations.create_index([("status", 1), ("created_at", -1)])
     await db.flow_mitigations.create_index("id")
+    try:
+        await web_proxy.start()
+    except Exception as e:
+        logger.warning(f"Acesso Web: {e}")
 
 
 async def seed_admin():
@@ -834,20 +839,31 @@ echo "Agente {a['name']} -> {suser}@{host}:{sport} (túnel {TUNNEL_BIND_HOST}:{t
 # Requisito: OpenSSH Server instalado e ativo (Configurações > Aplicativos > Recursos opcionais > "Servidor OpenSSH"):
 #   Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
 #   Set-Service sshd -StartupType Automatic; Start-Service sshd
-$Dir = "$env:USERPROFILE\\.bastion-agent"
+# Windows Server 2016 / sem o recurso opcional: instale o OpenSSH pelo MSI oficial
+#   https://github.com/PowerShell/Win32-OpenSSH/releases (OpenSSH-Win64-v9.5.0.0.msi)
+$Dir = "$env:ProgramData\\bastion-agent"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-@"
-{priv}"@ | Set-Content -Path "$Dir\\agent_key" -Encoding ascii -NoNewline
-icacls "$Dir\\agent_key" /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
+$Ssh = (Get-Command ssh.exe -ErrorAction SilentlyContinue).Source
+if (-not $Ssh) {{ $Ssh = "C:\\Program Files\\OpenSSH\\ssh.exe" }}
+if (-not (Test-Path $Ssh)) {{ Write-Host "ssh.exe não encontrado — instale o OpenSSH (veja acima)" -ForegroundColor Red; return }}
+$Key = @"
+{priv}"@
+if (Test-Path "$Dir\\agent_key") {{ icacls "$Dir\\agent_key" /reset | Out-Null }}
+# a chave precisa de quebras de linha LF e terminar com uma quebra de linha ("invalid format" sem isso)
+[IO.File]::WriteAllText("$Dir\\agent_key", (($Key -replace "`r`n", "`n").TrimEnd() + "`n"))
+icacls "$Dir\\agent_key" /inheritance:r /grant:r "*S-1-5-18:(R)" "*S-1-5-32-544:(R)" | Out-Null    # SYSTEM e Administradores (vale em qualquer idioma)
 @"
 while (`$true) {{
-  ssh {ssh_opts} -o UserKnownHostsFile=NUL -i "$Dir\\agent_key"
+  & "$Ssh" {ssh_opts} -o UserKnownHostsFile=NUL -i "$Dir\\agent_key"
   Start-Sleep -Seconds 5
 }}
 "@ | Set-Content -Path "$Dir\\tunnel.ps1"
 $Action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Dir\\tunnel.ps1`""
-$Trigger = New-ScheduledTaskTrigger -AtLogOn
-Register-ScheduledTask -TaskName "BastionAgent" -Action $Action -Trigger $Trigger -Force | Out-Null
+# sobe junto com o Windows, como SYSTEM: não depende de ninguém fazer logon (servidor)
+$Trigger = New-ScheduledTaskTrigger -AtStartup
+$Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName "BastionAgent" -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Force | Out-Null
 Start-ScheduledTask -TaskName "BastionAgent"
 Write-Host "Agente {a['name']} iniciado -> {suser}@{host}:{sport} (túnel {TUNNEL_BIND_HOST}:{tport}). Verifique o status no painel."
 """
@@ -2395,6 +2411,79 @@ async def delete_backup(backup_id: str, user: dict = Depends(get_current_user)):
     return {"deleted": r.deleted_count}
 
 
+# ---------- Acesso Web (página http/https do equipamento pelo Bastion) ----------
+async def _web_resolve(agent_id: str):
+    priv, _, _ = await _get_ssh_key()
+    chain = await _agent_chain(agent_id)
+    return [_agent_hop(a, priv) for a in chain], " → ".join(a["name"] for a in chain)
+
+
+async def _web_connect(hops):
+    w = SSHClientWrapper(hops)
+    await w.connect()
+    return w
+
+
+web_proxy = webproxy.WebProxy(db, _web_resolve, _web_connect)
+
+
+class WebOpenIn(BaseModel):
+    url: str
+    device_id: Optional[str] = None
+    agent_id: Optional[str] = None      # sem equipamento: agente escolhido; vazio = direto do servidor (admin)
+
+
+@api.get("/web/info")
+async def web_info(_: dict = Depends(get_current_user)):
+    return {"ports": web_proxy.live_ports, "enabled": bool(web_proxy.live_ports),
+            "idle_minutes": webproxy.IDLE_SECONDS // 60}
+
+
+@api.get("/web/sessions")
+async def web_sessions(user: dict = Depends(get_current_user)):
+    return web_proxy.list(user)
+
+
+@api.get("/web/sessions/all")
+async def web_sessions_all(_: dict = Depends(require_admin)):
+    return web_proxy.list(None)
+
+
+@api.post("/web/sessions")
+async def web_open(payload: WebOpenIn, user: dict = Depends(get_current_user)):
+    label, agent_id, device_id = "", payload.agent_id or None, None
+    if payload.device_id:
+        dev = await _get_device_for(user, payload.device_id)
+        device_id, label, agent_id = dev["id"], dev["name"], dev.get("agent_id") or None
+    elif agent_id:
+        await _get_agent_for(user, agent_id)
+    elif user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Abrir direto do servidor é só para administradores — escolha um agente")
+    try:
+        webproxy.parse_target(payload.url)
+        s = await web_proxy.open(user, payload.url, agent_id=agent_id, device_id=device_id, label=label)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except VpnDown as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e) or type(e).__name__)
+    if device_id:
+        await db.devices.update_one({"id": device_id}, {"$set": {"web_url": payload.url.strip()}})
+    return s
+
+
+@api.delete("/web/sessions/{sid}")
+async def web_close(sid: str, user: dict = Depends(get_current_user)):
+    s = web_proxy.sessions.get(sid)
+    if not s or (s.user_id != user["id"] and user.get("role") != "admin"):
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    await web_proxy.close(sid, reason="fechada pelo usuário")
+    return {"ok": True}
+
+
 # ---------- WebSocket Terminal ----------
 @app.websocket("/api/ws/terminal/{device_id}")
 async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
@@ -3889,4 +3978,5 @@ async def shutdown_db_client():
     if _flow_asn_task:
         _flow_asn_task.cancel()
     await agent_pool.close_all()
+    await web_proxy.stop()
     client.close()

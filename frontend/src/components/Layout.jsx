@@ -8,7 +8,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves,
+  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -20,6 +20,7 @@ const NAV = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Painel NOC", testid: "nav-dashboard" },
   { to: "/devices", icon: Server, label: "Equipamentos", testid: "nav-devices" },
   { to: "/terminal", icon: TerminalSquare, label: "Terminal SSH", testid: "nav-terminal" },
+  { to: "/web", icon: Globe, label: "Acesso Web", testid: "nav-web" },
   { to: "/maps", icon: Network, label: "Mapas de rede", testid: "nav-maps" },
   { to: "/dashboards", icon: Gauge, label: "Dashboards", testid: "nav-dashboards" },
   { to: "/flow", icon: Waves, label: "Análise de Flow", testid: "nav-flow" },

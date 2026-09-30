@@ -19,6 +19,7 @@ import Maps from "@/pages/Maps";
 import Dashboards from "@/pages/Dashboards";
 import Flow from "@/pages/Flow";
 import Automation from "@/pages/Automation";
+import WebAccess from "@/pages/WebAccess";
 
 function RootRedirect() {
   const { user, loading } = useAuth();
@@ -48,6 +49,7 @@ function App() {
             <Route path="/devices" element={<Devices />} />
             <Route path="/terminal" element={<Terminal />} />
             <Route path="/terminal/:deviceId" element={<Terminal />} />
+            <Route path="/web" element={<WebAccess />} />
             <Route path="/batch" element={<Batch />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/ssh-key" element={<SshKey />} />
