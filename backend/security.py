@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from urllib.parse import quote
 
-ISSUER = "Bastion"
+ISSUER = "BastiON"
 STEP = 30
 WINDOW = timedelta(minutes=15)
 MAX_FAILS_EMAIL = 5         # por e-mail em 15 min

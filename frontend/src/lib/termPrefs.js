@@ -21,12 +21,12 @@ export const TERM_THEMES = {
     },
   },
   bastion: {
-    label: "Bastion",
+    label: "BastiON",
     theme: {
-      background: "#05070A", foreground: "#E2E8F0", cursor: "#4DA3FF", cursorAccent: "#05070A",
-      selectionBackground: "rgba(0,122,255,0.35)",
-      black: "#0A0E17", red: "#F87171", green: "#10B981", yellow: "#F59E0B", blue: "#4DA3FF", magenta: "#8B5CF6", cyan: "#22D3EE", white: "#F8FAFC",
-      brightBlack: "#64748B", brightRed: "#FCA5A5", brightGreen: "#34D399", brightYellow: "#FCD34D", brightBlue: "#93C5FD", brightMagenta: "#C4B5FD", brightCyan: "#67E8F9", brightWhite: "#FFFFFF",
+      background: "#0E1214", foreground: "#DDE4E3", cursor: "#3CC48D", cursorAccent: "#0E1214",
+      selectionBackground: "rgba(47,111,203,0.40)",
+      black: "#1A2124", red: "#E5675F", green: "#3CC48D", yellow: "#E2B54F", blue: "#6E9FE6", magenta: "#B48AD9", cyan: "#4FB8C4", white: "#DDE4E3",
+      brightBlack: "#6E7B7E", brightRed: "#F08A83", brightGreen: "#7ADBB3", brightYellow: "#F0CC78", brightBlue: "#9DBEF0", brightMagenta: "#CDADE8", brightCyan: "#7FD0D9", brightWhite: "#FFFFFF",
     },
   },
   dracula: {

@@ -1,10 +1,10 @@
 // Utilitários da Análise de Flow: paleta, formatação, papéis e cores estáveis por série.
 import { useRef } from "react";
 
-// Paleta categórica (passos do modo escuro, validada contra o fundo #0f1520: CVD ΔE ≥ 8,4 entre vizinhas, contraste ≥ 3:1).
+// Paleta categórica (passos do modo escuro, validada contra o fundo #181E20: CVD ΔE ≥ 8,4 entre vizinhas, contraste ≥ 3:1).
 // A ordem é o mecanismo de segurança para daltonismo: nunca reordenar nem gerar uma 9ª cor.
 export const SERIES = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
-export const OTHER = "#64748B";
+export const OTHER = "#6E7B7E";
 export const MAX_SERIES = SERIES.length;
 
 export const ROLE_LABEL = { transito: "Trânsito", pni: "PNI", ix: "IX / PTT", cdn: "CDN / cache", cliente: "Cliente", outro: "Outro" };
@@ -108,9 +108,9 @@ export function colorize(res, assign, fixed) {
   return { series, table };
 }
 
-export const selCls = "h-8 rounded-md bg-[#05070A] border border-[#1E293B] text-slate-200 text-xs px-2 focus:outline-none focus:border-[#007AFF]";
-export const inputCls = "bg-[#05070A] border-[#1E293B]";
-export const chip = (on) => `h-8 px-2.5 rounded-md border text-xs font-mono whitespace-nowrap ${on ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] text-slate-400 hover:text-slate-200"}`;
+export const selCls = "h-8 rounded-md bg-sunken border border-line text-slate-200 text-xs px-2 focus:outline-none focus:border-brand";
+export const inputCls = "bg-sunken border-line";
+export const chip = (on) => `h-8 px-2.5 rounded-md border text-xs font-mono whitespace-nowrap ${on ? "border-brand bg-brand/15 text-slate-100" : "border-line text-slate-400 hover:text-slate-200"}`;
 
 /** Cor fixa por entidade quando cabem na paleta (até 8): a mesma interface tem a mesma cor em todas as telas. */
 export function fixedColors(ids) {

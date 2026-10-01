@@ -47,7 +47,7 @@ class LoginPayload(BaseModel):
     totp: Optional[str] = None      # código do app autenticador ou código de recuperação (xxxx-xxxx)
 
 
-# ---------- Agents (Bastion proxies) ----------
+# ---------- Agents (BastiON proxies) ----------
 class AgentCreate(BaseModel):
     name: str
     location: str = ""
@@ -214,7 +214,7 @@ class AITelegramUser(BaseModel):
 
 class AISettings(BaseModel):
     ai_enabled: bool = False                 # bot do Telegram
-    ai_web_enabled: bool = True              # chat dentro do Bastion
+    ai_web_enabled: bool = True              # chat dentro do BastiON
     ai_provider: str = "groq"
     api_key: Optional[str] = None            # write-only, do provedor escolhido; vazio mantém
     anthropic_api_key: Optional[str] = None  # legado

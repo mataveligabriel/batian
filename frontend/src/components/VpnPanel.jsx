@@ -10,12 +10,12 @@ import { Lock, LockOpen, Loader2, AlertTriangle, Plus, Pencil, Trash2, Plug, Unp
 import { STATUS } from "@/lib/netfmt";
 
 const ST = {
-  up: ["Conectada", STATUS.good, Lock], connecting: ["Conectando…", STATUS.warning, Loader2], disconnecting: ["Desconectando…", "#94A3B8", Loader2],
+  up: ["Conectada", STATUS.good, Lock], connecting: ["Conectando…", STATUS.warning, Loader2], disconnecting: ["Desconectando…", "#8D9A9D", Loader2],
   need_otp: ["Aguardando token", STATUS.warning, KeyRound],
   error: ["Erro", STATUS.critical, AlertTriangle], down: ["Caiu", STATUS.critical, AlertTriangle],
-  disconnected: ["Desconectada", "#64748B", LockOpen],
+  disconnected: ["Desconectada", "#6E7B7E", LockOpen],
 };
-const inputCls = "bg-[#05070A] border-[#1E293B] font-mono";
+const inputCls = "bg-sunken border-line font-mono";
 
 export function VpnState({ state, small = false }) {
   const [label, color, Icon] = ST[state] || ST.disconnected;
@@ -72,8 +72,8 @@ export function VpnConnectDialog({ vpn, onClose, reload, daemon = true }) {
   const working = st.state === "connecting" || st.state === "disconnecting";
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-md" data-testid="vpn-connect-dialog">
-        <DialogHeader><DialogTitle className="flex items-center gap-2"><KeyRound className="w-4 h-4 text-[#4DA3FF]" /> VPN {vpn.name}</DialogTitle></DialogHeader>
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-md" data-testid="vpn-connect-dialog">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><KeyRound className="w-4 h-4 text-brand-soft" /> VPN {vpn.name}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2 text-xs">
             <span className="font-mono text-slate-400 truncate">{vpn.username}@{vpn.host}:{vpn.port}</span>
@@ -82,7 +82,7 @@ export function VpnConnectDialog({ vpn, onClose, reload, daemon = true }) {
           {!daemon && (
             <div className="text-xs border rounded px-2.5 py-2 space-y-1" style={{ color: STATUS.critical, borderColor: `${STATUS.critical}66` }} data-testid="vpn-nodaemon">
               <div className="flex gap-1.5"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />O serviço de VPN não está rodando no servidor — nada é enviado ao FortiGate enquanto isso.</div>
-              <pre className="font-mono text-[11px] text-slate-200 bg-[#05070A] rounded p-1.5 whitespace-pre-wrap">{"cd /opt/bastion/deploy\necho \"COMPOSE_PROFILES=vpn\" | sudo tee -a .env\nsudo bash update.sh\nsudo docker compose ps vpn"}</pre>
+              <pre className="font-mono text-[11px] text-slate-200 bg-sunken rounded p-1.5 whitespace-pre-wrap">{"cd /opt/bastion/deploy\necho \"COMPOSE_PROFILES=vpn\" | sudo tee -a .env\nsudo bash update.sh\nsudo docker compose ps vpn"}</pre>
             </div>
           )}
           {up ? (
@@ -112,41 +112,41 @@ export function VpnConnectDialog({ vpn, onClose, reload, daemon = true }) {
             </div>
           )}
           {st.pending_cert && (
-            <div className="text-xs border border-[#2A3345] rounded p-2.5 space-y-2" data-testid="vpn-cert">
+            <div className="text-xs border border-line2 rounded p-2.5 space-y-2" data-testid="vpn-cert">
               <div className="text-slate-300">Impressão digital (SHA-256) do certificado do gateway:</div>
-              <div className="font-mono text-[11px] text-slate-100 break-all bg-[#05070A] p-1.5 rounded">{st.pending_cert}</div>
+              <div className="font-mono text-[11px] text-slate-100 break-all bg-sunken p-1.5 rounded">{st.pending_cert}</div>
               <div className="text-slate-500">Confira com quem administra o FortiGate antes de confiar.</div>
-              <Button size="sm" onClick={trust} className="h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="vpn-trust"><ShieldCheck className="w-4 h-4 mr-1" /> Confiar neste certificado</Button>
+              <Button size="sm" onClick={trust} className="h-8 bg-brand hover:bg-brand-strong" data-testid="vpn-trust"><ShieldCheck className="w-4 h-4 mr-1" /> Confiar neste certificado</Button>
             </div>
           )}
           {(up || st.diag) && (
             <div className="text-[11px]" data-testid="vpn-diag">
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-slate-500">Diagnóstico a partir do servidor</span>
-                <button onClick={diag} disabled={busy || diagRunning} className="ml-auto text-[#4DA3FF] hover:underline disabled:opacity-50" data-testid="vpn-diag-run">
+                <button onClick={diag} disabled={busy || diagRunning} className="ml-auto text-brand-soft hover:underline disabled:opacity-50" data-testid="vpn-diag-run">
                   {diagRunning ? "rodando…" : "Testar rotas e SSH dos jumps"}</button>
               </div>
-              {st.diag && <pre className="max-h-56 overflow-y-auto font-mono text-slate-300 bg-[#05070A] border border-[#1E293B] rounded p-2 whitespace-pre-wrap" data-testid="vpn-diag-out">{st.diag}</pre>}
+              {st.diag && <pre className="max-h-56 overflow-y-auto font-mono text-slate-300 bg-sunken border border-line rounded p-2 whitespace-pre-wrap" data-testid="vpn-diag-out">{st.diag}</pre>}
             </div>
           )}
           {st.log?.length > 0 && (
             <details className="text-[11px]" open={st.state === "error"}><summary className="cursor-pointer text-slate-500">Log da conexão</summary>
-              <pre className="mt-1 max-h-48 overflow-y-auto font-mono text-slate-400 bg-[#05070A] border border-[#1E293B] rounded p-2 whitespace-pre-wrap" data-testid="vpn-log">{st.log.join("\n")}</pre>
+              <pre className="mt-1 max-h-48 overflow-y-auto font-mono text-slate-400 bg-sunken border border-line rounded p-2 whitespace-pre-wrap" data-testid="vpn-log">{st.log.join("\n")}</pre>
             </details>
           )}
         </div>
         <DialogFooter>
           {up ? (
-            <Button variant="outline" onClick={disconnect} disabled={busy} className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="vpn-disconnect"><Unplug className="w-4 h-4 mr-1" /> Desconectar</Button>
+            <Button variant="outline" onClick={disconnect} disabled={busy} className="border-line bg-panel text-slate-200 hover:bg-slate-800" data-testid="vpn-disconnect"><Unplug className="w-4 h-4 mr-1" /> Desconectar</Button>
           ) : needOtp ? (
             <>
               <Button variant="ghost" onClick={disconnect} disabled={busy} className="text-slate-400">Cancelar</Button>
-              <Button onClick={sendOtp} disabled={busy || !otp.trim()} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="vpn-send-otp">
+              <Button onClick={sendOtp} disabled={busy || !otp.trim()} className="bg-brand hover:bg-brand-strong" data-testid="vpn-send-otp">
                 {busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <KeyRound className="w-4 h-4 mr-1" />} Enviar token
               </Button>
             </>
           ) : (
-            <Button onClick={connect} disabled={busy || working || !daemon} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="vpn-connect">
+            <Button onClick={connect} disabled={busy || working || !daemon} className="bg-brand hover:bg-brand-strong" data-testid="vpn-connect">
               {busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Plug className="w-4 h-4 mr-1" />} Conectar
             </Button>
           )}
@@ -173,7 +173,7 @@ function VpnForm({ initial, onClose, onSaved }) {
   };
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-lg" data-testid="vpn-form">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-lg" data-testid="vpn-form">
         <DialogHeader><DialogTitle>{initial?.id ? "Editar VPN" : "Nova VPN (FortiGate SSL-VPN)"}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div><Label>Nome</Label><Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="ex.: VPNJVE" className={inputCls} data-testid="vpn-name" /></div>
@@ -196,7 +196,7 @@ function VpnForm({ initial, onClose, onSaved }) {
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancelar</Button>
-          <Button onClick={save} disabled={busy} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="vpn-save">{busy && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Salvar</Button>
+          <Button onClick={save} disabled={busy} className="bg-brand hover:bg-brand-strong" data-testid="vpn-save">{busy && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Salvar</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -218,21 +218,21 @@ export function VpnSection({ vpns, daemon, reload, openId, onOpened }) {
   return (
     <div className="mb-6" data-testid="vpn-section">
       <div className="flex items-center gap-2 mb-2">
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">VPNs no servidor</div>
-        <Button size="sm" variant="ghost" onClick={() => setForm({})} className="h-7 text-xs text-[#4DA3FF] hover:bg-[#007AFF]/15" data-testid="vpn-new"><Plus className="w-3.5 h-3.5 mr-1" /> Nova VPN</Button>
+        <div className="text-xs text-slate-400">VPNs no servidor</div>
+        <Button size="sm" variant="ghost" onClick={() => setForm({})} className="h-7 text-xs text-brand-soft hover:bg-brand/15" data-testid="vpn-new"><Plus className="w-3.5 h-3.5 mr-1" /> Nova VPN</Button>
       </div>
       {!daemon && vpns.length > 0 && (
         <div className="text-xs text-amber-300 mb-2 flex gap-1.5"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
           O serviço de VPN não está rodando no servidor: coloque <code className="text-slate-200">COMPOSE_PROFILES=vpn</code> no deploy/.env e rode o update.sh.</div>
       )}
       {vpns.length === 0 ? (
-        <div className="text-sm text-slate-500 border border-dashed border-[#1E293B] rounded p-3">
+        <div className="text-sm text-slate-500 border border-dashed border-line rounded p-3">
           Jumps que só respondem por uma VPN FortiGate (SSL-VPN) podem ser alcançados direto do servidor: cadastre a VPN aqui, marque os agentes com ela e conecte digitando só o token — sem depender do seu PC ligado.
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           {vpns.map(v => (
-            <div key={v.id} className="border border-[#1E293B] rounded-lg bg-[#111722] p-3" data-testid={`vpn-${v.id}`}>
+            <div key={v.id} className="border border-line rounded-lg bg-surface p-3" data-testid={`vpn-${v.id}`}>
               <div className="flex items-center gap-2">
                 <div className="text-slate-100 font-semibold">{v.name}</div>
                 <VpnState state={v.status.state} />
@@ -246,8 +246,8 @@ export function VpnSection({ vpns, daemon, reload, openId, onOpened }) {
               {v.status.error && v.status.state !== "up" && <div className="text-[11px] mt-1" style={{ color: STATUS.critical }}>{v.status.error}</div>}
               <div className="flex gap-2 mt-2">
                 {v.status.state === "up"
-                  ? <Button size="sm" variant="outline" onClick={() => disc(v)} className="h-8 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800"><Unplug className="w-4 h-4 mr-1" /> Desconectar</Button>
-                  : <Button size="sm" onClick={() => setConn(v.id)} className="h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid={`vpn-open-${v.id}`}><KeyRound className="w-4 h-4 mr-1" /> {v.status.state === "need_otp" ? "Digitar o token" : "Conectar"}</Button>}
+                  ? <Button size="sm" variant="outline" onClick={() => disc(v)} className="h-8 border-line bg-panel text-slate-200 hover:bg-slate-800"><Unplug className="w-4 h-4 mr-1" /> Desconectar</Button>
+                  : <Button size="sm" onClick={() => setConn(v.id)} className="h-8 bg-brand hover:bg-brand-strong" data-testid={`vpn-open-${v.id}`}><KeyRound className="w-4 h-4 mr-1" /> {v.status.state === "need_otp" ? "Digitar o token" : "Conectar"}</Button>}
                 {v.status.state === "up" && <Button size="sm" variant="ghost" onClick={() => setConn(v.id)} className="h-8 text-slate-400 hover:bg-slate-800">Detalhes</Button>}
               </div>
             </div>
@@ -271,7 +271,7 @@ export function VpnIndicator({ mini = false }) {
         const [label, color, Icon] = ST[v.status.state] || ST.disconnected;
         return (
           <button key={v.id} onClick={() => setConn(v.id)} title={`VPN ${v.name}: ${label}`} data-testid={`vpn-ind-${v.id}`}
-                  className={`w-full flex items-center gap-2 rounded-md border border-[#1E293B] hover:bg-slate-800/50 ${mini ? "justify-center py-1.5" : "px-2 py-1.5"}`}>
+                  className={`w-full flex items-center gap-2 rounded-md border border-line hover:bg-slate-800/50 ${mini ? "justify-center py-1.5" : "px-2 py-1.5"}`}>
             <Icon className={`w-3.5 h-3.5 shrink-0 ${Icon === Loader2 ? "animate-spin" : ""}`} style={{ color }} />
             {!mini && <><span className="text-xs text-slate-300 truncate">VPN {v.name}</span><span className="ml-auto text-[10px] font-mono" style={{ color }}>{label}</span></>}
           </button>

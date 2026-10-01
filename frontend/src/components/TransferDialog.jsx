@@ -18,17 +18,17 @@ function CheckList({ items, selected, onToggle, onAll, render, q, empty }) {
   const shown = items.filter(i => !q || JSON.stringify(i).toLowerCase().includes(q.toLowerCase()));
   const allOn = shown.length > 0 && shown.every(i => selected.has(i.id));
   return (
-    <div className="border border-[#1E293B] rounded-md overflow-hidden">
-      <label className="flex items-center gap-2 px-3 py-1.5 bg-[#0B111C] text-[11px] font-mono text-slate-400 cursor-pointer border-b border-[#1E293B]">
-        <input type="checkbox" className="accent-[#007AFF]" checked={allOn} onChange={() => onAll(shown, !allOn)} disabled={!shown.length} />
+    <div className="border border-line rounded-md overflow-hidden">
+      <label className="flex items-center gap-2 px-3 py-1.5 bg-panel text-[11px] font-mono text-slate-400 cursor-pointer border-b border-line">
+        <input type="checkbox" className="accent-brand" checked={allOn} onChange={() => onAll(shown, !allOn)} disabled={!shown.length} />
         {allOn ? "desmarcar" : "marcar"} todos os {shown.length} visíveis
         <span className="ml-auto">{selected.size} selecionado(s)</span>
       </label>
-      <div className="max-h-72 overflow-y-auto divide-y divide-[#1E293B]">
+      <div className="max-h-72 overflow-y-auto divide-y divide-line">
         {!shown.length && <div className="px-3 py-6 text-center text-xs text-slate-500 font-mono">{empty}</div>}
         {shown.map(i => (
-          <label key={i.id} className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer text-sm ${selected.has(i.id) ? "bg-[#007AFF]/10" : "hover:bg-slate-800/40"}`}>
-            <input type="checkbox" className="accent-[#007AFF] shrink-0" checked={selected.has(i.id)} onChange={() => onToggle(i.id)} />
+          <label key={i.id} className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer text-sm ${selected.has(i.id) ? "bg-brand/10" : "hover:bg-slate-800/40"}`}>
+            <input type="checkbox" className="accent-brand shrink-0" checked={selected.has(i.id)} onChange={() => onToggle(i.id)} />
             {render(i)}
           </label>
         ))}
@@ -110,16 +110,16 @@ export function TransferDialog({ open, onOpenChange, peer = null, preset = {}, o
   const L = assets || { devices: [], maps: [], dashboards: [] };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-2xl max-h-[92vh] overflow-y-auto" data-testid="transfer-dialog">
-        <DialogHeader><DialogTitle className="flex items-center gap-2"><Send className="w-4 h-4 text-[#4DA3FF]" />
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-2xl max-h-[92vh] overflow-y-auto" data-testid="transfer-dialog">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><Send className="w-4 h-4 text-brand-soft" />
           {peer ? `Transferir · ${peer.name}` : "Enviar para outro usuário"}</DialogTitle></DialogHeader>
 
         {peer && isAdmin && peer.role !== "viewer" && (
-          <div className="flex border border-[#1E293B] rounded overflow-hidden text-xs" data-testid="transfer-direction">
-            <button onClick={() => setDirection("send")} className={`flex-1 px-3 py-2 ${direction === "send" ? "bg-[#007AFF]/25 text-slate-100" : "bg-[#0B111C] text-slate-400"}`}>
+          <div className="flex border border-line rounded overflow-hidden text-xs" data-testid="transfer-direction">
+            <button onClick={() => setDirection("send")} className={`flex-1 px-3 py-2 ${direction === "send" ? "bg-brand/25 text-slate-100" : "bg-panel text-slate-400"}`}>
               Enviar meus itens para {peer.name}
             </button>
-            <button onClick={() => setDirection("fetch")} className={`flex-1 px-3 py-2 ${direction === "fetch" ? "bg-[#007AFF]/25 text-slate-100" : "bg-[#0B111C] text-slate-400"}`}>
+            <button onClick={() => setDirection("fetch")} className={`flex-1 px-3 py-2 ${direction === "fetch" ? "bg-brand/25 text-slate-100" : "bg-panel text-slate-400"}`}>
               Trazer itens de {peer.name} para mim
             </button>
           </div>
@@ -129,7 +129,7 @@ export function TransferDialog({ open, onOpenChange, peer = null, preset = {}, o
           <div>
             <div className="text-xs text-slate-400 mb-1">Para</div>
             <select value={targetId} onChange={e => setTargetId(e.target.value)} data-testid="transfer-target"
-                    className="w-full h-9 bg-[#05070A] border border-[#1E293B] rounded px-2 text-sm">
+                    className="w-full h-9 bg-sunken border border-line rounded px-2 text-sm">
               <option value="">Escolha o usuário…</option>
               {targets.map(t => <option key={t.id} value={t.id}>{t.name} · {t.email} ({ROLE_LABEL[t.role] || t.role})</option>)}
             </select>
@@ -144,18 +144,18 @@ export function TransferDialog({ open, onOpenChange, peer = null, preset = {}, o
           </div>
         )}
 
-        <div className="flex gap-1 border-b border-[#1E293B]">
+        <div className="flex gap-1 border-b border-line">
           {tabs.map(t => (
             <button key={t.key} onClick={() => { setTab(t.key); setQ(""); }}
-                    className={`flex items-center gap-1.5 px-3 py-2 text-sm -mb-px border-b-2 ${tab === t.key ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400"}`}>
+                    className={`flex items-center gap-1.5 px-3 py-2 text-sm -mb-px border-b-2 ${tab === t.key ? "border-brand text-slate-100" : "border-transparent text-slate-400"}`}>
               <t.icon className="w-3.5 h-3.5" /> {t.label}
-              {sel[t.key].size > 0 && <span className="text-[10px] font-mono px-1.5 rounded bg-[#007AFF]/25 text-slate-100">{sel[t.key].size}</span>}
+              {sel[t.key].size > 0 && <span className="text-[10px] font-mono px-1.5 rounded bg-brand/25 text-slate-100">{sel[t.key].size}</span>}
             </button>
           ))}
         </div>
         <div className="relative">
           <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-          <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Filtrar…" className="pl-8 h-8 bg-[#05070A] border-[#1E293B] text-sm" />
+          <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Filtrar…" className="pl-8 h-8 bg-sunken border-line text-sm" />
         </div>
         {!assets ? <div className="py-8 text-center text-xs text-slate-500 font-mono"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Carregando…</div> : (
           <>
@@ -171,7 +171,7 @@ export function TransferDialog({ open, onOpenChange, peer = null, preset = {}, o
         {!toViewer && (
           <div className="space-y-1.5 text-[12px] text-slate-400">
             <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" className="accent-[#007AFF]" checked={creds} onChange={e => setCreds(e.target.checked)} data-testid="transfer-creds" />
+              <input type="checkbox" className="accent-brand" checked={creds} onChange={e => setCreds(e.target.checked)} data-testid="transfer-creds" />
               Levar as senhas dos equipamentos e agentes (continuam criptografadas)
             </label>
             <div className="text-[11px] text-slate-500">
@@ -183,7 +183,7 @@ export function TransferDialog({ open, onOpenChange, peer = null, preset = {}, o
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button onClick={submit} disabled={busy || !target || !count} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="transfer-submit">
+          <Button onClick={submit} disabled={busy || !target || !count} className="bg-brand hover:bg-brand-strong" data-testid="transfer-submit">
             {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
             {toViewer ? `Liberar ${count} item(ns)` : `Enviar ${count} item(ns)`}
           </Button>

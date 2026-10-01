@@ -51,7 +51,7 @@ function TerminalToolbar() {
   const [prefs, setPrefs] = useTermPrefs();
   const [legend, setLegend] = useState(false);
   const btn = "h-7 px-2 rounded border text-xs font-mono flex items-center gap-1 transition-colors";
-  const off = "border-[#1E293B] bg-[#111722] text-slate-400 hover:text-slate-200";
+  const off = "border-line bg-surface text-slate-400 hover:text-slate-200";
   const on = "border-emerald-500/50 bg-emerald-500/10 text-emerald-300";
   return (
     <div className="flex items-center gap-1.5 relative" data-testid="terminal-toolbar">
@@ -61,7 +61,7 @@ function TerminalToolbar() {
         <Highlighter className="w-3.5 h-3.5" /> Realce
       </button>
       {legend && prefs.highlight && (
-        <div className="absolute top-full right-0 mt-1 z-40 bg-[#111722] border border-[#1E293B] rounded-md p-2 shadow-xl w-52" data-testid="highlight-legend">
+        <div className="absolute top-full right-0 mt-1 z-40 bg-surface border border-line rounded-md p-2 shadow-xl w-52" data-testid="highlight-legend">
           {LEGEND.map(([l, c]) => (
             <div key={l} className="flex items-center gap-2 text-[11px] font-mono text-slate-300 py-0.5">
               <span className="w-2.5 h-2.5 rounded-sm" style={{ background: c }} /> {l}
@@ -73,7 +73,7 @@ function TerminalToolbar() {
         <Palette className="w-3.5 h-3.5" />
         <select value={prefs.theme} onChange={e => setPrefs({ theme: e.target.value })} data-testid="terminal-theme"
                 className="bg-transparent outline-none text-slate-200 cursor-pointer">
-          {Object.entries(TERM_THEMES).map(([k, t]) => <option key={k} value={k} className="bg-[#111722]">{t.label}</option>)}
+          {Object.entries(TERM_THEMES).map(([k, t]) => <option key={k} value={k} className="bg-surface">{t.label}</option>)}
         </select>
       </label>
       <div className={`${btn} ${off} px-1`} title="Tamanho da fonte (ou Ctrl + roda do mouse no terminal)">
@@ -108,23 +108,23 @@ function ContextMenu({ menu, onClose, actions }) {
   const Item = ({ icon: Icon, label, hint, onClick, disabled, testid }) => (
     <button disabled={disabled} data-testid={testid}
             onClick={() => { onClose(); onClick(); }}
-            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[13px] text-slate-200 hover:bg-[#007AFF]/20 disabled:opacity-35 disabled:hover:bg-transparent">
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-[13px] text-slate-200 hover:bg-brand/20 disabled:opacity-35 disabled:hover:bg-transparent">
       {Icon ? <Icon className="w-3.5 h-3.5 text-slate-400" /> : <span className="w-3.5" />}
       <span className="flex-1">{label}</span>
       {hint && <span className="text-[11px] text-slate-500 font-mono">{hint}</span>}
     </button>
   );
   const Radio = ({ checked, label, onClick }) => (
-    <button onClick={onClick} className="w-full flex items-center gap-2.5 px-3 py-1 text-left text-[12px] text-slate-300 hover:bg-[#007AFF]/20">
+    <button onClick={onClick} className="w-full flex items-center gap-2.5 px-3 py-1 text-left text-[12px] text-slate-300 hover:bg-brand/20">
       <span className="w-3.5 flex justify-center">{checked && <Check className="w-3.5 h-3.5 text-emerald-400" />}</span>{label}
     </button>
   );
-  const Sep = () => <div className="my-1 border-t border-[#1E293B]" />;
-  const Title = ({ children }) => <div className="px-3 pt-1 pb-0.5 text-[10px] uppercase tracking-widest text-slate-500 font-mono">{children}</div>;
+  const Sep = () => <div className="my-1 border-t border-line" />;
+  const Title = ({ children }) => <div className="px-3 pt-1 pb-0.5 text-[10px] text-slate-500">{children}</div>;
 
   return (
     <div ref={ref} style={pos} data-testid="terminal-context-menu"
-         className="fixed z-[100] w-72 py-1 bg-[#161B26] border border-[#2A3345] rounded-md shadow-2xl select-none"
+         className="fixed z-[100] w-72 py-1 bg-surface border border-line2 rounded-md shadow-2xl select-none"
          onContextMenu={(e) => e.preventDefault()}>
       <Item icon={Copy} label="Copiar" hint="Ctrl+Shift+C" disabled={!menu.hasSelection} onClick={actions.copy} testid="ctx-copy" />
       <Item icon={CopyCheck} label="Copiar tudo" onClick={actions.copyAll} testid="ctx-copy-all" />
@@ -169,10 +169,10 @@ function PasteDialog({ dlg, deviceName, onCancel, onConfirm }) {
   return (
     <div className="fixed inset-0 z-[110] bg-black/55 flex items-center justify-center p-4" data-testid="paste-dialog"
          onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div className="w-full max-w-2xl bg-[#111722] border border-[#2A3345] rounded-lg shadow-2xl">
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#1E293B]">
+      <div className="w-full max-w-2xl bg-surface border border-line2 rounded-lg shadow-2xl">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-line">
           <div className="text-sm text-slate-100 font-medium flex items-center gap-2">
-            <ClipboardPaste className="w-4 h-4 text-[#4DA3FF]" /> Confirmar colagem
+            <ClipboardPaste className="w-4 h-4 text-brand-soft" /> Confirmar colagem
           </div>
           <button onClick={onCancel} className="text-slate-400 hover:text-slate-100"><X className="w-4 h-4" /></button>
         </div>
@@ -185,7 +185,7 @@ function PasteDialog({ dlg, deviceName, onCancel, onConfirm }) {
           <textarea ref={taRef} value={text} onChange={e => setText(e.target.value)} spellCheck={false} data-testid="paste-text"
                     onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } if (e.key === "Escape") onCancel(); }}
                     placeholder="Ctrl+V para colar aqui…"
-                    className="w-full h-64 resize-y bg-[#05070A] border border-[#1E293B] rounded p-2.5 font-mono text-[13px] leading-5 text-slate-100 outline-none focus:border-[#007AFF] whitespace-pre overflow-auto" />
+                    className="w-full h-64 resize-y bg-sunken border border-line rounded p-2.5 font-mono text-[13px] leading-5 text-slate-100 outline-none focus:border-brand whitespace-pre overflow-auto" />
           <div className="flex items-center justify-between text-[11px] font-mono text-slate-500">
             <span data-testid="paste-count">{count} linha(s){endsWithEnter ? " · termina com Enter (a última linha será executada)" : ""}</span>
             <span>Ctrl+Enter confirma · Esc cancela</span>
@@ -195,9 +195,9 @@ function PasteDialog({ dlg, deviceName, onCancel, onConfirm }) {
             Não perguntar de novo quando for uma linha só (ajustável no botão direito do terminal)
           </label>
         </div>
-        <div className="flex justify-end gap-2 px-4 py-3 border-t border-[#1E293B]">
+        <div className="flex justify-end gap-2 px-4 py-3 border-t border-line">
           <Button variant="ghost" onClick={onCancel} data-testid="paste-cancel">Cancelar</Button>
-          <Button onClick={submit} disabled={!text} data-testid="paste-confirm" className="bg-[#007AFF] hover:bg-[#0062CC]">
+          <Button onClick={submit} disabled={!text} data-testid="paste-confirm" className="bg-brand hover:bg-brand-strong">
             <ClipboardPaste className="w-4 h-4 mr-2" /> Colar
           </Button>
         </div>
@@ -381,9 +381,9 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
   const label = status === "connected" ? "conectado" : status === "connecting" ? "conectando" : status === "closed" ? "encerrada" : "erro";
   return (
     <div className={`absolute inset-0 flex flex-col ${active && visible ? "visible z-10" : "invisible z-0"}`} data-testid={`terminal-pane-${device.id}`}>
-      <div className={`flex items-center justify-between border-b border-[#1E293B] bg-[#0B111C] ${prefs.focusMode ? "px-3 py-1" : "px-4 py-2"}`}>
+      <div className={`flex items-center justify-between border-b border-line bg-panel ${prefs.focusMode ? "px-3 py-1" : "px-4 py-2"}`}>
         <div className="flex items-center gap-3 min-w-0">
-          <Server className="w-4 h-4 text-[#4DA3FF] shrink-0" />
+          <Server className="w-4 h-4 text-brand-soft shrink-0" />
           <div className={prefs.focusMode ? "flex items-baseline gap-3 min-w-0" : "min-w-0"}>
             <div className="text-sm font-medium text-slate-100 truncate">{device.name}</div>
             <div className="text-[11px] font-mono text-slate-500 truncate">{(device.protocol || "ssh").toUpperCase()} · {device.host}:{device.port} · {device.username || "padrão"}</div>
@@ -396,7 +396,7 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
               <RotateCw className="w-3.5 h-3.5 mr-1" /> Reconectar
             </Button>
           )}
-          <span data-testid={`terminal-status-${device.id}`} className={`text-[11px] font-mono uppercase tracking-widest ${
+          <span data-testid={`terminal-status-${device.id}`} className={`text-[11px] font-medium ${
             status === "connected" ? "text-emerald-400" : status === "connecting" ? "text-amber-400" : "text-red-400"
           }`}>{label}</span>
         </div>
@@ -458,15 +458,14 @@ export function TerminalWorkspace({ visible }) {
   const menuPane = menu && panes.current[menu.deviceId];
   const deviceName = (id) => tabs.find(t => t.id === id)?.name || "equipamento";
 
-  const iconBtn = "h-7 px-2 rounded border border-[#1E293B] bg-[#111722] text-slate-300 hover:text-slate-100 text-xs font-mono flex items-center gap-1.5 shrink-0";
+  const iconBtn = "h-7 px-2 rounded border border-line bg-surface text-slate-300 hover:text-slate-100 text-xs font-mono flex items-center gap-1.5 shrink-0";
 
   return (
     <div className={`absolute inset-0 flex flex-col ${visible ? "visible z-20" : "invisible z-0 pointer-events-none"}`} data-testid="terminal-page">
       {!focus && (
-        <div className="hidden md:flex px-6 py-4 border-b border-[#1E293B] bg-[#0B111C] items-center justify-between">
+        <div className="hidden md:flex px-6 py-4 border-b border-line bg-panel items-center justify-between">
           <div>
-            <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Console SSH</div>
-            <h1 className="font-heading text-2xl font-bold text-slate-100">Terminal Workspace</h1>
+            <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100">Terminal Workspace</h1>
           </div>
           <div className="flex items-center gap-4">
             <div className="text-xs font-mono text-slate-500 hidden 2xl:block">
@@ -477,12 +476,12 @@ export function TerminalWorkspace({ visible }) {
         </div>
       )}
 
-      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-[#1E293B] bg-[#0A0F19]">
+      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-line bg-panel">
         <div className="flex items-center gap-1 overflow-x-auto flex-1 min-w-0">
           {tabs.map(t => (
             <div key={t.id} data-testid={`tab-${t.id}`} onClick={() => setActive(t.id)} title={`${t.host}:${t.port}`}
                  className={`group flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer text-sm border shrink-0 ${
-                   active === t.id ? "bg-[#111722] border-[#334155] text-slate-100" : "border-transparent text-slate-400 hover:bg-slate-800/50"}`}>
+                   active === t.id ? "bg-surface border-line2 text-slate-100" : "border-transparent text-slate-400 hover:bg-slate-800/50"}`}>
               <TerminalSquare className="w-3.5 h-3.5" />
               <span className="font-mono">{t.name}</span>
               <X className="w-3.5 h-3.5 opacity-60 hover:opacity-100 hover:text-red-400" data-testid={`close-tab-${t.id}`}
@@ -495,11 +494,11 @@ export function TerminalWorkspace({ visible }) {
             <Plus className="w-4 h-4 md:mr-1" /><span className="hidden md:inline">Nova aba</span>
           </Button>
           {pickerOpen && (
-            <div className="absolute top-full mt-1 right-0 z-40 w-72 max-w-[calc(100vw-16px)] bg-[#111722] border border-[#1E293B] rounded-md shadow-xl max-h-80 overflow-y-auto">
+            <div className="absolute top-full mt-1 right-0 z-40 w-72 max-w-[calc(100vw-16px)] bg-surface border border-line rounded-md shadow-xl max-h-80 overflow-y-auto">
               {devices.length === 0 && <div className="p-4 text-sm text-slate-500 font-mono">Sem equipamentos</div>}
               {devices.map(d => (
                 <div key={d.id} onClick={() => { openTab(d); setPickerOpen(false); }} data-testid={`picker-device-${d.id}`}
-                     className="px-3 py-2 hover:bg-slate-800 cursor-pointer border-b border-[#1E293B] last:border-b-0">
+                     className="px-3 py-2 hover:bg-slate-800 cursor-pointer border-b border-line last:border-b-0">
                   <div className="text-sm text-slate-100 flex items-center gap-2">
                     {d.status === "online" ? <Wifi className="w-3 h-3 text-emerald-400" /> : <WifiOff className="w-3 h-3 text-slate-600" />}
                     {d.name}
@@ -514,7 +513,7 @@ export function TerminalWorkspace({ visible }) {
         <button className={`${iconBtn} hidden md:flex`} onClick={toggleFs} data-testid="fullscreen-btn" title={isFs ? "Sair da tela cheia" : "Tela cheia"}>
           {isFs ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
         </button>
-        <button className={`${iconBtn} hidden md:flex ${focus ? "border-[#007AFF]/60 text-[#4DA3FF]" : ""}`} data-testid="focus-mode-btn"
+        <button className={`${iconBtn} hidden md:flex ${focus ? "border-brand/60 text-brand-soft" : ""}`} data-testid="focus-mode-btn"
                 onClick={() => setTermPrefs({ focusMode: !focus })}
                 title={focus ? "Mostrar menus" : "Modo foco: esconder o menu lateral e o cabeçalho"}>
           {focus ? <><PanelLeftOpen className="w-3.5 h-3.5" /> Menus</> : <><PanelLeftClose className="w-3.5 h-3.5" /> Foco</>}
@@ -537,25 +536,25 @@ export function TerminalWorkspace({ visible }) {
       </div>
 
       {tabs.length > 0 && (
-        <div className="md:hidden flex items-center gap-1 px-1.5 py-1.5 border-t border-[#1E293B] bg-[#0A0F19] overflow-x-auto" data-testid="mobile-keys">
+        <div className="md:hidden flex items-center gap-1 px-1.5 py-1.5 border-t border-line bg-panel overflow-x-auto" data-testid="mobile-keys">
           {MOBILE_KEYS.map(([l, d]) => (
             // onPointerDown + preventDefault: não tira o foco do terminal (o teclado do celular não fecha)
             <button key={l} onPointerDown={(e) => { e.preventDefault(); sendRaw(d); }}
-                    className={`shrink-0 h-9 min-w-[2.4rem] px-2 rounded border text-[13px] font-mono active:bg-[#007AFF]/30 ${l.startsWith("^") ? "border-amber-600/40 text-amber-200 bg-amber-500/5" : "border-[#1E293B] text-slate-200 bg-[#111722]"}`}>{l}</button>
+                    className={`shrink-0 h-9 min-w-[2.4rem] px-2 rounded border text-[13px] font-mono active:bg-brand/30 ${l.startsWith("^") ? "border-amber-600/40 text-amber-200 bg-amber-500/5" : "border-line text-slate-200 bg-surface"}`}>{l}</button>
           ))}
-          <button onPointerDown={(e) => { e.preventDefault(); active && requestPaste(active); }} className="shrink-0 h-9 px-2 rounded border border-[#1E293B] bg-[#111722] text-slate-200" title="Colar"><ClipboardPaste className="w-4 h-4" /></button>
-          <button onPointerDown={(e) => { e.preventDefault(); bumpFont(-1); }} className="shrink-0 h-9 px-2 rounded border border-[#1E293B] bg-[#111722] text-slate-200" title="Fonte menor"><ZoomOut className="w-4 h-4" /></button>
-          <button onPointerDown={(e) => { e.preventDefault(); bumpFont(1); }} className="shrink-0 h-9 px-2 rounded border border-[#1E293B] bg-[#111722] text-slate-200" title="Fonte maior"><ZoomIn className="w-4 h-4" /></button>
+          <button onPointerDown={(e) => { e.preventDefault(); active && requestPaste(active); }} className="shrink-0 h-9 px-2 rounded border border-line bg-surface text-slate-200" title="Colar"><ClipboardPaste className="w-4 h-4" /></button>
+          <button onPointerDown={(e) => { e.preventDefault(); bumpFont(-1); }} className="shrink-0 h-9 px-2 rounded border border-line bg-surface text-slate-200" title="Fonte menor"><ZoomOut className="w-4 h-4" /></button>
+          <button onPointerDown={(e) => { e.preventDefault(); bumpFont(1); }} className="shrink-0 h-9 px-2 rounded border border-line bg-surface text-slate-200" title="Fonte maior"><ZoomIn className="w-4 h-4" /></button>
         </div>
       )}
       {tabs.length > 0 && !focus && (
-        <div className="relative z-30 flex items-center gap-2 px-3 py-2 border-t border-[#1E293B] bg-[#0A0F19] overflow-x-auto" data-testid="quick-commands-bar">
+        <div className="relative z-30 flex items-center gap-2 px-3 py-2 border-t border-line bg-panel overflow-x-auto" data-testid="quick-commands-bar">
           <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span className="text-[10px] uppercase tracking-widest text-slate-500 font-mono shrink-0">Favoritos</span>
+          <span className="text-[10px] text-slate-500 shrink-0">Favoritos</span>
           {quick.length === 0 && <span className="text-xs text-slate-600 font-mono">Marque scripts como favoritos em "Execução em Lote" para aparecerem aqui.</span>}
           {quick.map(s => (
             <button key={s.id} onClick={() => sendQuick(s)} title={s.content} data-testid={`quick-cmd-${s.id}`}
-                    className="shrink-0 text-xs font-mono px-2.5 py-1 rounded border border-[#1E293B] bg-[#111722] text-slate-200 hover:border-amber-500/50 hover:text-amber-300 transition-colors">
+                    className="shrink-0 text-xs font-mono px-2.5 py-1 rounded border border-line bg-surface text-slate-200 hover:border-amber-500/50 hover:text-amber-300 transition-colors">
               {s.name}
             </button>
           ))}

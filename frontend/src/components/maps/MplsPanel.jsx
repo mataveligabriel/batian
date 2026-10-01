@@ -8,14 +8,14 @@ import { STATUS } from "@/lib/netfmt";
 const SEC_ORDER = ["ldp_session", "ldp_iface", "vpws", "vpls", "vrf", "bgp_vpn"];
 const SEC_LABEL = { ldp_session: "Sessões LDP", ldp_iface: "Interfaces LDP", vpws: "VPWS (l2vc)", vpls: "VPLS (vsi)", vrf: "L3VPN (VRF)", bgp_vpn: "MP-BGP VPN" };
 const VENDORS = [["huawei", "Huawei"], ["juniper", "Juniper"], ["cisco", "Cisco"], ["datacom", "Datacom DMOS"], ["zte", "ZTE"]];
-const stColor = (s) => (s === "up" ? STATUS.good : s === "down" ? STATUS.critical : s === "degraded" ? STATUS.warning : "#94A3B8");
+const stColor = (s) => (s === "up" ? STATUS.good : s === "down" ? STATUS.critical : s === "degraded" ? STATUS.warning : "#8D9A9D");
 const Yes = ({ v }) => (v === true ? <span style={{ color: STATUS.good }}>✓</span> : v === false ? <span style={{ color: STATUS.critical }}>✕</span> : <span className="text-slate-600">—</span>);
 
 function RawModal({ title, text, onClose }) {
   return (
     <div className="fixed inset-0 z-[130] bg-black/70 flex items-center justify-center p-3" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="w-full max-w-4xl max-h-[88vh] flex flex-col bg-[#111722] border border-[#2A3345] rounded-lg">
-        <div className="flex items-center px-4 py-2 border-b border-[#1E293B]">
+      <div className="w-full max-w-4xl max-h-[88vh] flex flex-col bg-surface border border-line2 rounded-lg">
+        <div className="flex items-center px-4 py-2 border-b border-line">
           <div className="text-sm font-semibold text-slate-100">{title}</div>
           <button onClick={onClose} className="ml-auto text-slate-400 hover:text-slate-100"><X className="w-4 h-4" /></button>
         </div>
@@ -53,7 +53,7 @@ export function MplsTab({ rep, rid, onSelectLink, selId, onOpenSettings }) {
       setRaw({ title: `${d.name} · saída da CLI`, text: SEC_ORDER.map(k => data.sections?.[k] ? `======== ${SEC_LABEL[k]} ${data.sections[k].ok ? "(entendido)" : "(NÃO entendido)"}\n${data.sections[k].raw || ""}` : "").filter(Boolean).join("\n\n") || data.error || "vazio" });
     } catch (e) { toast.error(formatApiError(e)); }
   };
-  const Stat = ({ l, v, bad }) => <div className="rounded border border-[#1E293B] bg-[#0B111C] px-2 py-1"><div className="text-[9px] uppercase tracking-widest text-slate-500 font-mono">{l}</div><div className="text-sm font-semibold" style={{ color: bad ? STATUS.critical : "#E2E8F0" }}>{v}</div></div>;
+  const Stat = ({ l, v, bad }) => <div className="rounded border border-line bg-panel px-2 py-1"><div className="text-[9px] text-slate-500">{l}</div><div className="text-sm font-semibold" style={{ color: bad ? STATUS.critical : "#CED6D7" }}>{v}</div></div>;
   return (
     <div className="space-y-3" data-testid="mpls-tab">
       <div className="grid grid-cols-3 gap-1.5">
@@ -65,12 +65,12 @@ export function MplsTab({ rep, rid, onSelectLink, selId, onOpenSettings }) {
         <Stat l="MP-BGP VPN" v={`${s.bgp_vpn_up}/${s.bgp_vpn_total}`} bad={s.bgp_vpn_up < s.bgp_vpn_total} />
       </div>
       <div>
-        <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono mb-1">LDP por enlace</div>
+        <div className="text-[10px] text-slate-500 mb-1">LDP por enlace</div>
         <table className="w-full font-mono text-xs">
           <thead className="text-[10px] uppercase text-slate-500"><tr><th className="text-left px-2">Enlace</th><th className="px-1">A</th><th className="px-1">B</th><th className="text-right px-2">sessão</th></tr></thead>
           <tbody>
             {rep.links.map(l => (
-              <tr key={l.id} onClick={() => onSelectLink(l.id)} className={`border-t border-[#1E293B] cursor-pointer hover:bg-slate-800/40 ${selId === l.id ? "bg-[#007AFF]/10" : ""}`}>
+              <tr key={l.id} onClick={() => onSelectLink(l.id)} className={`border-t border-line cursor-pointer hover:bg-slate-800/40 ${selId === l.id ? "bg-brand/10" : ""}`}>
                 <td className="px-2 py-1 text-slate-200 truncate max-w-[220px]">{l.a_name} ↔ {l.b_name}{!l.in_spf && <span className="text-slate-500"> · sem OSPF</span>}</td>
                 <td className="text-center"><Yes v={l.ldp_a} /></td><td className="text-center"><Yes v={l.ldp_b} /></td>
                 <td className="px-2 text-right" style={{ color: stColor(l.ldp_session) }}>{l.ldp_session || "—"}</td>
@@ -81,15 +81,15 @@ export function MplsTab({ rep, rid, onSelectLink, selId, onOpenSettings }) {
       </div>
       <div>
         <div className="flex items-center mb-1">
-          <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">Por equipamento</div>
-          <button onClick={onOpenSettings} className="ml-auto text-[11px] text-[#4DA3FF] underline" data-testid="mpls-open-settings">comandos por fabricante</button>
+          <div className="text-[10px] text-slate-500">Por equipamento</div>
+          <button onClick={onOpenSettings} className="ml-auto text-[11px] text-brand-soft underline" data-testid="mpls-open-settings">comandos por fabricante</button>
         </div>
         {mp.devices.map(d => {
           const secs = d.sections || {};
           const isOpen = open[d.id];
           const bad = SEC_ORDER.filter(k => secs[k] && !secs[k].ok).length;
           return (
-            <div key={d.id} className="rounded border border-[#1E293B] bg-[#0B111C] mb-1.5">
+            <div key={d.id} className="rounded border border-line bg-panel mb-1.5">
               <button className="w-full flex items-center gap-2 px-2 py-1.5 text-left" onClick={() => setOpen(o => ({ ...o, [d.id]: !o[d.id] }))}>
                 {isOpen ? <ChevronDown className="w-3.5 h-3.5 text-slate-500" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-500" />}
                 <span className="text-slate-100 text-xs font-semibold">{d.name}</span>
@@ -101,13 +101,13 @@ export function MplsTab({ rep, rid, onSelectLink, selId, onOpenSettings }) {
                 <div className="pb-2">
                   {SEC_ORDER.filter(k => secs[k]).map(k => (
                     <div key={k} className="mt-1">
-                      <div className="flex items-center gap-2 px-2 text-[10px] uppercase tracking-widest font-mono text-slate-500">
+                      <div className="flex items-center gap-2 px-2 text-[10px] text-slate-500">
                         {SEC_LABEL[k]} {secs[k].ok ? <span className="normal-case tracking-normal text-slate-600">· {secs[k].command}</span> : <span className="normal-case tracking-normal text-amber-300">· não entendido</span>}
                       </div>
                       {secs[k].ok && <SectionItems sec={k} items={secs[k].items} nameOf={nameOf} />}
                     </div>
                   ))}
-                  {!d.error && <button onClick={() => showRaw(d)} className="ml-2 mt-1 text-[11px] text-[#4DA3FF] underline flex items-center gap-1" data-testid={`mpls-raw-${d.id}`}><FileText className="w-3 h-3" /> ver saída da CLI</button>}
+                  {!d.error && <button onClick={() => showRaw(d)} className="ml-2 mt-1 text-[11px] text-brand-soft underline flex items-center gap-1" data-testid={`mpls-raw-${d.id}`}><FileText className="w-3 h-3" /> ver saída da CLI</button>}
                 </div>
               )}
             </div>
@@ -147,33 +147,33 @@ export function MplsSettingsDialog({ devices, onClose }) {
   const cand = devices.filter(d => VENDORS.some(([v]) => v === d.device_type));
   return (
     <div className="fixed inset-0 z-[120] bg-black/70 flex items-center justify-center p-3" data-testid="mpls-settings" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-[#111722] border border-[#2A3345] rounded-lg p-4 space-y-3">
+      <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-surface border border-line2 rounded-lg p-4 space-y-3">
         <div className="flex items-center"><div className="text-sm font-semibold text-slate-100">Comandos MPLS por fabricante</div>
           <button onClick={onClose} className="ml-auto text-slate-400 hover:text-slate-100"><X className="w-4 h-4" /></button></div>
-        <p className="text-xs text-slate-400">Um comando por linha: o Bastion tenta em ordem até um responder. Use o teste abaixo para ver a saída real do seu equipamento.</p>
+        <p className="text-xs text-slate-400">Um comando por linha: o BastiON tenta em ordem até um responder. Use o teste abaixo para ver a saída real do seu equipamento.</p>
         {!st ? <Loader2 className="w-4 h-4 animate-spin text-slate-400" /> : <>
-          <div className="flex gap-1 border-b border-[#1E293B]">
-            {VENDORS.map(([v, l]) => <button key={v} onClick={() => setVendor(v)} className={`px-3 py-1.5 text-xs -mb-px border-b-2 ${vendor === v ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400"}`}>{l}</button>)}
+          <div className="flex gap-1 border-b border-line">
+            {VENDORS.map(([v, l]) => <button key={v} onClick={() => setVendor(v)} className={`px-3 py-1.5 text-xs -mb-px border-b-2 ${vendor === v ? "border-brand text-slate-100" : "border-transparent text-slate-400"}`}>{l}</button>)}
           </div>
           <div className="grid sm:grid-cols-2 gap-2">
             {SEC_ORDER.map(k => (
               <label key={k} className="text-[11px] text-slate-400">{SEC_LABEL[k]}
                 <textarea rows={2} disabled={!st.is_admin} value={(edit[vendor]?.[k] || []).join("\n")}
                           onChange={e => setEdit(x => ({ ...x, [vendor]: { ...(x[vendor] || {}), [k]: e.target.value.split("\n") } }))}
-                          className="mt-0.5 w-full bg-[#05070A] border border-[#1E293B] rounded px-2 py-1 font-mono text-[11px] text-slate-200" data-testid={`mpls-cmd-${k}`} />
+                          className="mt-0.5 w-full bg-sunken border border-line rounded px-2 py-1 font-mono text-[11px] text-slate-200" data-testid={`mpls-cmd-${k}`} />
               </label>
             ))}
           </div>
-          {st.is_admin && <div className="flex justify-end"><Button size="sm" onClick={save} disabled={busy} className="bg-[#007AFF] hover:bg-[#0062CC]"><Save className="w-3.5 h-3.5 mr-1.5" /> Salvar comandos</Button></div>}
+          {st.is_admin && <div className="flex justify-end"><Button size="sm" onClick={save} disabled={busy} className="bg-brand hover:bg-brand-strong"><Save className="w-3.5 h-3.5 mr-1.5" /> Salvar comandos</Button></div>}
         </>}
-        <div className="border-t border-[#1E293B] pt-3">
+        <div className="border-t border-line pt-3">
           <div className="text-xs text-slate-300 mb-1.5">Testar num equipamento</div>
           <div className="flex gap-2">
-            <select value={testDev} onChange={e => setTestDev(e.target.value)} className="flex-1 h-8 bg-[#05070A] border border-[#1E293B] rounded px-2 text-xs" data-testid="mpls-test-dev">
+            <select value={testDev} onChange={e => setTestDev(e.target.value)} className="flex-1 h-8 bg-sunken border border-line rounded px-2 text-xs" data-testid="mpls-test-dev">
               <option value="">Escolha…</option>
               {cand.map(d => <option key={d.id} value={d.id}>{d.name} ({d.device_type})</option>)}
             </select>
-            <Button size="sm" onClick={test} disabled={!testDev || testing} className="h-8 bg-[#0B111C] border border-[#1E293B] text-slate-200 hover:bg-slate-800">
+            <Button size="sm" onClick={test} disabled={!testDev || testing} className="h-8 bg-panel border border-line text-slate-200 hover:bg-slate-800">
               {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FlaskConical className="w-3.5 h-3.5 mr-1.5" />} Testar
             </Button>
           </div>
@@ -186,7 +186,7 @@ export function MplsSettingsDialog({ devices, onClose }) {
                   <div key={k} className="flex items-center gap-2 text-[11px] font-mono">
                     <span className="w-36 text-slate-400">{SEC_LABEL[k]}</span>
                     {x.ok ? <span style={{ color: STATUS.good }}>✓ {x.items.length} item(ns) · {x.command}</span> : <span className="text-amber-300">✕ não entendido</span>}
-                    <button className="ml-auto text-[#4DA3FF] underline" onClick={() => setRaw({ title: `${SEC_LABEL[k]} · saída`, text: x.raw || "(vazio)" })}>saída</button>
+                    <button className="ml-auto text-brand-soft underline" onClick={() => setRaw({ title: `${SEC_LABEL[k]} · saída`, text: x.raw || "(vazio)" })}>saída</button>
                   </div>
                 );
               })}

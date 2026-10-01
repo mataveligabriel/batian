@@ -10,7 +10,7 @@ const OUT = { key: "out", label: "Saída (out)", color: "#d95926" };
 function Hero({ icon: Icon, label, color, value, pct, p95, max, big }) {
   return (
     <div className="min-w-0">
-      <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-widest font-mono text-slate-400">
+      <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
         <span className="w-2.5 h-2.5 rounded-sm" style={{ background: color }} /><Icon className="w-3.5 h-3.5" /> {label}
       </div>
       <div className="flex items-baseline gap-1.5 mt-0.5 min-w-0">
@@ -18,7 +18,7 @@ function Hero({ icon: Icon, label, color, value, pct, p95, max, big }) {
         {pct != null && <div className="text-xs font-mono text-slate-300">{pct.toFixed(1)}%</div>}
       </div>
       {pct != null && (
-        <div className="h-1 rounded bg-[#1E293B] mt-1 overflow-hidden" title={`${pct.toFixed(1)}% da capacidade`}>
+        <div className="h-1 rounded bg-line mt-1 overflow-hidden" title={`${pct.toFixed(1)}% da capacidade`}>
           <div className="h-full rounded" style={{ width: `${Math.min(100, pct)}%`, background: utilColor(pct) }} />
         </div>
       )}
@@ -32,14 +32,14 @@ function MembersTable({ members, totalIn, totalOut }) {
   const rows = [...members].sort((a, b) => (b.in_bps || 0) - (a.in_bps || 0));
   return (
     <table className="w-full text-xs font-mono mt-3" data-testid="agg-members">
-      <thead className="text-[10px] uppercase tracking-widest text-slate-500">
+      <thead className="text-[10px] text-slate-500">
         <tr><th className="text-left py-1">Interface</th><th className="text-right">Entrada</th><th className="text-right">Saída</th><th className="text-left pl-3 w-[28%]">Participação na entrada</th></tr>
       </thead>
       <tbody>
         {rows.map(m => {
           const share = totalIn && m.in_bps != null ? (m.in_bps / totalIn) * 100 : null;
           return (
-            <tr key={`${m.device_id}-${m.if_index}`} className="border-t border-[#1E293B]">
+            <tr key={`${m.device_id}-${m.if_index}`} className="border-t border-line">
               <td className="py-1 pr-2">
                 <div className="text-slate-100 truncate">{m.device_name} · {m.if_name}{m.invert && <span className="ml-1 text-[10px] text-slate-400">(invertida)</span>}</div>
                 {(m.alias || m.error || isDown(m.oper)) && (
@@ -53,7 +53,7 @@ function MembersTable({ members, totalIn, totalOut }) {
               <td className="pl-3">
                 {share != null && (
                   <div className="flex items-center gap-2">
-                    <div className="flex-1 h-1.5 rounded bg-[#1E293B] overflow-hidden"><div className="h-full rounded" style={{ width: `${Math.min(100, share)}%`, background: IN.color }} /></div>
+                    <div className="flex-1 h-1.5 rounded bg-line overflow-hidden"><div className="h-full rounded" style={{ width: `${Math.min(100, share)}%`, background: IN.color }} /></div>
                     <span className="text-[10px] text-slate-400 w-10 text-right">{share.toFixed(0)}%</span>
                   </div>
                 )}
@@ -99,7 +99,7 @@ export function TrafficWidget({ widget, minutes, refreshKey, height = 260 }) {
         <Hero icon={ArrowUpRight} label="Saída" color={OUT.color} value={st.out.cur} pct={pct(st.out.cur)} p95={st.out.p95} max={st.out.max} big={height >= 360} />
       </div>
       <LineChart points={data.points} series={[IN, OUT]} height={height} area yFormat={fmtBpsShort} tipFormat={fmtBps}
-                 refLines={cap && Math.max(st.in.max || 0, st.out.max || 0) > cap * 1e6 * 0.5 ? [{ y: cap * 1e6, label: `capacidade ${fmtSpeed(cap)}`, color: "#64748B" }] : []} />
+                 refLines={cap && Math.max(st.in.max || 0, st.out.max || 0) > cap * 1e6 * 0.5 ? [{ y: cap * 1e6, label: `capacidade ${fmtSpeed(cap)}`, color: "#6E7B7E" }] : []} />
       <div className="text-[10px] font-mono text-slate-500 mt-1">
         {cap ? `capacidade ${fmtSpeed(cap)}${widget.capacity_mbps ? " (contratada)" : widget.type === "aggregate" ? " (soma das portas)" : " (porta)"}` : "capacidade desconhecida"}
         {data.step_sec > 30 ? ` · pontos agregados a cada ${data.step_sec >= 3600 ? `${Math.round(data.step_sec / 3600)}h` : data.step_sec >= 60 ? `${Math.round(data.step_sec / 60)} min` : `${data.step_sec}s`} (média)` : ""}

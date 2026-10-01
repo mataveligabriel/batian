@@ -41,7 +41,7 @@ export function FlowView({ query, stacked = true, height = 320, bands = [], shar
       {table.length > 0 && (
         <div className="overflow-x-auto mt-2">
           <table className="w-full text-xs font-mono" data-testid="flow-table">
-            <thead className="text-[10px] uppercase tracking-widest text-slate-500">
+            <thead className="text-[10px] text-slate-500">
               <tr>
                 <th className="text-left py-1 pr-2">Série</th><th className="text-right px-2">Média</th><th className="text-right px-2">p95</th>
                 <th className="text-right px-2">Máximo</th><th className="text-right px-2">Atual</th><th className="text-right px-2">Volume</th>
@@ -50,12 +50,12 @@ export function FlowView({ query, stacked = true, height = 320, bands = [], shar
             </thead>
             <tbody>
               {table.map(r => (
-                <tr key={r.id} className="border-t border-[#1E293B]" data-testid="flow-row">
+                <tr key={r.id} className="border-t border-line" data-testid="flow-row">
                   <td className="py-1 pr-2 max-w-[360px]">
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className="w-2.5 h-2.5 rounded-[2px] shrink-0" style={{ background: r.color }} />
                       <span className="text-slate-100 truncate" title={r.name}>{r.name}</span>
-                      {r.role && <span className="text-[9px] px-1 rounded border border-[#2A3345] text-slate-400 shrink-0">{ROLE_LABEL[r.role] || r.role}</span>}
+                      {r.role && <span className="text-[9px] px-1 rounded border border-line2 text-slate-400 shrink-0">{ROLE_LABEL[r.role] || r.role}</span>}
                     </div>
                   </td>
                   <td className="text-right px-2 text-slate-200 whitespace-nowrap">{fmtRate(r.avg, unit)}</td>
@@ -65,7 +65,7 @@ export function FlowView({ query, stacked = true, height = 320, bands = [], shar
                   <td className="text-right px-2 text-slate-400 whitespace-nowrap">{fmtVolume(r.total, unit === "pps" ? "pps" : "bytes")}</td>
                   <td className="pl-3">
                     <div className="flex items-center gap-2">
-                      <div className="flex-1 h-1.5 rounded bg-[#1E293B] overflow-hidden"><div className="h-full rounded" style={{ width: `${Math.min(100, r.share * 100)}%`, background: r.color }} /></div>
+                      <div className="flex-1 h-1.5 rounded bg-line overflow-hidden"><div className="h-full rounded" style={{ width: `${Math.min(100, r.share * 100)}%`, background: r.color }} /></div>
                       <span className="text-[10px] text-slate-300 w-11 text-right">{(r.share * 100).toFixed(r.share < 0.1 ? 1 : 0)}%</span>
                     </div>
                   </td>

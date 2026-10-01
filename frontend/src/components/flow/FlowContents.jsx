@@ -33,7 +33,7 @@ function GroupDialog({ initial, onClose, onSaved }) {
   };
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-2xl" data-testid="group-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-2xl" data-testid="group-dialog">
         <DialogHeader><DialogTitle>{initial?.id ? "Editar conteúdo" : "Novo conteúdo"}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div><Label>Nome</Label><Input value={g.name} onChange={e => setG({ ...g, name: e.target.value })} placeholder="ex.: Google / YouTube" className={inputCls} data-testid="group-name" /></div>
@@ -51,7 +51,7 @@ function GroupDialog({ initial, onClose, onSaved }) {
             <div className="text-[11px] text-slate-500 mt-1">Use para caches instalados no seu provedor (usam IPs seus, então o AS não pega) ou para acompanhar blocos específicos.</div>
           </div>
           {asnInfo && (
-            <div className="text-[11px] font-mono border border-[#1E293B] rounded p-2 max-h-40 overflow-y-auto" data-testid="group-asninfo">
+            <div className="text-[11px] font-mono border border-line rounded p-2 max-h-40 overflow-y-auto" data-testid="group-asninfo">
               <div className="text-slate-300 mb-1">AS{asnInfo.asn} {asnInfo.name} — {asnInfo.v4_total} blocos IPv4, {asnInfo.v6_total} IPv6 (o ASN já cobre todos; só copie se quiser acompanhar bloco a bloco)</div>
               <div className="text-slate-500 break-all">{[...(asnInfo.v4 || []).slice(0, 40), ...(asnInfo.v6 || []).slice(0, 20)].join("  ")}</div>
             </div>
@@ -59,7 +59,7 @@ function GroupDialog({ initial, onClose, onSaved }) {
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancelar</Button>
-          <Button onClick={save} disabled={busy || !g.name.trim()} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="group-save">{busy && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Salvar</Button>
+          <Button onClick={save} disabled={busy || !g.name.trim()} className="bg-brand hover:bg-brand-strong" data-testid="group-save">{busy && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Salvar</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -79,8 +79,8 @@ function Lookup({ onCreate }) {
     finally { setBusy(false); }
   };
   return (
-    <div className="border border-[#1E293B] rounded p-2" data-testid="flow-lookup">
-      <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono mb-1">Descobrir conteúdo</div>
+    <div className="border border-line rounded p-2" data-testid="flow-lookup">
+      <div className="text-[10px] text-slate-500 mb-1">Descobrir conteúdo</div>
       <div className="flex gap-1">
         <Input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && go()} placeholder="IP, AS ou nome (ex.: 142.250.79.46)" className={`${inputCls} h-8 text-xs font-mono`} data-testid="lookup-q" />
         <Button size="sm" variant="ghost" onClick={go} className="h-8 px-2 hover:bg-slate-800" data-testid="lookup-go">{busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}</Button>
@@ -91,13 +91,13 @@ function Lookup({ onCreate }) {
           {r.asn ? <>
             <div className="text-slate-200">{r.ip} → <b>AS{r.asn}</b> {r.name}</div>
             <div className="text-slate-500">bloco: {r.prefixes.join(", ")}</div>
-            <button className="text-[#93C5FD] hover:underline mt-0.5" onClick={() => onCreate({ name: r.name, asns: [r.asn], prefixes: [] })}>+ criar conteúdo com AS{r.asn}</button>
+            <button className="text-brand-pale hover:underline mt-0.5" onClick={() => onCreate({ name: r.name, asns: [r.asn], prefixes: [] })}>+ criar conteúdo com AS{r.asn}</button>
           </> : <div className="text-slate-400">{r.ip}: fora da base (IP privado, não anunciado ou seu).</div>}
         </div>
       )}
       {r?.kind === "asn" && (
         <div className="text-[11px] font-mono mt-1.5 text-slate-200" data-testid="lookup-res">AS{r.asn} {r.name || "(sem nome)"} · {r.v4_total} blocos v4 / {r.v6_total} v6
-          <button className="block text-[#93C5FD] hover:underline mt-0.5" onClick={() => onCreate({ name: r.name || `AS${r.asn}`, asns: [r.asn], prefixes: [] })}>+ criar conteúdo</button></div>
+          <button className="block text-brand-pale hover:underline mt-0.5" onClick={() => onCreate({ name: r.name || `AS${r.asn}`, asns: [r.asn], prefixes: [] })}>+ criar conteúdo</button></div>
       )}
       {r?.kind === "search" && (
         <div className="mt-1.5 max-h-40 overflow-y-auto" data-testid="lookup-res">
@@ -127,8 +127,8 @@ function RoleSplit({ res }) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3" data-testid="role-split">
       {roles.map(r => (
-        <div key={r} className="border border-[#1E293B] rounded px-3 py-2">
-          <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">{ROLE_LABEL[r]}</div>
+        <div key={r} className="border border-line rounded px-3 py-2">
+          <div className="text-[10px] text-slate-500">{ROLE_LABEL[r]}</div>
           <div className="flex items-baseline gap-2">
             <div className="text-2xl font-heading font-bold text-slate-50 tabular-nums">{(byRole[r].share * 100).toFixed(0)}%</div>
             <div className="text-xs font-mono text-slate-400">{fmtRate(byRole[r].avg, res.unit)} média</div>
@@ -169,11 +169,11 @@ export function FlowContents({ ifaces, groups, presets, reload, ifColors, groupC
     <div className="flex flex-col lg:flex-row gap-4" data-testid="flow-contents">
       <div className="lg:w-72 shrink-0 space-y-2">
         <div className="flex gap-1.5">
-          <Button size="sm" onClick={() => setDlg({})} className="flex-1 h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="group-new"><Plus className="w-4 h-4 mr-1" /> Novo conteúdo</Button>
+          <Button size="sm" onClick={() => setDlg({})} className="flex-1 h-8 bg-brand hover:bg-brand-strong" data-testid="group-new"><Plus className="w-4 h-4 mr-1" /> Novo conteúdo</Button>
           <Button size="sm" variant="ghost" onClick={() => setShowPresets(!showPresets)} className="h-8 text-xs text-slate-300 hover:bg-slate-800" data-testid="group-presets"><Sparkles className="w-3.5 h-3.5 mr-1" />Sugestões</Button>
         </div>
         {showPresets && (
-          <div className="border border-[#1E293B] rounded p-1.5 max-h-60 overflow-y-auto" data-testid="presets-list">
+          <div className="border border-line rounded p-1.5 max-h-60 overflow-y-auto" data-testid="presets-list">
             {presets.map(p => (
               <button key={p.name} onClick={() => { setShowPresets(false); setDlg({ name: p.name, asns: p.asns, prefixes: [] }); }}
                       className="w-full text-left px-2 py-1 rounded hover:bg-slate-800/60 text-xs">
@@ -183,10 +183,10 @@ export function FlowContents({ ifaces, groups, presets, reload, ifColors, groupC
             <div className="text-[10px] text-slate-500 px-2 pt-1">Confira os ASNs e acrescente os blocos dos caches que você tem na rede.</div>
           </div>
         )}
-        <div className="border border-[#1E293B] rounded divide-y divide-[#1E293B]" data-testid="group-list">
+        <div className="border border-line rounded divide-y divide-line" data-testid="group-list">
           {groups.length === 0 && <div className="p-3 text-xs text-slate-500">Nenhum conteúdo ainda. Use <b>Sugestões</b> ou a busca abaixo.</div>}
           {groups.map(g => (
-            <div key={g.id} className={`px-2.5 py-2 cursor-pointer ${cur?.id === g.id && mode === "where" ? "bg-[#007AFF]/15" : "hover:bg-slate-800/40"}`} onClick={() => { setSel(g.id); setMode("where"); }} data-testid={`group-${g.id}`}>
+            <div key={g.id} className={`px-2.5 py-2 cursor-pointer ${cur?.id === g.id && mode === "where" ? "bg-brand/15" : "hover:bg-slate-800/40"}`} onClick={() => { setSel(g.id); setMode("where"); }} data-testid={`group-${g.id}`}>
               <div className="flex items-center gap-1">
                 <span className="text-sm text-slate-100 truncate">{g.name}</span>
                 <button onClick={(e) => { e.stopPropagation(); setDlg(g); }} className="ml-auto text-slate-500 hover:text-slate-200" title="Editar"><Pencil className="w-3.5 h-3.5" /></button>
@@ -233,7 +233,7 @@ export function FlowContents({ ifaces, groups, presets, reload, ifColors, groupC
         )}
         {query ? <FlowView query={query} onData={setRes} fixed={mode === "where" ? ifColors : groupColors} shareLabel={mode === "where" ? "Participação entre os locais" : "Participação no tráfego total"} testid="cont-view"
                            emptyText={mode === "where" ? "Nada deste conteúdo nas interfaces escolhidas no período." : "Sem dados no período."} />
-               : <div className="text-sm text-slate-400 p-6 border border-dashed border-[#1E293B] rounded">{!ifaces.length ? "Cadastre as interfaces monitoradas primeiro (aba Interfaces)." : "Crie um conteúdo à esquerda (ex.: Google pelas Sugestões)."}</div>}
+               : <div className="text-sm text-slate-400 p-6 border border-dashed border-line rounded">{!ifaces.length ? "Cadastre as interfaces monitoradas primeiro (aba Interfaces)." : "Crie um conteúdo à esquerda (ex.: Google pelas Sugestões)."}</div>}
       </div>
       {dlg && <GroupDialog initial={dlg} onClose={() => setDlg(null)} onSaved={async (g) => { setDlg(null); await reload(); setSel(g.id); setMode("where"); }} />}
     </div>

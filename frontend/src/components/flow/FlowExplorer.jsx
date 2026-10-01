@@ -38,8 +38,8 @@ export function FlowExplorer({ ifaces, groups, preset, ifColors, groupColors }) 
   } : null;
 
   if (!ifaces.length) {
-    return <div className="text-sm text-slate-400 p-6 border border-dashed border-[#1E293B] rounded" data-testid="flow-noifaces">
-      Nenhuma interface monitorada. Vá em <b>Interfaces</b>, escolha o equipamento e marque os trânsitos, PNIs e IXs que já mandam flow para o Bastion.
+    return <div className="text-sm text-slate-400 p-6 border border-dashed border-line rounded" data-testid="flow-noifaces">
+      Nenhuma interface monitorada. Vá em <b>Interfaces</b>, escolha o equipamento e marque os trânsitos, PNIs e IXs que já mandam flow para o BastiON.
     </div>;
   }
   return (

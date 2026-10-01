@@ -136,7 +136,7 @@ def diff_excerpt(old: str, new: str, max_lines: int = 20, width: int = 120) -> L
             continue
         out.append(ln[:width])
         if len(out) >= max_lines:
-            out.append("… (diff completo no Bastion)")
+            out.append("… (diff completo no BastiON)")
             break
     return out
 
@@ -227,7 +227,7 @@ async def notify_config_changes(db, results: List[dict], trigger: str) -> int:
             if m:
                 lines.append(f"Último commit (Junos): {m.group(2)} em {m.group(1)}")
             lines.append("Quem esteve no equipamento no período:")
-            lines += [f"  • {w}" for w in who[:8]] or ["  • ninguém pelo Bastion (alteração direta no equipamento?)"]
+            lines += [f"  • {w}" for w in who[:8]] or ["  • ninguém pelo BastiON (alteração direta no equipamento?)"]
             ex = diff_excerpt(old_c, new_c)
             if ex:
                 lines.append("")

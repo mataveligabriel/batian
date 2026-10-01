@@ -1,4 +1,4 @@
-"""SSH Bastion Central - FastAPI backend."""
+"""SSH BastiON Central - FastAPI backend."""
 from dotenv import load_dotenv
 from pathlib import Path
 ROOT_DIR = Path(__file__).parent
@@ -79,7 +79,7 @@ async def _load_user(user_id: str):
 
 auth_mod.USER_LOADER = _load_user   # papel/exclusão valem na hora + perfil View
 
-app = FastAPI(title="SSH Bastion Central")
+app = FastAPI(title="SSH BastiON Central")
 api = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s - %(message)s')
@@ -165,7 +165,7 @@ async def seed_sample_data():
         agents = [
             {"id": "agent-sp-01", "name": "Agente-SP-DC01", "location": "São Paulo - DC01",
              "host": "bastion-sp.example.com", "port": 22, "username": "bastion",
-             "description": "Bastion Datacenter São Paulo", "status": "online",
+             "description": "BastiON Datacenter São Paulo", "status": "online",
              "latency_ms": 12.4, "last_seen": datetime.now(timezone.utc).isoformat(),
              "created_at": datetime.now(timezone.utc).isoformat()},
             {"id": "agent-rj-01", "name": "Agente-RJ-Filial", "location": "Rio de Janeiro",
@@ -522,7 +522,7 @@ def _apply_secret(payload: dict, existing: Optional[dict], field: str = "passwor
     return payload
 
 
-# ---------- Bastion settings ----------
+# ---------- BastiON settings ----------
 async def _bastion_settings() -> dict:
     doc = await db.config.find_one({"key": "bastion"}, {"_id": 0})
     if not doc:
@@ -571,7 +571,7 @@ async def bastion_setup_script(api_url: str = Query(...), _: dict = Depends(requ
     s = await _bastion_settings()
     user = s.get("ssh_user", "bastion")
     script = f"""#!/usr/bin/env bash
-# SSH Bastion Central — preparação do servidor (rode como root no VPS onde o backend está rodando)
+# SSH BastiON Central — preparação do servidor (rode como root no VPS onde o backend está rodando)
 # Cria o usuário que recebe os túneis reversos dos agentes e sincroniza as chaves automaticamente.
 set -e
 BASTION_USER="{user}"
@@ -605,7 +605,7 @@ echo "* * * * * root /usr/local/bin/bastion-sync-keys.sh" > /etc/cron.d/bastion-
 /usr/local/bin/bastion-sync-keys.sh
 
 sshd -t && (systemctl reload sshd 2>/dev/null || systemctl reload ssh)
-echo "Bastion pronto. Usuário $BASTION_USER aceita túneis reversos; chaves sincronizadas a cada minuto."
+echo "BastiON pronto. Usuário $BASTION_USER aceita túneis reversos; chaves sincronizadas a cada minuto."
 """
     return {"script": script}
 
@@ -785,7 +785,7 @@ async def install_script(agent_id: str, user: dict = Depends(get_current_user)):
     a = await _get_agent_for(user, agent_id)
     if a.get("mode") != "reverse":
         return {"mode": "direct", "bash": "", "powershell": "",
-                "note": "Agente em modo direto: o Bastion conecta diretamente em "
+                "note": "Agente em modo direto: o BastiON conecta diretamente em "
                         f"{a.get('host')}:{a.get('port', 22)} (ou através do agente pai). Nenhum instalador necessário — "
                         "apenas garanta que a chave global (ou usuário/senha) esteja autorizada nesse host."}
     s = await _bastion_settings()
@@ -795,8 +795,8 @@ async def install_script(agent_id: str, user: dict = Depends(get_current_user)):
     ssh_opts = (f'-N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 '
                 f'-o StrictHostKeyChecking=no -R {TUNNEL_BIND_HOST}:{tport}:localhost:{lport} -p {sport} {suser}@{host}')
     bash = f"""#!/usr/bin/env bash
-# SSH Bastion Central — Agente Gateway "{a['name']}" (Linux/macOS)
-# Abre um túnel SSH reverso persistente até o Bastion. Requisito: servidor SSH local ativo na porta {lport}
+# SSH BastiON Central — Agente Gateway "{a['name']}" (Linux/macOS)
+# Abre um túnel SSH reverso persistente até o BastiON. Requisito: servidor SSH local ativo na porta {lport}
 # (Linux: sudo apt install openssh-server | macOS: Ajustes > Geral > Compartilhamento > Login Remoto)
 set -e
 DIR="$HOME/.bastion-agent"
@@ -816,7 +816,7 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>
   mkdir -p "$HOME/.config/systemd/user"
   cat > "$HOME/.config/systemd/user/bastion-agent.service" <<EOF
 [Unit]
-Description=SSH Bastion Central Agent ({a['name']})
+Description=SSH BastiON Central Agent ({a['name']})
 After=network-online.target
 [Service]
 ExecStart=$DIR/tunnel.sh
@@ -833,9 +833,9 @@ else
   nohup "$DIR/tunnel.sh" >"$DIR/tunnel.log" 2>&1 &
   echo "Túnel iniciado em segundo plano (log: $DIR/tunnel.log)."
 fi
-echo "Agente {a['name']} -> {suser}@{host}:{sport} (túnel {TUNNEL_BIND_HOST}:{tport} no Bastion)."
+echo "Agente {a['name']} -> {suser}@{host}:{sport} (túnel {TUNNEL_BIND_HOST}:{tport} no BastiON)."
 """
-    powershell = f"""# SSH Bastion Central — Agente Gateway "{a['name']}" (Windows, PowerShell como Administrador)
+    powershell = f"""# SSH BastiON Central — Agente Gateway "{a['name']}" (Windows, PowerShell como Administrador)
 # Requisito: OpenSSH Server instalado e ativo (Configurações > Aplicativos > Recursos opcionais > "Servidor OpenSSH"):
 #   Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
 #   Set-Service sshd -StartupType Automatic; Start-Service sshd
@@ -869,7 +869,7 @@ Write-Host "Agente {a['name']} iniciado -> {suser}@{host}:{sport} (túnel {TUNNE
 """
     return {"mode": "reverse", "bash": bash, "powershell": powershell, "tunnel_port": tport,
             "public_key": a.get("agent_public_key", ""),
-            "note": "" if s.get("public_host") else "Configure o host público do Bastion em 'Configurar Bastion' antes de instalar."}
+            "note": "" if s.get("public_host") else "Configure o host público do BastiON em 'Configurar BastiON' antes de instalar."}
 
 
 # ---------- Devices ----------
@@ -2022,7 +2022,7 @@ async def put_ai_settings(payload: AISettings, _: dict = Depends(require_admin))
         if not tid or tid in seen:
             continue
         if u.get("user_id") not in valid_users:
-            raise HTTPException(status_code=400, detail=f"Usuário do Bastion inválido para o Telegram ID {tid}")
+            raise HTTPException(status_code=400, detail=f"Usuário do BastiON inválido para o Telegram ID {tid}")
         seen.add(tid)
         users.append({"telegram_id": tid, "user_id": u["user_id"], "label": (u.get("label") or "").strip()})
     data["ai_users"] = users
@@ -2183,7 +2183,7 @@ async def send_daily_report(_: dict = Depends(require_admin)):
 
 @api.post("/automation/test-alert")
 async def test_alert(_: dict = Depends(require_admin)):
-    res = await automation.send_alert(db, "✅ SSH Bastion Central", "Alerta de teste — canal de notificações funcionando.")
+    res = await automation.send_alert(db, "✅ SSH BastiON Central", "Alerta de teste — canal de notificações funcionando.")
     return res
 
 
@@ -2411,7 +2411,7 @@ async def delete_backup(backup_id: str, user: dict = Depends(get_current_user)):
     return {"deleted": r.deleted_count}
 
 
-# ---------- Acesso Web (página http/https do equipamento pelo Bastion) ----------
+# ---------- Acesso Web (página http/https do equipamento pelo BastiON) ----------
 async def _web_resolve(agent_id: str):
     priv, _, _ = await _get_ssh_key()
     chain = await _agent_chain(agent_id)
@@ -2995,7 +2995,7 @@ async def push_devices(user: dict = Depends(get_current_user)):
 
 @api.post("/push/test")
 async def push_test(user: dict = Depends(get_current_user)):
-    res = await webpush.send(db, "🔔 Bastion", "Notificações ativadas. Os alarmes de interface e de equipamento chegam aqui.",
+    res = await webpush.send(db, "🔔 BastiON", "Notificações ativadas. Os alarmes de interface e de equipamento chegam aqui.",
                              url="/", user_id=user["id"], tag="bastion-test")
     if not res["sent"]:
         raise HTTPException(400, "Nenhum aparelho recebeu. Ative as notificações neste aparelho primeiro."
@@ -3481,7 +3481,7 @@ async def flow_attack(aid: str, user: dict = Depends(get_current_user)):
     return a
 
 
-# ---------- Mitigação de DDoS (blackhole via BGP do Bastion) ----------
+# ---------- Mitigação de DDoS (blackhole via BGP do BastiON) ----------
 class MitigationSettingsIn(BaseModel):
     enabled: bool = False
     local_as: int = 0
@@ -3892,7 +3892,7 @@ async def connect_vpn(vid: str, body: VpnConnectIn, user: dict = Depends(get_cur
     p = await _get_vpn_for(user, vid)
     if not await _vpn_daemon_ok():
         raise HTTPException(503, "O serviço de VPN não está rodando no servidor. Coloque COMPOSE_PROFILES=vpn no deploy/.env e rode o update.sh.")
-    otp = re.sub(r"\s", "", body.otp or "")      # vazio = o gateway manda o token (e-mail/SMS) e o Bastion pede depois
+    otp = re.sub(r"\s", "", body.otp or "")      # vazio = o gateway manda o token (e-mail/SMS) e o BastiON pede depois
     if len(otp) > 64:
         raise HTTPException(400, "Token inválido")
     await db.vpn_status.update_one({"_id": vid}, {"$set": {"state": "connecting", "error": None, "pending_cert": None, "prompt": None,
@@ -3955,7 +3955,7 @@ async def trust_vpn_cert(vid: str, user: dict = Depends(get_current_user)):
 # ---------- Health ----------
 @api.get("/")
 async def root():
-    return {"ok": True, "service": "SSH Bastion Central"}
+    return {"ok": True, "service": "SSH BastiON Central"}
 
 
 app.include_router(api)

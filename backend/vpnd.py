@@ -1,7 +1,7 @@
-"""Serviço de VPN do Bastion — roda no container "vpn" (python vpnd.py), com NET_ADMIN e /dev/ppp.
+"""Serviço de VPN do BastiON — roda no container "vpn" (python vpnd.py), com NET_ADMIN e /dev/ppp.
 
 FortiGate SSL-VPN pelo openfortivpn: usuário + senha (do cadastro, criptografada) + token digitado na hora.
-O Bastion pede pela coleção vpn_cmds (connect/disconnect) e acompanha em vpn_status. Só as redes dos jumps que
+O BastiON pede pela coleção vpn_cmds (connect/disconnect) e acompanha em vpn_status. Só as redes dos jumps que
 usam a VPN (e as que você cadastrar) entram no túnel: a rota padrão do servidor não muda.
 """
 import asyncio
@@ -132,7 +132,7 @@ class Tunnel:
                         self.lines.append(f"{datetime.now().strftime('%H:%M:%S')} {line}")
                         await self._parse(line)
                 if buf.strip() and _OTP_PROMPT.search(buf) and self.state != "up":
-                    # o gateway pediu o token (FortiToken, e-mail ou SMS): espera o usuário digitar no Bastion
+                    # o gateway pediu o token (FortiToken, e-mail ou SMS): espera o usuário digitar no BastiON
                     self.lines.append(f"{datetime.now().strftime('%H:%M:%S')} {_redact(buf.strip(), self.secrets)}")
                     self.prompt = buf.strip().rstrip(":").strip()
                     buf = ""
@@ -328,7 +328,7 @@ class VpnDaemon:
             return
         try:
             await self.alert(self.db, f"🔌 VPN {prof['name']} caiu",
-                             "Os jumps que dependem dela ficaram sem acesso. Abra o Bastion e informe o token para reconectar.",
+                             "Os jumps que dependem dela ficaram sem acesso. Abra o BastiON e informe o token para reconectar.",
                              push_url=f"/agents?vpn={prof['id']}", push_tag=f"vpn-{prof['id']}")
         except Exception as e:
             log.warning(f"alerta: {e}")

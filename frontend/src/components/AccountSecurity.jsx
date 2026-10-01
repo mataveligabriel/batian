@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { ShieldCheck, ShieldAlert, Loader2, Copy, Download, LogOut, KeyRound, CheckCircle2, XCircle } from "lucide-react";
 
-const inputCls = "bg-[#05070A] border-[#1E293B] font-mono";
+const inputCls = "bg-sunken border-line font-mono";
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 const browser = (ua = "") => /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox"
   : /Safari\//.test(ua) ? "Safari" : ua ? ua.split(" ")[0] : "—";
@@ -19,19 +19,19 @@ function RecoveryCodes({ codes, onDone }) {
   const copy = () => navigator.clipboard?.writeText(text).then(() => toast.success("Códigos copiados"));
   const download = () => {
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([`Bastion — códigos de recuperação (cada um vale uma vez)\n\n${text}\n`], { type: "text/plain" }));
+    a.href = URL.createObjectURL(new Blob([`BastiON — códigos de recuperação (cada um vale uma vez)\n\n${text}\n`], { type: "text/plain" }));
     a.download = "bastion-codigos-recuperacao.txt"; a.click(); URL.revokeObjectURL(a.href);
   };
   return (
     <div className="space-y-3" data-testid="recovery-codes">
       <div className="text-sm text-amber-300">Guarde estes códigos agora — eles não aparecem de novo. Cada um entra uma vez, se você perder o celular.</div>
-      <div className="grid grid-cols-2 gap-1.5 font-mono text-sm bg-[#05070A] border border-[#1E293B] rounded p-3">
+      <div className="grid grid-cols-2 gap-1.5 font-mono text-sm bg-sunken border border-line rounded p-3">
         {codes.map(c => <div key={c} className="text-slate-200 text-center">{c}</div>)}
       </div>
       <div className="flex gap-2">
-        <Button size="sm" variant="outline" onClick={copy} className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800"><Copy className="w-3.5 h-3.5 mr-1" /> Copiar</Button>
-        <Button size="sm" variant="outline" onClick={download} className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800"><Download className="w-3.5 h-3.5 mr-1" /> Baixar .txt</Button>
-        <Button size="sm" onClick={onDone} className="ml-auto bg-[#007AFF] hover:bg-[#0062CC]" data-testid="recovery-done">Guardei os códigos</Button>
+        <Button size="sm" variant="outline" onClick={copy} className="border-line bg-panel text-slate-200 hover:bg-slate-800"><Copy className="w-3.5 h-3.5 mr-1" /> Copiar</Button>
+        <Button size="sm" variant="outline" onClick={download} className="border-line bg-panel text-slate-200 hover:bg-slate-800"><Download className="w-3.5 h-3.5 mr-1" /> Baixar .txt</Button>
+        <Button size="sm" onClick={onDone} className="ml-auto bg-brand hover:bg-brand-strong" data-testid="recovery-done">Guardei os códigos</Button>
       </div>
     </div>
   );
@@ -47,7 +47,7 @@ function PasswordAndCode({ label, danger, onSubmit, busy }) {
         <Input placeholder="código do app" value={code} onChange={e => setCode(e.target.value)} className={inputCls} data-testid="sec-code" inputMode="numeric" />
       </div>
       <Button type="submit" size="sm" disabled={busy || !password || !code} data-testid="sec-confirm"
-              className={danger ? "bg-red-600 hover:bg-red-700" : "bg-[#007AFF] hover:bg-[#0062CC]"}>
+              className={danger ? "bg-red-600 hover:bg-red-700" : "bg-brand hover:bg-brand-strong"}>
         {busy && <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />}{label}
       </Button>
     </form>
@@ -93,11 +93,11 @@ export function AccountSecurity({ open, onOpenChange, forced = false }) {
 
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-lg max-h-[90vh] overflow-y-auto" data-testid="account-security">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-lg max-h-[90vh] overflow-y-auto" data-testid="account-security">
         <DialogHeader><DialogTitle>Segurança da conta</DialogTitle></DialogHeader>
         {forced && !st?.enabled && (
           <div className="text-sm text-amber-300 border border-amber-400/30 bg-amber-400/5 rounded p-2.5 flex gap-2" data-testid="forced-2fa">
-            <ShieldAlert className="w-4 h-4 mt-0.5 shrink-0" /> O administrador exige verificação em duas etapas. Ative o 2FA para continuar usando o Bastion.
+            <ShieldAlert className="w-4 h-4 mt-0.5 shrink-0" /> O administrador exige verificação em duas etapas. Ative o 2FA para continuar usando o BastiON.
           </div>
         )}
         {!st ? <Loader2 className="w-5 h-5 animate-spin text-slate-500" /> : (
@@ -116,7 +116,7 @@ export function AccountSecurity({ open, onOpenChange, forced = false }) {
               {!codes && !st.enabled && !setup && (
                 <>
                   <p className="text-xs text-slate-400 mb-2">Além da senha, o login pede um código de 6 dígitos do app no celular (Google Authenticator, Authy, Microsoft Authenticator…).</p>
-                  <Button size="sm" onClick={start} disabled={busy} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="twofa-start">
+                  <Button size="sm" onClick={start} disabled={busy} className="bg-brand hover:bg-brand-strong" data-testid="twofa-start">
                     {busy && <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />} Ativar 2FA
                   </Button>
                 </>
@@ -130,14 +130,14 @@ export function AccountSecurity({ open, onOpenChange, forced = false }) {
                     <div className="flex-1 min-w-[180px] text-xs text-slate-400 space-y-2">
                       <div>1. No app autenticador, toque em <b className="text-slate-300">+</b> e leia o QR code.</div>
                       <div>Sem câmera? Digite a chave:</div>
-                      <div className="font-mono text-[11px] text-slate-200 bg-[#05070A] border border-[#1E293B] rounded p-1.5 break-all" data-testid="twofa-secret">{setup.secret}</div>
+                      <div className="font-mono text-[11px] text-slate-200 bg-sunken border border-line rounded p-1.5 break-all" data-testid="twofa-secret">{setup.secret}</div>
                       <div>2. Digite o código de 6 dígitos que aparece:</div>
                     </div>
                   </div>
                   <form className="flex gap-2" onSubmit={e => { e.preventDefault(); enable(); }}>
                     <Input value={code} onChange={e => setCode(e.target.value)} placeholder="123456" inputMode="numeric" autoFocus
                            className={`${inputCls} w-40 text-center tracking-[0.3em]`} data-testid="twofa-code" />
-                    <Button type="submit" disabled={busy || code.replace(/\D/g, "").length !== 6} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="twofa-enable">
+                    <Button type="submit" disabled={busy || code.replace(/\D/g, "").length !== 6} className="bg-brand hover:bg-brand-strong" data-testid="twofa-enable">
                       {busy && <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />} Confirmar
                     </Button>
                   </form>
@@ -146,11 +146,11 @@ export function AccountSecurity({ open, onOpenChange, forced = false }) {
 
               {!codes && st.enabled && (
                 <div className="flex gap-2 flex-wrap">
-                  <Button size="sm" variant="outline" onClick={() => setMode(mode === "regen" ? null : "regen")} className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="twofa-regen">
+                  <Button size="sm" variant="outline" onClick={() => setMode(mode === "regen" ? null : "regen")} className="border-line bg-panel text-slate-200 hover:bg-slate-800" data-testid="twofa-regen">
                     <KeyRound className="w-3.5 h-3.5 mr-1" /> Novos códigos de recuperação
                   </Button>
                   {!st.require_2fa && (
-                    <Button size="sm" variant="outline" onClick={() => setMode(mode === "disable" ? null : "disable")} className="border-red-900/60 bg-[#0B111C] text-red-300 hover:bg-red-950/40" data-testid="twofa-disable">
+                    <Button size="sm" variant="outline" onClick={() => setMode(mode === "disable" ? null : "disable")} className="border-red-900/60 bg-panel text-red-300 hover:bg-red-950/40" data-testid="twofa-disable">
                       Desativar 2FA
                     </Button>
                   )}
@@ -163,14 +163,14 @@ export function AccountSecurity({ open, onOpenChange, forced = false }) {
 
             {!(forced && !st.enabled) && (
               <>
-                <section className="border-t border-[#1E293B] pt-4">
+                <section className="border-t border-line pt-4">
                   <div className="text-sm font-medium mb-1">Sessões</div>
-                  <p className="text-xs text-slate-400 mb-2">Esqueceu o Bastion aberto em outro computador ou celular? Encerre todas as outras sessões (esta continua).</p>
-                  <Button size="sm" variant="outline" onClick={logoutOthers} disabled={busy} className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="logout-others">
+                  <p className="text-xs text-slate-400 mb-2">Esqueceu o BastiON aberto em outro computador ou celular? Encerre todas as outras sessões (esta continua).</p>
+                  <Button size="sm" variant="outline" onClick={logoutOthers} disabled={busy} className="border-line bg-panel text-slate-200 hover:bg-slate-800" data-testid="logout-others">
                     <LogOut className="w-3.5 h-3.5 mr-1" /> Encerrar outras sessões
                   </Button>
                 </section>
-                <section className="border-t border-[#1E293B] pt-4">
+                <section className="border-t border-line pt-4">
                   <div className="text-sm font-medium mb-2">Últimos acessos à sua conta</div>
                   <div className="space-y-1" data-testid="my-logins">
                     {logins.length === 0 && <div className="text-xs text-slate-500">Nenhum registro ainda.</div>}

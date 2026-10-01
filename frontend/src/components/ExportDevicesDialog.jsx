@@ -46,15 +46,15 @@ export function ExportDevicesDialog({ open, onOpenChange, total, filteredIds, se
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-md" data-testid="export-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-md" data-testid="export-dialog">
         <DialogHeader><DialogTitle>Exportar equipamentos (CSV)</DialogTitle></DialogHeader>
         <p className="text-xs text-slate-400 font-mono">
-          Mesmo formato do <b>Importar CSV</b>: dá para editar no Excel e importar de volta, ou migrar para outro Bastion.
+          Mesmo formato do <b>Importar CSV</b>: dá para editar no Excel e importar de volta, ou migrar para outro BastiON.
         </p>
         <div className="space-y-2">
           {options.map(([v, label, n]) => (
             <label key={v} className={`flex items-center justify-between gap-3 px-3 py-2 rounded border cursor-pointer text-sm
-                ${scope === v ? "border-[#007AFF] bg-[#007AFF]/10" : "border-[#1E293B] bg-[#0B111C]"} ${n === 0 ? "opacity-40 pointer-events-none" : ""}`}>
+                ${scope === v ? "border-brand bg-brand/10" : "border-line bg-panel"} ${n === 0 ? "opacity-40 pointer-events-none" : ""}`}>
               <span className="flex items-center gap-2">
                 <input type="radio" name="export-scope" value={v} checked={scope === v} onChange={() => setScope(v)} data-testid={`export-scope-${v}`} />
                 {label}
@@ -77,7 +77,7 @@ export function ExportDevicesDialog({ open, onOpenChange, total, filteredIds, se
         </label>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button onClick={doExport} disabled={busy || count === 0} data-testid="export-confirm-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
+          <Button onClick={doExport} disabled={busy || count === 0} data-testid="export-confirm-btn" className="bg-brand hover:bg-brand-strong">
             <Download className="w-4 h-4 mr-2" /> Exportar ({count})
           </Button>
         </DialogFooter>

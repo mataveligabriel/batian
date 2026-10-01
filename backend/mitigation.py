@@ -1,6 +1,6 @@
 """Mitigação de DDoS por blackhole (RTBH só na borda): regras, validações e registro.
 
-O Bastion anuncia o /32 atacado por iBGP para as bordas com next-hop de descarte (ex.: 192.0.2.1 → NULL0),
+O BastiON anuncia o /32 atacado por iBGP para as bordas com next-hop de descarte (ex.: 192.0.2.1 → NULL0),
 a community combinada e NO_EXPORT (a rota não sai para trânsitos/IX). Quem fala BGP é o bgpd.py (container
 "bgp"); aqui ficam as regras usadas pela API, pelo Telegram e pelo próprio bgpd.
 
@@ -64,7 +64,7 @@ def clean_settings(data: dict) -> dict:
                 raise MitigationError(f"{label} precisa ser um IPv4")
         out[f] = v
     if out["enabled"] and not out["router_id"]:
-        raise MitigationError("Informe o Router-ID (normalmente o IP do servidor do Bastion)")
+        raise MitigationError("Informe o Router-ID (normalmente o IP do servidor do BastiON)")
     comms = []
     for c in out.get("communities") or []:
         c = str(c).strip()
@@ -135,13 +135,13 @@ def check_target(prefix: str, own_prefixes: List[str], s: dict) -> str:
     if not own_prefixes:
         raise MitigationError("Cadastre os seus blocos em Flow → Configuração → 'Blocos próprios' antes de mitigar")
     if not _in_any(ip, own_prefixes):
-        raise MitigationError(f"{ip} não está nos seus blocos próprios — o Bastion só faz blackhole de IP seu")
+        raise MitigationError(f"{ip} não está nos seus blocos próprios — o BastiON só faz blackhole de IP seu")
     hit = _in_any(ip, s.get("protect") or [])
     if hit:
         raise MitigationError(f"{ip} está na lista de protegidos ({hit}) — remova de lá se quiser mesmo mitigar")
     peer_ips = {p["ip"] for p in s.get("peers") or []}
     if str(ip) in peer_ips or str(ip) in (s.get("router_id"), s.get("local_address"), s.get("next_hop")):
-        raise MitigationError(f"{ip} é usado pela própria sessão BGP/Bastion — não dá para mitigar")
+        raise MitigationError(f"{ip} é usado pela própria sessão BGP/BastiON — não dá para mitigar")
     return f"{ip}/32"
 
 
@@ -218,7 +218,7 @@ def fmt_minutes(m: int) -> str:
 
 
 def router_config(s: dict, vendor: str, bastion_ip: str, own_prefixes: List[str]) -> str:
-    """Configuração de referência para a borda aceitar o blackhole do Bastion."""
+    """Configuração de referência para a borda aceitar o blackhole do BastiON."""
     asn = s.get("local_as") or "SEU_AS"
     nh = s.get("next_hop") or "192.0.2.1"
     comm = (s.get("communities") or ["65535:666"])[0]
@@ -235,7 +235,7 @@ def router_config(s: dict, vendor: str, bastion_ip: str, own_prefixes: List[str]
                 "set policy-options policy-statement BASTION-IN term resto then reject",
                 "set policy-options policy-statement BASTION-OUT then reject",
                 "set protocols bgp group BASTION-RTBH type internal",
-                'set protocols bgp group BASTION-RTBH description "Bastion - blackhole"',
+                'set protocols bgp group BASTION-RTBH description "BastiON - blackhole"',
                 "set protocols bgp group BASTION-RTBH import BASTION-IN",
                 "set protocols bgp group BASTION-RTBH export BASTION-OUT",
                 f"set protocols bgp group BASTION-RTBH neighbor {src}",

@@ -10,7 +10,7 @@ function Side({ node, value, onPick, letter, nameOf }) {
   return (
     <div className="flex-1 min-w-0">
       <div className="text-xs text-slate-300 mb-1.5 flex items-center justify-between">
-        <span><b className="text-[#4DA3FF]">{letter}</b> · {nameOf(node)}</span>
+        <span><b className="text-brand-soft">{letter}</b> · {nameOf(node)}</span>
         <span className="font-mono text-[11px] text-slate-400">{value ? `${value.name} (${fmtSpeed(value.speed_mbps)})` : "nenhuma"}</span>
       </div>
       <InterfacePicker deviceId={node?.device_id} value={value?.index} onPick={onPick} height="h-64" />
@@ -31,14 +31,14 @@ export function LinkDialog({ open, link, nodeA, nodeB, nameOf, onCancel, onSave,
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onCancel()}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-4xl max-h-[92vh] overflow-y-auto" data-testid="link-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-4xl max-h-[92vh] overflow-y-auto" data-testid="link-dialog">
         <DialogHeader><DialogTitle>{link?.id ? "Editar link" : "Novo link"}: {nameOf(nodeA)} ↔ {nameOf(nodeB)}</DialogTitle></DialogHeader>
         <p className="text-xs text-slate-400">
           Escolha a interface em <b>pelo menos um</b> dos lados — o tráfego é lido dela por SNMP. Se escolher dos dois lados,
-          o Bastion usa o lado A e o B serve de reserva e para o alarme de queda.
+          o BastiON usa o lado A e o B serve de reserva e para o alarme de queda.
         </p>
         {existing.length > 0 && (
-          <div className="text-[11px] font-mono text-slate-400 bg-[#0B111C] border border-[#1E293B] rounded px-3 py-2" data-testid="link-existing">
+          <div className="text-[11px] font-mono text-slate-400 bg-panel border border-line rounded px-3 py-2" data-testid="link-existing">
             Já existe{existing.length > 1 ? "m" : ""} {existing.length} enlace{existing.length > 1 ? "s" : ""} entre estes equipamentos — este será desenhado em paralelo (curva):
             <div className="text-slate-300 mt-1">{existing.map(l => `${l.from_if?.name || "—"} ↔ ${l.to_if?.name || "—"}`).join("   ·   ")}</div>
           </div>
@@ -51,19 +51,19 @@ export function LinkDialog({ open, link, nodeA, nodeB, nameOf, onCancel, onSave,
           <div>
             <Label>Capacidade do link (Mbps)</Label>
             <Input type="number" min={1} value={cap} onChange={e => setCap(e.target.value)} data-testid="link-capacity"
-                   placeholder={autoCap ? `automático: ${autoCap} (velocidade da porta)` : "ex.: 10000"} className="bg-[#05070A] border-[#1E293B] font-mono" />
+                   placeholder={autoCap ? `automático: ${autoCap} (velocidade da porta)` : "ex.: 10000"} className="bg-sunken border-line font-mono" />
             <div className="text-[11px] text-slate-500 mt-1">Use quando o contrato é menor que a porta (ex.: 2 Gbps numa porta de 10G).</div>
           </div>
           <div>
             <Label>Nome do link (opcional)</Label>
             <Input value={label} onChange={e => setLabel(e.target.value)} placeholder="ex.: Trânsito IP · Operadora X" data-testid="link-label"
-                   className="bg-[#05070A] border-[#1E293B]" />
+                   className="bg-sunken border-line" />
           </div>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
           <Button onClick={() => onSave({ from_if: fromIf, to_if: toIf, capacity_mbps: cap ? Number(cap) : null, label: label.trim() })}
-                  data-testid="link-save" className="bg-[#007AFF] hover:bg-[#0062CC]">Salvar link</Button>
+                  data-testid="link-save" className="bg-brand hover:bg-brand-strong">Salvar link</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -1,4 +1,4 @@
-"""Resumo diário do Bastion (Telegram / push): o que aconteceu nas últimas 24 h e o que pede atenção agora."""
+"""Resumo diário do BastiON (Telegram / push): o que aconteceu nas últimas 24 h e o que pede atenção agora."""
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -171,7 +171,7 @@ async def build(db, optics_names: Optional[Callable[[], Awaitable[Dict[str, Dict
     lines.append(s)
 
     local = now.astimezone()
-    title = f"📋 Resumo do Bastion — {local.strftime('%d/%m %H:%M')}"
+    title = f"📋 Resumo do BastiON — {local.strftime('%d/%m %H:%M')}"
     head = "✅ Nada pedindo atenção agora." if attention == 0 else f"⚠️ {attention} item(ns) pedindo atenção."
     data["attention"] = attention
     return title, head + "\n\n" + "\n\n".join(lines), data

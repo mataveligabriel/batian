@@ -22,10 +22,10 @@ export function pushBlocker() {
   return null;
 }
 export const BLOCKER_TEXT = {
-  https: "As notificações exigem que o Bastion seja acessado por HTTPS (com domínio). Veja o README, seção PWA.",
+  https: "As notificações exigem que o BastiON seja acessado por HTTPS (com domínio). Veja o README, seção PWA.",
   install: "No iPhone, primeiro instale o app: Compartilhar → Adicionar à Tela de Início. Depois abra pelo ícone e ative aqui.",
   unsupported: "Este navegador não suporta notificações push.",
-  desktop: "O app do Windows não recebe push. No PC, ative pelo Chrome ou Edge (abrindo o endereço do Bastion); no celular, pelo app instalado.",
+  desktop: "O app do Windows não recebe push. No PC, ative pelo Chrome ou Edge (abrindo o endereço do BastiON); no celular, pelo app instalado.",
 };
 
 function deviceName() {
@@ -55,7 +55,7 @@ export async function enablePush() {
   const block = pushBlocker();
   if (block) throw new Error(BLOCKER_TEXT[block]);
   const perm = await Notification.requestPermission();      // precisa vir de um toque do usuário
-  if (perm !== "granted") throw new Error("Permissão negada. Libere as notificações do Bastion nos Ajustes do aparelho.");
+  if (perm !== "granted") throw new Error("Permissão negada. Libere as notificações do BastiON nos Ajustes do aparelho.");
   const reg = (await navigator.serviceWorker.getRegistration()) || (await navigator.serviceWorker.register("/sw.js"));
   await navigator.serviceWorker.ready;
   const { data } = await api.get("/push/public-key");

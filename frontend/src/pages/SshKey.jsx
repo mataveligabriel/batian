@@ -52,28 +52,27 @@ export default function SshKey() {
   return (
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="ssh-key-page">
       <div className="mb-6">
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Credenciais Globais</div>
-        <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Chave SSH Global</h1>
+        <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Chave SSH Global</h1>
         <p className="text-slate-400 mt-2 text-sm max-w-2xl">
-          Chave privada única usada pelo Bastion Central para conectar em todos os equipamentos e agentes.
+          Chave privada única usada pelo BastiON Central para conectar em todos os equipamentos e agentes.
           Distribua a chave pública para <code className="text-emerald-300 font-mono">~/.ssh/authorized_keys</code>.
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card className="bg-[#111722] border-[#1E293B] p-5 lg:col-span-1" data-testid="ssh-config-card">
+        <Card className="bg-surface border-line p-5 lg:col-span-1" data-testid="ssh-config-card">
           <div className="flex items-center gap-2 mb-3">
-            <KeyRound className="w-4 h-4 text-[#4DA3FF]" />
-            <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Configuração</div>
+            <KeyRound className="w-4 h-4 text-brand-soft" />
+            <div className="text-xs text-slate-400">Configuração</div>
           </div>
           <div>
             <Label>Usuário padrão</Label>
-            <Input data-testid="ssh-default-user" value={config.default_username || "root"} onChange={e => setConfig({ ...config, default_username: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+            <Input data-testid="ssh-default-user" value={config.default_username || "root"} onChange={e => setConfig({ ...config, default_username: e.target.value })} className="bg-sunken border-line font-mono" />
           </div>
           <div className="mt-3">
             <Label>Senha padrão (RADIUS/TACACS)</Label>
             <Input data-testid="ssh-default-password" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)}
-                   placeholder={config.has_default_password ? "•••••••• (mantida — digite para trocar)" : "opcional"} className="bg-[#05070A] border-[#1E293B] font-mono" />
+                   placeholder={config.has_default_password ? "•••••••• (mantida — digite para trocar)" : "opcional"} className="bg-sunken border-line font-mono" />
             <div className="text-[11px] text-slate-500 mt-1 font-mono">Usada em todo equipamento sem senha própria. Nunca é exibida.</div>
             {config.has_default_password && (
               <label className="flex items-center gap-2 mt-2 text-xs text-slate-400 cursor-pointer">
@@ -89,20 +88,20 @@ export default function SshKey() {
           {isAdmin && (
             <div className="flex gap-2 mt-4">
               <Button onClick={generate} disabled={busy} data-testid="generate-key-btn"
-                      className="flex-1 bg-[#111722] border border-[#1E293B] text-slate-100 hover:bg-slate-800">
+                      className="flex-1 bg-surface border border-line text-slate-100 hover:bg-slate-800">
                 {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Wand2 className="w-4 h-4 mr-2" />}
                 Gerar chave
               </Button>
-              <Button onClick={save} disabled={busy} data-testid="save-key-btn" className="flex-1 bg-[#007AFF] hover:bg-[#0062CC]">
+              <Button onClick={save} disabled={busy} data-testid="save-key-btn" className="flex-1 bg-brand hover:bg-brand-strong">
                 <Save className="w-4 h-4 mr-2" /> Salvar
               </Button>
             </div>
           )}
         </Card>
 
-        <Card className="bg-[#111722] border-[#1E293B] p-5 lg:col-span-2" data-testid="ssh-keys-card">
+        <Card className="bg-surface border-line p-5 lg:col-span-2" data-testid="ssh-keys-card">
           <div className="mb-3 flex items-center justify-between">
-            <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Chave privada (PEM)</div>
+            <div className="text-xs text-slate-400">Chave privada (PEM)</div>
             {config.private_key && <Button size="sm" variant="ghost" onClick={() => copy(config.private_key)} className="text-slate-400"><Copy className="w-3.5 h-3.5" /></Button>}
           </div>
           <Textarea
@@ -111,12 +110,12 @@ export default function SshKey() {
             value={config.private_key}
             onChange={e => setConfig({ ...config, private_key: e.target.value })}
             placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-            className="bg-[#05070A] border-[#1E293B] font-mono text-xs text-slate-200"
+            className="bg-sunken border-line font-mono text-xs text-slate-200"
             disabled={!isAdmin}
           />
 
           <div className="mt-4 mb-3 flex items-center justify-between">
-            <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Chave pública</div>
+            <div className="text-xs text-slate-400">Chave pública</div>
             {config.public_key && <Button size="sm" variant="ghost" onClick={() => copy(config.public_key)} data-testid="copy-pubkey-btn" className="text-slate-400"><Copy className="w-3.5 h-3.5" /></Button>}
           </div>
           <Textarea
@@ -125,7 +124,7 @@ export default function SshKey() {
             value={config.public_key}
             onChange={e => setConfig({ ...config, public_key: e.target.value })}
             placeholder="ssh-rsa AAAA..."
-            className="bg-[#05070A] border-[#1E293B] font-mono text-xs text-emerald-300"
+            className="bg-sunken border-line font-mono text-xs text-emerald-300"
             disabled={!isAdmin}
           />
         </Card>

@@ -22,7 +22,7 @@ CACHE_PROGRAMS = {
 
 
 async def _pdb_get(http: httpx.AsyncClient, path: str, params: dict) -> List[dict]:
-    kw = dict(params=params, headers={"User-Agent": "Bastion-NOC (peering suggestions)"}, timeout=25)
+    kw = dict(params=params, headers={"User-Agent": "BastiON-NOC (peering suggestions)"}, timeout=25)
     try:
         r = await http.get(f"{PDB}/{path}", **kw)
     except httpx.ConnectError:

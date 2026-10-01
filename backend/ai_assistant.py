@@ -1,4 +1,4 @@
-"""Assistente de operações do Bastion: chat dentro do sistema e bot do Telegram.
+"""Assistente de operações do BastiON: chat dentro do sistema e bot do Telegram.
 
 Modelo: Claude (Anthropic) ou qualquer API compatível com OpenAI — Groq e Gemini (grátis para começar), Ollama local…
 Fluxo: pergunta -> loop de ferramentas do modelo ->
@@ -27,7 +27,7 @@ logger = logging.getLogger("bastion.ai")
 MODELS = [[m, m] for m in llm.PROVIDERS["anthropic"]["suggest"]]
 AI_DEFAULTS = {
     "ai_enabled": False,          # bot do Telegram
-    "ai_web_enabled": True,       # chat dentro do Bastion
+    "ai_web_enabled": True,       # chat dentro do BastiON
     "anthropic_api_key": "",      # legado (hoje fica em ai_keys["anthropic"])
     "ai_model": "claude-sonnet-5",
     "ai_allow_changes": True,
@@ -116,7 +116,7 @@ def _truncate(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
 # ---------------------------------------------------------------------------
 # Prompt e ferramentas
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """Você é o assistente de operações de rede do Bastion. Conversa com engenheiros de rede de um provedor de internet e acessa os equipamentos cadastrados no Bastion (Huawei, Juniper, Cisco, Datacom DmOS, ZTE OLT/switch, Mikrotik, Linux) através das ferramentas.
+SYSTEM_PROMPT = """Você é o assistente de operações de rede do BastiON. Conversa com engenheiros de rede de um provedor de internet e acessa os equipamentos cadastrados no BastiON (Huawei, Juniper, Cisco, Datacom DmOS, ZTE OLT/switch, Mikrotik, Linux) através das ferramentas.
 
 Regras obrigatórias:
 1. Nunca invente saídas, nomes de interface, IDs de ONU, estados ou valores. Consulte antes de afirmar algo ou propor qualquer alteração.
@@ -140,7 +140,7 @@ Dicas por fabricante (confirme a sintaxe da versão do equipamento):
 """
 CHANNEL_PROMPT = {
     "telegram": "Canal: Telegram. Texto simples, sem Markdown e sem tabelas largas: o usuário lê no celular.",
-    "web": ("Canal: chat dentro do Bastion (navegador). Pode usar listas curtas e blocos ``` para trechos de CLI; "
+    "web": ("Canal: chat dentro do BastiON (navegador). Pode usar listas curtas e blocos ``` para trechos de CLI; "
             "evite tabelas largas. As propostas aparecem como um cartão com os botões Confirmar/Cancelar."),
 }
 
@@ -148,7 +148,7 @@ _DEV = {"type": "string", "description": "Nome exato (ou id) do equipamento, com
 TOOLS = [
     {
         "name": "list_devices",
-        "description": "Lista/busca equipamentos cadastrados no Bastion do usuário. Retorna nome, host, tipo, tags, status e descrição.",
+        "description": "Lista/busca equipamentos cadastrados no BastiON do usuário. Retorna nome, host, tipo, tags, status e descrição.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -224,7 +224,7 @@ TOOLS = [
     },
     {
         "name": "get_config_backup",
-        "description": "Lê o último backup de configuração salvo pelo Bastion (sem acessar o equipamento). Bom para analisar configuração de BGP, interfaces etc. Pode estar desatualizado — a data vem no resultado.",
+        "description": "Lê o último backup de configuração salvo pelo BastiON (sem acessar o equipamento). Bom para analisar configuração de BGP, interfaces etc. Pode estar desatualizado — a data vem no resultado.",
         "input_schema": {
             "type": "object",
             "properties": {"device": _DEV, "filter": {"type": "string", "description": "Regex opcional para devolver só as linhas que casam."}},
@@ -276,7 +276,7 @@ TOOLS = [
 ]
 
 HELP_TEXT = (
-    "Sou o assistente do Bastion. Exemplos:\n"
+    "Sou o assistente do BastiON. Exemplos:\n"
     "• verifica o nível de sinal da porta 100GE0/0/1 da BORDA Huawei Cachoeiro\n"
     "• mostra as sessões BGP da borda X e o que estamos anunciando para o peer Y\n"
     "• quais interfaces estão down no switch S5732-Caxixe?\n"
@@ -466,7 +466,7 @@ class AgentCore:
 
     def _system(self, user: dict, s: dict) -> list:
         now = datetime.now().strftime("%d/%m/%Y %H:%M")
-        ctx = (f"Data/hora do servidor: {now}. Usuário do Bastion: {user.get('name') or user.get('email')}. "
+        ctx = (f"Data/hora do servidor: {now}. Usuário do BastiON: {user.get('name') or user.get('email')}. "
                + ("Alterações permitidas (sempre via propose_config_change)." if s.get("ai_allow_changes")
                   else "ALTERAÇÕES DESATIVADAS pelo administrador: apenas consultas. Se pedirem mudança, explique e mostre os comandos como sugestão em texto, sem propor."))
         return [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
@@ -1062,10 +1062,10 @@ class TelegramAssistant(AgentCore):
             return await self.send(chat_id, f"Seu ID do Telegram: {from_id}")
         link = self._auth(s, from_id)
         if not link:
-            return await self.send(chat_id, f"Acesso não autorizado.\nSeu ID do Telegram é {from_id} — peça ao administrador do Bastion para liberar em Automação → Assistente IA.")
+            return await self.send(chat_id, f"Acesso não autorizado.\nSeu ID do Telegram é {from_id} — peça ao administrador do BastiON para liberar em Automação → Assistente IA.")
         user = await self.db.users.find_one({"id": link["user_id"]}, {"_id": 0, "password_hash": 0})
         if not user:
-            return await self.send(chat_id, "Seu ID do Telegram está vinculado a um usuário do Bastion que não existe mais. Fale com o administrador.")
+            return await self.send(chat_id, "Seu ID do Telegram está vinculado a um usuário do BastiON que não existe mais. Fale com o administrador.")
         if cmd in ("/start", "/ajuda", "/help"):
             return await self.send(chat_id, HELP_TEXT)
         if cmd in ("/novo", "/reset", "/new"):
@@ -1138,7 +1138,7 @@ class TelegramAssistant(AgentCore):
         await self._tg("editMessageReplyMarkup", chat_id=chat_id, message_id=msg.get("message_id"), reply_markup={"inline_keyboard": []})
         exp = datetime.fromisoformat(m["expires_at"]).astimezone().strftime("%H:%M")
         await self.send(chat_id, f"🛡️ {m['prefix']} em blackhole nas bordas até {exp} ({'prazo estendido' if m.get('extended') else 'por ' + (user.get('email') or '')}).\n"
-                                 "Remover antes: Flow → Mitigação no Bastion.")
+                                 "Remover antes: Flow → Mitigação no BastiON.")
 
     async def _on_callback(self, cq: dict):
         data = cq.get("data") or ""
@@ -1194,7 +1194,7 @@ class TelegramAssistant(AgentCore):
 
 
 # ---------------------------------------------------------------------------
-# Canal web (chat dentro do Bastion)
+# Canal web (chat dentro do BastiON)
 # ---------------------------------------------------------------------------
 WEB_DISPLAY_MAX = 200
 

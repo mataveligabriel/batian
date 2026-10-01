@@ -8,7 +8,7 @@ import { Search, Loader2, Eye, ChevronDown, ChevronRight, AlertTriangle, CornerD
 const TYPES = ["", "huawei", "juniper", "datacom", "zte", "cisco", "mikrotik", "ubiquiti", "linux", "other"];
 const MODES = [["word", "Palavra inteira"], ["text", "Trecho"], ["regex", "Regex"]];
 const EXAMPLES = ["1302", "187.16.216.95", "vpn-instance", "mpls l2vc"];
-const sel = "h-9 bg-[#05070A] border border-[#1E293B] rounded-md px-2 text-sm text-slate-200";
+const sel = "h-9 bg-sunken border border-line rounded-md px-2 text-sm text-slate-200";
 const fmtAt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 const ageDays = (iso) => iso ? (Date.now() - new Date(iso).getTime()) / 86400000 : 0;
 
@@ -36,8 +36,8 @@ function Line({ no, children, dim }) {
 function DeviceResult({ r, onView, open, onToggle }) {
   const old = ageDays(r.backup_at) > 2;
   return (
-    <Card className="bg-[#111722] border-[#1E293B] overflow-hidden" data-testid={`cs-dev-${r.device_id}`}>
-      <div className="px-3 py-2 flex items-center gap-2 border-b border-[#1E293B] cursor-pointer hover:bg-slate-900/40" onClick={onToggle}>
+    <Card className="bg-surface border-line overflow-hidden" data-testid={`cs-dev-${r.device_id}`}>
+      <div className="px-3 py-2 flex items-center gap-2 border-b border-line cursor-pointer hover:bg-slate-900/40" onClick={onToggle}>
         {open ? <ChevronDown className="w-4 h-4 text-slate-500" /> : <ChevronRight className="w-4 h-4 text-slate-500" />}
         <div className="flex-1 min-w-0">
           <span className="text-sm text-slate-100 font-medium">{r.device_name}</span>
@@ -46,14 +46,14 @@ function DeviceResult({ r, onView, open, onToggle }) {
         <span className={`text-[11px] font-mono ${old ? "text-amber-400" : "text-slate-500"}`} title="data do backup pesquisado">
           backup {fmtAt(r.backup_at)}{old ? " (antigo)" : ""}
         </span>
-        <span className="text-[11px] font-mono text-[#4DA3FF] bg-[#4DA3FF]/10 rounded px-1.5">{r.count} linha{r.count > 1 ? "s" : ""}</span>
+        <span className="text-[11px] font-mono text-brand-soft bg-brand-soft/10 rounded px-1.5">{r.count} linha{r.count > 1 ? "s" : ""}</span>
         <Button size="sm" variant="ghost" className="h-7 text-slate-300 hover:bg-slate-800" title="Abrir a config inteira"
                 onClick={(e) => { e.stopPropagation(); onView(r.backup_id, r.matches[0]?.line_no); }} data-testid={`cs-view-${r.device_id}`}>
           <Eye className="w-3.5 h-3.5" />
         </Button>
       </div>
       {open && (
-        <div className="divide-y divide-[#1E293B]/60">
+        <div className="divide-y divide-line/60">
           {r.matches.map((m) => {
             // o bloco que já aparece no contexto acima não precisa ser repetido no caminho
             const shown = new Set(m.before.map(([, x]) => x.trim()));
@@ -109,31 +109,31 @@ export function ConfigSearch({ onView, initialQuery = "" }) {
 
   return (
     <div className="space-y-3" data-testid="config-search">
-      <Card className="bg-[#111722] border-[#1E293B] p-3">
+      <Card className="bg-surface border-line p-3">
         <form className="flex flex-wrap gap-2 items-center" onSubmit={(e) => { e.preventDefault(); run(); }}>
           <div className="relative flex-1 min-w-[220px]">
             <Search className="w-4 h-4 text-slate-500 absolute left-2.5 top-2.5" />
             <Input ref={inputRef} value={q} onChange={e => setQ(e.target.value)} data-testid="cs-query"
                    placeholder="VLAN, IP, peer, VSI, nome de cliente… em todas as configs"
-                   className="pl-8 bg-[#05070A] border-[#1E293B] font-mono" />
+                   className="pl-8 bg-sunken border-line font-mono" />
           </div>
-          <div className="flex rounded-md border border-[#1E293B] overflow-hidden" data-testid="cs-mode">
+          <div className="flex rounded-md border border-line overflow-hidden" data-testid="cs-mode">
             {MODES.map(([v, l]) => (
               <button type="button" key={v} onClick={() => setMode(v)} data-testid={`cs-mode-${v}`}
-                      className={`px-2.5 h-9 text-xs ${mode === v ? "bg-[#007AFF]/20 text-slate-100" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
+                      className={`px-2.5 h-9 text-xs ${mode === v ? "bg-brand/20 text-slate-100" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
             ))}
           </div>
           <select className={sel} value={dtype} onChange={e => setDtype(e.target.value)} data-testid="cs-type">
             {TYPES.map(t => <option key={t} value={t}>{t || "todos os fabricantes"}</option>)}
           </select>
-          <Input value={dev} onChange={e => setDev(e.target.value)} placeholder="equipamento (opcional)" className="w-44 bg-[#05070A] border-[#1E293B] h-9 text-sm" data-testid="cs-device" />
+          <Input value={dev} onChange={e => setDev(e.target.value)} placeholder="equipamento (opcional)" className="w-44 bg-sunken border-line h-9 text-sm" data-testid="cs-device" />
           <select className={sel} value={ctx} onChange={e => setCtx(Number(e.target.value))} title="linhas de contexto">
             {[0, 1, 2, 3, 5].map(n => <option key={n} value={n}>±{n} linhas</option>)}
           </select>
           <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
             <input type="checkbox" checked={cs} onChange={e => setCs(e.target.checked)} /> Aa
           </label>
-          <Button type="submit" disabled={busy || !q.trim()} className="bg-[#007AFF] hover:bg-[#0062CC] h-9" data-testid="cs-go">
+          <Button type="submit" disabled={busy || !q.trim()} className="bg-brand hover:bg-brand-strong h-9" data-testid="cs-go">
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Buscar"}
           </Button>
         </form>
@@ -148,7 +148,7 @@ export function ConfigSearch({ onView, initialQuery = "" }) {
         <div className="flex flex-wrap gap-2 items-center text-xs text-slate-500">
           Exemplos:
           {EXAMPLES.map(x => (
-            <button key={x} onClick={() => { setQ(x); run(x); }} className="font-mono px-2 py-1 rounded border border-[#1E293B] text-slate-300 hover:bg-slate-800/60">{x}</button>
+            <button key={x} onClick={() => { setQ(x); run(x); }} className="font-mono px-2 py-1 rounded border border-line text-slate-300 hover:bg-slate-800/60">{x}</button>
           ))}
         </div>
       )}
@@ -159,7 +159,7 @@ export function ConfigSearch({ onView, initialQuery = "" }) {
             <span><b className="text-slate-100">{res.devices_matched}</b> de {res.devices_searched} equipamento(s) · <b className="text-slate-100">{res.lines_matched}</b> linha(s) · {res.elapsed_ms} ms</span>
             {res.truncated && <span className="text-amber-400 flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" /> resultado cortado — refine a busca</span>}
             {res.results.length > 1 && (
-              <button className="text-[#4DA3FF] hover:underline" onClick={() => setClosed(Object.keys(closed).length ? {} : Object.fromEntries(res.results.map(r => [r.device_id, true])))}>
+              <button className="text-brand-soft hover:underline" onClick={() => setClosed(Object.keys(closed).length ? {} : Object.fromEntries(res.results.map(r => [r.device_id, true])))}>
                 {Object.keys(closed).length ? "expandir todos" : "recolher todos"}
               </button>
             )}

@@ -24,7 +24,7 @@ import { fmtBps, fmtSpeed, UTIL_BANDS, STATUS, NO_DATA } from "@/lib/netfmt";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("pt-BR") : "—";
-const tabBtn = (on) => `flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${on ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`;
+const tabBtn = (on) => `flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${on ? "border-brand text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`;
 
 function Legend() {
   return (
@@ -64,14 +64,14 @@ function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onM
       </div>
       {siblings.length > 1 && (
         <div data-testid="link-siblings">
-          <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono mb-1">{siblings.length} enlaces entre estes equipamentos</div>
+          <div className="text-[10px] text-slate-500 mb-1">{siblings.length} enlaces entre estes equipamentos</div>
           <div className="space-y-0.5">
             {siblings.map((s, i) => {
               const sl = liveLinks?.[s.id] || {};
               const ifn = s.from === link.from ? (s.from_if || s.to_if) : (s.to_if || s.from_if);
               return (
                 <button key={s.id} onClick={() => onPick(s.id)}
-                        className={`w-full flex items-center gap-2 text-[11px] font-mono px-2 py-1 rounded border ${s.id === link.id ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] text-slate-300 hover:bg-slate-800/60"}`}>
+                        className={`w-full flex items-center gap-2 text-[11px] font-mono px-2 py-1 rounded border ${s.id === link.id ? "border-brand bg-brand/15 text-slate-100" : "border-line text-slate-300 hover:bg-slate-800/60"}`}>
                   <span className="text-slate-500">{i + 1}</span>
                   <span className="truncate">{s.label || ifn?.name || "sem interface"}</span>
                   <span className={`ml-auto whitespace-nowrap ${sl.down ? "text-red-400" : "text-slate-400"}`}>{sl.down ? "DOWN" : fmtBps(Math.max(sl.ab_bps || 0, sl.ba_bps || 0) || null)}</span>
@@ -84,12 +84,12 @@ function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onM
       {lv.down && <div className="text-xs text-red-400 font-mono">✕ interface DOWN</div>}
       {lv.error && <div className="text-xs text-amber-300 font-mono break-words">⚠ {lv.error}</div>}
       <div className="grid grid-cols-2 gap-2 text-center">
-        <div className="bg-[#0B111C] border border-[#1E293B] rounded p-2">
+        <div className="bg-panel border border-line rounded p-2">
           <div className="text-[10px] text-slate-500 font-mono">A → B</div>
           <div className="text-slate-100 font-semibold">{fmtBps(lv.ab_bps)}</div>
           <div className="text-[11px] text-slate-400 font-mono">{lv.ab_pct != null ? `${lv.ab_pct}%` : "—"}</div>
         </div>
-        <div className="bg-[#0B111C] border border-[#1E293B] rounded p-2">
+        <div className="bg-panel border border-line rounded p-2">
           <div className="text-[10px] text-slate-500 font-mono">B → A</div>
           <div className="text-slate-100 font-semibold">{fmtBps(lv.ba_bps)}</div>
           <div className="text-[11px] text-slate-400 font-mono">{lv.ba_pct != null ? `${lv.ba_pct}%` : "—"}</div>
@@ -99,26 +99,26 @@ function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onM
       <div>
         <div className="flex gap-1 mb-1">
           {[[60, "1h"], [360, "6h"], [1440, "24h"], [10080, "7d"]].map(([m, l]) => (
-            <button key={m} onClick={() => setRange(m)} className={`text-[11px] font-mono px-2 py-0.5 rounded border ${range === m ? "border-[#007AFF] text-slate-100 bg-[#007AFF]/15" : "border-[#1E293B] text-slate-400"}`}>{l}</button>
+            <button key={m} onClick={() => setRange(m)} className={`text-[11px] font-mono px-2 py-0.5 rounded border ${range === m ? "border-brand text-slate-100 bg-brand/15" : "border-line text-slate-400"}`}>{l}</button>
           ))}
         </div>
         <TrafficChart points={points} labels={{ ab: `→ ${nameOf(b)}`, ba: `→ ${nameOf(a)}` }} />
       </div>
       {[["A", a, link.from_if], ["B", b, link.to_if]].filter(([, n, i]) => n?.device_id && i).map(([k, n, i]) => (
-        <div key={k} className="border-t border-[#1E293B] pt-2">
-          <div className="text-[11px] uppercase tracking-widest text-slate-400 font-mono mb-1">Sinal óptico · {k} · {nameOf(n)} · {i.name}</div>
+        <div key={k} className="border-t border-line pt-2">
+          <div className="text-[11px] text-slate-400 mb-1">Sinal óptico · {k} · {nameOf(n)} · {i.name}</div>
           <OpticsPanel deviceId={n.device_id} ifIndex={i.index} ifName={i.name} minutes={1440} compact readOnly={readOnly} />
         </div>
       ))}
       <div className="flex flex-wrap gap-2 pt-1">
         {!readOnly && (link.from_if || link.to_if) && (
-          <Button size="sm" variant="outline" onClick={onMonitor} className="h-7 text-xs border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="link-monitor">
+          <Button size="sm" variant="outline" onClick={onMonitor} className="h-7 text-xs border-line bg-panel text-slate-200 hover:bg-slate-800" data-testid="link-monitor">
             <BellRing className="w-3.5 h-3.5 mr-1" /> Alarmar queda no Telegram
           </Button>
         )}
         {editing && <>
-          <Button size="sm" variant="outline" onClick={onEdit} className="h-7 text-xs border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800"><Pencil className="w-3.5 h-3.5 mr-1" /> Editar link</Button>
-          <Button size="sm" variant="outline" onClick={onAddParallel} data-testid="link-add-parallel" className="h-7 text-xs border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800"><Plus className="w-3.5 h-3.5 mr-1" /> Outro enlace entre estes</Button>
+          <Button size="sm" variant="outline" onClick={onEdit} className="h-7 text-xs border-line bg-panel text-slate-200 hover:bg-slate-800"><Pencil className="w-3.5 h-3.5 mr-1" /> Editar link</Button>
+          <Button size="sm" variant="outline" onClick={onAddParallel} data-testid="link-add-parallel" className="h-7 text-xs border-line bg-panel text-slate-200 hover:bg-slate-800"><Plus className="w-3.5 h-3.5 mr-1" /> Outro enlace entre estes</Button>
           {link.curve != null && <Button size="sm" variant="ghost" onClick={onResetCurve} className="h-7 text-xs text-slate-300 hover:bg-slate-800"><RotateCcw className="w-3.5 h-3.5 mr-1" /> Curva automática</Button>}
           <Button size="sm" variant="ghost" onClick={onDelete} className="h-7 text-xs text-red-400 hover:bg-red-950/40"><Trash2 className="w-3.5 h-3.5 mr-1" /> Excluir</Button>
         </>}
@@ -143,11 +143,11 @@ function SettingsTab() {
     } catch (e) { toast.error(formatApiError(e)); }
     finally { setBusy(false); }
   };
-  const inputCls = "bg-[#05070A] border-[#1E293B] font-mono";
+  const inputCls = "bg-sunken border-line font-mono";
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 max-w-5xl" data-testid="monitor-settings">
-      <Card className="bg-[#111722] border-[#1E293B] p-5 space-y-3">
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Coleta SNMP</div>
+      <Card className="bg-surface border-line p-5 space-y-3">
+        <div className="text-xs text-slate-400">Coleta SNMP</div>
         <div className="flex items-center justify-between"><Label>Coleta ativa</Label>
           <Switch checked={s.enabled} onCheckedChange={v => setS({ ...s, enabled: v })} disabled={!s.is_admin} /></div>
         <div><Label>Intervalo entre leituras (segundos)</Label>
@@ -159,20 +159,20 @@ function SettingsTab() {
           <div className="text-[11px] text-slate-500 mt-1">2 leituras de {s.interval_sec}s = alarme em até ~{2 * s.interval_sec}s, sem alarmar por oscilação.</div></div>
         <div className="flex items-center justify-between"><Label>Avisar também quando a interface volta</Label>
           <Switch checked={s.alert_up} onCheckedChange={v => setS({ ...s, alert_up: v })} disabled={!s.is_admin} /></div>
-        {s.is_admin && <div className="flex justify-end"><Button onClick={save} disabled={busy} className="bg-[#007AFF] hover:bg-[#0062CC]">{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Salvar</Button></div>}
+        {s.is_admin && <div className="flex justify-end"><Button onClick={save} disabled={busy} className="bg-brand hover:bg-brand-strong">{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Salvar</Button></div>}
       </Card>
-      <Card className="bg-[#111722] border-[#1E293B] p-5 space-y-2 text-sm text-slate-300">
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Situação</div>
+      <Card className="bg-surface border-line p-5 space-y-2 text-sm text-slate-300">
+        <div className="text-xs text-slate-400">Situação</div>
         <div className="font-mono text-xs">Última coleta: {s.last_tick ? new Date(s.last_tick).toLocaleString("pt-BR") : "ainda não"} · levou {s.last_duration}s{s.busy ? " · coletando agora…" : ""}</div>
         <div className="font-mono text-xs">{s.errors ? <span className="text-amber-300">⚠ {s.errors} equipamento(s) sem resposta SNMP</span> : "Todos os equipamentos respondendo"}</div>
-        <Button size="sm" variant="outline" className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800"
+        <Button size="sm" variant="outline" className="border-line bg-panel text-slate-200 hover:bg-slate-800"
                 onClick={async () => { const { data } = await api.post("/monitor/poll-now"); data.started ? toast.info("Coleta iniciada") : toast.warning(data.reason); setTimeout(load, 3000); }}>
           <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Coletar agora
         </Button>
-        <div className="border-t border-[#1E293B] pt-3 mt-2 text-xs text-slate-400 space-y-1.5">
-          <div><b className="text-slate-200">Como funciona:</b> o Bastion lê por SNMP v2c só as interfaces usadas nos mapas e as marcadas em "Alarmes".</div>
-          <div><b className="text-slate-200">Acesso direto:</b> libere SNMP (UDP 161) no equipamento para o IP do servidor Bastion.</div>
-          <div><b className="text-slate-200">Atrás de agente:</b> SNMP (UDP) não passa pelo túnel SSH; o Bastion roda o <code>snmpget</code> no próprio agente — instale lá: <code>sudo apt install snmp</code> e libere o SNMP para o IP do agente.</div>
+        <div className="border-t border-line pt-3 mt-2 text-xs text-slate-400 space-y-1.5">
+          <div><b className="text-slate-200">Como funciona:</b> o BastiON lê por SNMP v2c só as interfaces usadas nos mapas e as marcadas em "Alarmes".</div>
+          <div><b className="text-slate-200">Acesso direto:</b> libere SNMP (UDP 161) no equipamento para o IP do servidor BastiON.</div>
+          <div><b className="text-slate-200">Atrás de agente:</b> SNMP (UDP) não passa pelo túnel SSH; o BastiON roda o <code>snmpget</code> no próprio agente — instale lá: <code>sudo apt install snmp</code> e libere o SNMP para o IP do agente.</div>
           <div><b className="text-slate-200">Alertas:</b> vão para o Telegram/webhook de <i>Automação → Notificações</i>.</div>
         </div>
       </Card>
@@ -317,14 +317,14 @@ export default function Maps() {
   const selSiblings = selLink ? map.links.filter(l => pairOf(l) === pairOf(selLink)) : [];
   const selDev = selNode?.device_id && devById[selNode.device_id];
   const addList = devices.filter(d => !addQ || `${d.name} ${d.host} ${(d.tags || []).join(" ")}`.toLowerCase().includes(addQ.toLowerCase()));
-  const tb = "h-8 text-xs border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800";
+  const tb = "h-8 text-xs border-line bg-panel text-slate-200 hover:bg-slate-800";
 
   return (
     <div className="flex-1 flex flex-col min-h-0" data-testid="maps-page">
       <div className="px-4 md:px-6 pt-4 pb-0">
-        <div className="hidden md:block text-xs uppercase tracking-widest text-slate-400 font-mono">Topologia & tráfego</div>
-        <h1 className="hidden md:block font-heading text-2xl font-bold text-slate-100 mt-1">Mapas de rede</h1>
-        <div className="flex gap-1 md:mt-4 border-b border-[#1E293B] overflow-x-auto whitespace-nowrap">
+        <div className="hidden md:block text-xs text-slate-400">Topologia & tráfego</div>
+        <h1 className="hidden md:block font-heading text-2xl font-semibold tracking-tight text-slate-100 mt-1">Mapas de rede</h1>
+        <div className="flex gap-1 md:mt-4 border-b border-line overflow-x-auto whitespace-nowrap">
           <button className={tabBtn(tab === "maps")} onClick={() => setTab("maps")} data-testid="tab-maps"><Network className="w-4 h-4" /> Mapas</button>
           {!readOnly && <>
             <button className={tabBtn(tab === "alarms")} onClick={() => setTab("alarms")} data-testid="tab-alarms"><BellRing className="w-4 h-4" /> Alarmes de interface</button>
@@ -340,17 +340,17 @@ export default function Maps() {
       {tab === "maps" && (
         <div className="flex-1 min-h-0 flex gap-4 p-2 md:px-6 md:pb-6 md:pt-4">
           {/* lista de mapas (no celular: só quando nenhum mapa está aberto) */}
-          <Card className={`bg-[#111722] border-[#1E293B] ${isMobile ? "w-full" : "w-60"} shrink-0 flex-col overflow-hidden ${isMobile && map ? "hidden" : "flex"}`}>
-            <div className={`p-3 border-b border-[#1E293B] flex gap-1.5 ${readOnly ? "hidden" : ""}`}>
+          <Card className={`bg-surface border-line ${isMobile ? "w-full" : "w-60"} shrink-0 flex-col overflow-hidden ${isMobile && map ? "hidden" : "flex"}`}>
+            <div className={`p-3 border-b border-line flex gap-1.5 ${readOnly ? "hidden" : ""}`}>
               <Input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && createMap()}
-                     placeholder="Novo mapa…" className="h-8 bg-[#05070A] border-[#1E293B] text-sm" data-testid="new-map-name" />
-              <Button size="sm" onClick={createMap} disabled={!newName.trim()} className="h-8 px-2 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="new-map-btn"><Plus className="w-4 h-4" /></Button>
+                     placeholder="Novo mapa…" className="h-8 bg-sunken border-line text-sm" data-testid="new-map-name" />
+              <Button size="sm" onClick={createMap} disabled={!newName.trim()} className="h-8 px-2 bg-brand hover:bg-brand-strong" data-testid="new-map-btn"><Plus className="w-4 h-4" /></Button>
             </div>
-            <div className="flex-1 overflow-y-auto divide-y divide-[#1E293B]">
+            <div className="flex-1 overflow-y-auto divide-y divide-line">
               {maps.length === 0 && <div className="p-4 text-xs text-slate-500 font-mono">{readOnly ? "Nenhum mapa liberado para você ainda. Peça ao administrador." : 'Nenhum mapa. Crie o primeiro acima (ex.: "Backbone", "POP Cachoeiro").'}</div>}
               {maps.map(m => (
                 <button key={m.id} onClick={() => openMap(m.id)} data-testid={`map-item-${m.id}`}
-                        className={`w-full text-left px-3 py-2.5 hover:bg-slate-800/50 ${current?.id === m.id ? "bg-[#0B111C] border-l-2 border-[#007AFF]" : "border-l-2 border-transparent"}`}>
+                        className={`w-full text-left px-3 py-2.5 hover:bg-slate-800/50 ${current?.id === m.id ? "bg-panel border-l-2 border-brand" : "border-l-2 border-transparent"}`}>
                   <div className="text-sm text-slate-100 truncate">{m.name}</div>
                   <div className="text-[10px] font-mono text-slate-500">{m.nodes} equip. · {m.links} links</div>
                 </button>
@@ -360,21 +360,21 @@ export default function Maps() {
 
           {/* editor / visualização */}
           {!map ? (
-            <Card className="hidden md:flex flex-1 bg-[#111722] border-[#1E293B] items-center justify-center text-slate-500 text-sm font-mono">Selecione ou crie um mapa.</Card>
+            <Card className="hidden md:flex flex-1 bg-surface border-line items-center justify-center text-slate-500 text-sm font-mono">Selecione ou crie um mapa.</Card>
           ) : (
             <div className="flex-1 min-w-0 flex flex-col gap-2">
               <div className="flex items-center gap-2 flex-wrap">
                 {editing ? (
-                  <Input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} className="h-8 w-56 bg-[#05070A] border-[#1E293B] font-semibold" data-testid="map-name" />
+                  <Input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} className="h-8 w-56 bg-sunken border-line font-semibold" data-testid="map-name" />
                 ) : isMobile ? (
                   <select value={map.id} onChange={e => (e.target.value === "__list" ? confirmDiscard() && (setCurrent(null), setDraft(null), setEditing(false), setSelected(null)) : openMap(e.target.value))}
-                          className="h-9 flex-1 min-w-0 bg-[#0B111C] border border-[#1E293B] rounded px-2 text-sm text-slate-100 font-semibold" data-testid="mobile-map-select">
+                          className="h-9 flex-1 min-w-0 bg-panel border border-line rounded px-2 text-sm text-slate-100 font-semibold" data-testid="mobile-map-select">
                     {maps.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                     <option value="__list">{readOnly ? "☰ Lista de mapas" : "☰ Lista de mapas / novo…"}</option>
                   </select>
                 ) : <div className="text-lg font-semibold text-slate-100 mr-2">{map.name}</div>}
                 {readOnly ? null : !editing ? <>
-                  <Button size="sm" variant="outline" onClick={() => setAnalysisOpen(true)} className={`${tb} border-[#007AFF]/50 text-[#4DA3FF]`} data-testid="map-analyze"
+                  <Button size="sm" variant="outline" onClick={() => setAnalysisOpen(true)} className={`${tb} border-brand/50 text-brand-soft`} data-testid="map-analyze"
                           title="Diagnóstico: custos OSPF, BGP, erros de interface e cenários de falha"><Stethoscope className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Analisar</span></Button>
                   <Button size="sm" variant="outline" onClick={startEdit} className={tb} data-testid="map-edit" title="Editar"><Pencil className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Editar</span></Button>
                   <Button size="sm" variant="outline" onClick={duplicate} className={`${tb} hidden md:inline-flex`}><Copy className="w-3.5 h-3.5 mr-1.5" /> Duplicar</Button>
@@ -384,9 +384,9 @@ export default function Maps() {
                   <div className="relative">
                     <Button size="sm" variant="outline" onClick={() => setAddOpen(v => !v)} className={tb} data-testid="map-add-device"><Server className="w-3.5 h-3.5 mr-1.5" /> Equipamento</Button>
                     {addOpen && (
-                      <div className="absolute top-full mt-1 left-0 z-30 w-80 max-w-[calc(100vw-24px)] bg-[#111722] border border-[#1E293B] rounded-md shadow-2xl">
+                      <div className="absolute top-full mt-1 left-0 z-30 w-80 max-w-[calc(100vw-24px)] bg-surface border border-line rounded-md shadow-2xl">
                         <div className="p-2 relative"><Search className="w-3.5 h-3.5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
-                          <Input autoFocus value={addQ} onChange={e => setAddQ(e.target.value)} placeholder="Buscar…" className="pl-8 h-8 bg-[#05070A] border-[#1E293B] text-sm" /></div>
+                          <Input autoFocus value={addQ} onChange={e => setAddQ(e.target.value)} placeholder="Buscar…" className="pl-8 h-8 bg-sunken border-line text-sm" /></div>
                         <div className="max-h-72 overflow-y-auto">
                           {addList.map(d => {
                             const inMap = draft.nodes.some(n => n.device_id === d.id);
@@ -404,14 +404,14 @@ export default function Maps() {
                   </div>
                   <Button size="sm" variant="outline" onClick={() => addNode("cloud", { label: "Internet" })} className={tb} title="Nuvem (Internet, IX, operadora)"><Cloud className="w-3.5 h-3.5 mr-1.5" /> Nuvem</Button>
                   <Button size="sm" variant="outline" onClick={() => { const t = window.prompt("Texto:"); if (t) addNode("label", { label: t }); }} className={tb}><Type className="w-3.5 h-3.5 mr-1.5" /> Texto</Button>
-                  <div className="flex border border-[#1E293B] rounded overflow-hidden">
-                    <button onClick={() => setTool("select")} className={`h-8 px-2.5 text-xs flex items-center gap-1.5 ${tool === "select" ? "bg-[#007AFF]/25 text-slate-100" : "bg-[#0B111C] text-slate-400"}`} title="Mover e selecionar"><MousePointer2 className="w-3.5 h-3.5" /> Mover</button>
-                    <button onClick={() => setTool("connect")} className={`h-8 px-2.5 text-xs flex items-center gap-1.5 ${tool === "connect" ? "bg-amber-500/25 text-amber-100" : "bg-[#0B111C] text-slate-400"}`} data-testid="map-tool-connect" title="Ligar dois equipamentos"><Cable className="w-3.5 h-3.5" /> Ligar</button>
+                  <div className="flex border border-line rounded overflow-hidden">
+                    <button onClick={() => setTool("select")} className={`h-8 px-2.5 text-xs flex items-center gap-1.5 ${tool === "select" ? "bg-brand/25 text-slate-100" : "bg-panel text-slate-400"}`} title="Mover e selecionar"><MousePointer2 className="w-3.5 h-3.5" /> Mover</button>
+                    <button onClick={() => setTool("connect")} className={`h-8 px-2.5 text-xs flex items-center gap-1.5 ${tool === "connect" ? "bg-amber-500/25 text-amber-100" : "bg-panel text-slate-400"}`} data-testid="map-tool-connect" title="Ligar dois equipamentos"><Cable className="w-3.5 h-3.5" /> Ligar</button>
                   </div>
                   {selected && <Button size="sm" variant="ghost" onClick={deleteSelected} className="h-8 text-xs text-red-400 hover:bg-red-950/40"><Trash2 className="w-3.5 h-3.5 mr-1" /> Remover selecionado</Button>}
                   <div className="ml-auto flex gap-2">
                     <Button size="sm" variant="ghost" onClick={cancelEdit} className="h-8 text-xs text-slate-300"><X className="w-3.5 h-3.5 mr-1" /> Cancelar</Button>
-                    <Button size="sm" onClick={save} disabled={saving} className="h-8 text-xs bg-[#007AFF] hover:bg-[#0062CC]" data-testid="map-save">
+                    <Button size="sm" onClick={save} disabled={saving} className="h-8 text-xs bg-brand hover:bg-brand-strong" data-testid="map-save">
                       {saving ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Save className="w-3.5 h-3.5 mr-1" />} Salvar{dirty ? " *" : ""}
                     </Button>
                   </div>
@@ -425,11 +425,11 @@ export default function Maps() {
               </div>
               <Legend />
               <div className="flex-1 min-h-0 flex gap-3">
-                <div className="flex-1 min-w-0 rounded-lg border border-[#1E293B] overflow-hidden">
+                <div className="flex-1 min-w-0 rounded-lg border border-line overflow-hidden">
                   {map.nodes.length === 0 && !editing ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-500 text-sm gap-3">
                       Mapa vazio.
-                      {!readOnly && <Button size="sm" onClick={startEdit} className="bg-[#007AFF] hover:bg-[#0062CC]"><Pencil className="w-3.5 h-3.5 mr-1.5" /> Montar o mapa</Button>}
+                      {!readOnly && <Button size="sm" onClick={startEdit} className="bg-brand hover:bg-brand-strong"><Pencil className="w-3.5 h-3.5 mr-1.5" /> Montar o mapa</Button>}
                     </div>
                   ) : (
                     <MapCanvas map={map} live={live} devices={devices} editing={editing} tool={tool} selected={selected}
@@ -439,8 +439,8 @@ export default function Maps() {
                 </div>
                 {(selLink || selNode) && (
                   <Card className={isMobile
-                    ? "fixed inset-x-0 bottom-0 z-30 max-h-[62dvh] rounded-b-none rounded-t-xl bg-[#111722] border-[#2A3345] p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] overflow-y-auto shadow-2xl"
-                    : "w-80 shrink-0 bg-[#111722] border-[#1E293B] p-4 overflow-y-auto relative"}>
+                    ? "fixed inset-x-0 bottom-0 z-30 max-h-[62dvh] rounded-b-none rounded-t-xl bg-surface border-line2 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] overflow-y-auto shadow-2xl"
+                    : "w-80 shrink-0 bg-surface border-line p-4 overflow-y-auto relative"}>
                     <button className="absolute top-3 right-3 p-1 text-slate-400 hover:text-slate-200" onClick={() => setSelected(null)}><X className="w-4 h-4" /></button>
                     {selLink && (
                       <LinkDetails link={selLink} live={live?.links?.[selLink.id]} nameOf={nameOf} nodes={nodesById} editing={editing}
@@ -462,7 +462,7 @@ export default function Maps() {
                         </> : editing && (
                           <div><Label>Texto</Label>
                             <Input value={selNode.label || ""} onChange={e => patch(d => { d.nodes.find(n => n.id === selNode.id).label = e.target.value; return d; })}
-                                   className="bg-[#05070A] border-[#1E293B]" /></div>
+                                   className="bg-sunken border-line" /></div>
                         )}
                         {editing && <Button size="sm" variant="ghost" onClick={deleteSelected} className="h-7 text-xs text-red-400 hover:bg-red-950/40"><Trash2 className="w-3.5 h-3.5 mr-1" /> Remover do mapa</Button>}
                         {editing && <div className="text-[11px] text-slate-500">Para ligar: ferramenta <b>Ligar</b> → clique neste e no outro equipamento.</div>}

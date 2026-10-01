@@ -194,7 +194,7 @@ class _Proto(asyncio.DatagramProtocol):
 
 
 class SnmpClient:
-    """SNMP v2c direto do servidor Bastion."""
+    """SNMP v2c direto do servidor BastiON."""
 
     def __init__(self, host: str, community: str, port: int = 161, timeout: float = 2.0, retries: int = 1):
         self.host, self.community, self.port = host, community, int(port or 161)

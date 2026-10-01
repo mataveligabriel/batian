@@ -22,8 +22,8 @@ import { useTermPrefs } from "@/lib/termPrefs";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const RANGES = [[60, "1h"], [360, "6h"], [1440, "24h"], [10080, "7 dias"], [43200, "30 dias"]];
-const tabBtn = (on) => `flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${on ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`;
-const inputCls = "bg-[#05070A] border-[#1E293B]";
+const tabBtn = (on) => `flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${on ? "border-brand text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`;
+const inputCls = "bg-sunken border-line";
 
 // altura da janela: gráficos se ajustam à tela (e ao modo foco / tela cheia)
 function useVh() {
@@ -71,12 +71,12 @@ function WidgetDialog({ initial, devices, onCancel, onSave }) {
 
   return (
     <Dialog open onOpenChange={(v) => !v && onCancel()}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-5xl max-h-[94vh] overflow-y-auto" data-testid="widget-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-5xl max-h-[94vh] overflow-y-auto" data-testid="widget-dialog">
         <DialogHeader><DialogTitle>{initial ? "Editar gráfico" : "Novo gráfico"}</DialogTitle></DialogHeader>
         <div className="flex gap-2">
           {[["traffic", "Tráfego de uma interface", Activity], ["aggregate", "Agregado (soma de várias)", Sigma], ["optics", "Sinal óptico (RX/TX por lane)", Radio]].map(([v, l, I]) => (
             <button key={v} onClick={() => setW({ ...w, type: v })} data-testid={`wtype-${v}`}
-                    className={`flex-1 flex items-center gap-2 px-3 py-2 rounded border text-sm ${w.type === v ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] text-slate-400"}`}>
+                    className={`flex-1 flex items-center gap-2 px-3 py-2 rounded border text-sm ${w.type === v ? "border-brand bg-brand/15 text-slate-100" : "border-line text-slate-400"}`}>
               <I className="w-4 h-4" /> {l}
             </button>
           ))}
@@ -88,34 +88,34 @@ function WidgetDialog({ initial, devices, onCancel, onSave }) {
             <Label>Equipamento</Label>
             <div className="relative mt-1"><Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
               <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar…" className={`${inputCls} pl-8 h-8 text-sm`} /></div>
-            <div className="h-64 overflow-y-auto border border-[#1E293B] rounded mt-1 divide-y divide-[#111722] bg-[#05070A]">
+            <div className="h-64 overflow-y-auto border border-line rounded mt-1 divide-y divide-surface bg-sunken">
               {list.map(d => {
                 const n = sources.filter(x => x.device_id === d.id).length;
                 return (
                   <button key={d.id} onClick={() => (agg ? setPickDev(d.id) : setW({ ...w, device_id: d.id, if_index: null, if_name: "" }))} data-testid={`wdev-${d.id}`}
-                          className={`w-full text-left px-2.5 py-1.5 text-sm flex items-center gap-2 ${devId === d.id ? "bg-[#007AFF]/20 text-slate-100" : "text-slate-300 hover:bg-slate-800/60"}`}>
+                          className={`w-full text-left px-2.5 py-1.5 text-sm flex items-center gap-2 ${devId === d.id ? "bg-brand/20 text-slate-100" : "text-slate-300 hover:bg-slate-800/60"}`}>
                     <div className="min-w-0"><div className="truncate">{d.name}</div><div className="text-[10px] font-mono text-slate-500">{d.host}</div></div>
-                    {agg && n > 0 && <span className="ml-auto text-[10px] font-mono px-1.5 rounded bg-[#007AFF]/25 text-[#93C5FD]">{n}</span>}
+                    {agg && n > 0 && <span className="ml-auto text-[10px] font-mono px-1.5 rounded bg-brand/25 text-brand-pale">{n}</span>}
                   </button>
                 );
               })}
             </div>
           </div>
           <div className="md:col-span-3">
-            <Label>{agg ? "Interfaces (clique para incluir/remover)" : <>Interface {w.if_name && <span className="font-mono text-[#93C5FD] ml-1">{w.if_name}</span>}</>}</Label>
+            <Label>{agg ? "Interfaces (clique para incluir/remover)" : <>Interface {w.if_name && <span className="font-mono text-brand-pale ml-1">{w.if_name}</span>}</>}</Label>
             <div className="mt-1">
               {devId ? (
                 agg ? <InterfacePicker deviceId={devId} mode="multi" selected={new Set(sources.filter(x => x.device_id === devId).map(x => x.if_index))} onToggle={onPickIface} height="h-64" />
                     : <InterfacePicker deviceId={devId} value={w.if_index} height="h-64" onPick={onPickIface} />
-              ) : <div className="h-72 flex items-center justify-center text-xs text-slate-500 font-mono border border-[#1E293B] rounded">Escolha o equipamento</div>}
+              ) : <div className="h-72 flex items-center justify-center text-xs text-slate-500 font-mono border border-line rounded">Escolha o equipamento</div>}
             </div>
           </div>
         </div>
         {agg && (
-          <div className="border border-[#1E293B] rounded" data-testid="agg-sources">
-            <div className="px-3 py-1.5 text-[11px] uppercase tracking-widest text-slate-400 font-mono border-b border-[#1E293B]">No agregado: {sources.length} interface(s)</div>
+          <div className="border border-line rounded" data-testid="agg-sources">
+            <div className="px-3 py-1.5 text-[11px] text-slate-400 border-b border-line">No agregado: {sources.length} interface(s)</div>
             {sources.length === 0 && <div className="px-3 py-2 text-xs text-slate-500 font-mono">Nenhuma ainda.</div>}
-            <div className="max-h-44 overflow-y-auto divide-y divide-[#1E293B]">
+            <div className="max-h-44 overflow-y-auto divide-y divide-line">
               {sources.map((x, i) => (
                 <div key={`${x.device_id}-${x.if_index}`} className="px-3 py-1.5 flex items-center gap-3 text-xs">
                   <span className="text-slate-100 truncate">{devName(x.device_id)} · <span className="font-mono">{x.if_name}</span></span>
@@ -143,7 +143,7 @@ function WidgetDialog({ initial, devices, onCancel, onSave }) {
           <div><Label>Largura</Label>
             <div className="flex gap-1 mt-1">
               {[["full", "Inteira", Square], ["half", "Metade", Columns2]].map(([v, l, I]) => (
-                <button key={v} onClick={() => setW({ ...w, size: v })} className={`flex-1 h-9 rounded border text-xs flex items-center justify-center gap-1.5 ${w.size === v ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] text-slate-400"}`}><I className="w-3.5 h-3.5" /> {l}</button>
+                <button key={v} onClick={() => setW({ ...w, size: v })} className={`flex-1 h-9 rounded border text-xs flex items-center justify-center gap-1.5 ${w.size === v ? "border-brand bg-brand/15 text-slate-100" : "border-line text-slate-400"}`}><I className="w-3.5 h-3.5" /> {l}</button>
               ))}
             </div>
           </div>
@@ -151,7 +151,7 @@ function WidgetDialog({ initial, devices, onCancel, onSave }) {
         {w.type === "optics" && <div className="text-[11px] text-slate-500">Leitura pela CLI a cada 5 min. Interfaces de 40G/100G mostram as 4 lanes. Os limites viram linhas no gráfico e status na tabela.</div>}
         <DialogFooter>
           <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
-          <Button disabled={!ok} data-testid="wsave" className="bg-[#007AFF] hover:bg-[#0062CC]"
+          <Button disabled={!ok} data-testid="wsave" className="bg-brand hover:bg-brand-strong"
                   onClick={() => onSave(agg ? { ...w, device_id: null, if_index: null, if_name: "", title: w.title.trim() }
                                             : { ...w, sources: [], title: w.title.trim() || `${dev?.name || ""} · ${w.if_name}` })}>Salvar gráfico</Button>
         </DialogFooter>
@@ -182,23 +182,23 @@ function OpticsSettingsTab() {
   const TYPES = [["huawei", "Huawei VRP"], ["juniper", "Juniper Junos"], ["cisco", "Cisco IOS/XE/XR"], ["datacom", "Datacom DmOS"], ["zte", "ZTE"], ["mikrotik", "Mikrotik"]];
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-4" data-testid="optics-settings">
-      <Card className="bg-[#111722] border-[#1E293B] p-5 space-y-3 h-fit">
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Leitura óptica</div>
+      <Card className="bg-surface border-line p-5 space-y-3 h-fit">
+        <div className="text-xs text-slate-400">Leitura óptica</div>
         <div className="flex items-center justify-between"><Label>Ativa</Label><Switch checked={s.optics_enabled} onCheckedChange={v => setS({ ...s, optics_enabled: v })} disabled={!s.is_admin} /></div>
         <div><Label>Intervalo (segundos)</Label><Input type="number" min={60} value={s.optics_interval_sec} onChange={e => setS({ ...s, optics_interval_sec: e.target.value })} className={`${inputCls} font-mono`} disabled={!s.is_admin} /></div>
         <div className="text-xs font-mono text-slate-400">Última leitura: {s.last_tick ? new Date(s.last_tick).toLocaleString("pt-BR") : "ainda não"}{s.busy ? " · lendo…" : ""}{s.errors ? <span className="text-amber-300"> · {s.errors} interface(s) com erro</span> : ""}</div>
-        <Button size="sm" variant="outline" className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800"
+        <Button size="sm" variant="outline" className="border-line bg-panel text-slate-200 hover:bg-slate-800"
                 onClick={async () => { const { data } = await api.post("/optics/poll-now"); data.started ? toast.info("Leitura iniciada") : toast.warning(data.reason); setTimeout(load, 5000); }}>
           <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Ler agora
         </Button>
-        <div className="text-xs text-slate-400 border-t border-[#1E293B] pt-3 space-y-1.5">
+        <div className="text-xs text-slate-400 border-t border-line pt-3 space-y-1.5">
           <div>Lê pela CLI (SSH) as interfaces dos <b>links dos mapas</b> e dos <b>gráficos ópticos</b> dos dashboards.</div>
           <div>Os comandos são tentados em ordem até um deles trazer valores. Use <code>{"{ifname}"}</code> onde entra o nome da interface.</div>
           <div>Nos gráficos, o botão <b>Testar leitura</b> mostra a saída bruta — use para ajustar o comando ao seu firmware.</div>
         </div>
       </Card>
-      <Card className="bg-[#111722] border-[#1E293B] p-5 xl:col-span-2 space-y-3">
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Comandos por fabricante (um por linha)</div>
+      <Card className="bg-surface border-line p-5 xl:col-span-2 space-y-3">
+        <div className="text-xs text-slate-400">Comandos por fabricante (um por linha)</div>
         {TYPES.map(([t, l]) => (
           <div key={t}>
             <div className="flex items-center justify-between"><Label>{l}</Label>
@@ -207,7 +207,7 @@ function OpticsSettingsTab() {
                       className={`${inputCls} font-mono text-xs mt-1`} disabled={!s.is_admin} data-testid={`optics-cmd-${t}`} />
           </div>
         ))}
-        {s.is_admin && <div className="flex justify-end"><Button onClick={save} disabled={busy} className="bg-[#007AFF] hover:bg-[#0062CC]">{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Salvar</Button></div>}
+        {s.is_admin && <div className="flex justify-end"><Button onClick={save} disabled={busy} className="bg-brand hover:bg-brand-strong">{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Salvar</Button></div>}
       </Card>
     </div>
   );
@@ -295,14 +295,14 @@ export default function Dashboards() {
     setDraft(x => ({ ...x, widgets: x.widgets.some(y => y.id === w.id) ? x.widgets.map(y => (y.id === w.id ? w : y)) : [...x.widgets, w] }));
     setWdlg(null);
   };
-  const tb = "h-8 text-xs border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800";
+  const tb = "h-8 text-xs border-line bg-panel text-slate-200 hover:bg-slate-800";
 
   return (
     <div className="flex-1 flex flex-col min-h-0" data-testid="dashboards-page">
       <div className={`px-4 md:px-6 pt-4 ${focus ? "hidden" : ""}`}>
-        <div className="hidden md:block text-xs uppercase tracking-widest text-slate-400 font-mono">Consumo & sinais</div>
-        <h1 className="hidden md:block font-heading text-2xl font-bold text-slate-100 mt-1">Dashboards</h1>
-        <div className="flex gap-1 md:mt-4 border-b border-[#1E293B] overflow-x-auto whitespace-nowrap">
+        <div className="hidden md:block text-xs text-slate-400">Consumo & sinais</div>
+        <h1 className="hidden md:block font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Dashboards</h1>
+        <div className="flex gap-1 md:mt-4 border-b border-line overflow-x-auto whitespace-nowrap">
           <button className={tabBtn(tab === "dash")} onClick={() => setTab("dash")}><Gauge className="w-4 h-4" /> Dashboards</button>
           {!readOnly && <button className={tabBtn(tab === "optics")} onClick={() => setTab("optics")} data-testid="tab-optics-settings"><Settings2 className="w-4 h-4" /> Configurações da óptica</button>}
           {readOnly && <span className="ml-auto self-center text-[11px] font-mono text-amber-300 flex items-center gap-1"><Eye className="w-3.5 h-3.5" /> somente leitura</span>}
@@ -313,17 +313,17 @@ export default function Dashboards() {
 
       {tab === "dash" && (
         <div className={`flex-1 min-h-0 flex gap-3 ${focus ? "p-3" : "p-3 md:px-6 md:pb-6 md:pt-4"}`}>
-          <Card className={`bg-[#111722] border-[#1E293B] ${isMobile ? "w-full" : "w-52"} shrink-0 flex-col overflow-hidden ${focus || (isMobile && dash) ? "hidden" : "flex"}`}>
-            <div className={`p-3 border-b border-[#1E293B] ${readOnly ? "hidden" : ""}`}>
+          <Card className={`bg-surface border-line ${isMobile ? "w-full" : "w-52"} shrink-0 flex-col overflow-hidden ${focus || (isMobile && dash) ? "hidden" : "flex"}`}>
+            <div className={`p-3 border-b border-line ${readOnly ? "hidden" : ""}`}>
               {!creating ? (
-                <Button size="sm" onClick={() => setCreating(true)} className="w-full h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="new-dash-btn"><Plus className="w-4 h-4 mr-1" /> Novo dashboard</Button>
+                <Button size="sm" onClick={() => setCreating(true)} className="w-full h-8 bg-brand hover:bg-brand-strong" data-testid="new-dash-btn"><Plus className="w-4 h-4 mr-1" /> Novo dashboard</Button>
               ) : (
                 <div className="space-y-1.5">
                   <Input autoFocus value={newDash.name} onChange={e => setNewDash({ ...newDash, name: e.target.value })} placeholder="Nome (ex.: Trânsitos)" className={`${inputCls} h-8 text-sm`} data-testid="new-dash-name" />
                   <Input value={newDash.group} onChange={e => setNewDash({ ...newDash, group: e.target.value })} onKeyDown={e => e.key === "Enter" && create()} placeholder="Grupo (ex.: Borda)" list="dash-groups" className={`${inputCls} h-8 text-sm`} data-testid="new-dash-group" />
                   <datalist id="dash-groups">{groups.map(([g]) => <option key={g} value={g} />)}</datalist>
                   <div className="flex gap-1.5"><Button size="sm" variant="ghost" onClick={() => setCreating(false)} className="flex-1 h-7 text-xs">Cancelar</Button>
-                    <Button size="sm" onClick={create} disabled={!newDash.name.trim()} className="flex-1 h-7 text-xs bg-[#007AFF] hover:bg-[#0062CC]" data-testid="new-dash-create">Criar</Button></div>
+                    <Button size="sm" onClick={create} disabled={!newDash.name.trim()} className="flex-1 h-7 text-xs bg-brand hover:bg-brand-strong" data-testid="new-dash-create">Criar</Button></div>
                 </div>
               )}
             </div>
@@ -331,10 +331,10 @@ export default function Dashboards() {
               {list.length === 0 && <div className="p-4 text-xs text-slate-500 font-mono">{readOnly ? "Nenhum dashboard liberado para você ainda. Peça ao administrador." : 'Nenhum dashboard. Crie um (ex.: grupo "Borda" → "Trânsitos").'}</div>}
               {groups.map(([g, ds]) => (
                 <div key={g}>
-                  <div className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-widest text-slate-500 font-mono flex items-center gap-1.5"><FolderOpen className="w-3 h-3" /> {g}</div>
+                  <div className="px-3 pt-3 pb-1 text-[10px] text-slate-500 flex items-center gap-1.5"><FolderOpen className="w-3 h-3" /> {g}</div>
                   {ds.map(d => (
                     <button key={d.id} onClick={() => open(d.id)} data-testid={`dash-item-${d.id}`}
-                            className={`w-full text-left px-3 py-2 hover:bg-slate-800/50 ${current?.id === d.id ? "bg-[#0B111C] border-l-2 border-[#007AFF]" : "border-l-2 border-transparent"}`}>
+                            className={`w-full text-left px-3 py-2 hover:bg-slate-800/50 ${current?.id === d.id ? "bg-panel border-l-2 border-brand" : "border-l-2 border-transparent"}`}>
                       <div className="text-sm text-slate-100 truncate">{d.name}</div>
                       <div className="text-[10px] font-mono text-slate-500">{d.widgets} gráfico(s)</div>
                     </button>
@@ -345,10 +345,10 @@ export default function Dashboards() {
           </Card>
 
           {!dash ? (
-            <Card className="hidden md:flex flex-1 bg-[#111722] border-[#1E293B] items-center justify-center text-slate-500 text-sm font-mono">Selecione ou crie um dashboard.</Card>
+            <Card className="hidden md:flex flex-1 bg-surface border-line items-center justify-center text-slate-500 text-sm font-mono">Selecione ou crie um dashboard.</Card>
           ) : (
             <div className="flex-1 min-w-0 flex flex-col gap-3 overflow-y-auto pr-1">
-              <div className="flex items-center gap-2 flex-wrap sticky top-0 z-10 bg-[#090D14] pb-2">
+              <div className="flex items-center gap-2 flex-wrap sticky top-0 z-10 bg-canvas pb-2">
                 {editing ? (
                   <>
                     <Input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} className={`${inputCls} h-8 w-52 font-semibold`} />
@@ -356,7 +356,7 @@ export default function Dashboards() {
                     <Button size="sm" variant="outline" onClick={() => setWdlg({})} className={tb} data-testid="add-widget"><Plus className="w-3.5 h-3.5 mr-1.5" /> Gráfico</Button>
                     <div className="ml-auto flex gap-2">
                       <Button size="sm" variant="ghost" onClick={() => { if (confirmDiscard()) { setEditing(false); setDraft(null); } }} className="h-8 text-xs text-slate-300"><X className="w-3.5 h-3.5 mr-1" /> Cancelar</Button>
-                      <Button size="sm" onClick={save} disabled={saving} className="h-8 text-xs bg-[#007AFF] hover:bg-[#0062CC]" data-testid="dash-save">
+                      <Button size="sm" onClick={save} disabled={saving} className="h-8 text-xs bg-brand hover:bg-brand-strong" data-testid="dash-save">
                         {saving ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Save className="w-3.5 h-3.5 mr-1" />} Salvar{dirty ? " *" : ""}</Button>
                     </div>
                   </>
@@ -364,23 +364,23 @@ export default function Dashboards() {
                   <>
                     {focus || isMobile ? (
                       <select value={dash.id} onChange={e => (e.target.value === "__new" ? (setCurrent(null), setCreating(true)) : open(e.target.value))} data-testid="focus-dash-select"
-                              className="h-9 md:h-8 bg-[#0B111C] border border-[#1E293B] rounded px-2 text-sm text-slate-100 font-semibold mr-2 max-w-full md:max-w-[320px] flex-1 md:flex-none min-w-0">
+                              className="h-9 md:h-8 bg-panel border border-line rounded px-2 text-sm text-slate-100 font-semibold mr-2 max-w-full md:max-w-[320px] flex-1 md:flex-none min-w-0">
                         {groups.map(([g, ds]) => (
                           <optgroup key={g} label={g}>{ds.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>
                         ))}
                         {isMobile && !readOnly && <option value="__new">＋ Novo dashboard…</option>}
                       </select>
                     ) : (
-                      <div className="mr-2"><div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">{dash.group}</div><div className="text-lg font-semibold text-slate-100 leading-tight">{dash.name}</div></div>
+                      <div className="mr-2"><div className="text-[10px] text-slate-500">{dash.group}</div><div className="text-lg font-semibold text-slate-100 leading-tight">{dash.name}</div></div>
                     )}
-                    <div className="flex border border-[#1E293B] rounded overflow-hidden" data-testid="range-picker">
+                    <div className="flex border border-line rounded overflow-hidden" data-testid="range-picker">
                       {RANGES.map(([m, l]) => (
-                        <button key={m} onClick={() => setMinutes(m)} className={`h-8 px-2 md:px-3 text-xs font-mono ${minutes === m ? "bg-[#007AFF]/25 text-slate-100" : "bg-[#0B111C] text-slate-400 hover:text-slate-200"}`}>{l}</button>
+                        <button key={m} onClick={() => setMinutes(m)} className={`h-8 px-2 md:px-3 text-xs font-mono ${minutes === m ? "bg-brand/25 text-slate-100" : "bg-panel text-slate-400 hover:text-slate-200"}`}>{l}</button>
                       ))}
                     </div>
                     <Button size="sm" variant="ghost" onClick={() => setRefreshKey(k => k + 1)} className="h-8 text-slate-400 hover:bg-slate-800" title="Atualizar"><RefreshCw className="w-3.5 h-3.5" /></Button>
                     <Button size="sm" variant="outline" onClick={() => setPrefs({ dashFocus: !focus })} data-testid="dash-focus"
-                            className={`${tb} hidden md:inline-flex ${focus ? "border-[#007AFF]/60 text-[#4DA3FF]" : ""}`} title={focus ? "Mostrar menus" : "Modo foco: esconde menu lateral, cabeçalho e lista"}>
+                            className={`${tb} hidden md:inline-flex ${focus ? "border-brand/60 text-brand-soft" : ""}`} title={focus ? "Mostrar menus" : "Modo foco: esconde menu lateral, cabeçalho e lista"}>
                       {focus ? <><PanelLeftOpen className="w-3.5 h-3.5 mr-1.5" /> Menus</> : <><PanelLeftClose className="w-3.5 h-3.5 mr-1.5" /> Foco</>}
                     </Button>
                     <Button size="sm" variant="outline" onClick={() => toggleFs(() => setPrefs({ dashFocus: true }))} className={`${tb} hidden md:inline-flex`} title={isFs ? "Sair da tela cheia" : "Tela cheia"} data-testid="dash-fullscreen">
@@ -397,16 +397,16 @@ export default function Dashboards() {
               </div>
 
               {dash.widgets.length === 0 && (
-                <Card className="bg-[#111722] border-[#1E293B] p-10 text-center text-sm text-slate-500">
+                <Card className="bg-surface border-line p-10 text-center text-sm text-slate-500">
                   Nenhum gráfico ainda.
-                  {!editing && !readOnly ? <div className="mt-3"><Button size="sm" onClick={() => { setDraft(JSON.parse(JSON.stringify(current))); setEditing(true); setWdlg({}); }} className="bg-[#007AFF] hover:bg-[#0062CC]"><Plus className="w-3.5 h-3.5 mr-1" /> Adicionar gráfico</Button></div> : null}
+                  {!editing && !readOnly ? <div className="mt-3"><Button size="sm" onClick={() => { setDraft(JSON.parse(JSON.stringify(current))); setEditing(true); setWdlg({}); }} className="bg-brand hover:bg-brand-strong"><Plus className="w-3.5 h-3.5 mr-1" /> Adicionar gráfico</Button></div> : null}
                 </Card>
               )}
               <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 28rem), 1fr))" }}>
                 {dash.widgets.map((w, i) => (
-                  <Card key={w.id} className={`bg-[#111722] border-[#1E293B] p-3 min-w-0 ${w.size === "half" ? "" : "col-span-full"}`} data-testid={`widget-${w.id}`}>
+                  <Card key={w.id} className={`bg-surface border-line p-3 min-w-0 ${w.size === "half" ? "" : "col-span-full"}`} data-testid={`widget-${w.id}`}>
                     <div className="flex items-start gap-2 mb-2">
-                      {React.createElement(widgetIcon(w.type), { className: "w-4 h-4 text-[#4DA3FF] mt-0.5 shrink-0" })}
+                      {React.createElement(widgetIcon(w.type), { className: "w-4 h-4 text-brand-soft mt-0.5 shrink-0" })}
                       <div className="min-w-0">
                         <div className={`${focus ? "text-base" : "text-sm"} font-semibold text-slate-100 truncate`}>{w.title}</div>
                         <div className="text-[11px] font-mono text-slate-500 truncate">
@@ -437,17 +437,17 @@ export default function Dashboards() {
       {expanded && (
         <div className="fixed inset-0 z-[120] bg-black/75 p-3 sm:p-6 flex" data-testid="widget-expanded"
              onMouseDown={(e) => { if (e.target === e.currentTarget) setExpanded(null); }}>
-          <Card className="flex-1 bg-[#111722] border-[#2A3345] p-5 overflow-y-auto">
+          <Card className="flex-1 bg-surface border-line2 p-5 overflow-y-auto">
             <div className="flex items-start gap-2 mb-4">
-              {React.createElement(widgetIcon(expanded.type), { className: "w-5 h-5 text-[#4DA3FF] mt-0.5" })}
+              {React.createElement(widgetIcon(expanded.type), { className: "w-5 h-5 text-brand-soft mt-0.5" })}
               <div className="min-w-0">
                 <div className="text-lg font-semibold text-slate-100 truncate">{expanded.title}</div>
                 <div className="text-xs font-mono text-slate-500">{expanded.type === "aggregate" ? `soma de ${(expanded.sources || []).length} interface(s)` : `${devName(expanded.device_id)} · ${expanded.if_name}`}</div>
               </div>
               <div className="ml-auto flex items-center gap-2">
-                <div className="flex border border-[#1E293B] rounded overflow-hidden">
+                <div className="flex border border-line rounded overflow-hidden">
                   {RANGES.map(([m, l]) => (
-                    <button key={m} onClick={() => setMinutes(m)} className={`h-8 px-3 text-xs font-mono ${minutes === m ? "bg-[#007AFF]/25 text-slate-100" : "bg-[#0B111C] text-slate-400 hover:text-slate-200"}`}>{l}</button>
+                    <button key={m} onClick={() => setMinutes(m)} className={`h-8 px-3 text-xs font-mono ${minutes === m ? "bg-brand/25 text-slate-100" : "bg-panel text-slate-400 hover:text-slate-200"}`}>{l}</button>
                   ))}
                 </div>
                 <Button size="sm" variant="ghost" onClick={() => setExpanded(null)} className="h-8 text-slate-300 hover:bg-slate-800" title="Fechar (Esc)"><X className="w-4 h-4" /></Button>

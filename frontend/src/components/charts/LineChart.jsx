@@ -83,32 +83,32 @@ export function LineChart({
            onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
         {ticks.map((v, i) => (
           <g key={i}>
-            <line x1={PL} x2={W - PR} y1={y(v)} y2={y(v)} stroke="#1E293B" strokeWidth="1" vectorEffect="non-scaling-stroke" />
-            <text x={PL - 6} y={y(v) + 3.5} textAnchor="end" fontSize="11" fill="#64748B" fontFamily="JetBrains Mono, monospace">{yFormat(v)}</text>
+            <line x1={PL} x2={W - PR} y1={y(v)} y2={y(v)} stroke="#262F32" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+            <text x={PL - 6} y={y(v) + 3.5} textAnchor="end" fontSize="11" fill="#6E7B7E" fontFamily="JetBrains Mono, monospace">{yFormat(v)}</text>
           </g>
         ))}
         {xticks.map((t, i) => (
-          <text key={i} x={x(t)} y={H - 6} fontSize="10.5" fill="#64748B" fontFamily="JetBrains Mono, monospace"
+          <text key={i} x={x(t)} y={H - 6} fontSize="10.5" fill="#6E7B7E" fontFamily="JetBrains Mono, monospace"
                 textAnchor={i === 0 ? "start" : i === 4 ? "end" : "middle"}>{tfmt(t)}</text>
         ))}
         {refLines.map((r, i) => (
           <g key={`r${i}`}>
             <line x1={PL} x2={W - PR} y1={y(r.y)} y2={y(r.y)} stroke={r.color} strokeWidth="1.5" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
-            <text x={W - PR - 4} y={y(r.y) - 4} textAnchor="end" fontSize="10.5" fill="#CBD5E1" fontFamily="JetBrains Mono, monospace">{r.label}</text>
+            <text x={W - PR - 4} y={y(r.y) - 4} textAnchor="end" fontSize="10.5" fill="#ADB9BB" fontFamily="JetBrains Mono, monospace">{r.label}</text>
           </g>
         ))}
         {area && series[0] && <path d={areaPath(series[0].key)} fill={series[0].color} fillOpacity="0.14" />}
         {series.map(s => <path key={s.key} d={path(s.key)} fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
-        {hover && <line x1={x(hover.ts)} x2={x(hover.ts)} y1={PT} y2={H - PB} stroke="#94A3B8" strokeWidth="1" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />}
+        {hover && <line x1={x(hover.ts)} x2={x(hover.ts)} y1={PT} y2={H - PB} stroke="#8D9A9D" strokeWidth="1" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />}
       </svg>
       {hover && (
         <>
           {series.map(s => Number.isFinite(hover[s.key]) && (
             <span key={s.key} className="absolute w-2.5 h-2.5 rounded-full pointer-events-none"
                   style={{ left: `calc(${(x(hover.ts) / W) * 100}% - 5px)`, top: `${y(hover[s.key]) - 5}px`,
-                           background: s.color, boxShadow: "0 0 0 2px #0B111C" }} />
+                           background: s.color, boxShadow: "0 0 0 2px #14191B" }} />
           ))}
-          <div className="absolute z-10 pointer-events-none bg-[#111722] border border-[#2A3345] rounded px-2.5 py-1.5 text-[11px] font-mono text-slate-200 shadow-lg"
+          <div className="absolute z-10 pointer-events-none bg-surface border border-line2 rounded px-2.5 py-1.5 text-[11px] font-mono text-slate-200 shadow-lg"
                style={{ top: 4, ...(tipLeft ? { right: `calc(${100 - (x(hover.ts) / W) * 100}% + 12px)` } : { left: `calc(${(x(hover.ts) / W) * 100}% + 12px)` }) }}>
             <div className="text-slate-400">{new Date(hover.ts).toLocaleString("pt-BR")}</div>
             {series.map(s => (

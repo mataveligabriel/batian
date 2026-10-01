@@ -1,5 +1,5 @@
 // Área de transferência com plano B: a API moderna só existe em HTTPS (ou no app desktop);
-// acessando o Bastion por http://IP no navegador usamos execCommand, que funciona após um clique/seleção.
+// acessando o BastiON por http://IP no navegador usamos execCommand, que funciona após um clique/seleção.
 export async function copyText(text) {
   if (!text) return false;
   try {

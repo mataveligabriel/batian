@@ -851,7 +851,7 @@ def mpls_checks(mpls: Dict[str, dict], links: List[dict], g: Graph, topo: dict, 
     for did, m in mpls.items():
         if m.get("error"):
             F.append(_f("warn", "Coleta", f"Sem leitura MPLS de {dname(did)} (SSH)", m["error"],
-                        "Confira usuário/senha SSH do equipamento no Bastion (a leitura MPLS usa a CLI).", device=dname(did)))
+                        "Confira usuário/senha SSH do equipamento no BastiON (a leitura MPLS usa a CLI).", device=dname(did)))
 
     # ---- LDP nos enlaces OSPF (só importa no caminho entre roteadores que rodam MPLS)
     no_ldp = set()

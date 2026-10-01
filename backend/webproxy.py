@@ -1,15 +1,15 @@
-"""Acesso Web: abre a página de gerência de um equipamento (http/https) pelo Bastion, direto no app.
+"""Acesso Web: abre a página de gerência de um equipamento (http/https) pelo BastiON, direto no app.
 
-Cada sessão ganha uma porta própria do Bastion (padrão 8090–8099). O site do equipamento fica na raiz
+Cada sessão ganha uma porta própria do BastiON (padrão 8090–8099). O site do equipamento fica na raiz
 dessa porta, então não é preciso reescrever caminhos: telas antigas e SPAs funcionam como no acesso direto.
 
-  navegador ──http──▶ Bastion :8090 ──(SSH pelos agentes)──▶ equipamento :80/:443
+  navegador ──http──▶ BastiON :8090 ──(SSH pelos agentes)──▶ equipamento :80/:443
 
 - Origem: pela cadeia de agentes do equipamento (túnel SSH, como o terminal) ou direto do servidor.
 - Acesso: a URL de entrada traz um token de uso único por sessão, trocado por um cookie HttpOnly
   daquela porta. Sem o cookie certo a porta responde 403 — ninguém usa a sessão de outro.
 - Portas diferentes = origens diferentes: o JavaScript da página do equipamento não enxerga o login
-  do Bastion (que fica no localStorage da origem do app).
+  do BastiON (que fica no localStorage da origem do app).
 - Redirecionamento de http para https (ou para outra porta) do mesmo equipamento é seguido sozinho.
 - A sessão fecha depois de WEB_PROXY_IDLE_MIN minutos sem uso (padrão 30) ou quando o usuário fecha.
 """
@@ -293,7 +293,7 @@ class WebProxy:
                                    "Feche uma sessão aberta (Acesso Web → sessões ativas).")
             await self.close(mine[0].id, reason="substituída")
             free = [p for p in self.live_ports if p not in self.by_port]
-        hops, via = await self.resolve(agent_id) if agent_id else ([], "Bastion (direto)")
+        hops, via = await self.resolve(agent_id) if agent_id else ([], "BastiON (direto)")
         s = WebSession(id=secrets.token_hex(8), user_id=user["id"], user_email=user.get("email", ""),
                        port=free[0], token=secrets.token_urlsafe(24), scheme=scheme, host=host, tport=tport,
                        path=path, label=label or host, via=via, agent_id=agent_id, device_id=device_id)
@@ -306,7 +306,7 @@ class WebProxy:
                 raise
         else:
             if not await _tcp_ok(host, tport):
-                raise RuntimeError(f"{host}:{tport} não responde a partir do servidor do Bastion")
+                raise RuntimeError(f"{host}:{tport} não responde a partir do servidor do BastiON")
         s.client = httpx.AsyncClient(verify=self.tls, follow_redirects=False, trust_env=False,
                                      timeout=httpx.Timeout(90, connect=15))
         self.sessions[s.id] = s
@@ -363,7 +363,7 @@ class WebProxy:
         s = self.by_port.get(port)
         if not s:
             return await _send(send, *_page(410, "Sessão web encerrada",
-                                             "Abra a página de novo pelo Bastion (Acesso Web)."))
+                                             "Abra a página de novo pelo BastiON (Acesso Web)."))
         path = scope.get("path") or "/"
         qs = (scope.get("query_string") or b"").decode("latin-1")
         headers = [(k.decode("latin-1").lower(), v.decode("latin-1")) for k, v in scope.get("headers", [])]
@@ -374,14 +374,14 @@ class WebProxy:
             if not to.startswith("/") or to.startswith("//"):
                 to = "/"
             if not tok or not hmac.compare_digest(tok, s.token):
-                return await _send(send, *_page(403, "Link inválido", "Abra a página pelo Bastion."))
+                return await _send(send, *_page(403, "Link inválido", "Abra a página pelo BastiON."))
             s.last = time.time()
             return await _send(send, 302, b"", [("location", to), ("cache-control", "no-store"), (
                 "set-cookie", f"{cookie_name}={s.token}; Path=/; HttpOnly; SameSite=Lax")])
         cookies = _parse_cookie(dict(headers).get("cookie", ""))
         if not hmac.compare_digest(cookies.get(cookie_name, ""), s.token):
             return await _send(send, *_page(403, "Acesso negado",
-                                            "Esta porta pertence a uma sessão do Bastion. Abra a página pelo app."))
+                                            "Esta porta pertence a uma sessão do BastiON. Abra a página pelo app."))
         s.last = time.time()
         s.requests += 1
 
@@ -401,7 +401,7 @@ class WebProxy:
                 continue
             if k == "cookie":
                 # o navegador manda para esta porta os cookies de todas as sessões (cookie não separa porta):
-                # não repassa o do Bastion nem os criados por outro equipamento aberto
+                # não repassa o do BastiON nem os criados por outro equipamento aberto
                 others = set().union(*(x.cookie_names for x in self.sessions.values() if x is not s)) - s.cookie_names
                 v = "; ".join(f"{a}={b}" for a, b in cookies.items() if not re.fullmatch(r"bwp\d+", a) and a not in others)
                 if not v:
@@ -494,7 +494,7 @@ class WebProxy:
         return rest
 
     def _rewrite_body(self, s: WebSession, data: bytes, our: str) -> bytes:
-        """Links absolutos para o equipamento (http://10.0.0.1/…) passam a apontar para a porta do Bastion."""
+        """Links absolutos para o equipamento (http://10.0.0.1/…) passam a apontar para a porta do BastiON."""
         o = our.encode()
         cands = {_origin(sc, s.host, pt) for sc in ("http", "https") for pt in (s.tport, 80, 443)}
         for c in sorted(cands, key=len, reverse=True):
@@ -516,7 +516,7 @@ def _parse_cookie(h: str) -> Dict[str, str]:
 
 
 def _fix_cookie(v: str, secure: bool) -> str:
-    """Cookie do equipamento vale no endereço do Bastion: tira Domain; sem HTTPS tira Secure (e SameSite=None)."""
+    """Cookie do equipamento vale no endereço do BastiON: tira Domain; sem HTTPS tira Secure (e SameSite=None)."""
     parts = [p for p in (x.strip() for x in v.split(";")) if p]
     keep = [parts[0]] if parts else []
     for p in parts[1:]:

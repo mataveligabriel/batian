@@ -59,23 +59,23 @@ export function MonitorTab({ devices }) {
   return (
     <div className="grid grid-cols-1 xl:grid-cols-5 gap-4" data-testid="monitor-tab">
       <div className="xl:col-span-3 space-y-4">
-        <Card className="bg-[#111722] border-[#1E293B] overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#1E293B] flex items-center gap-2">
-            <BellRing className="w-4 h-4 text-[#4DA3FF]" />
-            <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Interfaces monitoradas</div>
+        <Card className="bg-surface border-line overflow-hidden">
+          <div className="px-4 py-3 border-b border-line flex items-center gap-2">
+            <BellRing className="w-4 h-4 text-brand-soft" />
+            <div className="text-xs text-slate-400">Interfaces monitoradas</div>
             <span className="ml-auto text-[11px] text-slate-500">caiu/voltou → Telegram configurado em Automação</span>
           </div>
           {rows.length === 0 && <div className="p-6 text-sm text-slate-500 font-mono">Nenhuma interface monitorada. Escolha um equipamento ao lado →</div>}
           {Object.entries(byDevice).map(([devId, g]) => (
-            <div key={devId} className="border-b border-[#1E293B] last:border-b-0">
-              <div className="px-4 py-2 bg-[#0B111C] flex items-center gap-2">
+            <div key={devId} className="border-b border-line last:border-b-0">
+              <div className="px-4 py-2 bg-panel flex items-center gap-2">
                 <span className="text-sm text-slate-100 font-medium">{g.name}</span>
                 {g.error && <span className="text-[11px] text-amber-300 font-mono truncate" title={g.error}>⚠ {g.error}</span>}
                 <Button size="sm" variant="ghost" className="ml-auto h-7 text-xs text-slate-300 hover:bg-slate-800"
                         onClick={() => openDevice(devices.find(d => d.id === devId) || { id: devId, name: g.name })}>editar</Button>
               </div>
               <table className="w-full text-sm">
-                <tbody className="divide-y divide-[#1E293B]">
+                <tbody className="divide-y divide-line">
                   {g.items.map(r => (
                     <tr key={r.if_index} data-testid={`mon-row-${devId}-${r.if_index}`}>
                       <td className="px-4 py-1.5 font-mono text-xs text-slate-100">{r.if_name}</td>
@@ -93,13 +93,13 @@ export function MonitorTab({ devices }) {
           ))}
         </Card>
 
-        <Card className="bg-[#111722] border-[#1E293B] overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#1E293B] flex items-center">
-            <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Últimos eventos</div>
+        <Card className="bg-surface border-line overflow-hidden">
+          <div className="px-4 py-3 border-b border-line flex items-center">
+            <div className="text-xs text-slate-400">Últimos eventos</div>
             <Button size="sm" variant="ghost" onClick={() => load()} className="ml-auto h-7 text-slate-400 hover:bg-slate-800"><RefreshCw className="w-3.5 h-3.5" /></Button>
           </div>
           {events.length === 0 && <div className="p-4 text-sm text-slate-500 font-mono">Nenhuma queda registrada.</div>}
-          <div className="divide-y divide-[#1E293B] max-h-80 overflow-y-auto" data-testid="mon-events">
+          <div className="divide-y divide-line max-h-80 overflow-y-auto" data-testid="mon-events">
             {events.map(e => (
               <div key={e.id} className="px-4 py-2 text-sm flex items-center gap-3">
                 {e.status === "down" ? <XCircle className="w-4 h-4 text-red-400 shrink-0" /> : <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
@@ -114,15 +114,15 @@ export function MonitorTab({ devices }) {
         </Card>
       </div>
 
-      <Card className="bg-[#111722] border-[#1E293B] xl:col-span-2 p-4 h-fit">
+      <Card className="bg-surface border-line xl:col-span-2 p-4 h-fit">
         {!editDev ? (
           <>
-            <div className="text-xs uppercase tracking-widest text-slate-400 font-mono mb-2 flex items-center gap-2"><Plus className="w-3.5 h-3.5" /> Monitorar interfaces de…</div>
+            <div className="text-xs text-slate-400 mb-2 flex items-center gap-2"><Plus className="w-3.5 h-3.5" /> Monitorar interfaces de…</div>
             <div className="relative mb-2">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
-              <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar equipamento…" className="pl-8 h-8 bg-[#05070A] border-[#1E293B] text-sm" />
+              <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar equipamento…" className="pl-8 h-8 bg-sunken border-line text-sm" />
             </div>
-            <div className="max-h-[60vh] overflow-y-auto border border-[#1E293B] rounded divide-y divide-[#1E293B]">
+            <div className="max-h-[60vh] overflow-y-auto border border-line rounded divide-y divide-line">
               {devList.map(d => {
                 const n = rows.filter(r => r.device_id === d.id).length;
                 return (
@@ -130,7 +130,7 @@ export function MonitorTab({ devices }) {
                           className="w-full text-left px-3 py-2 hover:bg-slate-800/60 flex items-center gap-2">
                     <span className="text-sm text-slate-100 truncate">{d.name}</span>
                     <span className="text-[11px] font-mono text-slate-500 truncate">{d.host}</span>
-                    {n > 0 && <span className="ml-auto text-[10px] font-mono px-1.5 rounded bg-[#007AFF]/20 text-[#93C5FD]">{n}</span>}
+                    {n > 0 && <span className="ml-auto text-[10px] font-mono px-1.5 rounded bg-brand/20 text-brand-pale">{n}</span>}
                   </button>
                 );
               })}
@@ -146,7 +146,7 @@ export function MonitorTab({ devices }) {
             <InterfacePicker deviceId={editDev.id} mode="multi" selected={new Set(sel.keys())} onToggle={toggle} height="h-[50vh]" />
             <div className="flex justify-end gap-2 mt-3">
               <Button variant="ghost" onClick={() => setEditDev(null)}>Voltar</Button>
-              <Button onClick={() => save(editDev.id, [...sel.values()])} disabled={saving} data-testid="mon-save" className="bg-[#007AFF] hover:bg-[#0062CC]">
+              <Button onClick={() => save(editDev.id, [...sel.values()])} disabled={saving} data-testid="mon-save" className="bg-brand hover:bg-brand-strong">
                 {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Salvar
               </Button>
             </div>

@@ -13,7 +13,7 @@ function NumberedConfig({ content, focus }) {
   const ref = useRef(null);
   useEffect(() => { ref.current?.scrollIntoView({ block: "center" }); }, [focus, content]);
   return (
-    <div className="bg-[#05070A] border border-[#1E293B] rounded p-3 text-xs font-mono text-slate-300 max-h-[65vh] overflow-auto" data-testid="backup-content">
+    <div className="bg-sunken border border-line rounded p-3 text-xs font-mono text-slate-300 max-h-[65vh] overflow-auto" data-testid="backup-content">
       {(content || "").split("\n").map((l, i) => (
         <div key={i} ref={i + 1 === focus ? ref : null} className={`flex gap-3 ${i + 1 === focus ? "bg-amber-400/15 text-amber-100" : ""}`}>
           <span className="w-12 shrink-0 text-right text-slate-600 select-none">{i + 1}</span>
@@ -29,11 +29,11 @@ const fmt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR") : "—";
 function DiffView({ diff }) {
   if (!diff) return <div className="text-sm text-slate-500 font-mono p-4">Sem diferenças entre as duas versões.</div>;
   return (
-    <pre className="bg-[#05070A] border border-[#1E293B] rounded p-3 text-xs font-mono max-h-[60vh] overflow-auto" data-testid="backup-diff">
+    <pre className="bg-sunken border border-line rounded p-3 text-xs font-mono max-h-[60vh] overflow-auto" data-testid="backup-diff">
       {diff.split("\n").map((l, i) => (
         <div key={i} className={l.startsWith("+") && !l.startsWith("+++") ? "text-emerald-400 bg-emerald-500/5" :
                                 l.startsWith("-") && !l.startsWith("---") ? "text-red-400 bg-red-500/5" :
-                                l.startsWith("@@") ? "text-[#4DA3FF]" : "text-slate-400"}>{l || " "}</div>
+                                l.startsWith("@@") ? "text-brand-soft" : "text-slate-400"}>{l || " "}</div>
       ))}
     </pre>
   );
@@ -113,19 +113,18 @@ export default function Backups() {
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="backups-page">
       <div className="flex items-start justify-between mb-6 gap-4">
         <div>
-          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Configurações versionadas</div>
-          <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Backups de Configuração</h1>
+          <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Backups de Configuração</h1>
           <p className="text-slate-400 mt-2 text-sm max-w-2xl">Coleta automática diária (running-config, export etc.) por tipo de equipamento. Compare versões e baixe qualquer snapshot.</p>
         </div>
-        <Button onClick={() => runAll(null)} disabled={running} data-testid="run-all-backups-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
+        <Button onClick={() => runAll(null)} disabled={running} data-testid="run-all-backups-btn" className="bg-brand hover:bg-brand-strong">
           {running ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />} Backup agora (todos)
         </Button>
       </div>
 
-      <div className="flex gap-1 mb-4 border-b border-[#1E293B]" data-testid="backups-tabs">
+      <div className="flex gap-1 mb-4 border-b border-line" data-testid="backups-tabs">
         {[["devices", "Por equipamento", Server], ["search", "Buscar nas configs", FileSearch], ["manage", "Todos os backups / limpeza", HardDrive]].map(([v, l, Icon]) => (
           <button key={v} onClick={() => setTab(v)} data-testid={`backups-tab-${v}`}
-            className={`flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${tab === v ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`}>
+            className={`flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${tab === v ? "border-brand text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`}>
             <Icon className="w-4 h-4" /> {l}
           </button>
         ))}
@@ -139,13 +138,13 @@ export default function Backups() {
 
       {tab === "devices" && (
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        <Card className="bg-[#111722] border-[#1E293B] lg:col-span-2 overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#1E293B] text-xs uppercase tracking-widest text-slate-400 font-mono">Equipamentos</div>
+        <Card className="bg-surface border-line lg:col-span-2 overflow-hidden">
+          <div className="px-4 py-3 border-b border-line text-xs text-slate-400">Equipamentos</div>
           {summary.length === 0 && <div className="p-6 text-sm text-slate-500 font-mono">Nenhum backup ainda. Clique em "Backup agora".</div>}
-          <div className="divide-y divide-[#1E293B] max-h-[70vh] overflow-y-auto">
+          <div className="divide-y divide-line max-h-[70vh] overflow-y-auto">
             {summary.map(s => (
               <button key={s.device_id} onClick={() => setSelected(s)} data-testid={`backup-device-${s.device_id}`}
-                      className={`w-full text-left px-4 py-3 hover:bg-slate-900/40 ${selected?.device_id === s.device_id ? "bg-[#0B111C]" : ""}`}>
+                      className={`w-full text-left px-4 py-3 hover:bg-slate-900/40 ${selected?.device_id === s.device_id ? "bg-panel" : ""}`}>
                 <div className="flex items-center justify-between">
                   <div className="text-sm text-slate-100 font-medium flex items-center gap-2">
                     {s.last_ok ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <XCircle className="w-3.5 h-3.5 text-red-400" />}
@@ -160,16 +159,16 @@ export default function Backups() {
           </div>
         </Card>
 
-        <Card className="bg-[#111722] border-[#1E293B] lg:col-span-3 overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#1E293B] flex items-center justify-between">
-            <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">{selected ? `Versões — ${selected.device_name}` : "Versões"}</div>
+        <Card className="bg-surface border-line lg:col-span-3 overflow-hidden">
+          <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+            <div className="text-xs text-slate-400">{selected ? `Versões — ${selected.device_name}` : "Versões"}</div>
             {selected && (
               <div className="flex gap-2">
                 <Button size="sm" variant="outline" onClick={showDiff} disabled={diffSel.length !== 2} data-testid="compare-btn"
-                        className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800 h-7 text-xs">
+                        className="border-line bg-panel text-slate-200 hover:bg-slate-800 h-7 text-xs">
                   <GitCompare className="w-3.5 h-3.5 mr-1" /> Comparar ({diffSel.length}/2)
                 </Button>
-                <Button size="sm" onClick={() => runAll([selected.device_id])} disabled={running} data-testid="run-device-backup-btn" className="bg-[#007AFF] hover:bg-[#0062CC] h-7 text-xs">
+                <Button size="sm" onClick={() => runAll([selected.device_id])} disabled={running} data-testid="run-device-backup-btn" className="bg-brand hover:bg-brand-strong h-7 text-xs">
                   <Archive className="w-3.5 h-3.5 mr-1" /> Backup agora
                 </Button>
               </div>
@@ -177,7 +176,7 @@ export default function Backups() {
           </div>
           {!selected && <div className="p-6 text-sm text-slate-500 font-mono">Selecione um equipamento à esquerda.</div>}
           {selected && (
-            <div className="divide-y divide-[#1E293B] max-h-[40vh] overflow-y-auto">
+            <div className="divide-y divide-line max-h-[40vh] overflow-y-auto">
               {versions.map(v => (
                 <div key={v.id} className="px-4 py-2.5 flex items-center gap-3 hover:bg-slate-900/40" data-testid={`backup-version-${v.id}`}>
                   <input type="checkbox" disabled={!v.ok} checked={diffSel.includes(v.id)} onChange={() => toggleDiff(v.id)} data-testid={`diff-check-${v.id}`} />
@@ -198,22 +197,22 @@ export default function Backups() {
               ))}
             </div>
           )}
-          {diff && <div className="p-3 border-t border-[#1E293B]"><DiffView diff={diff.identical ? "" : diff.diff} /></div>}
+          {diff && <div className="p-3 border-t border-line"><DiffView diff={diff.identical ? "" : diff.diff} /></div>}
         </Card>
       </div>
       )}
 
       <Dialog open={!!viewing} onOpenChange={(v) => !v && setViewing(null)}>
-        <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-4xl" data-testid="backup-view-dialog">
+        <DialogContent className="bg-surface border-line text-slate-100 max-w-4xl" data-testid="backup-view-dialog">
           <DialogHeader><DialogTitle>{viewing?.device_name} — {fmt(viewing?.created_at)}</DialogTitle></DialogHeader>
           <div className="flex justify-end">
-            <Button size="sm" variant="outline" onClick={() => download(viewing)} data-testid="download-backup-btn" className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800 h-7 text-xs">
+            <Button size="sm" variant="outline" onClick={() => download(viewing)} data-testid="download-backup-btn" className="border-line bg-panel text-slate-200 hover:bg-slate-800 h-7 text-xs">
               <Download className="w-3.5 h-3.5 mr-1" /> Baixar
             </Button>
           </div>
           {viewing?.focusLine
             ? <NumberedConfig content={viewing.content} focus={viewing.focusLine} />
-            : <pre className="bg-[#05070A] border border-[#1E293B] rounded p-3 text-xs font-mono text-slate-300 max-h-[65vh] overflow-auto whitespace-pre-wrap" data-testid="backup-content">{viewing?.content}</pre>}
+            : <pre className="bg-sunken border border-line rounded p-3 text-xs font-mono text-slate-300 max-h-[65vh] overflow-auto whitespace-pre-wrap" data-testid="backup-content">{viewing?.content}</pre>}
         </DialogContent>
       </Dialog>
     </div>

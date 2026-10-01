@@ -1,4 +1,4 @@
-"""Coletor de flows do Bastion — roda no container "flow" (python flowd.py).
+"""Coletor de flows do BastiON — roda no container "flow" (python flowd.py).
 
 Escuta NetFlow v5/v9/IPFIX (UDP 2055) e sFlow v5 (UDP 6343), agrega em memória (flowagg) e grava no Mongo
 (ver flowstore). Relê a configuração a cada 30 s: interfaces monitoradas, conteúdos, prefixos próprios, limites de

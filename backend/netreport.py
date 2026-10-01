@@ -163,7 +163,7 @@ td{{border-bottom:1px solid #eef1f4;padding:6px;vertical-align:top}} .num{{text-
 .note{{background:#f5f7fa;border-left:3px solid #9aa5b1;padding:8px 12px;font-size:12px;color:#44515f;margin-top:10px}}
 @media print{{.wrap{{padding:0}} h2{{break-after:avoid}} tr{{break-inside:avoid}}}}
 </style></head><body><div class="wrap">
-<div class="muted">Bastion · Relatório de análise de rede</div>
+<div class="muted">BastiON · Relatório de análise de rede</div>
 <h1>{e(doc.get("map_name", "Mapa"))}</h1>
 <div class="muted">Gerado em {e(when)} · {s["devices_ok"]}/{s["devices"]} equipamentos lidos por SNMP · coleta {doc.get("duration_sec", "?")}s</div>
 <div class="cards">

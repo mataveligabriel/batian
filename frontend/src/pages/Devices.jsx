@@ -192,20 +192,19 @@ export default function Devices() {
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="devices-page">
       <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
         <div>
-          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Inventário</div>
-          <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Equipamentos</h1>
+          <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Equipamentos</h1>
           <p className="hidden md:block text-slate-400 mt-2 text-sm">Cadastre hosts com porta SSH customizada e associe a um agente proxy.</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setImportOpen(true)} data-testid="import-devices-btn"
-                  className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">
+                  className="border-line bg-panel text-slate-200 hover:bg-slate-800">
             <Upload className="w-4 h-4 md:mr-2" /><span className="hidden md:inline">Importar CSV</span>
           </Button>
           <Button variant="outline" onClick={() => setExportOpen(true)} disabled={!devices.length} data-testid="export-devices-btn"
-                  className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">
+                  className="border-line bg-panel text-slate-200 hover:bg-slate-800">
             <Download className="w-4 h-4 md:mr-2" /><span className="hidden md:inline">Exportar</span>
           </Button>
-          <Button onClick={openNew} data-testid="add-device-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
+          <Button onClick={openNew} data-testid="add-device-btn" className="bg-brand hover:bg-brand-strong">
             <Plus className="w-4 h-4 mr-1 md:mr-2" /> <span className="md:hidden">Novo</span><span className="hidden md:inline">Novo Equipamento</span>
           </Button>
         </div>
@@ -219,26 +218,26 @@ export default function Devices() {
         <div className="relative w-full md:w-auto">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
           <Input placeholder="Buscar por nome ou IP..." data-testid="search-devices-input" value={q} onChange={(e) => setQ(e.target.value)}
-                 className="pl-9 w-full md:w-72 bg-[#111722] border-[#1E293B] font-mono text-sm" />
+                 className="pl-9 w-full md:w-72 bg-surface border-line font-mono text-sm" />
         </div>
         <div className="flex gap-2 flex-wrap">
           <Badge onClick={() => setTagFilter("")} data-testid="tag-filter-all"
-            className={`cursor-pointer ${!tagFilter ? "bg-[#007AFF] text-white" : "bg-[#111722] text-slate-300 border-[#1E293B]"}`}>Todas</Badge>
+            className={`cursor-pointer ${!tagFilter ? "bg-brand text-white" : "bg-surface text-slate-300 border-line"}`}>Todas</Badge>
           {allTags.map(t => (
             <Badge key={t} onClick={() => setTagFilter(t)} data-testid={`tag-filter-${t}`}
-              className={`cursor-pointer ${tagFilter === t ? "bg-[#007AFF] text-white" : "bg-[#111722] text-slate-300 border-[#1E293B]"}`}>{t}</Badge>
+              className={`cursor-pointer ${tagFilter === t ? "bg-brand text-white" : "bg-surface text-slate-300 border-line"}`}>{t}</Badge>
           ))}
         </div>
         <div className="flex gap-1 md:ml-auto overflow-x-auto" data-testid="status-filter">
           {[["", "Todos"], ["online", "Online"], ["offline", "Offline"], ["unknown", "Sem status"]].map(([v, l]) => (
             <button key={v || "all"} onClick={() => setStatusFilter(v)} data-testid={`status-filter-${v || "all"}`}
-              className={`text-xs font-mono px-2.5 py-1 rounded border ${statusFilter === v ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] bg-[#111722] text-slate-400 hover:text-slate-200"}`}>{l}</button>
+              className={`text-xs font-mono px-2.5 py-1 rounded border ${statusFilter === v ? "border-brand bg-brand/15 text-slate-100" : "border-line bg-surface text-slate-400 hover:text-slate-200"}`}>{l}</button>
           ))}
         </div>
       </div>
 
       {selected.size > 0 && (
-        <div className="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-2 px-3 py-2 rounded border border-[#007AFF]/50 bg-[#0B1A2E]" data-testid="selection-bar">
+        <div className="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-2 px-3 py-2 rounded border border-brand/50 bg-brand/10" data-testid="selection-bar">
           <span className="text-sm text-slate-100 font-mono mr-1" data-testid="selection-count">
             {selected.size} selecionado(s)
             {selected.size !== selInView && <span className="text-slate-400"> · {selInView} visível(is)</span>}
@@ -246,13 +245,13 @@ export default function Devices() {
           <Button size="sm" variant="ghost" onClick={pingSelected} disabled={pinging} data-testid="bulk-ping-btn" className="text-amber-400 hover:bg-amber-950/40">
             {pinging ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Zap className="w-4 h-4 mr-1.5" />} Ping
           </Button>
-          <Button size="sm" variant="ghost" onClick={batchSelected} data-testid="bulk-batch-btn" className="text-[#4DA3FF] hover:bg-[#007AFF]/15">
+          <Button size="sm" variant="ghost" onClick={batchSelected} data-testid="bulk-batch-btn" className="text-brand-soft hover:bg-brand/15">
             <Play className="w-4 h-4 mr-1.5" /> Executar em lote
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setBulkOpen(true)} data-testid="bulk-edit-btn" className="text-slate-200 hover:bg-slate-800">
             <Pencil className="w-4 h-4 mr-1.5" /> Editar em massa
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setSendOpen(true)} data-testid="bulk-send-btn" className="text-[#4DA3FF] hover:bg-[#007AFF]/15" title="Copiar para outro usuário">
+          <Button size="sm" variant="ghost" onClick={() => setSendOpen(true)} data-testid="bulk-send-btn" className="text-brand-soft hover:bg-brand/15" title="Copiar para outro usuário">
             <Send className="w-4 h-4 mr-1.5" /> Enviar para usuário
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setExportOpen(true)} data-testid="bulk-export-btn" className="text-slate-200 hover:bg-slate-800">
@@ -271,7 +270,7 @@ export default function Devices() {
       <div className="md:hidden space-y-2" data-testid="devices-mobile-list">
         {filtered.length === 0 && <div className="text-center py-10 text-slate-500 font-mono text-sm">Nenhum equipamento encontrado</div>}
         {filtered.map(d => (
-          <div key={d.id} className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 ${selected.has(d.id) ? "border-[#007AFF]/60 bg-[#007AFF]/10" : "border-[#1E293B] bg-[#111722]"}`}>
+          <div key={d.id} className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 ${selected.has(d.id) ? "border-brand/60 bg-brand/10" : "border-line bg-surface"}`}>
             <button className="flex-1 min-w-0 text-left" onClick={() => nav(`/terminal/${d.id}`)} data-testid={`mobile-device-${d.id}`}>
               <div className="flex items-center gap-2">
                 <span className={`w-2 h-2 rounded-full shrink-0 ${d.status === "online" ? "bg-emerald-400" : d.status === "offline" ? "bg-red-400" : "bg-slate-600"}`} />
@@ -287,10 +286,10 @@ export default function Devices() {
         ))}
       </div>
 
-      <Card className="hidden md:block bg-[#111722] border-[#1E293B] overflow-hidden">
+      <Card className="hidden md:block bg-surface border-line overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="text-xs uppercase tracking-widest text-slate-500 font-mono bg-[#0B111C]">
+            <thead className="text-xs text-slate-500 bg-panel">
               <tr>
                 <th className="pl-4 pr-1 py-3 w-8">
                   <Checkbox checked={headerState} onCheckedChange={toggleAllInView} disabled={!filteredIds.length}
@@ -307,12 +306,12 @@ export default function Devices() {
                 <th className="text-right px-4 py-3">Ações</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#1E293B]">
+            <tbody className="divide-y divide-line">
               {filtered.length === 0 && (
                 <tr><td colSpan={10} className="text-center py-10 text-slate-500 font-mono">Nenhum equipamento encontrado</td></tr>
               )}
               {filtered.map(d => (
-                <tr key={d.id} data-testid={`device-row-${d.id}`} className={selected.has(d.id) ? "bg-[#007AFF]/10" : "hover:bg-slate-900/40"}>
+                <tr key={d.id} data-testid={`device-row-${d.id}`} className={selected.has(d.id) ? "bg-brand/10" : "hover:bg-slate-900/40"}>
                   <td className="pl-4 pr-1 py-3" onClick={(e) => { e.preventDefault(); toggleRow(d.id, e.shiftKey); }}>
                     <Checkbox checked={selected.has(d.id)} data-testid={`select-device-${d.id}`} aria-label={`Selecionar ${d.name}`} className="border-slate-500" />
                   </td>
@@ -326,7 +325,7 @@ export default function Devices() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-slate-100 font-medium">{d.name}</td>
-                  <td className="px-4 py-3 font-mono text-slate-300">{d.host}:{d.port} <span data-testid={`device-proto-${d.id}`} className={`ml-1 text-[9px] uppercase px-1 py-0.5 rounded border ${d.protocol === "telnet" ? "border-amber-500/40 text-amber-400" : "border-[#1E293B] text-slate-500"}`}>{d.protocol || "ssh"}</span></td>
+                  <td className="px-4 py-3 font-mono text-slate-300">{d.host}:{d.port} <span data-testid={`device-proto-${d.id}`} className={`ml-1 text-[9px] uppercase px-1 py-0.5 rounded border ${d.protocol === "telnet" ? "border-amber-500/40 text-amber-400" : "border-line text-slate-500"}`}>{d.protocol || "ssh"}</span></td>
                   <td className="px-4 py-3 text-xs text-slate-400" data-testid={`device-type-${d.id}`}>{typeLabel(d.device_type)}</td>
                   <td className="px-4 py-3 font-mono text-slate-400">
                     <span className="inline-flex items-center gap-1.5">{d.username || <span className="text-slate-600">padrão</span>}
@@ -336,7 +335,7 @@ export default function Devices() {
                   <td className="px-4 py-3 text-slate-400 text-xs">{agentName(d.agent_id)}</td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
-                      {(d.tags || []).map(t => <Badge key={t} className="bg-[#0B111C] border border-[#1E293B] text-slate-300 text-[10px]">{t}</Badge>)}
+                      {(d.tags || []).map(t => <Badge key={t} className="bg-panel border border-line text-slate-300 text-[10px]">{t}</Badge>)}
                     </div>
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-slate-400">{d.latency_ms ? `${d.latency_ms} ms` : "—"}</td>
@@ -345,10 +344,10 @@ export default function Devices() {
                       <Button size="sm" variant="ghost" onClick={() => ping(d)} data-testid={`ping-device-${d.id}`} className="text-amber-400 hover:bg-amber-950/40">
                         <Zap className="w-4 h-4" />
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => nav(`/terminal/${d.id}`)} data-testid={`connect-ssh-${d.id}`} className="text-[#4DA3FF] hover:bg-[#007AFF]/15">
+                      <Button size="sm" variant="ghost" onClick={() => nav(`/terminal/${d.id}`)} data-testid={`connect-ssh-${d.id}`} className="text-brand-soft hover:bg-brand/15">
                         <TerminalSquare className="w-4 h-4" />
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => nav(`/web?device=${d.id}`)} data-testid={`open-web-${d.id}`} className="text-[#4DA3FF] hover:bg-[#007AFF]/15" title="Abrir página web (http/https)">
+                      <Button size="sm" variant="ghost" onClick={() => nav(`/web?device=${d.id}`)} data-testid={`open-web-${d.id}`} className="text-brand-soft hover:bg-brand/15" title="Abrir página web (http/https)">
                         <Globe className="w-4 h-4" />
                       </Button>
                       <Button size="sm" variant="ghost" onClick={() => openEdit(d)} data-testid={`edit-device-${d.id}`} className="text-slate-300 hover:bg-slate-800" title="Editar">
@@ -370,7 +369,7 @@ export default function Devices() {
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-lg max-h-[92vh] overflow-y-auto">
+        <DialogContent className="bg-surface border-line text-slate-100 max-w-lg max-h-[92vh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? "Editar equipamento" : cloneOf ? `Duplicar ${cloneOf.name}` : "Novo equipamento"}</DialogTitle></DialogHeader>
           {cloneOf && (
             <div className="text-[11px] font-mono text-slate-400 -mt-1" data-testid="clone-hint">
@@ -380,18 +379,18 @@ export default function Devices() {
           <div className="space-y-3">
             <div>
               <Label>Nome</Label>
-              <Input data-testid="device-form-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+              <Input data-testid="device-form-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="bg-sunken border-line font-mono" />
             </div>
             <div className="grid grid-cols-4 gap-3">
               <div className="col-span-2">
                 <Label>Host / IP</Label>
-                <Input data-testid="device-form-host" autoFocus={!!cloneOf} placeholder={cloneOf ? `antes: ${cloneOf.host}` : ""} value={form.host} onChange={e => setForm({ ...form, host: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+                <Input data-testid="device-form-host" autoFocus={!!cloneOf} placeholder={cloneOf ? `antes: ${cloneOf.host}` : ""} value={form.host} onChange={e => setForm({ ...form, host: e.target.value })} className="bg-sunken border-line font-mono" />
               </div>
               <div>
                 <Label>Protocolo</Label>
                 <Select value={form.protocol || "ssh"} onValueChange={(v) => setForm({ ...form, protocol: v, port: (v === "telnet" && Number(form.port) === 22) ? 23 : (v === "ssh" && Number(form.port) === 23) ? 22 : form.port })}>
-                  <SelectTrigger data-testid="device-form-protocol" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
-                  <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
+                  <SelectTrigger data-testid="device-form-protocol" className="bg-sunken border-line font-mono"><SelectValue /></SelectTrigger>
+                  <SelectContent className="bg-surface border-line text-slate-100">
                     <SelectItem value="ssh">SSH</SelectItem>
                     <SelectItem value="telnet">Telnet</SelectItem>
                   </SelectContent>
@@ -399,18 +398,18 @@ export default function Devices() {
               </div>
               <div>
                 <Label>Porta</Label>
-                <Input data-testid="device-form-port" type="number" value={form.port} onChange={e => setForm({ ...form, port: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+                <Input data-testid="device-form-port" type="number" value={form.port} onChange={e => setForm({ ...form, port: e.target.value })} className="bg-sunken border-line font-mono" />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Usuário SSH</Label>
-                <Input data-testid="device-form-username" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} placeholder="vazio = usuário padrão" className="bg-[#05070A] border-[#1E293B] font-mono" />
+                <Input data-testid="device-form-username" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} placeholder="vazio = usuário padrão" className="bg-sunken border-line font-mono" />
               </div>
               <div>
                 <Label>Senha (RADIUS/TACACS)</Label>
                 <Input data-testid="device-form-password" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })}
-                       placeholder={editing?.has_password ? "•••••••• (mantida)" : cloneOf?.has_password ? "•••••••• (copiada do original)" : "vazio = senha padrão / chave"} className="bg-[#05070A] border-[#1E293B] font-mono" />
+                       placeholder={editing?.has_password ? "•••••••• (mantida)" : cloneOf?.has_password ? "•••••••• (copiada do original)" : "vazio = senha padrão / chave"} className="bg-sunken border-line font-mono" />
                 {editing?.has_password && (
                   <label className="flex items-center gap-2 mt-1 text-[11px] text-slate-400 cursor-pointer">
                     <input type="checkbox" data-testid="device-form-clear-password" checked={form.clear_password} onChange={e => setForm({ ...form, clear_password: e.target.checked })} /> remover senha própria
@@ -421,8 +420,8 @@ export default function Devices() {
             <div>
               <Label>Tipo de equipamento</Label>
               <Select value={form.device_type || "linux"} onValueChange={(v) => setForm({ ...form, device_type: v })}>
-                <SelectTrigger data-testid="device-form-type" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
-                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
+                <SelectTrigger data-testid="device-form-type" className="bg-sunken border-line font-mono"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-surface border-line text-slate-100">
                   {DEVICE_TYPES.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
                 </SelectContent>
               </Select>
@@ -431,10 +430,10 @@ export default function Devices() {
             <div>
               <Label>Agente Proxy (opcional)</Label>
               <Select value={form.agent_id || "none"} onValueChange={(v) => setForm({ ...form, agent_id: v === "none" ? "" : v })}>
-                <SelectTrigger data-testid="device-form-agent" className="bg-[#05070A] border-[#1E293B] font-mono">
+                <SelectTrigger data-testid="device-form-agent" className="bg-sunken border-line font-mono">
                   <SelectValue placeholder="Sem agente (conexão direta)" />
                 </SelectTrigger>
-                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
+                <SelectContent className="bg-surface border-line text-slate-100">
                   <SelectItem value="none">Sem agente (conexão direta)</SelectItem>
                   {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.name} · {a.location}</SelectItem>)}
                 </SelectContent>
@@ -442,25 +441,25 @@ export default function Devices() {
             </div>
             <div>
               <Label>Tags (separadas por vírgula)</Label>
-              <Input data-testid="device-form-tags" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} placeholder="Roteador, SP, Core" className="bg-[#05070A] border-[#1E293B] font-mono" />
+              <Input data-testid="device-form-tags" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} placeholder="Roteador, SP, Core" className="bg-sunken border-line font-mono" />
             </div>
             <div>
               <Label>Descrição</Label>
-              <Textarea data-testid="device-form-desc" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+              <Textarea data-testid="device-form-desc" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="bg-sunken border-line font-mono" />
             </div>
             <div className="grid grid-cols-4 gap-3 items-end">
               <div className="col-span-2">
                 <Label>SNMP community (v2c)</Label>
                 <Input data-testid="device-form-snmp" value={form.snmp_community} onChange={e => setForm({ ...form, snmp_community: e.target.value })}
-                       placeholder="vazio = community padrão dos Mapas" className="bg-[#05070A] border-[#1E293B] font-mono" />
+                       placeholder="vazio = community padrão dos Mapas" className="bg-sunken border-line font-mono" />
               </div>
               <div>
                 <Label>Porta SNMP</Label>
-                <Input type="number" value={form.snmp_port} onChange={e => setForm({ ...form, snmp_port: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+                <Input type="number" value={form.snmp_port} onChange={e => setForm({ ...form, snmp_port: e.target.value })} className="bg-sunken border-line font-mono" />
               </div>
               <Button type="button" variant="outline" disabled={!editing} onClick={testSnmp} data-testid="device-form-snmp-test"
                       title={editing ? "Testa com a community já salva" : "Salve o equipamento primeiro"}
-                      className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">Testar</Button>
+                      className="border-line bg-panel text-slate-200 hover:bg-slate-800">Testar</Button>
             </div>
             <div className="grid grid-cols-3 gap-3 items-end">
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer pb-2">
@@ -468,13 +467,13 @@ export default function Devices() {
               </label>
               <div className="col-span-2">
                 <Label>Comando de backup (opcional, sobrescreve o padrão do tipo)</Label>
-                <Input data-testid="device-form-backup-command" value={form.backup_command} onChange={e => setForm({ ...form, backup_command: e.target.value })} placeholder="ex.: show running-config" className="bg-[#05070A] border-[#1E293B] font-mono" />
+                <Input data-testid="device-form-backup-command" value={form.backup_command} onChange={e => setForm({ ...form, backup_command: e.target.value })} placeholder="ex.: show running-config" className="bg-sunken border-line font-mono" />
               </div>
             </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setOpen(false)} data-testid="device-form-cancel">Cancelar</Button>
-            <Button onClick={save} data-testid="device-form-save" className="bg-[#007AFF] hover:bg-[#0062CC]">Salvar</Button>
+            <Button onClick={save} data-testid="device-form-save" className="bg-brand hover:bg-brand-strong">Salvar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

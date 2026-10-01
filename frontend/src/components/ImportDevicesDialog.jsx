@@ -80,7 +80,7 @@ export function ImportDevicesDialog({ open, onOpenChange, onDone }) {
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) reset(); onOpenChange(v); }}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-3xl" data-testid="import-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-3xl" data-testid="import-dialog">
         <DialogHeader><DialogTitle>Importar equipamentos (CSV)</DialogTitle></DialogHeader>
         <p className="text-xs text-slate-400 font-mono">
           Colunas: <span className="text-emerald-300">name, host, port, protocol (ssh|telnet), username, password, device_type, tags, agent, description, backup_enabled, backup_command, snmp_community, snmp_port</span>.
@@ -91,7 +91,7 @@ export function ImportDevicesDialog({ open, onOpenChange, onDone }) {
           <input ref={inputRef} type="file" accept=".csv,text/csv" className="hidden" data-testid="import-file-input"
                  onChange={(e) => onFile(e.target.files?.[0])} />
           <Button variant="outline" onClick={() => inputRef.current?.click()} data-testid="import-choose-file-btn"
-                  className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">
+                  className="border-line bg-panel text-slate-200 hover:bg-slate-800">
             <FileSpreadsheet className="w-4 h-4 mr-2" /> Escolher CSV
           </Button>
           <Button variant="ghost" onClick={downloadTemplate} data-testid="import-template-btn" className="text-slate-300 hover:bg-slate-800">
@@ -101,12 +101,12 @@ export function ImportDevicesDialog({ open, onOpenChange, onDone }) {
         </div>
 
         {rows.length > 0 && (
-          <div className="border border-[#1E293B] rounded max-h-64 overflow-auto" data-testid="import-preview">
+          <div className="border border-line rounded max-h-64 overflow-auto" data-testid="import-preview">
             <table className="w-full text-xs font-mono">
-              <thead className="bg-[#0B111C] text-slate-500 uppercase tracking-widest sticky top-0">
+              <thead className="bg-panel text-slate-500 sticky top-0">
                 <tr><th className="text-left px-3 py-2">name</th><th className="text-left px-3 py-2">host</th><th className="text-left px-3 py-2">port</th><th className="text-left px-3 py-2">user</th><th className="text-left px-3 py-2">tipo</th><th className="text-left px-3 py-2">agent</th><th className="text-left px-3 py-2">tags</th></tr>
               </thead>
-              <tbody className="divide-y divide-[#1E293B]">
+              <tbody className="divide-y divide-line">
                 {rows.slice(0, 200).map((r, i) => (
                   <tr key={i} className={!r.name || !r.host ? "text-red-400" : "text-slate-300"}>
                     <td className="px-3 py-1.5">{r.name || "—"}</td><td className="px-3 py-1.5">{r.host || r.ip || "—"}</td>
@@ -129,7 +129,7 @@ export function ImportDevicesDialog({ open, onOpenChange, onDone }) {
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Fechar</Button>
-          <Button onClick={doImport} disabled={!rows.length || busy || !!result} data-testid="import-confirm-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
+          <Button onClick={doImport} disabled={!rows.length || busy || !!result} data-testid="import-confirm-btn" className="bg-brand hover:bg-brand-strong">
             <Upload className="w-4 h-4 mr-2" /> Importar {rows.length ? `(${rows.length})` : ""}
           </Button>
         </DialogFooter>

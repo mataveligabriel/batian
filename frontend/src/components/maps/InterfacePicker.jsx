@@ -44,7 +44,7 @@ export function InterfacePicker({ deviceId, mode = "single", value, selected, on
         <div className="relative flex-1">
           <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
           <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar interface ou descrição…"
-                 className="pl-8 h-8 bg-[#05070A] border-[#1E293B] font-mono text-xs" data-testid="iface-search" />
+                 className="pl-8 h-8 bg-sunken border-line font-mono text-xs" data-testid="iface-search" />
         </div>
         <label className="text-[11px] text-slate-400 flex items-center gap-1 whitespace-nowrap cursor-pointer">
           <input type="checkbox" checked={hideDown} onChange={e => setHideDown(e.target.checked)} /> só up
@@ -59,12 +59,12 @@ export function InterfacePicker({ deviceId, mode = "single", value, selected, on
           {data.sys_name || "?"} · {data.interfaces.length} interfaces · lido em {new Date(data.at).toLocaleString("pt-BR")}
         </div>
       )}
-      <div className={`${height} overflow-y-auto border border-[#1E293B] rounded bg-[#05070A]`}>
+      <div className={`${height} overflow-y-auto border border-line rounded bg-sunken`}>
         {loading && !data && <div className="p-3 text-xs text-slate-400 font-mono flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Lendo interfaces por SNMP…</div>}
         {err && (
           <div className="p-3 text-xs text-red-400 font-mono flex gap-2" data-testid="iface-error">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-            <span>{err}<br /><span className="text-slate-500">Confira a community SNMP do equipamento (Equipamentos → editar) e se o SNMP está liberado para o IP do Bastion (ou do agente).</span></span>
+            <span>{err}<br /><span className="text-slate-500">Confira a community SNMP do equipamento (Equipamentos → editar) e se o SNMP está liberado para o IP do BastiON (ou do agente).</span></span>
           </div>
         )}
         {data && list.length === 0 && <div className="p-3 text-xs text-slate-500 font-mono">Nenhuma interface encontrada.</div>}
@@ -73,7 +73,7 @@ export function InterfacePicker({ deviceId, mode = "single", value, selected, on
           return (
             <button key={i.index} type="button" data-testid={`iface-${i.index}`}
                     onClick={() => (mode === "single" ? onPick?.(i) : onToggle?.(i))}
-                    className={`w-full text-left px-2.5 py-1.5 flex items-center gap-2 border-b border-[#111722] last:border-b-0 ${isSel ? "bg-[#007AFF]/20" : "hover:bg-slate-800/60"}`}>
+                    className={`w-full text-left px-2.5 py-1.5 flex items-center gap-2 border-b border-surface last:border-b-0 ${isSel ? "bg-brand/20" : "hover:bg-slate-800/60"}`}>
               {mode === "multi" && <input type="checkbox" readOnly checked={!!isSel} className="pointer-events-none" />}
               <span className={`text-[10px] font-mono w-12 shrink-0 ${isDown(i.oper) ? "text-red-400" : i.oper === "up" ? "text-emerald-400" : "text-slate-500"}`}>
                 {i.oper === "up" ? "● up" : isDown(i.oper) ? "○ down" : `· ${OPER_LABEL[i.oper] || i.oper}`}

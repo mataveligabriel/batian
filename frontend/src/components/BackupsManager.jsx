@@ -16,12 +16,12 @@ export const fmtBytes = (b) => {
   return `${n.toFixed(n >= 100 || i === 0 ? 0 : 1)} ${u[i]}`;
 };
 const PAGE = 50;
-const inputCls = "bg-[#05070A] border-[#1E293B] font-mono text-sm";
+const inputCls = "bg-sunken border-line font-mono text-sm";
 
 function Stat({ label, value, sub, tone = "text-slate-100" }) {
   return (
-    <div className="bg-[#0B111C] border border-[#1E293B] rounded-md px-4 py-3">
-      <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">{label}</div>
+    <div className="bg-panel border border-line rounded-md px-4 py-3">
+      <div className="text-[10px] text-slate-500">{label}</div>
       <div className={`text-2xl font-heading font-bold mt-0.5 ${tone}`}>{value}</div>
       {sub && <div className="text-[11px] font-mono text-slate-500 mt-0.5">{sub}</div>}
     </div>
@@ -117,14 +117,14 @@ export function BackupsManager({ onView, onChanged }) {
   const pages = Math.max(1, Math.ceil(total / PAGE));
   const chip = (v, l) => (
     <button key={v} onClick={() => setStatus(v)} data-testid={`bk-status-${v}`}
-      className={`text-xs font-mono px-2.5 py-1 rounded border ${status === v ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] bg-[#111722] text-slate-400 hover:text-slate-200"}`}>{l}</button>
+      className={`text-xs font-mono px-2.5 py-1 rounded border ${status === v ? "border-brand bg-brand/15 text-slate-100" : "border-line bg-surface text-slate-400 hover:text-slate-200"}`}>{l}</button>
   );
 
   return (
     <div className="space-y-4" data-testid="backups-manager">
       {stats && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3" data-testid="bk-stats">
-          <Stat label="Espaço usado" value={fmtBytes(stats.size_bytes)} sub={`${stats.count} backup(s) · ${stats.devices} host(s)`} tone="text-[#4DA3FF]" />
+          <Stat label="Espaço usado" value={fmtBytes(stats.size_bytes)} sub={`${stats.count} backup(s) · ${stats.devices} host(s)`} tone="text-brand-soft" />
           <Stat label="Idênticos ao anterior" value={stats.unchanged} sub="versões sem nenhuma mudança" tone="text-amber-300" />
           <Stat label="Falhas guardadas" value={stats.failed} sub="tentativas que deram erro" tone={stats.failed ? "text-red-400" : "text-slate-100"} />
           <Stat label="Mais antigo" value={stats.oldest ? new Date(stats.oldest).toLocaleDateString("pt-BR") : "—"}
@@ -132,9 +132,9 @@ export function BackupsManager({ onView, onChanged }) {
         </div>
       )}
 
-      <Card className="bg-[#111722] border-[#1E293B] p-4" data-testid="bk-cleanup">
-        <div className="flex items-center gap-2 mb-3"><Eraser className="w-4 h-4 text-[#4DA3FF]" />
-          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Limpeza de backups antigos</div></div>
+      <Card className="bg-surface border-line p-4" data-testid="bk-cleanup">
+        <div className="flex items-center gap-2 mb-3"><Eraser className="w-4 h-4 text-brand-soft" />
+          <div className="text-xs text-slate-400">Limpeza de backups antigos</div></div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-2 text-sm text-slate-300">
           <label className="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" checked={rules.useAge} onChange={e => setRules({ ...rules, useAge: e.target.checked })} data-testid="rule-age" />
@@ -164,7 +164,7 @@ export function BackupsManager({ onView, onChanged }) {
             backups mais recentes de cada equipamento (proteção — nunca são apagados)
           </label>
         </div>
-        <div className="flex items-center justify-between gap-3 mt-4 flex-wrap border-t border-[#1E293B] pt-3">
+        <div className="flex items-center justify-between gap-3 mt-4 flex-wrap border-t border-line pt-3">
           <div className="text-sm font-mono" data-testid="cleanup-preview">
             {noRule ? <span className="text-slate-500">Marque ao menos uma regra.</span>
               : !preview ? <span className="text-slate-500">calculando…</span>
@@ -178,9 +178,9 @@ export function BackupsManager({ onView, onChanged }) {
         </div>
       </Card>
 
-      <Card className="bg-[#111722] border-[#1E293B] overflow-hidden" data-testid="bk-all">
-        <div className="px-4 py-3 border-b border-[#1E293B] flex flex-wrap items-center gap-3">
-          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono flex items-center gap-2"><HardDrive className="w-4 h-4" /> Todos os backups</div>
+      <Card className="bg-surface border-line overflow-hidden" data-testid="bk-all">
+        <div className="px-4 py-3 border-b border-line flex flex-wrap items-center gap-3">
+          <div className="text-xs text-slate-400 flex items-center gap-2"><HardDrive className="w-4 h-4" /> Todos os backups</div>
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <Input placeholder="Buscar host…" value={q} onChange={e => setQ(e.target.value)} className={`${inputCls} pl-9 w-56 h-8`} data-testid="bk-search" />
@@ -194,7 +194,7 @@ export function BackupsManager({ onView, onChanged }) {
         </div>
 
         {selected.size > 0 && (
-          <div className="flex items-center gap-3 px-4 py-2 bg-[#0B1A2E] border-b border-[#007AFF]/40 text-sm" data-testid="bk-selection-bar">
+          <div className="flex items-center gap-3 px-4 py-2 bg-brand/10 border-b border-brand/40 text-sm" data-testid="bk-selection-bar">
             <span className="font-mono text-slate-100">{selected.size} selecionado(s){selOnPage === selected.size ? ` · ${fmtBytes(selBytes)}` : ""}</span>
             <Button size="sm" variant="ghost" onClick={() => deleteIds([...selected], `${selected.size} backup(s) selecionado(s)`)}
                     className="text-red-400 hover:bg-red-950/40 h-7" data-testid="bk-delete-selected"><Trash2 className="w-4 h-4 mr-1.5" /> Apagar selecionados</Button>
@@ -204,7 +204,7 @@ export function BackupsManager({ onView, onChanged }) {
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="text-xs uppercase tracking-widest text-slate-500 font-mono bg-[#0B111C]">
+            <thead className="text-xs text-slate-500 bg-panel">
               <tr>
                 <th className="pl-4 pr-1 py-2.5 w-8"><Checkbox checked={headerState} onCheckedChange={toggleAll} disabled={!pageIds.length} className="border-slate-500" data-testid="bk-select-all" /></th>
                 <th className="text-left px-3 py-2.5">Data</th>
@@ -215,10 +215,10 @@ export function BackupsManager({ onView, onChanged }) {
                 <th className="text-right px-4 py-2.5">Ações</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#1E293B]">
+            <tbody className="divide-y divide-line">
               {!loading && items.length === 0 && <tr><td colSpan={7} className="text-center py-8 text-slate-500 font-mono">Nenhum backup encontrado</td></tr>}
               {items.map(b => (
-                <tr key={b.id} className={selected.has(b.id) ? "bg-[#007AFF]/10" : "hover:bg-slate-900/40"} data-testid={`bk-row-${b.id}`}>
+                <tr key={b.id} className={selected.has(b.id) ? "bg-brand/10" : "hover:bg-slate-900/40"} data-testid={`bk-row-${b.id}`}>
                   <td className="pl-4 pr-1 py-2" onClick={() => toggle(b.id)}><Checkbox checked={selected.has(b.id)} className="border-slate-500" /></td>
                   <td className="px-3 py-2 font-mono text-slate-300 whitespace-nowrap">{fmt(b.created_at)}</td>
                   <td className="px-3 py-2 text-slate-100">{b.device_name}</td>
@@ -241,7 +241,7 @@ export function BackupsManager({ onView, onChanged }) {
             </tbody>
           </table>
         </div>
-        <div className="flex items-center justify-between px-4 py-2 border-t border-[#1E293B] text-xs font-mono text-slate-400">
+        <div className="flex items-center justify-between px-4 py-2 border-t border-line text-xs font-mono text-slate-400">
           <span>{total} backup(s){loading && <Loader2 className="inline w-3 h-3 ml-2 animate-spin" />}</span>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="ghost" disabled={page === 0} onClick={() => setPage(p => p - 1)} className="h-7"><ChevronLeft className="w-4 h-4" /></Button>

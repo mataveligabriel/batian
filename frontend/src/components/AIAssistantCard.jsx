@@ -40,8 +40,8 @@ export function AIAssistantCard() {
   useEffect(() => { load().catch(e => toast.error(formatApiError(e))); }, []);
 
   if (!s) return null;
-  const inputCls = "bg-[#05070A] border-[#1E293B] font-mono";
-  const content = "bg-[#111722] border-[#1E293B] text-slate-100";
+  const inputCls = "bg-sunken border-line font-mono";
+  const content = "bg-surface border-line text-slate-100";
   const setUser = (i, patch) => setS({ ...s, ai_users: s.ai_users.map((u, j) => j === i ? { ...u, ...patch } : u) });
 
   const save = async () => {
@@ -80,11 +80,11 @@ export function AIAssistantCard() {
   const statusColor = s.bot_status === "ativo" ? "text-emerald-400" : s.bot_status?.startsWith("erro") ? "text-red-400" : "text-slate-400";
 
   return (
-    <Card className="bg-[#111722] border-[#1E293B] p-5 mt-6" data-testid="ai-card">
+    <Card className="bg-surface border-line p-5 mt-6" data-testid="ai-card">
       <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
         <div className="flex items-center gap-2">
-          <Bot className="w-4 h-4 text-[#4DA3FF]" />
-          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Assistente IA — chat no sistema e Telegram</div>
+          <Bot className="w-4 h-4 text-brand-soft" />
+          <div className="text-xs text-slate-400">Assistente IA — chat no sistema e Telegram</div>
         </div>
         <div className="text-[11px] font-mono">bot do Telegram: <span className={statusColor} data-testid="ai-bot-status">{s.bot_status}</span></div>
       </div>
@@ -107,7 +107,7 @@ export function AIAssistantCard() {
           <div>
             <Label>Provedor do modelo</Label>
             <select value={prov} onChange={e => pick(s, e.target.value)} data-testid="ai-provider"
-                    className="w-full h-9 rounded-md bg-[#05070A] border border-[#1E293B] text-slate-200 text-sm px-2">
+                    className="w-full h-9 rounded-md bg-sunken border border-line text-slate-200 text-sm px-2">
               {Object.entries(s.providers || {}).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
             </select>
             <div className="text-[11px] text-slate-500 mt-1">{s.providers?.[prov]?.hint}</div>
@@ -134,7 +134,7 @@ export function AIAssistantCard() {
             <Label>Modelo</Label>
             <div className="flex gap-1.5">
               <Input data-testid="ai-model" list="ai-model-list" value={model} onChange={e => setModel(e.target.value)} className={inputCls} />
-              <Button size="sm" variant="outline" onClick={listModels} disabled={listing} className="h-9 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800 text-xs" title="Buscar os modelos disponíveis no provedor">
+              <Button size="sm" variant="outline" onClick={listModels} disabled={listing} className="h-9 border-line bg-panel text-slate-200 hover:bg-slate-800 text-xs" title="Buscar os modelos disponíveis no provedor">
                 {listing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Listar"}</Button>
             </div>
             <datalist id="ai-model-list">{[...new Set([...(s.providers?.[prov]?.suggest || []), ...found])].map(m => <option key={m} value={m} />)}</datalist>
@@ -147,7 +147,7 @@ export function AIAssistantCard() {
             </div>
             <Switch data-testid="ai-allow-changes" checked={s.ai_allow_changes} onCheckedChange={v => setS({ ...s, ai_allow_changes: v })} />
           </div>
-          <div className="text-[11px] font-mono text-slate-500 border border-[#1E293B] rounded p-2" data-testid="ai-usage">
+          <div className="text-[11px] font-mono text-slate-500 border border-line rounded p-2" data-testid="ai-usage">
             Uso em {u.month}: {num(u.requests)} chamadas · entrada {num(u.input_tokens)} · saída {num(u.output_tokens)} · cache {num(u.cache_read_tokens)} tokens
           </div>
         </div>
@@ -156,7 +156,7 @@ export function AIAssistantCard() {
           <div className="flex items-center justify-between mb-2">
             <Label className="flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /> Usuários autorizados no Telegram</Label>
             <Button size="sm" variant="ghost" onClick={() => setS({ ...s, ai_users: [...s.ai_users, { telegram_id: "", user_id: users[0]?.id || "", label: "" }] })}
-                    data-testid="ai-add-user" className="text-[#4DA3FF] hover:bg-[#007AFF]/15">
+                    data-testid="ai-add-user" className="text-brand-soft hover:bg-brand/15">
               <Plus className="w-4 h-4 mr-1" /> Adicionar
             </Button>
           </div>
@@ -171,7 +171,7 @@ export function AIAssistantCard() {
                        onChange={e => setUser(i, { label: e.target.value })} />
                 <div className="col-span-5">
                   <Select value={row.user_id} onValueChange={v => setUser(i, { user_id: v })}>
-                    <SelectTrigger className={inputCls}><SelectValue placeholder="Usuário do Bastion" /></SelectTrigger>
+                    <SelectTrigger className={inputCls}><SelectValue placeholder="Usuário do BastiON" /></SelectTrigger>
                     <SelectContent className={content}>
                       {users.map(x => <SelectItem key={x.id} value={x.id}>{x.name || x.email} · {x.email}</SelectItem>)}
                     </SelectContent>
@@ -188,30 +188,30 @@ export function AIAssistantCard() {
       </div>
 
       <div className="flex justify-end gap-2 mt-4">
-        <Button variant="outline" onClick={test} disabled={testing} data-testid="ai-test-btn" className="border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800">
+        <Button variant="outline" onClick={test} disabled={testing} data-testid="ai-test-btn" className="border-line bg-panel text-slate-200 hover:bg-slate-800">
           {testing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <PlugZap className="w-4 h-4 mr-2" />} Testar conexão
         </Button>
-        <Button onClick={save} disabled={busy} data-testid="ai-save-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
+        <Button onClick={save} disabled={busy} data-testid="ai-save-btn" className="bg-brand hover:bg-brand-strong">
           {busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Salvar assistente
         </Button>
       </div>
 
-      <div className="mt-5 border-t border-[#1E293B] pt-3" data-testid="ai-audit">
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono mb-2">Últimas ações do assistente nos equipamentos</div>
+      <div className="mt-5 border-t border-line pt-3" data-testid="ai-audit">
+        <div className="text-xs text-slate-400 mb-2">Últimas ações do assistente nos equipamentos</div>
         {audit.length === 0 && <div className="text-sm text-slate-500 font-mono">Nenhuma ainda.</div>}
-        <div className="divide-y divide-[#1E293B] max-h-80 overflow-y-auto">
+        <div className="divide-y divide-line max-h-80 overflow-y-auto">
           {audit.map(a => (
             <details key={a.id} className="py-2 text-sm">
               <summary className="cursor-pointer flex flex-wrap gap-x-3 items-center">
-                <span className={`text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border ${a.kind === "change" ? "border-amber-500/50 text-amber-400" : "border-[#1E293B] text-slate-400"}`}>
+                <span className={`text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border ${a.kind === "change" ? "border-amber-500/50 text-amber-400" : "border-line text-slate-400"}`}>
                   {a.kind === "change" ? "alteração" : "leitura"}
                 </span>
                 <span className="text-slate-100">{a.device_name}</span>
                 <span className={a.ok ? "text-emerald-400 text-xs" : "text-red-400 text-xs"}>{a.ok ? "ok" : "falha"}</span>
                 <span className="text-[11px] font-mono text-slate-500">{fmt(a.at)} · {a.user_email}{a.proposal_id ? ` · #${a.proposal_id}` : ""}</span>
               </summary>
-              <pre className="mt-2 text-[11px] font-mono text-emerald-300 bg-[#05070A] border border-[#1E293B] rounded p-2 whitespace-pre-wrap">{(a.commands || []).join("\n")}</pre>
-              <pre className="mt-1 text-[11px] font-mono text-slate-400 bg-[#05070A] border border-[#1E293B] rounded p-2 whitespace-pre-wrap max-h-60 overflow-y-auto">{a.output}</pre>
+              <pre className="mt-2 text-[11px] font-mono text-emerald-300 bg-sunken border border-line rounded p-2 whitespace-pre-wrap">{(a.commands || []).join("\n")}</pre>
+              <pre className="mt-1 text-[11px] font-mono text-slate-400 bg-sunken border border-line rounded p-2 whitespace-pre-wrap max-h-60 overflow-y-auto">{a.output}</pre>
             </details>
           ))}
         </div>

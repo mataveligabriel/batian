@@ -32,7 +32,7 @@ function MapPanel({ id, devices, height, onOpen }) {
   const nm = (nid) => { const n = map.nodes.find(x => x.id === nid); const d = n?.device_id && devices.find(x => x.id === n.device_id); return d?.name || n?.label || "?"; };
   return (
     <div>
-      <div className="rounded-md border border-[#1E293B] overflow-hidden" style={{ height }}>
+      <div className="rounded-md border border-line overflow-hidden" style={{ height }}>
         <MapCanvas map={map} live={live} devices={devices} editing={false} tool="select" selected={sel} onSelect={setSel}
                    onMoveNode={() => {}} onConnect={() => {}} fitSignal={height} />
       </div>
@@ -43,7 +43,7 @@ function MapPanel({ id, devices, height, onOpen }) {
         {link ? (
           <span className="ml-auto text-slate-300">{link.label || `${nm(link.from)} ↔ ${nm(link.to)}`}: →{fmtBps(lv?.ab_bps)} · ←{fmtBps(lv?.ba_bps)}{lv?.down ? " · DOWN" : ""}</span>
         ) : <span className="ml-auto">toque num enlace para ver o tráfego</span>}
-        <button onClick={onOpen} className="text-[#4DA3FF] hover:underline flex items-center gap-1">abrir no Mapas <ExternalLink className="w-3 h-3" /></button>
+        <button onClick={onOpen} className="text-brand-soft hover:underline flex items-center gap-1">abrir no Mapas <ExternalLink className="w-3 h-3" /></button>
       </div>
     </div>
   );
@@ -65,9 +65,9 @@ function DashPanel({ id, devices, minutes, refreshKey, onOpen }) {
       {dash.widgets.length === 0 && <div className="text-xs text-slate-500 font-mono py-4">Dashboard sem gráficos.</div>}
       <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 26rem), 1fr))" }}>
         {dash.widgets.map(w => (
-          <div key={w.id} className="bg-[#0B111C] border border-[#1E293B] rounded-md p-3 min-w-0">
+          <div key={w.id} className="bg-panel border border-line rounded-md p-3 min-w-0">
             <div className="flex items-start gap-2 mb-2">
-              {React.createElement(widgetIcon(w.type), { className: "w-4 h-4 text-[#4DA3FF] mt-0.5 shrink-0" })}
+              {React.createElement(widgetIcon(w.type), { className: "w-4 h-4 text-brand-soft mt-0.5 shrink-0" })}
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-slate-100 truncate">{w.title}</div>
                 <div className="text-[11px] font-mono text-slate-500 truncate">
@@ -80,7 +80,7 @@ function DashPanel({ id, devices, minutes, refreshKey, onOpen }) {
         ))}
       </div>
       <div className="flex justify-end mt-1.5">
-        <button onClick={onOpen} className="text-[10px] font-mono text-[#4DA3FF] hover:underline flex items-center gap-1">abrir em Dashboards <ExternalLink className="w-3 h-3" /></button>
+        <button onClick={onOpen} className="text-[10px] font-mono text-brand-soft hover:underline flex items-center gap-1">abrir em Dashboards <ExternalLink className="w-3 h-3" /></button>
       </div>
     </div>
   );
@@ -94,12 +94,12 @@ function ChooseDialog({ open, onClose, maps, dashboards, layout, onSave }) {
   const tg = (arr, set) => (id) => set(arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]);
   const Col = ({ title, icon: Icon, items, sel, onT, sub }) => (
     <div className="flex-1 min-w-0">
-      <div className="flex items-center gap-1.5 text-xs uppercase tracking-widest text-slate-400 font-mono mb-1.5"><Icon className="w-3.5 h-3.5" /> {title}</div>
-      <div className="border border-[#1E293B] rounded-md max-h-72 overflow-y-auto divide-y divide-[#1E293B]">
+      <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5"><Icon className="w-3.5 h-3.5" /> {title}</div>
+      <div className="border border-line rounded-md max-h-72 overflow-y-auto divide-y divide-line">
         {!items.length && <div className="px-3 py-6 text-center text-xs text-slate-500 font-mono">Nenhum disponível</div>}
         {items.map(i => (
-          <label key={i.id} className={`flex items-center gap-2 px-3 py-2 cursor-pointer text-sm ${sel.includes(i.id) ? "bg-[#007AFF]/10" : "hover:bg-slate-800/40"}`}>
-            <input type="checkbox" className="accent-[#007AFF]" checked={sel.includes(i.id)} onChange={() => onT(i.id)} />
+          <label key={i.id} className={`flex items-center gap-2 px-3 py-2 cursor-pointer text-sm ${sel.includes(i.id) ? "bg-brand/10" : "hover:bg-slate-800/40"}`}>
+            <input type="checkbox" className="accent-brand" checked={sel.includes(i.id)} onChange={() => onT(i.id)} />
             <span className="truncate">{sub ? <span className="text-slate-500">{sub(i)} · </span> : null}{i.name}</span>
             {sel.includes(i.id) && <span className="ml-auto text-[10px] font-mono text-slate-400">{sel.indexOf(i.id) + 1}º</span>}
           </label>
@@ -109,7 +109,7 @@ function ChooseDialog({ open, onClose, maps, dashboards, layout, onSave }) {
   );
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-3xl" data-testid="noc-choose-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-3xl" data-testid="noc-choose-dialog">
         <DialogHeader><DialogTitle>Painéis do NOC</DialogTitle></DialogHeader>
         <p className="text-xs text-slate-400">Marque o que quer acompanhar no Painel NOC. A ordem em que marcar é a ordem das abas.</p>
         <div className="flex gap-4 flex-col md:flex-row">
@@ -118,13 +118,13 @@ function ChooseDialog({ open, onClose, maps, dashboards, layout, onSave }) {
         </div>
         <div className="flex items-center gap-2 text-sm">
           <Timer className="w-4 h-4 text-slate-400" /> Rotação automática (tela de parede):
-          <select value={rot} onChange={e => setRot(Number(e.target.value))} className="h-8 bg-[#05070A] border border-[#1E293B] rounded px-2 text-sm">
+          <select value={rot} onChange={e => setRot(Number(e.target.value))} className="h-8 bg-sunken border border-line rounded px-2 text-sm">
             {ROTATE.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancelar</Button>
-          <Button onClick={() => onSave({ maps: m, dashboards: d, rotate_sec: rot })} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="noc-save">Salvar</Button>
+          <Button onClick={() => onSave({ maps: m, dashboards: d, rotate_sec: rot })} className="bg-brand hover:bg-brand-strong" data-testid="noc-save">Salvar</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -181,24 +181,24 @@ export function NocPanels({ big = false }) {
     catch { toast.error("O navegador não permitiu tela cheia"); }
   };
 
-  if (!layout) return <Card className="bg-[#111722] border-[#1E293B] p-5 text-xs text-slate-500 font-mono"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Carregando painéis…</Card>;
+  if (!layout) return <Card className="bg-surface border-line p-5 text-xs text-slate-500 font-mono"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Carregando painéis…</Card>;
   const shown = active === "all" ? panels : panels.filter(p => p.key === active);
   const mapH = fs ? "calc(100vh - 140px)" : active === "all" ? (big ? 520 : 440) : (big ? "calc(100dvh - 260px)" : 560);
 
   return (
-    <div ref={boxRef} className={`${fs ? "bg-[#090D14] p-4 overflow-y-auto" : ""}`} data-testid="noc-panels">
+    <div ref={boxRef} className={`${fs ? "bg-canvas p-4 overflow-y-auto" : ""}`} data-testid="noc-panels">
       <div className="flex items-center gap-2 flex-wrap mb-3">
         <div className="mr-2">
-          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Painéis do NOC</div>
+          <div className="text-xs text-slate-400">Painéis do NOC</div>
           {!big && <div className="font-heading text-xl font-semibold text-slate-100">Mapas e dashboards</div>}
         </div>
         {panels.length > 0 && (
           <div className="flex gap-1 overflow-x-auto max-w-full" data-testid="noc-tabs">
-            <button onClick={() => setActive("all")} className={`h-8 px-3 rounded border text-xs flex items-center gap-1.5 shrink-0 ${active === "all" ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] text-slate-400"}`}>
+            <button onClick={() => setActive("all")} className={`h-8 px-3 rounded border text-xs flex items-center gap-1.5 shrink-0 ${active === "all" ? "border-brand bg-brand/15 text-slate-100" : "border-line text-slate-400"}`}>
               <LayoutGrid className="w-3.5 h-3.5" /> Todos
             </button>
             {panels.map(p => (
-              <button key={p.key} onClick={() => setActive(p.key)} className={`h-8 px-3 rounded border text-xs flex items-center gap-1.5 shrink-0 ${active === p.key ? "border-[#007AFF] bg-[#007AFF]/15 text-slate-100" : "border-[#1E293B] text-slate-400 hover:text-slate-200"}`}>
+              <button key={p.key} onClick={() => setActive(p.key)} className={`h-8 px-3 rounded border text-xs flex items-center gap-1.5 shrink-0 ${active === p.key ? "border-brand bg-brand/15 text-slate-100" : "border-line text-slate-400 hover:text-slate-200"}`}>
                 {p.kind === "map" ? <Network className="w-3.5 h-3.5" /> : <Gauge className="w-3.5 h-3.5" />} {p.name}
               </button>
             ))}
@@ -206,34 +206,34 @@ export function NocPanels({ big = false }) {
         )}
         <div className="ml-auto flex items-center gap-1.5">
           {layout.dashboards.length > 0 && (
-            <div className="flex border border-[#1E293B] rounded overflow-hidden">
+            <div className="flex border border-line rounded overflow-hidden">
               {RANGES.map(([m, l]) => (
-                <button key={m} onClick={() => setMinutes(m)} className={`h-8 px-2 text-xs font-mono ${minutes === m ? "bg-[#007AFF]/25 text-slate-100" : "bg-[#0B111C] text-slate-400"}`}>{l}</button>
+                <button key={m} onClick={() => setMinutes(m)} className={`h-8 px-2 text-xs font-mono ${minutes === m ? "bg-brand/25 text-slate-100" : "bg-panel text-slate-400"}`}>{l}</button>
               ))}
             </div>
           )}
           {layout.rotate_sec > 0 && <span className="text-[10px] font-mono text-slate-500 hidden md:inline"><Timer className="w-3 h-3 inline" /> {layout.rotate_sec}s</span>}
-          <Button size="sm" variant="outline" onClick={toggleFs} className="h-8 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800 hidden md:inline-flex" title="Tela cheia (TV do NOC)">
+          <Button size="sm" variant="outline" onClick={toggleFs} className="h-8 border-line bg-panel text-slate-200 hover:bg-slate-800 hidden md:inline-flex" title="Tela cheia (TV do NOC)">
             {fs ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setChoose(true)} className="h-8 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="noc-choose">
+          <Button size="sm" variant="outline" onClick={() => setChoose(true)} className="h-8 border-line bg-panel text-slate-200 hover:bg-slate-800" data-testid="noc-choose">
             <Settings2 className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Escolher painéis</span>
           </Button>
         </div>
       </div>
 
       {panels.length === 0 ? (
-        <Card className="bg-[#111722] border-[#1E293B] border-dashed p-8 text-center">
+        <Card className="bg-surface border-line border-dashed p-8 text-center">
           <div className="text-sm text-slate-300">Escolha os mapas de rede e dashboards para acompanhar aqui.</div>
           <div className="text-xs text-slate-500 mt-1">{maps.length + dashboards.length === 0 ? "Nenhum mapa ou dashboard disponível para você ainda." : `${maps.length} mapa(s) e ${dashboards.length} dashboard(s) disponíveis.`}</div>
-          {maps.length + dashboards.length > 0 && <Button onClick={() => setChoose(true)} className="mt-4 bg-[#007AFF] hover:bg-[#0062CC]"><Settings2 className="w-4 h-4 mr-2" /> Escolher painéis</Button>}
+          {maps.length + dashboards.length > 0 && <Button onClick={() => setChoose(true)} className="mt-4 bg-brand hover:bg-brand-strong"><Settings2 className="w-4 h-4 mr-2" /> Escolher painéis</Button>}
         </Card>
       ) : (
         <div className="space-y-4">
           {shown.map(p => (
-            <Card key={p.key} className="bg-[#111722] border-[#1E293B] p-3 md:p-4">
+            <Card key={p.key} className="bg-surface border-line p-3 md:p-4">
               <div className="flex items-center gap-2 mb-2">
-                {p.kind === "map" ? <Network className="w-4 h-4 text-[#4DA3FF]" /> : <Gauge className="w-4 h-4 text-[#4DA3FF]" />}
+                {p.kind === "map" ? <Network className="w-4 h-4 text-brand-soft" /> : <Gauge className="w-4 h-4 text-brand-soft" />}
                 <div className="text-sm font-semibold text-slate-100">{p.name}</div>
               </div>
               {p.kind === "map"

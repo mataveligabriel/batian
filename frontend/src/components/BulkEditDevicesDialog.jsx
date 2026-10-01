@@ -17,8 +17,8 @@ export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, d
   const [busy, setBusy] = useState(false);
   useEffect(() => { if (open) setF(empty); }, [open]);
 
-  const trigger = "bg-[#05070A] border-[#1E293B] font-mono";
-  const content = "bg-[#111722] border-[#1E293B] text-slate-100";
+  const trigger = "bg-sunken border-line font-mono";
+  const content = "bg-surface border-line text-slate-100";
 
   const apply = async () => {
     const payload = { device_ids: deviceIds, add_tags: splitTags(f.add_tags), remove_tags: splitTags(f.remove_tags) };
@@ -41,7 +41,7 @@ export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, d
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-lg max-h-[92vh] overflow-y-auto" data-testid="bulk-edit-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-lg max-h-[92vh] overflow-y-auto" data-testid="bulk-edit-dialog">
         <DialogHeader><DialogTitle>Editar {deviceIds.length} equipamento(s)</DialogTitle></DialogHeader>
         <p className="text-xs text-slate-400 font-mono">Só os campos alterados são aplicados. "Manter" deixa o valor atual de cada equipamento.</p>
         <div className="space-y-3">
@@ -118,7 +118,7 @@ export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, d
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button onClick={apply} disabled={busy} data-testid="bulk-edit-save" className="bg-[#007AFF] hover:bg-[#0062CC]">Aplicar</Button>
+          <Button onClick={apply} disabled={busy} data-testid="bulk-edit-save" className="bg-brand hover:bg-brand-strong">Aplicar</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

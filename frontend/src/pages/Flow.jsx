@@ -12,7 +12,7 @@ import { FlowPeering } from "@/components/flow/FlowPeering";
 import { STATUS } from "@/lib/netfmt";
 import { fixedColors } from "@/components/flow/flowlib";
 
-const tabBtn = (on) => `flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${on ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`;
+const tabBtn = (on) => `flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${on ? "border-brand text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`;
 const TABS = [["explorar", "Explorar", Compass], ["conteudos", "Conteúdos", Layers], ["ataques", "Ataques", ShieldAlert],
               ["mitigacao", "Mitigação", ShieldBan], ["peering", "Peering", Handshake],
               ["interfaces", "Interfaces", Cable], ["config", "Configuração", Settings2]];
@@ -51,9 +51,9 @@ export default function Flow() {
   return (
     <div className="flex-1 flex flex-col min-h-0" data-testid="flow-page">
       <div className="px-4 md:px-6 pt-4">
-        <div className="hidden md:block text-xs uppercase tracking-widest text-slate-400 font-mono">NetFlow · IPFIX · sFlow</div>
-        <h1 className="hidden md:block font-heading text-2xl font-bold text-slate-100 mt-1">Análise de Flow</h1>
-        <div className="flex gap-1 md:mt-4 border-b border-[#1E293B] overflow-x-auto whitespace-nowrap">
+        <div className="hidden md:block text-xs text-slate-400">NetFlow · IPFIX · sFlow</div>
+        <h1 className="hidden md:block font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Análise de Flow</h1>
+        <div className="flex gap-1 md:mt-4 border-b border-line overflow-x-auto whitespace-nowrap">
           {TABS.map(([k, l, I]) => (
             <button key={k} className={tabBtn(tab === k)} onClick={() => setTab(k)} data-testid={`flow-tab-${k}`}>
               <I className="w-4 h-4" /> {l}

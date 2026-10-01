@@ -87,9 +87,9 @@ interface HundredGigE0/0/0/1
  flow ipv4 monitor BASTION-V4 sampler S1000 ingress`,
   sflow: (ip, nf, sf) => `Datacom DMOS / switches com sFlow:
   coletor ........ ${ip}  porta ${sf}
-  agente ......... IP da loopback (é por ele que o Bastion identifica o equipamento)
+  agente ......... IP da loopback (é por ele que o BastiON identifica o equipamento)
   amostragem ..... 1:1000 a 1:4096 nas interfaces externas (trânsito, PNI, IX)
-  counter-poll ... opcional (o Bastion usa só as amostras de pacote)
+  counter-poll ... opcional (o BastiON usa só as amostras de pacote)
 ZTE ZXR10: NetFlow v9 ou IPFIX para ${ip} porta ${nf}, amostragem na entrada, timeout ativo 60 s.
 A sintaxe muda entre versões de firmware — confira com "?" no equipamento; a tabela de exportadores
 acima mostra na hora se chegou, o tipo e a taxa de amostragem lida.`,
@@ -105,21 +105,21 @@ function Exporters({ s, onSampling }) {
     return () => { alive = false; clearInterval(t); };
   }, []);
   return (
-    <div className="border border-[#1E293B] rounded" data-testid="flow-exporters">
-      <div className="px-3 py-2 border-b border-[#1E293B] flex items-center gap-2 text-sm text-slate-100"><Radio className="w-4 h-4 text-slate-400" /> Exportadores recebidos
+    <div className="border border-line rounded" data-testid="flow-exporters">
+      <div className="px-3 py-2 border-b border-line flex items-center gap-2 text-sm text-slate-100"><Radio className="w-4 h-4 text-slate-400" /> Exportadores recebidos
         <span className="ml-auto text-[11px] font-mono text-slate-500">UDP {s.netflow_port} (NetFlow/IPFIX) · {s.sflow_port} (sFlow)</span></div>
       {list && list.length === 0 && <div className="p-3 text-xs text-slate-500">Nada chegou ainda. Confira o roteador, o firewall do servidor (<code className="text-slate-300">ufw allow from IP_DO_ROTEADOR to any port {s.netflow_port} proto udp</code>) e se o container <b>flow</b> está rodando.</div>}
       {list && list.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-xs font-mono">
-            <thead className="text-[10px] uppercase tracking-widest text-slate-500"><tr>
+            <thead className="text-[10px] text-slate-500"><tr>
               <th className="text-left px-3 py-1">IP</th><th className="text-left">Tipo</th><th className="text-right">Amostragem</th><th className="text-right">Pacotes/s</th>
               <th className="text-right">Flows/s</th><th className="text-right">Interfaces</th><th className="text-left pl-3">Último</th><th className="text-left">Avisos</th>{s.is_admin && <th className="text-left">Taxa fixa</th>}</tr></thead>
             <tbody>
               {list.map(e => {
                 const stale = !e.last || Date.now() - new Date(e.last).getTime() > 120000;
                 return (
-                  <tr key={e.ip} className="border-t border-[#1E293B]" data-testid={`exp-${e.ip}`}>
+                  <tr key={e.ip} className="border-t border-line" data-testid={`exp-${e.ip}`}>
                     <td className="px-3 py-1.5 text-slate-100">{e.ip}{e.src && e.src !== e.ip && <div className="text-[10px] text-slate-500">via {e.src}</div>}</td>
                     <td className="text-slate-300">{({ v5: "NetFlow v5", v9: "NetFlow v9", ipfix: "IPFIX", sflow: "sFlow v5" })[e.kind] || e.kind}{e.bidir && <span className="text-[10px] text-slate-500"> · entrada+saída</span>}</td>
                     <td className="text-right text-slate-200">{e.rate ? `1:${e.rate}` : <span className="text-amber-300">?</span>}</td>
@@ -147,7 +147,7 @@ function AsnBase({ s, reload }) {
   const up = (f) => { const fd = new FormData(); fd.append("file", f); run(() => api.post("/flow/asn/upload", fd)); };
   const a = s.asn;
   return (
-    <div className="border border-[#1E293B] rounded p-3" data-testid="flow-asn">
+    <div className="border border-line rounded p-3" data-testid="flow-asn">
       <div className="flex items-center gap-2 text-sm text-slate-100 mb-1"><Database className="w-4 h-4 text-slate-400" /> Base IP → ASN <span className="text-[11px] text-slate-500 font-mono">(iptoasn.com, domínio público)</span></div>
       <div className="text-xs font-mono text-slate-300 mb-2">
         {a ? <>{a.ranges_v4?.toLocaleString("pt-BR")} faixas IPv4 · {a.ranges_v6?.toLocaleString("pt-BR")} IPv6 · {a.asns?.toLocaleString("pt-BR")} ASNs · atualizada {ago(a.at)} ({a.source})</>
@@ -156,7 +156,7 @@ function AsnBase({ s, reload }) {
       </div>
       {s.is_admin && (
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={() => run(() => api.post("/flow/asn/update"))} disabled={busy} className="h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="asn-update">
+          <Button size="sm" onClick={() => run(() => api.post("/flow/asn/update"))} disabled={busy} className="h-8 bg-brand hover:bg-brand-strong" data-testid="asn-update">
             {busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />}Atualizar base de ASN</Button>
           <Button size="sm" variant="ghost" onClick={() => file.current?.click()} disabled={busy} className="h-8 text-slate-300 hover:bg-slate-800"><Upload className="w-4 h-4 mr-1" />Enviar arquivo</Button>
           <input ref={file} type="file" accept=".gz,.tsv,.txt" className="hidden" onChange={e => e.target.files?.[0] && up(e.target.files[0])} />
@@ -228,7 +228,7 @@ export function FlowSettings({ settings, reload }) {
       <Exporters s={s} onSampling={onSampling} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="border border-[#1E293B] rounded p-3 space-y-3">
+        <div className="border border-line rounded p-3 space-y-3">
           <div className="flex items-center gap-2 text-sm text-slate-100"><ShieldAlert className="w-4 h-4 text-slate-400" /> Detector de ataques
             <label className="ml-auto flex items-center gap-2 text-xs text-slate-300">ativo <Switch checked={!!f.att.enabled} onCheckedChange={v => setAtt({ enabled: v })} disabled={ro} /></label></div>
           <div className="grid grid-cols-2 gap-3">
@@ -250,7 +250,7 @@ export function FlowSettings({ settings, reload }) {
           </div>
         </div>
         <div className="space-y-4">
-          <div className="border border-[#1E293B] rounded p-3 space-y-3">
+          <div className="border border-line rounded p-3 space-y-3">
             <div className="text-sm text-slate-100">Coletor e retenção</div>
             <div className="grid grid-cols-2 gap-3">
               {num("Porta NetFlow/IPFIX (UDP)", f.netflow_port, v => setF({ ...f, netflow_port: v }))}
@@ -259,7 +259,7 @@ export function FlowSettings({ settings, reload }) {
               {num("Dias da junção por hora", f.hourly_days, v => setF({ ...f, hourly_days: v }), "7 a 730")}
             </div>
             <label className="flex items-center gap-2 text-xs text-slate-300"><Switch checked={!!f.asn_auto} onCheckedChange={v => setF({ ...f, asn_auto: v })} disabled={ro} /> atualizar a base de ASN sozinho toda semana</label>
-            <div className="grid grid-cols-2 gap-3 pt-1 border-t border-[#1E293B]">
+            <div className="grid grid-cols-2 gap-3 pt-1 border-t border-line">
               {num("Seu AS", f.own_asn || "", v => setF({ ...f, own_asn: v }), "para a sugestão de peering achar os IXs em comum", "own-asn")}
               {num("Descoberta: mínimo (Mb/s)", f.discover_min_mbps ?? 5, v => setF({ ...f, discover_min_mbps: v }), "interfaces abaixo disso não aparecem")}
             </div>
@@ -269,17 +269,17 @@ export function FlowSettings({ settings, reload }) {
         </div>
       </div>
       {s.is_admin ? (
-        <Button onClick={() => save()} disabled={busy} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="flow-save">{busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Save className="w-4 h-4 mr-1" />}Salvar configuração</Button>
+        <Button onClick={() => save()} disabled={busy} className="bg-brand hover:bg-brand-strong" data-testid="flow-save">{busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Save className="w-4 h-4 mr-1" />}Salvar configuração</Button>
       ) : <div className="text-xs text-slate-500">Só o administrador altera a configuração do coletor.</div>}
 
-      <div className="border border-[#1E293B] rounded" data-testid="router-config">
-        <div className="px-3 py-2 border-b border-[#1E293B] flex flex-wrap items-center gap-2 text-sm text-slate-100"><Router className="w-4 h-4 text-slate-400" /> Configuração dos roteadores
+      <div className="border border-line rounded" data-testid="router-config">
+        <div className="px-3 py-2 border-b border-line flex flex-wrap items-center gap-2 text-sm text-slate-100"><Router className="w-4 h-4 text-slate-400" /> Configuração dos roteadores
           <div className="flex flex-wrap gap-1 ml-auto">{VENDORS.map(([v, l]) => <button key={v} onClick={() => setVendor(v)} className={chip(vendor === v)} data-testid={`vendor-${v}`}>{l}</button>)}</div></div>
         <div className="relative">
-          <pre className="text-[11px] font-mono text-slate-200 bg-[#05070A] p-3 overflow-x-auto whitespace-pre" data-testid="router-snippet">{snippet}</pre>
+          <pre className="text-[11px] font-mono text-slate-200 bg-sunken p-3 overflow-x-auto whitespace-pre" data-testid="router-snippet">{snippet}</pre>
           <button onClick={() => { navigator.clipboard?.writeText(snippet); toast.success("Copiado"); }} className="absolute top-2 right-2 text-slate-400 hover:text-slate-100" title="Copiar"><Copy className="w-4 h-4" /></button>
         </div>
-        <div className="px-3 py-2 text-[11px] text-slate-500 border-t border-[#1E293B]">
+        <div className="px-3 py-2 text-[11px] text-slate-500 border-t border-line">
           Troque 10.255.0.1 pela loopback do roteador e a interface pelos seus trânsitos/PNIs. Regras: amostragem na <b>entrada</b> das interfaces externas,
           timeout ativo de 60 s, e libere o UDP no servidor só para os roteadores: <code className="text-slate-300">ufw allow from IP_DO_ROTEADOR to any port {s.netflow_port} proto udp</code>.
         </div>

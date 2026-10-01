@@ -54,22 +54,22 @@ export function TrafficChart({ points, labels = {}, height = 170 }) {
       <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
         {ticks.map((v, i) => (
           <g key={i}>
-            <line x1={PL} x2={W - PR} y1={y(v)} y2={y(v)} stroke="#1E293B" strokeWidth="1" />
-            <text x={PL - 6} y={y(v) + 3} textAnchor="end" fontSize="10" fill="#64748B" fontFamily="monospace">{fmtBpsShort(v)}</text>
+            <line x1={PL} x2={W - PR} y1={y(v)} y2={y(v)} stroke="#262F32" strokeWidth="1" />
+            <text x={PL - 6} y={y(v) + 3} textAnchor="end" fontSize="10" fill="#6E7B7E" fontFamily="monospace">{fmtBpsShort(v)}</text>
           </g>
         ))}
-        <text x={PL} y={H - 6} fontSize="10" fill="#64748B" fontFamily="monospace">{timeFmt(t0)}</text>
-        <text x={W - PR} y={H - 6} fontSize="10" fill="#64748B" fontFamily="monospace" textAnchor="end">{timeFmt(t1)}</text>
+        <text x={PL} y={H - 6} fontSize="10" fill="#6E7B7E" fontFamily="monospace">{timeFmt(t0)}</text>
+        <text x={W - PR} y={H - 6} fontSize="10" fill="#6E7B7E" fontFamily="monospace" textAnchor="end">{timeFmt(t1)}</text>
         {SERIES.map(s => <path key={s.key} d={path(s.key)} fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" />)}
         {hover && (
           <g>
-            <line x1={x(hover.ts)} x2={x(hover.ts)} y1={PT} y2={H - PB} stroke="#94A3B8" strokeWidth="1" strokeDasharray="3 3" />
-            {SERIES.map(s => <circle key={s.key} cx={x(hover.ts)} cy={y(hover[s.key])} r="4" fill={s.color} stroke="#0B111C" strokeWidth="2" />)}
+            <line x1={x(hover.ts)} x2={x(hover.ts)} y1={PT} y2={H - PB} stroke="#8D9A9D" strokeWidth="1" strokeDasharray="3 3" />
+            {SERIES.map(s => <circle key={s.key} cx={x(hover.ts)} cy={y(hover[s.key])} r="4" fill={s.color} stroke="#14191B" strokeWidth="2" />)}
           </g>
         )}
       </svg>
       {hover && (
-        <div className="absolute top-6 right-2 bg-[#111722] border border-[#2A3345] rounded px-2.5 py-1.5 text-[11px] font-mono text-slate-200 pointer-events-none shadow-lg">
+        <div className="absolute top-6 right-2 bg-surface border border-line2 rounded px-2.5 py-1.5 text-[11px] font-mono text-slate-200 pointer-events-none shadow-lg">
           <div className="text-slate-400">{new Date(hover.ts).toLocaleTimeString("pt-BR")}</div>
           {SERIES.map(s => (
             <div key={s.key} className="flex items-center gap-1.5">

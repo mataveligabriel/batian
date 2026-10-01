@@ -12,9 +12,9 @@ const SUGGESTIONS = [
 ];
 const RISK = { baixo: ["Risco baixo", STATUS.good], medio: ["Risco médio", STATUS.warning], alto: ["Risco alto", STATUS.critical] };
 const PSTATUS = {
-  pending: ["Aguardando sua confirmação", Clock, "#94A3B8"], running: ["Executando…", Loader2, "#94A3B8"],
+  pending: ["Aguardando sua confirmação", Clock, "#8D9A9D"], running: ["Executando…", Loader2, "#8D9A9D"],
   done: ["Executada", CheckCircle2, STATUS.good], failed: ["Executada com falhas", AlertTriangle, STATUS.serious],
-  cancelled: ["Cancelada — nada foi executado", XCircle, "#94A3B8"], expired: ["Expirou — peça de novo", Clock, "#94A3B8"],
+  cancelled: ["Cancelada — nada foi executado", XCircle, "#8D9A9D"], expired: ["Expirou — peça de novo", Clock, "#8D9A9D"],
 };
 
 /** Texto do assistente: blocos ``` viram <pre>, **negrito**, `código` e quebras de linha. Sem HTML cru. */
@@ -23,13 +23,13 @@ function RichText({ text }) {
   return (
     <div className="space-y-1.5">
       {parts.map((p, i) => i % 2 === 1
-        ? <pre key={i} className="text-[11px] font-mono bg-[#05070A] border border-[#1E293B] rounded p-2 overflow-x-auto whitespace-pre">{p.replace(/\n$/, "")}</pre>
+        ? <pre key={i} className="text-[11px] font-mono bg-sunken border border-line rounded p-2 overflow-x-auto whitespace-pre">{p.replace(/\n$/, "")}</pre>
         : p.trim() && (
           <div key={i} className="whitespace-pre-wrap break-words">
             {p.replace(/^\n+|\n+$/g, "").split(/(\*\*[^*]+\*\*|\*[^*\s](?:[^*\n]*[^*\s])?\*|`[^`\n]+`)/).map((seg, j) => (
               seg.startsWith("**") && seg.endsWith("**") ? <b key={j} className="text-slate-50">{seg.slice(2, -2)}</b>
                 : seg.length > 2 && seg.startsWith("*") && seg.endsWith("*") ? <b key={j} className="text-slate-50">{seg.slice(1, -1)}</b>
-                : seg.startsWith("`") && seg.endsWith("`") ? <code key={j} className="font-mono text-[12px] bg-[#05070A] px-1 rounded">{seg.slice(1, -1)}</code>
+                : seg.startsWith("`") && seg.endsWith("`") ? <code key={j} className="font-mono text-[12px] bg-sunken px-1 rounded">{seg.slice(1, -1)}</code>
                   : <React.Fragment key={j}>{seg}</React.Fragment>
             ))}
           </div>
@@ -44,26 +44,26 @@ function Proposal({ it, onDecide, busy }) {
   const [sending, setSending] = useState(false);
   const act = async (a) => { setSending(true); try { await onDecide(it.pid, a); } finally { setSending(false); } };
   return (
-    <div className="border rounded-md bg-[#0B111C] p-3 text-sm" style={{ borderColor: it.status === "pending" ? rc : "#1E293B" }} data-testid={`proposal-${it.pid}`}>
+    <div className="border rounded-md bg-panel p-3 text-sm" style={{ borderColor: it.status === "pending" ? rc : "#262F32" }} data-testid={`proposal-${it.pid}`}>
       <div className="flex items-center gap-2 mb-1.5">
         <ShieldAlert className="w-4 h-4 shrink-0" style={{ color: rc }} />
-        <span className="text-[11px] font-mono font-bold uppercase tracking-widest" style={{ color: rc }}>{risk}</span>
+        <span className="text-[11px] font-bold" style={{ color: rc }}>{risk}</span>
         <span className="text-[10px] font-mono text-slate-500 ml-auto">#{it.pid}</span>
       </div>
       <div className="text-slate-100 mb-2">{it.summary}</div>
       {(it.changes || []).map((c, i) => (
         <div key={i} className="mb-2">
           <div className="text-[11px] font-mono text-slate-400 mb-0.5">▶ {c.device_name} <span className="text-slate-600">({c.host})</span></div>
-          <pre className="text-[11px] font-mono text-slate-100 bg-[#05070A] border border-[#1E293B] rounded p-2 overflow-x-auto whitespace-pre">{c.commands.join("\n")}</pre>
+          <pre className="text-[11px] font-mono text-slate-100 bg-sunken border border-line rounded p-2 overflow-x-auto whitespace-pre">{c.commands.join("\n")}</pre>
         </div>
       ))}
       {it.rollback && <details className="text-[11px] text-slate-400 mb-2"><summary className="cursor-pointer">Como desfazer</summary><pre className="font-mono whitespace-pre-wrap mt-1">{it.rollback}</pre></details>}
       {it.status === "pending" ? (
         <div className="flex gap-2">
-          <button onClick={() => act("confirm")} disabled={sending || busy} className="flex-1 h-9 rounded-md bg-[#007AFF] hover:bg-[#0062CC] text-white text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-1.5" data-testid={`confirm-${it.pid}`}>
+          <button onClick={() => act("confirm")} disabled={sending || busy} className="flex-1 h-9 rounded-md bg-brand hover:bg-brand-strong text-white text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-1.5" data-testid={`confirm-${it.pid}`}>
             {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />} Confirmar e executar
           </button>
-          <button onClick={() => act("cancel")} disabled={sending} className="h-9 px-3 rounded-md border border-[#2A3345] text-slate-300 hover:bg-slate-800 text-sm" data-testid={`cancel-${it.pid}`}>Cancelar</button>
+          <button onClick={() => act("cancel")} disabled={sending} className="h-9 px-3 rounded-md border border-line2 text-slate-300 hover:bg-slate-800 text-sm" data-testid={`cancel-${it.pid}`}>Cancelar</button>
         </div>
       ) : (
         <div className="flex items-center gap-1.5 text-xs font-mono" style={{ color: sc }} data-testid={`pstatus-${it.pid}`}>
@@ -75,7 +75,7 @@ function Proposal({ it, onDecide, busy }) {
   );
 }
 
-/** Chat do assistente dentro do Bastion: botão flutuante + painel lateral (tela cheia no celular). */
+/** Chat do assistente dentro do BastiON: botão flutuante + painel lateral (tela cheia no celular). */
 export function AssistantChat({ hideButton = false, isAdmin = false }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState(null);
@@ -131,16 +131,16 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
   return (
     <>
       {!open && !hideButton && (
-        <button onClick={() => setOpen(true)} className="fixed z-40 right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] w-12 h-12 rounded-full bg-[#007AFF] hover:bg-[#0062CC] text-white shadow-lg shadow-black/40 flex items-center justify-center"
+        <button onClick={() => setOpen(true)} className="fixed z-40 right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] w-12 h-12 rounded-full bg-brand hover:bg-brand-strong text-white shadow-lg shadow-black/40 flex items-center justify-center"
                 title="Assistente" aria-label="Abrir assistente" data-testid="assistant-fab">
           <Bot className="w-6 h-6" />
           {conv.busy && <span className="absolute top-0.5 right-0.5 w-3 h-3 rounded-full bg-amber-400 animate-pulse" />}
         </button>
       )}
       {open && (
-        <div className="fixed z-50 inset-0 md:inset-auto md:right-4 md:bottom-4 md:top-4 md:w-[440px] flex flex-col bg-[#0F1520] md:border border-[#2A3345] md:rounded-lg shadow-2xl shadow-black/60 pt-[env(safe-area-inset-top)]" data-testid="assistant-panel">
-          <div className="flex items-center gap-2 px-3 h-12 border-b border-[#1E293B] shrink-0">
-            <Bot className="w-5 h-5 text-[#4DA3FF]" />
+        <div className="fixed z-50 inset-0 md:inset-auto md:right-4 md:bottom-4 md:top-4 md:w-[440px] flex flex-col bg-surface md:border border-line2 md:rounded-lg shadow-2xl shadow-black/60 pt-[env(safe-area-inset-top)]" data-testid="assistant-panel">
+          <div className="flex items-center gap-2 px-3 h-12 border-b border-line shrink-0">
+            <Bot className="w-5 h-5 text-brand-soft" />
             <div className="min-w-0">
               <div className="text-sm font-semibold text-slate-100">Assistente</div>
               <div className="text-[10px] font-mono text-slate-500 truncate">{enabled ? `${status.provider} · ${status.model}` : "não configurado"}</div>
@@ -153,7 +153,7 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
             <div className="p-4 text-sm text-slate-300 space-y-2" data-testid="assistant-setup">
               <div className="flex items-center gap-2 text-amber-300"><AlertTriangle className="w-4 h-4" /> Assistente ainda não configurado</div>
               <div className="text-slate-400">{status.reason ? `Motivo: ${status.reason}.` : ""}</div>
-              {isAdmin ? <div>Vá em <a href="/automation" className="text-[#4DA3FF] underline">Automação → Assistente IA</a>, escolha um provedor grátis (Groq ou Gemini) ou o Ollama no servidor, cole a chave e salve.</div>
+              {isAdmin ? <div>Vá em <a href="/automation" className="text-brand-soft underline">Automação → Assistente IA</a>, escolha um provedor grátis (Groq ou Gemini) ou o Ollama no servidor, cole a chave e salve.</div>
                        : <div>Peça ao administrador para ligar o assistente.</div>}
             </div>
           ) : (
@@ -164,7 +164,7 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
                     <div>Pergunte sobre os seus equipamentos: interfaces, BGP, sinal óptico, flow — ou peça uma alteração, que eu mostro os comandos e só executo depois do seu clique.</div>
                     <div className="flex flex-col gap-1.5">
                       {SUGGESTIONS.map(s => (
-                        <button key={s} onClick={() => send(s)} className="text-left text-xs px-2.5 py-1.5 rounded-md border border-[#1E293B] text-slate-300 hover:bg-slate-800/60 flex items-center gap-1.5">
+                        <button key={s} onClick={() => send(s)} className="text-left text-xs px-2.5 py-1.5 rounded-md border border-line text-slate-300 hover:bg-slate-800/60 flex items-center gap-1.5">
                           <Sparkles className="w-3.5 h-3.5 text-slate-500 shrink-0" />{s}</button>
                       ))}
                     </div>
@@ -172,22 +172,22 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
                   </div>
                 )}
                 {conv.items.map(it => {
-                  if (it.kind === "user") return <div key={it.id} className="flex justify-end"><div className="max-w-[85%] bg-[#007AFF]/20 border border-[#007AFF]/30 text-slate-100 text-sm rounded-lg rounded-br-sm px-3 py-2 whitespace-pre-wrap break-words" data-testid="msg-user">{it.text}</div></div>;
+                  if (it.kind === "user") return <div key={it.id} className="flex justify-end"><div className="max-w-[85%] bg-brand/20 border border-brand/30 text-slate-100 text-sm rounded-lg rounded-br-sm px-3 py-2 whitespace-pre-wrap break-words" data-testid="msg-user">{it.text}</div></div>;
                   if (it.kind === "tool") return <div key={it.id} className="flex items-center gap-1.5 text-[11px] font-mono text-slate-500 pl-1" data-testid="msg-tool"><Wrench className="w-3 h-3 shrink-0" /><span className="truncate">{it.text}</span></div>;
                   if (it.kind === "wait") return <div key={it.id} className="flex items-center gap-1.5 text-[11px] font-mono text-amber-300/80 pl-1" data-testid="msg-wait"><Clock className="w-3 h-3 shrink-0" /><span className="truncate" title={it.text}>{it.text}</span></div>;
                   if (it.kind === "proposal") return <Proposal key={it.id} it={it} onDecide={decide} busy={conv.busy} />;
                   if (it.kind === "error") return <div key={it.id} className="text-xs text-amber-300 border border-amber-400/30 bg-amber-400/5 rounded px-2.5 py-2 flex gap-1.5" data-testid="msg-error"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" /><span className="whitespace-pre-wrap">{it.text.replace(/^⚠️\s*/, "")}</span></div>;
-                  return <div key={it.id} className="max-w-[95%] text-sm text-slate-200 bg-[#111722] border border-[#1E293B] rounded-lg rounded-bl-sm px-3 py-2" data-testid="msg-assistant"><RichText text={it.text} /></div>;
+                  return <div key={it.id} className="max-w-[95%] text-sm text-slate-200 bg-surface border border-line rounded-lg rounded-bl-sm px-3 py-2" data-testid="msg-assistant"><RichText text={it.text} /></div>;
                 })}
                 {conv.busy && <div className="flex items-center gap-2 text-xs text-slate-400 pl-1" data-testid="assistant-busy"><Loader2 className="w-3.5 h-3.5 animate-spin" /> trabalhando…</div>}
               </div>
-              <div className="border-t border-[#1E293B] p-2 shrink-0 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
+              <div className="border-t border-line p-2 shrink-0 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
                 <div className="flex gap-2 items-end">
                   <textarea ref={inputRef} value={text} onChange={e => setText(e.target.value)} rows={1} maxLength={4000}
                             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
                             placeholder={conv.busy ? "Aguarde a resposta…" : "Pergunte ou peça algo… (Enter envia)"}
-                            className="flex-1 resize-none max-h-32 min-h-[38px] bg-[#05070A] border border-[#1E293B] rounded-md px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#007AFF]" data-testid="assistant-input" />
-                  <button onClick={() => send()} disabled={!text.trim() || conv.busy || sending} className="h-[38px] w-10 rounded-md bg-[#007AFF] hover:bg-[#0062CC] text-white flex items-center justify-center disabled:opacity-40" aria-label="Enviar" data-testid="assistant-send">
+                            className="flex-1 resize-none max-h-32 min-h-[38px] bg-sunken border border-line rounded-md px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-brand" data-testid="assistant-input" />
+                  <button onClick={() => send()} disabled={!text.trim() || conv.busy || sending} className="h-[38px] w-10 rounded-md bg-brand hover:bg-brand-strong text-white flex items-center justify-center disabled:opacity-40" aria-label="Enviar" data-testid="assistant-send">
                     {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                   </button>
                 </div>

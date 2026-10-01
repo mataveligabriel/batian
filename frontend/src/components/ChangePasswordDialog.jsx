@@ -26,10 +26,10 @@ export function ChangePasswordDialog({ open, onOpenChange }) {
     finally { setBusy(false); }
   };
 
-  const cls = "bg-[#05070A] border-[#1E293B] font-mono";
+  const cls = "bg-sunken border-line font-mono";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-sm" data-testid="change-password-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-sm" data-testid="change-password-dialog">
         <DialogHeader><DialogTitle>Trocar minha senha</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div><Label>Senha atual</Label><Input data-testid="cp-current" type="password" value={form.current} onChange={e => setForm({ ...form, current: e.target.value })} className={cls} /></div>
@@ -38,7 +38,7 @@ export function ChangePasswordDialog({ open, onOpenChange }) {
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancelar</Button>
-          <Button onClick={submit} disabled={busy} data-testid="cp-submit" className="bg-[#007AFF] hover:bg-[#0062CC]">Alterar senha</Button>
+          <Button onClick={submit} disabled={busy} data-testid="cp-submit" className="bg-brand hover:bg-brand-strong">Alterar senha</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

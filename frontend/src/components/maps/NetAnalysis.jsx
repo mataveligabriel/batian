@@ -12,13 +12,13 @@ import { fmtBps, fmtSpeed, STATUS } from "@/lib/netfmt";
 const SEV = {
   crit: { label: "Crítico", color: STATUS.critical, icon: XCircle },
   warn: { label: "Atenção", color: STATUS.warning, icon: AlertTriangle },
-  info: { label: "Info", color: "#4DA3FF", icon: Info },
+  info: { label: "Info", color: "#7FADEB", icon: Info },
 };
 const REFS = [["", "automática (a que a rede usa)"], ["10000", "10 Gbps"], ["100000", "100 Gbps"], ["400000", "400 Gbps"], ["1000000", "1 Tbps"]];
 const TABS = [["findings", "Achados"], ["ospf", "OSPF"], ["mpls", "MPLS"], ["scen", "Cenários"], ["bgp", "BGP"], ["ifaces", "Interfaces"]];
 const fmtWhen = (iso) => new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 const num = (v, d = 1) => (v === null || v === undefined ? "—" : v === 0 ? "0" : Number(v).toFixed(d));
-const pctColor = (p) => (p === null || p === undefined ? "#94A3B8" : p >= 100 ? STATUS.critical : p >= 90 ? STATUS.critical : p >= 70 ? STATUS.warning : "#E2E8F0");
+const pctColor = (p) => (p === null || p === undefined ? "#8D9A9D" : p >= 100 ? STATUS.critical : p >= 90 ? STATUS.critical : p >= 70 ? STATUS.warning : "#CED6D7");
 
 function SevBadge({ sev }) {
   const s = SEV[sev];
@@ -138,20 +138,20 @@ export function NetAnalysis({ map, devices, onClose }) {
   const overloaded = simRes ? Object.entries(simRes.links).flatMap(([id, p]) => ["ab", "ba"].filter(d => (p[`${d}_pct`] || 0) >= 100).map(d => ({ id, d, pct: p[`${d}_pct`] }))) : [];
   const shownFindings = (rep?.findings || []).filter(f => sevOn[f.sev]);
   const s = rep?.summary;
-  const scoreColor = !s ? "#94A3B8" : s.score >= 80 ? STATUS.good : s.score >= 50 ? STATUS.warning : STATUS.critical;
+  const scoreColor = !s ? "#8D9A9D" : s.score >= 80 ? STATUS.good : s.score >= 50 ? STATUS.warning : STATUS.critical;
 
   return (
-    <div className="fixed inset-0 z-[100] bg-[#090D14] flex flex-col" data-testid="net-analysis">
+    <div className="fixed inset-0 z-[100] bg-canvas flex flex-col" data-testid="net-analysis">
       {/* cabeçalho */}
-      <div className="flex items-center gap-2 flex-wrap px-3 md:px-4 py-2 border-b border-[#1E293B] bg-[#0B111C] pt-[calc(0.5rem+env(safe-area-inset-top))]">
-        <Stethoscope className="w-5 h-5 text-[#4DA3FF]" />
+      <div className="flex items-center gap-2 flex-wrap px-3 md:px-4 py-2 border-b border-line bg-panel pt-[calc(0.5rem+env(safe-area-inset-top))]">
+        <Stethoscope className="w-5 h-5 text-brand-soft" />
         <div className="mr-2 min-w-0">
-          <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">Análise de rede · experimental</div>
+          <div className="text-[10px] text-slate-500">Análise de rede · experimental</div>
           <div className="text-sm font-semibold text-slate-100 truncate">{map.name}</div>
         </div>
         {s && (
           <div className="flex items-center gap-2 text-xs font-mono">
-            <span className="px-2 py-1 rounded border border-[#1E293B]" title="Saúde (100 − 15 por crítico − 5 por atenção − 1 por info)">
+            <span className="px-2 py-1 rounded border border-line" title="Saúde (100 − 15 por crítico − 5 por atenção − 1 por info)">
               saúde <b style={{ color: scoreColor }}>{s.score}</b>
             </span>
             {["crit", "warn", "info"].map(k => <span key={k} style={{ color: SEV[k].color }}>{s[k]} {SEV[k].label.toLowerCase()}</span>)}
@@ -159,37 +159,37 @@ export function NetAnalysis({ map, devices, onClose }) {
         )}
         <div className="ml-auto flex items-center gap-1.5 flex-wrap">
           {reports.length > 0 && (
-            <select value={doc?.id || ""} onChange={e => openReport(e.target.value)} className="h-8 bg-[#05070A] border border-[#1E293B] rounded px-2 text-xs font-mono" data-testid="na-history">
+            <select value={doc?.id || ""} onChange={e => openReport(e.target.value)} className="h-8 bg-sunken border border-line rounded px-2 text-xs font-mono" data-testid="na-history">
               {reports.map(r => <option key={r.id} value={r.id}>{fmtWhen(r.at)} · {r.summary?.crit ?? "?"} crít.</option>)}
             </select>
           )}
           <div className="relative">
-            <Button size="sm" variant="outline" onClick={() => setShowOpts(v => !v)} className="h-8 border-[#1E293B] bg-[#0B111C] text-slate-300 hover:bg-slate-800" title="Opções"><Settings2 className="w-3.5 h-3.5" /></Button>
+            <Button size="sm" variant="outline" onClick={() => setShowOpts(v => !v)} className="h-8 border-line bg-panel text-slate-300 hover:bg-slate-800" title="Opções"><Settings2 className="w-3.5 h-3.5" /></Button>
             {showOpts && (
-              <div className="absolute right-0 top-full mt-1 z-20 w-72 bg-[#111722] border border-[#1E293B] rounded-md shadow-2xl p-3 space-y-2 text-xs">
+              <div className="absolute right-0 top-full mt-1 z-20 w-72 bg-surface border border-line rounded-md shadow-2xl p-3 space-y-2 text-xs">
                 <label className="block text-slate-400">Referência de banda do custo OSPF
-                  <select value={opts.ref} onChange={e => setOpts({ ...opts, ref: e.target.value })} className="mt-1 w-full h-8 bg-[#05070A] border border-[#1E293B] rounded px-2">
+                  <select value={opts.ref} onChange={e => setOpts({ ...opts, ref: e.target.value })} className="mt-1 w-full h-8 bg-sunken border border-line rounded px-2">
                     {REFS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                   </select>
                 </label>
                 <div className="grid grid-cols-2 gap-2">
-                  <label className="text-slate-400">Atenção (%)<input type="number" value={opts.util_warn} onChange={e => setOpts({ ...opts, util_warn: e.target.value })} className="mt-1 w-full h-8 bg-[#05070A] border border-[#1E293B] rounded px-2 font-mono" /></label>
-                  <label className="text-slate-400">Crítico (%)<input type="number" value={opts.util_crit} onChange={e => setOpts({ ...opts, util_crit: e.target.value })} className="mt-1 w-full h-8 bg-[#05070A] border border-[#1E293B] rounded px-2 font-mono" /></label>
+                  <label className="text-slate-400">Atenção (%)<input type="number" value={opts.util_warn} onChange={e => setOpts({ ...opts, util_warn: e.target.value })} className="mt-1 w-full h-8 bg-sunken border border-line rounded px-2 font-mono" /></label>
+                  <label className="text-slate-400">Crítico (%)<input type="number" value={opts.util_crit} onChange={e => setOpts({ ...opts, util_crit: e.target.value })} className="mt-1 w-full h-8 bg-sunken border border-line rounded px-2 font-mono" /></label>
                 </div>
                 <label className="flex items-start gap-2 text-slate-300 cursor-pointer">
-                  <input type="checkbox" className="accent-[#007AFF] mt-0.5" checked={opts.mpls} onChange={e => setOpts({ ...opts, mpls: e.target.checked })} data-testid="na-opt-mpls" />
+                  <input type="checkbox" className="accent-brand mt-0.5" checked={opts.mpls} onChange={e => setOpts({ ...opts, mpls: e.target.checked })} data-testid="na-opt-mpls" />
                   <span>Ler MPLS pela CLI (LDP, VPWS, VPLS, L3VPN) — entra por SSH em cada equipamento</span>
                 </label>
-                <button onClick={() => { setShowOpts(false); setMplsCfg(true); }} className="text-[11px] text-[#4DA3FF] underline">comandos MPLS por fabricante…</button>
+                <button onClick={() => { setShowOpts(false); setMplsCfg(true); }} className="text-[11px] text-brand-soft underline">comandos MPLS por fabricante…</button>
                 <div className="text-[11px] text-slate-500">Vale para a próxima análise.</div>
               </div>
             )}
           </div>
           {doc && <>
-            <Button size="sm" variant="outline" onClick={() => download(false)} className="h-8 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800" data-testid="na-download"><Download className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Relatório</span></Button>
-            <Button size="sm" variant="outline" onClick={() => download(true)} className="h-8 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800 hidden md:inline-flex" title="Abrir para imprimir / salvar em PDF"><Printer className="w-3.5 h-3.5" /></Button>
+            <Button size="sm" variant="outline" onClick={() => download(false)} className="h-8 border-line bg-panel text-slate-200 hover:bg-slate-800" data-testid="na-download"><Download className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Relatório</span></Button>
+            <Button size="sm" variant="outline" onClick={() => download(true)} className="h-8 border-line bg-panel text-slate-200 hover:bg-slate-800 hidden md:inline-flex" title="Abrir para imprimir / salvar em PDF"><Printer className="w-3.5 h-3.5" /></Button>
           </>}
-          <Button size="sm" onClick={run} disabled={running} className="h-8 bg-[#007AFF] hover:bg-[#0062CC]" data-testid="na-run">
+          <Button size="sm" onClick={run} disabled={running} className="h-8 bg-brand hover:bg-brand-strong" data-testid="na-run">
             {running ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Coletando… {elapsed}s</> : <><Play className="w-3.5 h-3.5 mr-1.5" /> Analisar agora</>}
           </Button>
           <Button size="sm" variant="ghost" onClick={onClose} className="h-8 text-slate-300 hover:bg-slate-800" title="Fechar (Esc)"><X className="w-4 h-4" /></Button>
@@ -199,17 +199,17 @@ export function NetAnalysis({ map, devices, onClose }) {
       {!doc ? (
         <div className="flex-1 flex items-center justify-center p-6">
           <div className="max-w-xl text-center">
-            <Stethoscope className="w-10 h-10 mx-auto text-[#4DA3FF] mb-3" />
+            <Stethoscope className="w-10 h-10 mx-auto text-brand-soft mb-3" />
             <div className="text-lg font-semibold text-slate-100">Diagnóstico da rede deste mapa</div>
-            <p className="text-sm text-slate-400 mt-2">O Bastion lê por SNMP cada equipamento do mapa e verifica:</p>
+            <p className="text-sm text-slate-400 mt-2">O BastiON lê por SNMP cada equipamento do mapa e verifica:</p>
             <div className="text-left text-sm text-slate-300 mt-3 grid sm:grid-cols-2 gap-x-6 gap-y-1">
               {["Custos OSPF por enlace (e se seguem a banda)", "Custo assimétrico e paralelos sem ECMP", "Área, tipo de rede, timers e MTU divergentes",
                 "Adjacências que não chegam a FULL", "Sessões BGP caídas ou reiniciando", "Interfaces com erro / descarte",
                 "Enlaces congestionados e lanes ópticas ruins", "Pontos únicos de falha e o que acontece se cada enlace cair"].map(t => (
-                <div key={t} className="flex gap-2"><span className="text-[#4DA3FF]">•</span>{t}</div>
+                <div key={t} className="flex gap-2"><span className="text-brand-soft">•</span>{t}</div>
               ))}
             </div>
-            <Button onClick={run} disabled={running} className="mt-5 bg-[#007AFF] hover:bg-[#0062CC]">
+            <Button onClick={run} disabled={running} className="mt-5 bg-brand hover:bg-brand-strong">
               {running ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Coletando SNMP… {elapsed}s</> : <><Play className="w-4 h-4 mr-2" /> Rodar a primeira análise</>}
             </Button>
             <p className="text-[11px] text-slate-500 mt-3">Leva de 15 s a 1 min. Usa a community SNMP dos equipamentos (leitura das MIBs OSPF, BGP e IF). Nada é alterado na rede.</p>
@@ -218,11 +218,11 @@ export function NetAnalysis({ map, devices, onClose }) {
       ) : (
         <div className="flex-1 min-h-0 flex flex-col md:flex-row">
           {/* mapa */}
-          <div className="h-[46dvh] md:h-auto md:flex-1 min-w-0 relative border-b md:border-b-0 md:border-r border-[#1E293B]">
+          <div className="h-[46dvh] md:h-auto md:flex-1 min-w-0 relative border-b md:border-b-0 md:border-r border-line">
             <MapCanvas map={map} live={live} devices={devices} editing={false} tool="select" selected={sel} onSelect={setSel}
                        onMoveNode={() => {}} onConnect={() => {}} fitSignal={fitSignal} costs={costs} marks={marks} />
             <div className="absolute top-2 left-2 right-2 flex flex-wrap gap-2 pointer-events-none">
-              <div className="hidden md:block pointer-events-auto text-[11px] font-mono bg-[#111722]/95 border border-[#1E293B] rounded px-2 py-1 text-slate-300">
+              <div className="hidden md:block pointer-events-auto text-[11px] font-mono bg-surface/95 border border-line rounded px-2 py-1 text-slate-300">
                 número perto do equipamento = custo OSPF dele no enlace · halo = problema
               </div>
               {simActive ? (
@@ -242,7 +242,7 @@ export function NetAnalysis({ map, devices, onClose }) {
           {/* painel */}
           <div className="md:w-[460px] shrink-0 flex flex-col min-h-0 flex-1 md:flex-none">
             {(selLink || selNode) ? (
-              <div className="p-3 border-b border-[#1E293B] bg-[#0B111C] max-h-[55%] overflow-y-auto" data-testid="na-selection">
+              <div className="p-3 border-b border-line bg-panel max-h-[55%] overflow-y-auto" data-testid="na-selection">
                 <div className="flex items-start gap-2">
                   <div className="min-w-0 flex-1">
                     {selLink ? <>
@@ -266,7 +266,7 @@ export function NetAnalysis({ map, devices, onClose }) {
                               <td key={d} className="px-2 text-right">
                                 <input type="number" min={1} max={65535} placeholder={String(selLink[`cost_${d}`] ?? "—")} value={sim.costs[`${selLink.id}:${d}`] ?? ""}
                                        onChange={e => setCost(selLink.id, d, e.target.value)} disabled={selLink[`cost_${d}`] == null}
-                                       className="w-20 h-7 bg-[#05070A] border border-[#1E293B] rounded px-1.5 text-right" title="Digite para simular outro custo" data-testid={`na-cost-${d}`} />
+                                       className="w-20 h-7 bg-sunken border border-line rounded px-1.5 text-right" title="Digite para simular outro custo" data-testid={`na-cost-${d}`} />
                               </td>
                             ))}</tr>
                           <tr><td className="px-2 text-slate-500">uso agora</td><td className="px-2 text-right">{selLink.ab_pct ?? "—"}%</td><td className="px-2 text-right">{selLink.ba_pct ?? "—"}%</td></tr>
@@ -284,7 +284,7 @@ export function NetAnalysis({ map, devices, onClose }) {
                         {sc.worst_link && <> · mais carregado: {sc.worst_link} <b style={{ color: pctColor(sc.worst_pct) }}>{num(sc.worst_pct, 0)}%</b></>}</div>}
                       {selLink.in_spf && (
                         <Button size="sm" variant="outline" onClick={() => toggle("down", selLink.id)} data-testid="na-sim-down"
-                                className={`h-7 text-xs ${sim.down.includes(selLink.id) ? "border-amber-500/60 text-amber-200 bg-amber-500/10" : "border-[#1E293B] bg-[#05070A] text-slate-200"}`}>
+                                className={`h-7 text-xs ${sim.down.includes(selLink.id) ? "border-amber-500/60 text-amber-200 bg-amber-500/10" : "border-line bg-sunken text-slate-200"}`}>
                           <Unplug className="w-3.5 h-3.5 mr-1" /> {sim.down.includes(selLink.id) ? "Religar (desfazer queda)" : "Simular queda deste enlace"}
                         </Button>
                       )}
@@ -294,20 +294,20 @@ export function NetAnalysis({ map, devices, onClose }) {
                 })()}
                 {selNode && (
                   <Button size="sm" variant="outline" onClick={() => toggle("downNodes", selNode.id)}
-                          className={`mt-2 h-7 text-xs ${sim.downNodes.includes(selNode.id) ? "border-amber-500/60 text-amber-200 bg-amber-500/10" : "border-[#1E293B] bg-[#05070A] text-slate-200"}`}>
+                          className={`mt-2 h-7 text-xs ${sim.downNodes.includes(selNode.id) ? "border-amber-500/60 text-amber-200 bg-amber-500/10" : "border-line bg-sunken text-slate-200"}`}>
                     <Power className="w-3.5 h-3.5 mr-1" /> {sim.downNodes.includes(selNode.id) ? "Religar equipamento" : "Simular parada deste equipamento"}
                   </Button>
                 )}
               </div>
             ) : (
-              <div className="px-3 py-2 border-b border-[#1E293B] text-[11px] text-slate-500 bg-[#0B111C]">
+              <div className="px-3 py-2 border-b border-line text-[11px] text-slate-500 bg-panel">
                 Toque num <b className="text-slate-300">enlace</b> para ver custos e simular queda/novo custo, ou num <b className="text-slate-300">equipamento</b> para simular a parada dele.
               </div>
             )}
 
-            <div className="flex gap-1 px-2 border-b border-[#1E293B] overflow-x-auto shrink-0">
+            <div className="flex gap-1 px-2 border-b border-line overflow-x-auto shrink-0">
               {TABS.map(([k, l]) => (
-                <button key={k} onClick={() => setTab(k)} className={`px-3 py-2 text-xs -mb-px border-b-2 whitespace-nowrap ${tab === k ? "border-[#007AFF] text-slate-100" : "border-transparent text-slate-400"}`}>
+                <button key={k} onClick={() => setTab(k)} className={`px-3 py-2 text-xs -mb-px border-b-2 whitespace-nowrap ${tab === k ? "border-brand text-slate-100" : "border-transparent text-slate-400"}`}>
                   {l}{k === "findings" ? ` (${rep.findings.length})` : k === "bgp" ? ` (${rep.bgp.length})` : ""}
                 </button>
               ))}
@@ -325,12 +325,12 @@ export function NetAnalysis({ map, devices, onClose }) {
                 {shownFindings.length === 0 && <div className="text-center text-slate-500 py-8">{rep.findings.length ? "Nada com esse filtro." : "Nenhum problema encontrado. 🎉"}</div>}
                 {shownFindings.map((f, i) => (
                   <div key={i} onClick={() => f.link_id && setSel({ type: "link", id: f.link_id })}
-                       className={`rounded border border-[#1E293B] bg-[#0B111C] p-2 mb-1.5 ${f.link_id ? "cursor-pointer hover:border-[#334155]" : ""} ${sel?.id && f.link_id === sel.id ? "border-[#007AFF]" : ""}`}>
-                    <div className="flex items-center gap-2"><SevBadge sev={f.sev} /><span className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">{f.cat}</span></div>
+                       className={`rounded border border-line bg-panel p-2 mb-1.5 ${f.link_id ? "cursor-pointer hover:border-line2" : ""} ${sel?.id && f.link_id === sel.id ? "border-brand" : ""}`}>
+                    <div className="flex items-center gap-2"><SevBadge sev={f.sev} /><span className="text-[10px] text-slate-500">{f.cat}</span></div>
                     <div className="text-slate-100 font-semibold mt-1">{f.title}</div>
                     {f.detail && <div className="text-slate-400 mt-0.5">{f.detail}</div>}
                     {f.where && <div className="text-[10px] font-mono text-slate-500 mt-0.5">{f.where}</div>}
-                    {f.fix && <div className="text-slate-300 mt-1 border-l-2 border-[#007AFF]/60 pl-2">{f.fix}</div>}
+                    {f.fix && <div className="text-slate-300 mt-1 border-l-2 border-brand/60 pl-2">{f.fix}</div>}
                   </div>
                 ))}
               </>}
@@ -340,7 +340,7 @@ export function NetAnalysis({ map, devices, onClose }) {
                   <thead className="text-[10px] uppercase text-slate-500"><tr><Th>Enlace</Th><Th right>A→B</Th><Th right>B→A</Th><Th right>esp.</Th><Th>adj.</Th></tr></thead>
                   <tbody>
                     {rep.links.map(l => (
-                      <tr key={l.id} onClick={() => setSel({ type: "link", id: l.id })} className={`border-t border-[#1E293B] cursor-pointer hover:bg-slate-800/40 ${sel?.id === l.id ? "bg-[#007AFF]/10" : ""}`}>
+                      <tr key={l.id} onClick={() => setSel({ type: "link", id: l.id })} className={`border-t border-line cursor-pointer hover:bg-slate-800/40 ${sel?.id === l.id ? "bg-brand/10" : ""}`}>
                         <td className="px-2 py-1.5"><div className="text-slate-200 truncate max-w-[200px]">{l.a_name} ↔ {l.b_name}</div><div className="text-[10px] text-slate-500">{fmtSpeed(l.capacity_mbps)}{l.sev ? " · " : ""}{l.sev && <span style={{ color: SEV[l.sev].color }}>{SEV[l.sev].label}</span>}</div></td>
                         <td className="px-2 text-right" style={{ color: l.cost_ab !== l.cost_ba ? STATUS.warning : undefined }}>{l.cost_ab ?? "—"}</td>
                         <td className="px-2 text-right" style={{ color: l.cost_ab !== l.cost_ba ? STATUS.warning : undefined }}>{l.cost_ba ?? "—"}</td>
@@ -358,9 +358,9 @@ export function NetAnalysis({ map, devices, onClose }) {
                   <tbody>
                     {rep.scenarios.map(x => (
                       <tr key={x.link_id} onClick={() => { setSel({ type: "link", id: x.link_id }); setSim({ down: [x.link_id], downNodes: [], costs: {} }); }}
-                          className="border-t border-[#1E293B] cursor-pointer hover:bg-slate-800/40">
+                          className="border-t border-line cursor-pointer hover:bg-slate-800/40">
                         <td className="px-2 py-1.5 text-slate-200">{x.name}</td>
-                        <td className="px-2" style={{ color: x.isolated_nodes.length ? STATUS.critical : "#64748B" }}>{x.isolated_nodes.join(", ") || "—"}</td>
+                        <td className="px-2" style={{ color: x.isolated_nodes.length ? STATUS.critical : "#6E7B7E" }}>{x.isolated_nodes.join(", ") || "—"}</td>
                         <td className="px-2 text-right"><div style={{ color: pctColor(x.worst_pct) }}>{num(x.worst_pct, 0)}%</div><div className="text-[10px] text-slate-500 truncate max-w-[150px]">{x.worst_link}</div></td>
                       </tr>
                     ))}
@@ -373,9 +373,9 @@ export function NetAnalysis({ map, devices, onClose }) {
                   <thead className="text-[10px] uppercase text-slate-500"><tr><Th>Peer</Th><Th>Estado</Th><Th right>há</Th></tr></thead>
                   <tbody>
                     {rep.bgp.map((p, i) => (
-                      <tr key={i} className="border-t border-[#1E293B]">
+                      <tr key={i} className="border-t border-line">
                         <td className="px-2 py-1.5"><div className="text-slate-200">{p.ip}</div><div className="text-[10px] text-slate-500">{p.device} · {p.remote_as === 23456 ? "AS 4 bytes" : `AS${p.remote_as}`}</div></td>
-                        <td className="px-2"><span style={{ color: !p.admin_up ? "#64748B" : p.state === "established" ? STATUS.good : STATUS.critical }}>{p.admin_up ? p.state : "shutdown"}</span>
+                        <td className="px-2"><span style={{ color: !p.admin_up ? "#6E7B7E" : p.state === "established" ? STATUS.good : STATUS.critical }}>{p.admin_up ? p.state : "shutdown"}</span>
                           {p.last_error && <div className="text-[10px] text-slate-500">{p.last_error}</div>}</td>
                         <td className="px-2 text-right text-slate-400">{p.state === "established" && p.established_sec != null ? (p.established_sec < 3600 ? `${Math.floor(p.established_sec / 60)} min` : p.established_sec < 86400 ? `${Math.floor(p.established_sec / 3600)} h` : `${Math.floor(p.established_sec / 86400)} d`) : "—"}</td>
                       </tr>
@@ -391,9 +391,9 @@ export function NetAnalysis({ map, devices, onClose }) {
                     {rep.ifaces.map((i, k) => {
                       const bad = (i.in_err_ps || 0) + (i.out_err_ps || 0) > 0;
                       return (
-                        <tr key={k} className="border-t border-[#1E293B]">
+                        <tr key={k} className="border-t border-line">
                           <td className="px-2 py-1.5"><div className="text-slate-200">{i.device} · {i.iface}</div><div className="text-[10px] text-slate-500 truncate max-w-[210px]">{i.oper}{i.alias ? ` · ${i.alias}` : ""}{i.in_map ? " · no mapa" : ""}</div></td>
-                          <td className="px-2 text-right" style={{ color: bad ? STATUS.warning : "#64748B" }}>{num(i.in_err_ps)} · {num(i.out_err_ps)}</td>
+                          <td className="px-2 text-right" style={{ color: bad ? STATUS.warning : "#6E7B7E" }}>{num(i.in_err_ps)} · {num(i.out_err_ps)}</td>
                           <td className="px-2 text-right text-slate-400">{num((i.in_disc_ps || 0) + (i.out_disc_ps || 0), 0)}</td>
                         </tr>
                       );
@@ -402,7 +402,7 @@ export function NetAnalysis({ map, devices, onClose }) {
                 </table>
               )}
             </div>
-            <div className="px-3 py-1.5 border-t border-[#1E293B] text-[10px] font-mono text-slate-500 flex items-center gap-2">
+            <div className="px-3 py-1.5 border-t border-line text-[10px] font-mono text-slate-500 flex items-center gap-2">
               <Activity className="w-3 h-3" /> {fmtWhen(doc.at)} · {rep.summary.devices_ok}/{rep.summary.devices} equip. lidos · coleta {doc.duration_sec}s
               <button className="ml-auto underline" onClick={() => setFitSignal(x => x + 1)}>ajustar mapa</button>
             </div>
@@ -410,7 +410,7 @@ export function NetAnalysis({ map, devices, onClose }) {
         </div>
       )}
       {mplsCfg && <MplsSettingsDialog devices={devices} onClose={() => setMplsCfg(false)} />}
-      {running && doc && <div className="absolute inset-x-0 top-[52px] h-0.5 bg-[#007AFF]/60 animate-pulse" />}
+      {running && doc && <div className="absolute inset-x-0 top-[52px] h-0.5 bg-brand/60 animate-pulse" />}
     </div>
   );
 }

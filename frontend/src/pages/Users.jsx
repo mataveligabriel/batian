@@ -14,7 +14,7 @@ import { useAuth } from "@/context/AuthContext";
 
 const empty = { name: "", email: "", password: "", role: "operator" };
 const ROLE = {
-  admin: { label: "Administrador", cls: "bg-[#007AFF]/15 text-[#4DA3FF] border-[#007AFF]/30" },
+  admin: { label: "Administrador", cls: "bg-brand/15 text-brand-soft border-brand/30" },
   operator: { label: "Operador", cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
   viewer: { label: "View", cls: "bg-amber-500/10 text-amber-300 border-amber-500/30" },
 };
@@ -48,15 +48,15 @@ function AccessDialog({ target, onClose }) {
   };
   const List = ({ title, icon: Icon, items, sel, onT, onAll, sub }) => (
     <div className="flex-1 min-w-0">
-      <div className="flex items-center gap-1.5 text-xs uppercase tracking-widest text-slate-400 font-mono mb-1.5">
+      <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1.5">
         <Icon className="w-3.5 h-3.5" /> {title}
-        <button className="ml-auto normal-case tracking-normal text-[11px] text-[#4DA3FF]" onClick={onAll}>{items.length && items.every(i => sel.has(i.id)) ? "nenhum" : "todos"}</button>
+        <button className="ml-auto normal-case tracking-normal text-[11px] text-brand-soft" onClick={onAll}>{items.length && items.every(i => sel.has(i.id)) ? "nenhum" : "todos"}</button>
       </div>
-      <div className="border border-[#1E293B] rounded-md max-h-80 overflow-y-auto divide-y divide-[#1E293B]">
+      <div className="border border-line rounded-md max-h-80 overflow-y-auto divide-y divide-line">
         {!items.length && <div className="px-3 py-6 text-center text-xs text-slate-500 font-mono">Nenhum criado ainda</div>}
         {items.map(i => (
-          <label key={i.id} className={`flex items-start gap-2 px-3 py-2 cursor-pointer text-sm ${sel.has(i.id) ? "bg-[#007AFF]/10" : "hover:bg-slate-800/40"}`}>
-            <input type="checkbox" className="accent-[#007AFF] mt-1" checked={sel.has(i.id)} onChange={() => onT(i.id)} />
+          <label key={i.id} className={`flex items-start gap-2 px-3 py-2 cursor-pointer text-sm ${sel.has(i.id) ? "bg-brand/10" : "hover:bg-slate-800/40"}`}>
+            <input type="checkbox" className="accent-brand mt-1" checked={sel.has(i.id)} onChange={() => onT(i.id)} />
             <span className="min-w-0"><span className="block truncate text-slate-100">{i.name}</span><span className="block text-[10px] font-mono text-slate-500 truncate">{sub(i)}</span></span>
           </label>
         ))}
@@ -65,7 +65,7 @@ function AccessDialog({ target, onClose }) {
   );
   return (
     <Dialog open={!!target} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-3xl" data-testid="access-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-3xl" data-testid="access-dialog">
         <DialogHeader><DialogTitle className="flex items-center gap-2"><Eye className="w-4 h-4 text-amber-300" /> O que {target?.name} pode ver</DialogTitle></DialogHeader>
         <p className="text-xs text-slate-400">Usuário <b>View</b> só acessa Painel NOC, Dashboards e Mapas, em modo leitura e ao vivo. Marque o que ele enxerga — de qualquer usuário.</p>
         {!cat ? <div className="py-8 text-center text-xs text-slate-500"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Carregando…</div> : (
@@ -78,7 +78,7 @@ function AccessDialog({ target, onClose }) {
         )}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancelar</Button>
-          <Button onClick={save} disabled={busy || !cat} className="bg-[#007AFF] hover:bg-[#0062CC]" data-testid="access-save">Salvar acesso</Button>
+          <Button onClick={save} disabled={busy || !cat} className="bg-brand hover:bg-brand-strong" data-testid="access-save">Salvar acesso</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -101,10 +101,10 @@ function SecurityCard({ onChanged }) {
   };
   if (!s) return null;
   return (
-    <Card className="bg-[#111722] border-[#1E293B] p-4 mb-4 grid gap-4 md:grid-cols-2" data-testid="security-card">
+    <Card className="bg-surface border-line p-4 mb-4 grid gap-4 md:grid-cols-2" data-testid="security-card">
       <div>
         <div className="flex items-center gap-2">
-          <ShieldCheck className="w-4 h-4 text-[#4DA3FF]" />
+          <ShieldCheck className="w-4 h-4 text-brand-soft" />
           <div className="text-sm font-medium text-slate-100">Exigir 2FA de todos os usuários</div>
           <label className="ml-auto flex items-center gap-2 text-xs cursor-pointer">
             <input type="checkbox" checked={s.require_2fa} onChange={toggle} data-testid="require-2fa" /> {s.require_2fa ? "exigido" : "opcional"}
@@ -116,7 +116,7 @@ function SecurityCard({ onChanged }) {
           : <div className="text-[11px] text-emerald-400 mt-2">Todos os usuários com 2FA.</div>}
       </div>
       <div>
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono mb-2">Últimas tentativas recusadas</div>
+        <div className="text-xs text-slate-400 mb-2">Últimas tentativas recusadas</div>
         {fails.length === 0 && <div className="text-[11px] text-slate-500">Nenhuma.</div>}
         <div className="space-y-0.5" data-testid="failed-logins">
           {fails.map(f => (
@@ -179,17 +179,16 @@ export default function Users() {
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="users-page">
       <div className="flex items-start justify-between flex-wrap gap-3 mb-6">
         <div>
-          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Controle de Acesso</div>
-          <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Usuários</h1>
+          <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Usuários</h1>
         </div>
-        <Button onClick={() => setOpen(true)} data-testid="add-user-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
+        <Button onClick={() => setOpen(true)} data-testid="add-user-btn" className="bg-brand hover:bg-brand-strong">
           <UserPlus className="w-4 h-4 mr-2" /> Novo Usuário
         </Button>
       </div>
       <SecurityCard onChanged={load} />
-      <Card className="bg-[#111722] border-[#1E293B] overflow-x-auto">
+      <Card className="bg-surface border-line overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="text-xs uppercase tracking-widest text-slate-500 font-mono bg-[#0B111C]">
+          <thead className="text-xs text-slate-500 bg-panel">
             <tr>
               <th className="text-left px-4 py-3">Nome</th>
               <th className="text-left px-4 py-3">Email</th>
@@ -199,7 +198,7 @@ export default function Users() {
               <th className="text-right px-4 py-3">Ações</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-[#1E293B]">
+          <tbody className="divide-y divide-line">
             {users.map(u => (
               <tr key={u.id} data-testid={`user-row-${u.id}`}>
                 <td className="px-4 py-3 text-slate-100">{u.name}</td>
@@ -220,7 +219,7 @@ export default function Users() {
                       <Eye className="w-4 h-4 md:mr-1.5" /><span className="hidden md:inline">Acesso</span>
                     </Button>
                   ) : u.id !== current?.id && (
-                    <Button size="sm" variant="ghost" onClick={() => setTransfer(u)} data-testid={`transfer-user-${u.id}`} className="text-[#4DA3FF] hover:bg-[#007AFF]/15" title="Enviar ou trazer equipamentos, mapas e dashboards">
+                    <Button size="sm" variant="ghost" onClick={() => setTransfer(u)} data-testid={`transfer-user-${u.id}`} className="text-brand-soft hover:bg-brand/15" title="Enviar ou trazer equipamentos, mapas e dashboards">
                       <ArrowLeftRight className="w-4 h-4 md:mr-1.5" /><span className="hidden md:inline">Transferir</span>
                     </Button>
                   )}
@@ -245,25 +244,25 @@ export default function Users() {
       </Card>
 
       <Dialog open={!!editing} onOpenChange={(v) => !v && setEditing(null)}>
-        <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100" data-testid="edit-user-dialog">
+        <DialogContent className="bg-surface border-line text-slate-100" data-testid="edit-user-dialog">
           <DialogHeader><DialogTitle>Editar usuário — {editing?.email}</DialogTitle></DialogHeader>
           <div className="space-y-3">
-            <div><Label>Nome</Label><Input data-testid="edit-user-name" value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" /></div>
+            <div><Label>Nome</Label><Input data-testid="edit-user-name" value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className="bg-sunken border-line font-mono" /></div>
             <div>
               <Label>Papel</Label>
               <Select value={editForm.role} onValueChange={(v) => setEditForm({ ...editForm, role: v })} disabled={editing?.id === current?.id}>
-                <SelectTrigger data-testid="edit-user-role" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
-                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100"><RoleItems /></SelectContent>
+                <SelectTrigger data-testid="edit-user-role" className="bg-sunken border-line font-mono"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-surface border-line text-slate-100"><RoleItems /></SelectContent>
               </Select>
             </div>
             <div>
               <Label>Nova senha (opcional — redefine sem excluir o usuário)</Label>
-              <Input data-testid="edit-user-password" type="password" value={editForm.password} onChange={e => setEditForm({ ...editForm, password: e.target.value })} placeholder="deixe vazio para manter" className="bg-[#05070A] border-[#1E293B] font-mono" />
+              <Input data-testid="edit-user-password" type="password" value={editForm.password} onChange={e => setEditForm({ ...editForm, password: e.target.value })} placeholder="deixe vazio para manter" className="bg-sunken border-line font-mono" />
             </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setEditing(null)}>Cancelar</Button>
-            <Button onClick={saveEdit} data-testid="save-edit-user-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">Salvar</Button>
+            <Button onClick={saveEdit} data-testid="save-edit-user-btn" className="bg-brand hover:bg-brand-strong">Salvar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -272,23 +271,23 @@ export default function Users() {
       <TransferDialog open={!!transfer} onOpenChange={(v) => !v && setTransfer(null)} peer={transfer} />
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100">
+        <DialogContent className="bg-surface border-line text-slate-100">
           <DialogHeader><DialogTitle>Novo usuário</DialogTitle></DialogHeader>
           <div className="space-y-3">
-            <div><Label>Nome</Label><Input data-testid="user-form-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" /></div>
-            <div><Label>Email</Label><Input data-testid="user-form-email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" /></div>
-            <div><Label>Senha</Label><Input data-testid="user-form-password" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" /></div>
+            <div><Label>Nome</Label><Input data-testid="user-form-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="bg-sunken border-line font-mono" /></div>
+            <div><Label>Email</Label><Input data-testid="user-form-email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className="bg-sunken border-line font-mono" /></div>
+            <div><Label>Senha</Label><Input data-testid="user-form-password" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} className="bg-sunken border-line font-mono" /></div>
             <div>
               <Label>Papel</Label>
               <Select value={form.role} onValueChange={v => setForm({ ...form, role: v })}>
-                <SelectTrigger data-testid="user-form-role" className="bg-[#05070A] border-[#1E293B] font-mono"><SelectValue /></SelectTrigger>
-                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100"><RoleItems /></SelectContent>
+                <SelectTrigger data-testid="user-form-role" className="bg-sunken border-line font-mono"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-surface border-line text-slate-100"><RoleItems /></SelectContent>
               </Select>
             </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button>
-            <Button onClick={save} data-testid="save-user-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">Criar</Button>
+            <Button onClick={save} data-testid="save-user-btn" className="bg-brand hover:bg-brand-strong">Criar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

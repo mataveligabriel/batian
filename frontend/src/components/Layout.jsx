@@ -15,6 +15,7 @@ import { AssistantChat } from "@/components/AssistantChat";
 import { VpnIndicator } from "@/components/VpnPanel";
 import { useIsMobile } from "@/lib/pwa";
 import { useTermPrefs } from "@/lib/termPrefs";
+import { Wordmark, LogoMark } from "@/components/Brand";
 
 const NAV = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Painel NOC", testid: "nav-dashboard" },
@@ -67,13 +68,12 @@ export default function Layout() {
   if (isViewer && !VIEWER_PATHS.some(p => pathname === p || pathname.startsWith(p + "/"))) return <Navigate to="/dashboard" replace />;
 
   return (
-    <div className="h-[var(--app-h,100dvh)] flex flex-col md:flex-row bg-[#090D14] overflow-hidden">
+    <div className="h-[var(--app-h,100dvh)] flex flex-col md:flex-row bg-canvas overflow-hidden">
       {/* Celular: barra do topo com o menu */}
       {!hidden && (
-        <header className="md:hidden shrink-0 flex items-center gap-2 px-2 h-12 box-content pt-[env(safe-area-inset-top)] border-b border-[#1E293B] bg-[#0B111C]" data-testid="mobile-topbar">
+        <header className="md:hidden shrink-0 flex items-center gap-2 px-2 h-12 box-content pt-[env(safe-area-inset-top)] border-b border-line bg-panel" data-testid="mobile-topbar">
           <button onClick={() => setDrawer(true)} className="w-10 h-10 flex items-center justify-center text-slate-200" aria-label="Abrir menu" data-testid="mobile-menu-btn"><Menu className="w-5 h-5" /></button>
-          <ShieldCheck className="w-4 h-4 text-[#4DA3FF]" />
-          <div className="font-heading font-semibold text-slate-100 truncate">{current?.label || "Bastion"}</div>
+          {current ? <div className="font-heading font-semibold text-slate-100 truncate">{current.label}</div> : <Wordmark className="text-base" />}
           {tabs.length > 0 && !onTerminal && (
             <NavLink to="/terminal" className="ml-auto text-[11px] font-mono px-2 py-1 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
               <TerminalSquare className="w-3.5 h-3.5" /> {tabs.length}
@@ -83,27 +83,25 @@ export default function Layout() {
       )}
       {isMobile && drawer && <div className="fixed inset-0 z-40 bg-black/60" onClick={() => setDrawer(false)} />}
       {/* Sidebar (no celular vira gaveta) */}
-      <aside className={`${hidden && !isMobile ? "hidden" : "flex"} ${isMobile ? "w-64" : mini ? "w-14" : "w-52"} shrink-0 border-r border-[#1E293B] bg-[#0B111C] flex-col transition-[width,transform] duration-150
+      <aside className={`${hidden && !isMobile ? "hidden" : "flex"} ${isMobile ? "w-64" : mini ? "w-14" : "w-56"} shrink-0 border-r border-line bg-panel flex-col transition-[width,transform] duration-150
                          ${isMobile ? `fixed inset-y-0 left-0 z-50 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] shadow-2xl ${drawer ? "translate-x-0" : "-translate-x-full"}` : ""}`}
              data-testid="sidebar">
-        <div className={`border-b border-[#1E293B] flex items-center ${mini ? "flex-col gap-2 py-3" : "gap-2.5 px-3 py-3"}`}>
-          <div className="w-8 h-8 rounded-md bg-[#007AFF]/15 border border-[#007AFF]/40 flex items-center justify-center shrink-0">
-            <ShieldCheck className="w-4 h-4 text-[#4DA3FF]" />
-          </div>
+        <div className={`flex items-center ${mini ? "flex-col gap-2 py-3" : "gap-2.5 px-3 pt-4 pb-3"}`}>
+          <LogoMark />
           {!mini && (
             <div className="flex-1 min-w-0">
-              <div className="font-heading font-bold text-slate-100 leading-tight">Bastion</div>
-              <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono">SSH Central</div>
+              <Wordmark className="text-[17px] leading-none" />
+              <div className="text-[11px] text-slate-500 mt-1">Central do NOC</div>
             </div>
           )}
           <button onClick={() => (isMobile ? setDrawer(false) : setPrefs({ sidebarCollapsed: !mini }))} data-testid="sidebar-toggle"
-                  title={mini ? "Expandir menu" : "Encolher menu"}
-                  className="w-7 h-7 rounded flex items-center justify-center text-slate-400 hover:text-[#4DA3FF] hover:bg-slate-800/60 border border-transparent hover:border-[#1E293B]">
+                  title={mini ? "Expandir menu" : "Encolher menu"} aria-label={mini ? "Expandir menu" : "Encolher menu"}
+                  className="w-7 h-7 rounded-md flex items-center justify-center text-slate-500 hover:text-slate-200 hover:bg-white/5">
             {isMobile ? <X className="w-4 h-4" /> : mini ? <ChevronsRight className="w-4 h-4" /> : <ChevronsLeft className="w-4 h-4" />}
           </button>
         </div>
 
-        <nav className={`flex-1 space-y-0.5 overflow-y-auto ${mini ? "p-2" : "p-2"}`}>
+        <nav className={`flex-1 space-y-px overflow-y-auto ${mini ? "p-2" : "px-2.5 py-2"}`}>
           {nav.map(item => (
             <NavLink
               key={item.to}
@@ -111,14 +109,14 @@ export default function Layout() {
               data-testid={item.testid}
               title={mini ? item.label : undefined}
               className={({ isActive }) =>
-                `relative flex items-center gap-2.5 ${mini ? "justify-center px-0" : "px-2.5"} py-2.5 md:py-1.5 rounded-md text-sm md:text-[13px] transition-colors ${
+                `relative flex items-center gap-2.5 ${mini ? "justify-center px-0" : "px-2.5"} py-2.5 md:py-[7px] rounded-md text-sm md:text-[13.5px] transition-colors ${
                   isActive
-                    ? "bg-[#007AFF]/12 text-[#4DA3FF] border border-[#007AFF]/30"
-                    : "text-slate-400 hover:text-slate-100 hover:bg-slate-800/60 border border-transparent"
+                    ? "bg-white/[0.06] text-slate-50 font-medium before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-brand-soft"
+                    : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.04]"
                 }`
               }
             >
-              <item.icon className="w-4 h-4 shrink-0" />
+              <item.icon className="w-4 h-4 shrink-0 opacity-90" />
               {!mini && <span className="truncate">{item.label}</span>}
               {item.to === "/terminal" && tabs.length > 0 && (
                 <span data-testid="nav-terminal-badge" className={mini
@@ -130,39 +128,43 @@ export default function Layout() {
         </nav>
         {!isViewer && <VpnIndicator mini={mini} />}
 
-        <div className={`border-t border-[#1E293B] p-2 ${mini ? "space-y-1" : "flex flex-wrap gap-1"}`}>
+        <div className={`border-t border-line p-2 ${mini ? "space-y-1" : "flex flex-wrap gap-1"}`}>
           <PushToggle mini={mini} />
-          <div className={`w-full px-2.5 py-1.5 rounded-md bg-[#111722] border border-[#1E293B] ${mini ? "hidden" : ""}`}>
-            <div className="text-sm text-slate-100 font-medium truncate" data-testid="current-user-name">{user?.name}</div>
-            <div className="text-[11px] text-slate-500 font-mono truncate" title={user?.email}>{user?.email}</div>
-            <div className={`text-[10px] uppercase font-mono ${isViewer ? "text-amber-300" : "text-emerald-400"}`}>{isViewer ? "view · somente leitura" : user?.role}</div>
+          <div className={`w-full flex items-center gap-2.5 px-2 py-2 ${mini ? "hidden" : ""}`}>
+            <div className="w-8 h-8 rounded-full bg-slate-800 border border-line flex items-center justify-center text-[13px] font-semibold text-slate-200 shrink-0">{(user?.name || "?").trim().charAt(0).toUpperCase()}</div>
+            <div className="min-w-0">
+              <div className="text-[13px] text-slate-100 font-medium truncate" data-testid="current-user-name">{user?.name}</div>
+              <div className="text-[11px] text-slate-500 truncate" title={user?.email}>{isViewer ? <span className="text-amber-300">Somente leitura</span> : ({ admin: "Administrador", operator: "Operador" }[user?.role] || user?.role)}</div>
+            </div>
+            <button data-testid="logout-btn" onClick={logout} title="Sair" aria-label="Sair"
+                    className="ml-auto w-8 h-8 rounded-md flex items-center justify-center text-slate-500 hover:text-red-300 hover:bg-red-500/10 transition-colors">
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
           <button
             data-testid="change-password-btn"
             onClick={() => setCpOpen(true)}
             title="Trocar senha"
-            className={`${mini ? "w-full" : "flex-1"} flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-wider font-mono text-slate-400 hover:text-[#4DA3FF] px-2 py-1.5 rounded-md hover:bg-slate-800/60 transition-colors border border-transparent hover:border-[#1E293B]`}
+            className={`${mini ? "w-full" : "flex-1"} flex items-center justify-center gap-1.5 text-[12px] text-slate-400 hover:text-slate-100 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors`}
           >
-            <KeyRound className="w-3.5 h-3.5" /> {!mini && "Trocar senha"}
+            <KeyRound className="w-3.5 h-3.5" /> {!mini && "Senha"}
           </button>
           <ChangePasswordDialog open={cpOpen} onOpenChange={setCpOpen} />
           <button
             data-testid="account-security-btn"
             onClick={() => setSecOpen(true)}
             title="Segurança da conta: 2FA, sessões e últimos acessos"
-            className={`${mini ? "w-full" : "flex-1"} flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-wider font-mono ${user?.totp_enabled ? "text-slate-400" : "text-amber-300"} hover:text-[#4DA3FF] px-2 py-1.5 rounded-md hover:bg-slate-800/60 transition-colors border border-transparent hover:border-[#1E293B]`}
+            className={`${mini ? "w-full" : "flex-1"} flex items-center justify-center gap-1.5 text-[12px] ${user?.totp_enabled ? "text-slate-400" : "text-amber-300"} hover:text-slate-100 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors`}
           >
             <ShieldCheck className="w-3.5 h-3.5" /> {!mini && "Segurança"}
           </button>
           <AccountSecurity open={secOpen || mustEnroll} onOpenChange={setSecOpen} forced={mustEnroll} />
-          <button
-            data-testid="logout-btn"
-            onClick={logout}
-            title="Sair"
-            className={`${mini ? "mt-1 w-full" : "flex-1"} flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-wider font-mono text-slate-400 hover:text-red-400 px-2 py-1.5 rounded-md hover:bg-red-950/30 transition-colors border border-transparent hover:border-red-900/50`}
-          >
-            <LogOut className="w-3.5 h-3.5" /> {!mini && "Sair"}
-          </button>
+          {mini && (
+            <button data-testid="logout-btn-mini" onClick={logout} title="Sair"
+                    className="mt-1 w-full flex items-center justify-center px-2 py-1.5 rounded-md text-slate-400 hover:text-red-300 hover:bg-red-500/10 transition-colors">
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </aside>
 

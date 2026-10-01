@@ -11,7 +11,7 @@ const PROTO = { 1: "ICMP", 6: "TCP", 17: "UDP", 47: "GRE", 58: "ICMPv6" };
 function hint(a) {
   const t = a.type || "";
   const sp = a.sport?.[0]?.[0];
-  const out = [`Botão Mitigar: blackhole (RTBH) do ${a.victim}${a.victim.includes(":") ? "/128" : "/32"} nas suas bordas (BGP do Bastion) — derruba o ataque e o IP junto.`];
+  const out = [`Botão Mitigar: blackhole (RTBH) do ${a.victim}${a.victim.includes(":") ? "/128" : "/32"} nas suas bordas (BGP do BastiON) — derruba o ataque e o IP junto.`];
   if (t.startsWith("Amplificação") && sp !== undefined) out.push(`Filtro/Flowspec no upstream: UDP porta de origem ${sp} → ${a.victim} (tráfego legítimo com essa porta de origem é raro).`);
   if (t === "UDP fragmentado") out.push("Filtro de fragmentos UDP para o IP atacado no upstream (Flowspec fragment).");
   if (t.includes("SYN")) out.push("SYN cookies / limite de SYN no servidor; no upstream, Flowspec TCP flags SYN para o destino.");
@@ -35,28 +35,28 @@ function AttackDetail({ a: base }) {
     <div className="px-3 pb-3 pt-1 space-y-3" data-testid={`attack-detail-${a.id}`}>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-slate-500">AS de origem</div>
+          <div className="text-[10px] text-slate-500">AS de origem</div>
           {(a.src_as || []).map(([asn, b, name]) => <div key={asn} className="text-slate-300 truncate">{asn ? `AS${asn}` : "AS ?"} <span className="text-slate-500">{name}</span></div>)}
         </div>
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-slate-500">Portas (origem → destino)</div>
+          <div className="text-[10px] text-slate-500">Portas (origem → destino)</div>
           <div className="text-slate-300">origem: {(a.sport || []).map(p => p[0]).join(", ") || "—"}</div>
           <div className="text-slate-300">destino: {(a.dport || []).map(p => p[0]).join(", ") || "—"}</div>
           <div className="text-slate-400">protocolo: {(a.proto || []).map(p => PROTO[p[0]] || p[0]).join(", ") || "—"}</div>
           <div className="text-slate-400 mt-1">entrada: {Object.values(a.if_labels || {}).join(", ") || "—"}</div>
         </div>
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-slate-500">Como mitigar</div>
+          <div className="text-[10px] text-slate-500">Como mitigar</div>
           {hint(a).map((h, i) => <div key={i} className="text-slate-300 text-[11px] leading-snug mb-1">• {h}</div>)}
         </div>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono mb-1">Bits/s para {a.victim} (média de 30 s)</div>
+          <div className="text-[10px] text-slate-500 mb-1">Bits/s para {a.victim} (média de 30 s)</div>
           <StackedChart ts={ts} series={bps} unit="bps" height={170} emptyText="Série ainda curta — aparece nas próximas janelas." />
         </div>
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono mb-1">Pacotes/s para {a.victim}</div>
+          <div className="text-[10px] text-slate-500 mb-1">Pacotes/s para {a.victim}</div>
           <StackedChart ts={ts} series={pps} unit="pps" height={170} emptyText="Série ainda curta — aparece nas próximas janelas." />
         </div>
       </div>
@@ -92,14 +92,14 @@ export function FlowAttacks({ settings, onCount }) {
       {err && <div className="text-xs text-amber-300 mb-2">{err}</div>}
       <div className="mb-4">
         {act.length === 0 ? (
-          <div className="flex items-center gap-2 text-sm text-slate-300 border border-[#1E293B] rounded px-3 py-3" data-testid="no-active">
+          <div className="flex items-center gap-2 text-sm text-slate-300 border border-line rounded px-3 py-3" data-testid="no-active">
             <ShieldCheck className="w-5 h-5" style={{ color: STATUS.good }} /> <b style={{ color: STATUS.good }}>Normal</b> — nenhum ataque em andamento.
           </div>
         ) : act.map(a => (
           <div key={a.id} className="border rounded mb-2" style={{ borderColor: STATUS.critical }} data-testid="attack-active">
             <div className="flex flex-wrap items-center">
             <button className="flex-1 text-left px-3 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1" onClick={() => setOpen(open === a.id ? null : a.id)}>
-              <span className="flex items-center gap-1.5 text-xs font-mono font-bold uppercase tracking-widest" style={{ color: STATUS.critical }}><Siren className="w-4 h-4 animate-pulse" /> Em andamento</span>
+              <span className="flex items-center gap-1.5 text-xs font-bold" style={{ color: STATUS.critical }}><Siren className="w-4 h-4 animate-pulse" /> Em andamento</span>
               <span className="font-mono text-lg text-slate-50">{a.victim}</span>
               <span className="text-sm text-slate-200">{a.type}</span>
               <span className="text-sm font-mono text-slate-50"><b>{fmtRate(a.cur_bps)}</b> · {fmtRate(a.cur_pps, "pps")}</span>
@@ -117,10 +117,10 @@ export function FlowAttacks({ settings, onCount }) {
       </div>
 
       {mit && <MitigateDialog target={mit} onClose={() => setMit(null)} onDone={loadMit} />}
-      <div className="text-[10px] uppercase tracking-widest text-slate-500 font-mono mb-1">Histórico</div>
+      <div className="text-[10px] text-slate-500 mb-1">Histórico</div>
       {items && past.length === 0 && <div className="text-xs text-slate-500 mb-3">Nenhum ataque registrado.</div>}
       {past.length > 0 && (
-        <div className="border border-[#1E293B] rounded divide-y divide-[#1E293B] mb-4" data-testid="attack-history">
+        <div className="border border-line rounded divide-y divide-line mb-4" data-testid="attack-history">
           {past.map(a => {
             const dur = ((a.end ? new Date(a.end) : new Date()) - new Date(a.start)) / 1000;
             return (

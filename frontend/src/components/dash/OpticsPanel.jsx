@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { CheckCircle2, AlertTriangle, XCircle, Loader2, FlaskConical } from "lucide-react";
 
-// 4 lanes = slots 1-4 da paleta categórica (modo escuro), validados no fundo #0B111C.
+// 4 lanes = slots 1-4 da paleta categórica (modo escuro), validados no fundo #14191B.
 // Par amarelo/verde fica na faixa de atenção p/ daltonismo -> sempre com legenda + tabela de valores (codificação secundária).
 export const LANE_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500"];
 const NO_LIGHT = -40;
@@ -37,7 +37,7 @@ export function OpticsTestDialog({ open, onClose, deviceId, ifIndex, ifName, onD
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-3xl" data-testid="optics-test-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-3xl" data-testid="optics-test-dialog">
         <DialogHeader><DialogTitle>Teste de leitura óptica · {ifName}</DialogTitle></DialogHeader>
         {busy && <div className="text-sm text-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Conectando e lendo…</div>}
         {res && <>
@@ -46,7 +46,7 @@ export function OpticsTestDialog({ open, onClose, deviceId, ifIndex, ifName, onD
           </div>
           {res.ok && <div className="text-xs font-mono text-slate-300">{res.lanes.map(l => `lane ${l.lane}: RX ${fmtDbm(l.rx)} · TX ${fmtDbm(l.tx)}`).join("   |   ")}</div>}
           {!res.ok && res.commands_tried && <div className="text-xs text-slate-400">Comandos tentados: <code className="text-slate-200">{res.commands_tried.join("  →  ") || "nenhum"}</code>. Ajuste em <b>Dashboards → Configurações da óptica</b> para o seu firmware.</div>}
-          {res.raw && <pre className="bg-[#05070A] border border-[#1E293B] rounded p-2 text-[11px] font-mono text-slate-400 max-h-80 overflow-auto whitespace-pre-wrap">{res.raw}</pre>}
+          {res.raw && <pre className="bg-sunken border border-line rounded p-2 text-[11px] font-mono text-slate-400 max-h-80 overflow-auto whitespace-pre-wrap">{res.raw}</pre>}
         </>}
       </DialogContent>
     </Dialog>
@@ -93,12 +93,12 @@ export function OpticsPanel({ deviceId, ifIndex, ifName, minutes = 1440, warn, c
       )}
       {lanes.length > 0 && (
         <table className="w-full text-xs font-mono mb-2" data-testid="optics-lanes">
-          <thead className="text-[10px] uppercase tracking-widest text-slate-500">
+          <thead className="text-[10px] text-slate-500">
             <tr><th className="text-left py-1">{n > 1 ? "Lane" : ""}</th><th className="text-right">RX</th><th className="text-right">TX</th><th className="text-right pl-2"></th></tr>
           </thead>
           <tbody>
             {lanes.map((l, i) => (
-              <tr key={i} className="border-t border-[#1E293B]">
+              <tr key={i} className="border-t border-line">
                 <td className="py-1"><span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: LANE_COLORS[i % 4] }} />{n > 1 ? `Lane ${l.lane}` : "Porta"}</span></td>
                 <td className="text-right text-slate-100 font-semibold">{fmtDbm(l.rx)}</td>
                 <td className="text-right text-slate-300">{fmtDbm(l.tx)}</td>
@@ -112,7 +112,7 @@ export function OpticsPanel({ deviceId, ifIndex, ifName, minutes = 1440, warn, c
         <>
           <div className="flex items-center gap-1 mb-1">
             {["rx", "tx"].map(k => (
-              <button key={k} onClick={() => setWhich(k)} className={`text-[11px] font-mono px-2 py-0.5 rounded border ${which === k ? "border-[#007AFF] text-slate-100 bg-[#007AFF]/15" : "border-[#1E293B] text-slate-400"}`}>
+              <button key={k} onClick={() => setWhich(k)} className={`text-[11px] font-mono px-2 py-0.5 rounded border ${which === k ? "border-brand text-slate-100 bg-brand/15" : "border-line text-slate-400"}`}>
                 {k === "rx" ? "RX (recebido)" : "TX (enviado)"}
               </button>
             ))}

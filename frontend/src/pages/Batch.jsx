@@ -80,17 +80,16 @@ export default function Batch() {
   return (
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="batch-page">
       <div className="mb-6">
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Automação</div>
-        <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Execução em Lote</h1>
+        <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Execução em Lote</h1>
         <p className="text-slate-400 mt-2 text-sm">Rode scripts em múltiplos equipamentos simultaneamente e veja o resultado por host.</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Devices selector */}
-        <Card className="bg-[#111722] border-[#1E293B] p-5 lg:col-span-1" data-testid="devices-selector">
+        <Card className="bg-surface border-line p-5 lg:col-span-1" data-testid="devices-selector">
           <div className="flex items-center justify-between mb-3">
-            <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Equipamentos ({selected.length}/{devices.length})</div>
-            <button onClick={toggleAll} data-testid="toggle-all-devices" className="text-xs text-[#4DA3FF] hover:underline font-mono">
+            <div className="text-xs text-slate-400">Equipamentos ({selected.length}/{devices.length})</div>
+            <button onClick={toggleAll} data-testid="toggle-all-devices" className="text-xs text-brand-soft hover:underline font-mono">
               {selected.length === devices.length ? "limpar" : "todos"}
             </button>
           </div>
@@ -110,69 +109,69 @@ export default function Batch() {
         </Card>
 
         {/* Script picker + inline + run */}
-        <Card className="bg-[#111722] border-[#1E293B] p-5 lg:col-span-2" data-testid="batch-runner">
+        <Card className="bg-surface border-line p-5 lg:col-span-2" data-testid="batch-runner">
           <div className="flex items-center justify-between mb-3">
-            <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Comando</div>
-            <Button size="sm" variant="ghost" onClick={() => setShowNew(v => !v)} data-testid="toggle-new-script" className="text-[#4DA3FF]">
+            <div className="text-xs text-slate-400">Comando</div>
+            <Button size="sm" variant="ghost" onClick={() => setShowNew(v => !v)} data-testid="toggle-new-script" className="text-brand-soft">
               <Plus className="w-4 h-4 mr-1" /> Novo script
             </Button>
           </div>
 
           {showNew && (
-            <div className="mb-4 p-3 border border-[#1E293B] rounded-md bg-[#0B111C] space-y-2" data-testid="script-form">
-              <div className="text-[11px] uppercase tracking-widest text-slate-500 font-mono">{editingScript ? `Editando: ${editingScript.name}` : "Novo script"}</div>
-              <Input placeholder="Nome" data-testid="new-script-name" value={newScript.name} onChange={e => setNewScript({ ...newScript, name: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
-              <Input placeholder="Descrição" data-testid="new-script-desc" value={newScript.description} onChange={e => setNewScript({ ...newScript, description: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
-              <Textarea placeholder="Conteúdo do script..." data-testid="new-script-content" rows={4} value={newScript.content} onChange={e => setNewScript({ ...newScript, content: e.target.value })} className="bg-[#05070A] border-[#1E293B] font-mono" />
+            <div className="mb-4 p-3 border border-line rounded-md bg-panel space-y-2" data-testid="script-form">
+              <div className="text-[11px] text-slate-500">{editingScript ? `Editando: ${editingScript.name}` : "Novo script"}</div>
+              <Input placeholder="Nome" data-testid="new-script-name" value={newScript.name} onChange={e => setNewScript({ ...newScript, name: e.target.value })} className="bg-sunken border-line font-mono" />
+              <Input placeholder="Descrição" data-testid="new-script-desc" value={newScript.description} onChange={e => setNewScript({ ...newScript, description: e.target.value })} className="bg-sunken border-line font-mono" />
+              <Textarea placeholder="Conteúdo do script..." data-testid="new-script-content" rows={4} value={newScript.content} onChange={e => setNewScript({ ...newScript, content: e.target.value })} className="bg-sunken border-line font-mono" />
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
                 <Checkbox data-testid="new-script-quick" checked={newScript.quick} onCheckedChange={(v) => setNewScript({ ...newScript, quick: !!v })} />
                 Mostrar como comando favorito na barra do terminal
               </label>
               <div className="flex justify-end gap-2">
                 <Button variant="ghost" size="sm" onClick={cancelEdit} data-testid="cancel-script-btn">Cancelar</Button>
-                <Button size="sm" onClick={saveScript} data-testid="save-new-script" className="bg-[#007AFF] hover:bg-[#0062CC]">{editingScript ? "Atualizar" : "Salvar"}</Button>
+                <Button size="sm" onClick={saveScript} data-testid="save-new-script" className="bg-brand hover:bg-brand-strong">{editingScript ? "Atualizar" : "Salvar"}</Button>
               </div>
             </div>
           )}
 
           <div className="grid grid-cols-3 gap-3 mb-3">
             <div className="col-span-2">
-              <Label className="text-xs uppercase tracking-widest text-slate-400 font-mono">Script salvo</Label>
+              <Label className="text-xs text-slate-400">Script salvo</Label>
               <Select value={scriptId || "none"} onValueChange={v => setScriptId(v === "none" ? "" : v)}>
-                <SelectTrigger data-testid="script-select" className="bg-[#05070A] border-[#1E293B] font-mono">
+                <SelectTrigger data-testid="script-select" className="bg-sunken border-line font-mono">
                   <SelectValue placeholder="Selecione um script" />
                 </SelectTrigger>
-                <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
+                <SelectContent className="bg-surface border-line text-slate-100">
                   <SelectItem value="none">— nenhum —</SelectItem>
                   {scripts.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label className="text-xs uppercase tracking-widest text-slate-400 font-mono">Timeout (s)</Label>
-              <Input type="number" data-testid="batch-timeout" value={timeout} onChange={e => setTimeoutVal(e.target.value)} className="bg-[#05070A] border-[#1E293B] font-mono" />
+              <Label className="text-xs text-slate-400">Timeout (s)</Label>
+              <Input type="number" data-testid="batch-timeout" value={timeout} onChange={e => setTimeoutVal(e.target.value)} className="bg-sunken border-line font-mono" />
             </div>
           </div>
 
           <div className="mb-3">
-            <Label className="text-xs uppercase tracking-widest text-slate-400 font-mono">Ou comando inline</Label>
-            <Textarea data-testid="batch-inline-cmd" rows={3} value={inline} onChange={e => setInline(e.target.value)} placeholder="uname -a" className="bg-[#05070A] border-[#1E293B] font-mono text-emerald-300" />
+            <Label className="text-xs text-slate-400">Ou comando inline</Label>
+            <Textarea data-testid="batch-inline-cmd" rows={3} value={inline} onChange={e => setInline(e.target.value)} placeholder="uname -a" className="bg-sunken border-line font-mono text-emerald-300" />
           </div>
 
-          <Button onClick={execute} disabled={running} data-testid="execute-batch-btn" className="bg-[#007AFF] hover:bg-[#0062CC] w-full">
+          <Button onClick={execute} disabled={running} data-testid="execute-batch-btn" className="bg-brand hover:bg-brand-strong w-full">
             {running ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Play className="w-4 h-4 mr-2" />}
             Executar em {selected.length} equipamento(s)
           </Button>
 
           {scripts.length > 0 && (
             <div className="mt-4">
-              <div className="text-xs uppercase tracking-widest text-slate-500 font-mono mb-2">Scripts salvos</div>
+              <div className="text-xs text-slate-500 mb-2">Scripts salvos</div>
               <div className="flex flex-wrap gap-2">
                 {scripts.map(s => (
-                  <div key={s.id} className="flex items-center gap-2 bg-[#0B111C] border border-[#1E293B] rounded-md px-2 py-1" data-testid={`script-chip-${s.id}`}>
+                  <div key={s.id} className="flex items-center gap-2 bg-panel border border-line rounded-md px-2 py-1" data-testid={`script-chip-${s.id}`}>
                     {s.quick && <Star className="w-3 h-3 text-amber-400" />}
                     <span className="text-xs text-slate-300">{s.name}</span>
-                    <button onClick={() => editScript(s)} data-testid={`edit-script-${s.id}`} className="text-slate-500 hover:text-[#4DA3FF]" title="Editar">
+                    <button onClick={() => editScript(s)} data-testid={`edit-script-${s.id}`} className="text-slate-500 hover:text-brand-soft" title="Editar">
                       <Pencil className="w-3 h-3" />
                     </button>
                     <button onClick={() => delScript(s.id)} data-testid={`del-script-${s.id}`} className="text-slate-500 hover:text-red-400">
@@ -188,9 +187,9 @@ export default function Batch() {
 
       {results.length > 0 && (
         <div className="mt-6 space-y-3" data-testid="batch-results">
-          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Resultados</div>
+          <div className="text-xs text-slate-400">Resultados</div>
           {results.map(r => (
-            <Card key={r.device_id} className="bg-[#111722] border-[#1E293B] p-4">
+            <Card key={r.device_id} className="bg-surface border-line p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <Badge className={r.ok ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : "bg-red-500/15 text-red-400 border-red-500/30"}>
@@ -202,8 +201,8 @@ export default function Batch() {
                 <span className="text-xs font-mono text-slate-500">exit {r.exit_status}</span>
               </div>
               {r.error && <div className="text-xs font-mono text-red-400 mb-1">{r.error}</div>}
-              {r.stdout && <pre className="text-xs font-mono text-slate-300 bg-[#05070A] p-3 rounded border border-[#1E293B] overflow-x-auto whitespace-pre-wrap">{r.stdout}</pre>}
-              {r.stderr && <pre className="text-xs font-mono text-red-300 bg-[#050505] p-3 rounded border border-red-900/40 overflow-x-auto whitespace-pre-wrap mt-1">{r.stderr}</pre>}
+              {r.stdout && <pre className="text-xs font-mono text-slate-300 bg-sunken p-3 rounded border border-line overflow-x-auto whitespace-pre-wrap">{r.stdout}</pre>}
+              {r.stderr && <pre className="text-xs font-mono text-red-300 bg-sunken p-3 rounded border border-red-900/40 overflow-x-auto whitespace-pre-wrap mt-1">{r.stderr}</pre>}
             </Card>
           ))}
         </div>

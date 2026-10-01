@@ -1,4 +1,4 @@
-"""Speaker BGP mínimo do Bastion — roda no container "bgp" (python bgpd.py).
+"""Speaker BGP mínimo do BastiON — roda no container "bgp" (python bgpd.py).
 
 Só anuncia: abre iBGP com as bordas cadastradas e anuncia os /32 das mitigações ativas (blackhole) com next-hop
 de descarte, community e NO_EXPORT. Tudo que a borda manda é lido e descartado (a borda deve ter export deny).

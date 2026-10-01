@@ -13,7 +13,7 @@ import { Globe, Plus, X, RotateCw, ExternalLink, Loader2, Server, Radio, ShieldA
 
 const DIRECT = "__direct__";
 
-// endereço da porta da sessão no mesmo host em que o Bastion foi aberto
+// endereço da porta da sessão no mesmo host em que o BastiON foi aberto
 export function webSessionUrl(s, entry = true) {
   const base = `${window.location.protocol}//${window.location.hostname}:${s.port}`;
   return entry && s.entry ? base + s.entry : base + "/";
@@ -72,12 +72,12 @@ function OpenDialog({ open, onOpenChange, devices, agents, isAdmin, preset, onOp
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-[#111722] border-[#1E293B] text-slate-100 max-w-lg" data-testid="web-open-dialog">
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-lg" data-testid="web-open-dialog">
         <DialogHeader><DialogTitle>Abrir página web</DialogTitle></DialogHeader>
-        <div className="flex gap-1 p-1 bg-[#05070A] border border-[#1E293B] rounded-md text-xs font-mono">
+        <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-xs font-mono">
           {[["device", "Equipamento", Server], ["url", "Endereço por agente", Radio]].map(([k, l, I]) => (
             <button key={k} type="button" onClick={() => setMode(k)} data-testid={`web-mode-${k}`}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded ${mode === k ? "bg-[#007AFF]/20 text-[#4DA3FF]" : "text-slate-400 hover:text-slate-200"}`}>
+              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded ${mode === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}>
               <I className="w-3.5 h-3.5" />{l}
             </button>
           ))}
@@ -89,12 +89,12 @@ function OpenDialog({ open, onOpenChange, devices, agents, isAdmin, preset, onOp
               <div>
                 <Label>Equipamento</Label>
                 <Input value={q} onChange={e => setQ(e.target.value)} placeholder="nome, IP ou tag…" data-testid="web-device-search"
-                  className="bg-[#05070A] border-[#1E293B] font-mono mt-1" />
-                <div className="mt-1 max-h-44 overflow-y-auto border border-[#1E293B] rounded-md divide-y divide-[#1E293B]">
+                  className="bg-sunken border-line font-mono mt-1" />
+                <div className="mt-1 max-h-44 overflow-y-auto border border-line rounded-md divide-y divide-line">
                   {filtered.length === 0 && <div className="p-3 text-xs text-slate-500 font-mono">Nenhum equipamento</div>}
                   {filtered.map(d => (
                     <button key={d.id} type="button" onClick={() => pick(d)} data-testid={`web-pick-${d.id}`}
-                      className={`w-full text-left px-3 py-1.5 text-xs flex justify-between gap-2 ${d.id === deviceId ? "bg-[#007AFF]/15 text-[#4DA3FF]" : "text-slate-300 hover:bg-slate-800/60"}`}>
+                      className={`w-full text-left px-3 py-1.5 text-xs flex justify-between gap-2 ${d.id === deviceId ? "bg-brand/15 text-brand-soft" : "text-slate-300 hover:bg-slate-800/60"}`}>
                       <span className="truncate">{d.name}</span>
                       <span className="font-mono text-slate-500 shrink-0">{d.host}{d.agent_id ? ` · ${agentName(d.agent_id) || "agente"}` : ""}</span>
                     </button>
@@ -104,7 +104,7 @@ function OpenDialog({ open, onOpenChange, devices, agents, isAdmin, preset, onOp
             )}
             {dev && (
               <div className="text-xs font-mono text-slate-400" data-testid="web-device-route">
-                <span className="text-slate-200">{dev.name}</span> · via {dev.agent_id ? (agentName(dev.agent_id) || "agente") : "Bastion (direto)"}
+                <span className="text-slate-200">{dev.name}</span> · via {dev.agent_id ? (agentName(dev.agent_id) || "agente") : "BastiON (direto)"}
               </div>
             )}
           </div>
@@ -112,9 +112,9 @@ function OpenDialog({ open, onOpenChange, devices, agents, isAdmin, preset, onOp
           <div>
             <Label>Sair por</Label>
             <Select value={agentId} onValueChange={setAgentId}>
-              <SelectTrigger className="bg-[#05070A] border-[#1E293B] mt-1" data-testid="web-agent-select"><SelectValue placeholder="Escolha o agente" /></SelectTrigger>
-              <SelectContent className="bg-[#111722] border-[#1E293B] text-slate-100">
-                {isAdmin && <SelectItem value={DIRECT}>Bastion (direto do servidor)</SelectItem>}
+              <SelectTrigger className="bg-sunken border-line mt-1" data-testid="web-agent-select"><SelectValue placeholder="Escolha o agente" /></SelectTrigger>
+              <SelectContent className="bg-surface border-line text-slate-100">
+                {isAdmin && <SelectItem value={DIRECT}>BastiON (direto do servidor)</SelectItem>}
                 {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.name}{a.status === "offline" ? " (offline)" : ""}</SelectItem>)}
               </SelectContent>
             </Select>
@@ -125,19 +125,19 @@ function OpenDialog({ open, onOpenChange, devices, agents, isAdmin, preset, onOp
           <Label>Endereço</Label>
           <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="http://10.0.0.1/  ou  https://10.0.0.1:8443/"
             onKeyDown={e => e.key === "Enter" && submit()} data-testid="web-url"
-            className="bg-[#05070A] border-[#1E293B] font-mono mt-1" />
+            className="bg-sunken border-line font-mono mt-1" />
           {mode === "device" && dev && (
             <div className="flex flex-wrap gap-1 mt-1.5">
               {[["http", 80], ["https", 443], ["http", 8080], ["https", 8443]].map(([s, p]) => (
                 <button key={s + p} type="button" onClick={() => quick(s, p)} data-testid={`web-quick-${s}-${p}`}
-                  className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-[#1E293B] text-slate-400 hover:text-slate-200">{s}:{p}</button>
+                  className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-line text-slate-400 hover:text-slate-200">{s}:{p}</button>
               ))}
             </div>
           )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} className="border-[#1E293B] bg-transparent">Cancelar</Button>
-          <Button onClick={submit} disabled={busy} data-testid="web-open-submit" className="bg-[#007AFF] hover:bg-[#0066DD]">
+          <Button variant="outline" onClick={() => onOpenChange(false)} className="border-line bg-transparent">Cancelar</Button>
+          <Button onClick={submit} disabled={busy} data-testid="web-open-submit" className="bg-brand hover:bg-brand-strong">
             {busy ? <Loader2 className="w-4 h-4 animate-spin mr-1.5" /> : <Globe className="w-4 h-4 mr-1.5" />}Abrir
           </Button>
         </DialogFooter>
@@ -205,11 +205,10 @@ export default function WebAccess() {
     <div className="flex-1 flex flex-col min-h-0" data-testid="web-page">
       <div className="px-4 md:px-6 pt-4 pb-2 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Gerência pelo navegador</div>
-          <h1 className="font-heading text-2xl sm:text-3xl font-bold text-slate-100 mt-1">Acesso Web</h1>
+          <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Acesso Web</h1>
         </div>
         <Button onClick={() => { setPreset(null); setDlg(true); }} disabled={info && !info.enabled}
-          className="bg-[#007AFF] hover:bg-[#0066DD]" data-testid="web-new-btn">
+          className="bg-brand hover:bg-brand-strong" data-testid="web-new-btn">
           <Plus className="w-4 h-4 mr-1.5" />Abrir página
         </Button>
       </div>
@@ -221,11 +220,11 @@ export default function WebAccess() {
       )}
 
       {sessions.length > 0 && (
-        <div className="px-4 md:px-6 flex gap-1 overflow-x-auto border-b border-[#1E293B]" data-testid="web-tabs">
+        <div className="px-4 md:px-6 flex gap-1 overflow-x-auto border-b border-line" data-testid="web-tabs">
           {sessions.map(s => (
             <div key={s.id} onClick={() => setActive(s.id)} data-testid={`web-tab-${s.id}`}
-              className={`group flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-t-md border border-b-0 cursor-pointer text-xs shrink-0 ${s.id === active ? "bg-[#111722] border-[#1E293B] text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`}>
-              <Globe className="w-3.5 h-3.5 text-[#4DA3FF]" />
+              className={`group flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-t-md border border-b-0 cursor-pointer text-xs shrink-0 ${s.id === active ? "bg-surface border-line text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`}>
+              <Globe className="w-3.5 h-3.5 text-brand-soft" />
               <span className="max-w-[180px] truncate">{s.label}</span>
               <button onClick={(e) => { e.stopPropagation(); close(s); }} title="Fechar sessão" data-testid={`web-close-${s.id}`}
                 className="p-0.5 rounded hover:bg-slate-700/60 text-slate-500 hover:text-slate-200"><X className="w-3 h-3" /></button>
@@ -252,15 +251,15 @@ export default function WebAccess() {
             </div>
           </div>
           {https ? (
-            <Card className="flex-1 flex flex-col items-center justify-center gap-3 bg-[#111722] border-[#1E293B] text-center p-6" data-testid="web-https-note">
+            <Card className="flex-1 flex flex-col items-center justify-center gap-3 bg-surface border-line text-center p-6" data-testid="web-https-note">
               <ShieldAlert className="w-8 h-8 text-amber-400" />
-              <div className="text-slate-200 text-sm max-w-md">Você abriu o Bastion por HTTPS e a página do equipamento vem pela porta {cur.port} em HTTP. O navegador não mostra uma dentro da outra, então ela abre numa aba separada.</div>
-              <Button onClick={() => window.open(webSessionUrl(cur), "_blank", "noopener")} className="bg-[#007AFF] hover:bg-[#0066DD]">
+              <div className="text-slate-200 text-sm max-w-md">Você abriu o BastiON por HTTPS e a página do equipamento vem pela porta {cur.port} em HTTP. O navegador não mostra uma dentro da outra, então ela abre numa aba separada.</div>
+              <Button onClick={() => window.open(webSessionUrl(cur), "_blank", "noopener")} className="bg-brand hover:bg-brand-strong">
                 <ExternalLink className="w-4 h-4 mr-1.5" />Abrir {cur.label}
               </Button>
             </Card>
           ) : (
-            <div className="relative flex-1 min-h-[320px] rounded-md border border-[#1E293B] overflow-hidden bg-white">
+            <div className="relative flex-1 min-h-[320px] rounded-md border border-line overflow-hidden bg-white">
               {sessions.map(s => (
                 <iframe key={`${s.id}-${reloads[s.id] || 0}`} title={s.label} src={webSessionUrl(s)} data-testid={`web-frame-${s.id}`}
                   allow="clipboard-read; clipboard-write; fullscreen" onLoad={refresh}

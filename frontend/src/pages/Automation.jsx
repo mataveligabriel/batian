@@ -73,19 +73,18 @@ export default function Automation() {
   };
 
   if (!s) return <div className="p-6 text-slate-500 font-mono text-sm">Carregando…</div>;
-  const inputCls = "bg-[#05070A] border-[#1E293B] font-mono";
+  const inputCls = "bg-sunken border-line font-mono";
 
   return (
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="automation-page">
       <div className="mb-6">
-        <div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Rotinas em segundo plano</div>
-        <h1 className="font-heading text-2xl sm:text-4xl font-bold text-slate-100 mt-1">Automação & Alertas</h1>
+        <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Automação & Alertas</h1>
         <p className="text-slate-400 mt-2 text-sm max-w-2xl">Monitoramento automático pela cadeia de saltos, backup diário de configurações e notificações quando um agente ou equipamento cai.</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card className="bg-[#111722] border-[#1E293B] p-5" data-testid="ping-card">
-          <div className="flex items-center gap-2 mb-4"><Activity className="w-4 h-4 text-[#4DA3FF]" /><div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Ping automático</div></div>
+        <Card className="bg-surface border-line p-5" data-testid="ping-card">
+          <div className="flex items-center gap-2 mb-4"><Activity className="w-4 h-4 text-brand-soft" /><div className="text-xs text-slate-400">Ping automático</div></div>
           <div className="flex items-center justify-between mb-3">
             <Label>Ativo</Label>
             <Switch data-testid="ping-enabled" checked={s.ping_enabled} onCheckedChange={v => setS({ ...s, ping_enabled: v })} disabled={!isAdmin} />
@@ -93,13 +92,13 @@ export default function Automation() {
           <Label>Intervalo (minutos)</Label>
           <Input data-testid="ping-interval" type="number" min={1} value={s.ping_interval_min} onChange={e => setS({ ...s, ping_interval_min: e.target.value })} className={inputCls} disabled={!isAdmin} />
           <div className="text-[11px] font-mono text-slate-500 mt-3">Último ciclo: {fmt(s.last_ping)}{s.ping_running && <span className="text-amber-400 ml-2">em execução…</span>}</div>
-          <Button size="sm" variant="outline" onClick={pingNow} data-testid="ping-now-btn" className="mt-3 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800 w-full">
+          <Button size="sm" variant="outline" onClick={pingNow} data-testid="ping-now-btn" className="mt-3 border-line bg-panel text-slate-200 hover:bg-slate-800 w-full">
             <Zap className="w-3.5 h-3.5 mr-1.5" /> Executar ping agora
           </Button>
         </Card>
 
-        <Card className="bg-[#111722] border-[#1E293B] p-5" data-testid="backup-card">
-          <div className="flex items-center gap-2 mb-4"><Archive className="w-4 h-4 text-[#4DA3FF]" /><div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Backup diário</div></div>
+        <Card className="bg-surface border-line p-5" data-testid="backup-card">
+          <div className="flex items-center gap-2 mb-4"><Archive className="w-4 h-4 text-brand-soft" /><div className="text-xs text-slate-400">Backup diário</div></div>
           <div className="flex items-center justify-between mb-3">
             <Label>Ativo</Label>
             <Switch data-testid="backup-enabled" checked={s.backup_enabled} onCheckedChange={v => setS({ ...s, backup_enabled: v })} disabled={!isAdmin} />
@@ -109,8 +108,8 @@ export default function Automation() {
           <div className="text-[11px] font-mono text-slate-500 mt-3">Comandos padrão: Cisco/Datacom/ZTE <code>show running-config</code> · Huawei <code>display current-configuration</code> · Juniper <code>show configuration | display set</code> · Mikrotik <code>/export</code>. Personalize por equipamento.</div>
         </Card>
 
-        <Card className="bg-[#111722] border-[#1E293B] p-5" data-testid="alerts-card">
-          <div className="flex items-center gap-2 mb-4"><BellRing className="w-4 h-4 text-[#4DA3FF]" /><div className="text-xs uppercase tracking-widest text-slate-400 font-mono">Notificações</div></div>
+        <Card className="bg-surface border-line p-5" data-testid="alerts-card">
+          <div className="flex items-center gap-2 mb-4"><BellRing className="w-4 h-4 text-brand-soft" /><div className="text-xs text-slate-400">Notificações</div></div>
           <div className="flex items-center justify-between mb-2">
             <Label>Agente caiu / voltou</Label>
             <Switch data-testid="notify-agents" checked={s.notify_agents} onCheckedChange={v => setS({ ...s, notify_agents: v })} disabled={!isAdmin} />
@@ -126,7 +125,7 @@ export default function Automation() {
             </div>
             <Switch data-testid="notify-config-changes" checked={s.notify_config_changes !== false} onCheckedChange={v => setS({ ...s, notify_config_changes: v })} disabled={!isAdmin} />
           </div>
-          <div className="border border-[#1E293B] rounded-md p-2.5 mb-3" data-testid="daily-report">
+          <div className="border border-line rounded-md p-2.5 mb-3" data-testid="daily-report">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5"><ClipboardList className="w-3.5 h-3.5 text-slate-400" /><Label>Resumo diário</Label></div>
               <Switch data-testid="daily-report-enabled" checked={s.daily_report_enabled !== false} onCheckedChange={v => setS({ ...s, daily_report_enabled: v })} disabled={!isAdmin} />
@@ -141,13 +140,13 @@ export default function Automation() {
                 {repBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Eye className="w-3.5 h-3.5 mr-1" />} Prévia
               </Button>
               {isAdmin && (
-                <Button size="sm" variant="ghost" onClick={sendReport} disabled={repBusy} className="h-7 text-xs text-[#4DA3FF] hover:bg-[#007AFF]/15" data-testid="daily-report-send">
+                <Button size="sm" variant="ghost" onClick={sendReport} disabled={repBusy} className="h-7 text-xs text-brand-soft hover:bg-brand/15" data-testid="daily-report-send">
                   <Send className="w-3.5 h-3.5 mr-1" /> Enviar agora
                 </Button>
               )}
             </div>
             {report && (
-              <pre className="mt-2 text-[11px] font-mono text-slate-300 bg-[#05070A] border border-[#1E293B] rounded p-2 whitespace-pre-wrap max-h-72 overflow-y-auto" data-testid="daily-report-text">{report.title + "\n\n" + report.text}</pre>
+              <pre className="mt-2 text-[11px] font-mono text-slate-300 bg-sunken border border-line rounded p-2 whitespace-pre-wrap max-h-72 overflow-y-auto" data-testid="daily-report-text">{report.title + "\n\n" + report.text}</pre>
             )}
           </div>
           <Label>Telegram — token do bot</Label>
@@ -163,7 +162,7 @@ export default function Automation() {
           <Label className="mt-3 block">Webhook (Slack / Discord / genérico)</Label>
           <Input data-testid="webhook-url" value={s.webhook_url || ""} onChange={e => setS({ ...s, webhook_url: e.target.value })} placeholder="https://hooks.slack.com/services/…" className={inputCls} disabled={!isAdmin} />
           {isAdmin && (
-            <Button size="sm" variant="outline" onClick={testAlert} data-testid="test-alert-btn" className="mt-3 border-[#1E293B] bg-[#0B111C] text-slate-200 hover:bg-slate-800 w-full">
+            <Button size="sm" variant="outline" onClick={testAlert} data-testid="test-alert-btn" className="mt-3 border-line bg-panel text-slate-200 hover:bg-slate-800 w-full">
               <Send className="w-3.5 h-3.5 mr-1.5" /> Enviar alerta de teste
             </Button>
           )}
@@ -172,7 +171,7 @@ export default function Automation() {
 
       {isAdmin && (
         <div className="flex justify-end mt-4">
-          <Button onClick={save} disabled={busy} data-testid="save-automation-btn" className="bg-[#007AFF] hover:bg-[#0062CC]">
+          <Button onClick={save} disabled={busy} data-testid="save-automation-btn" className="bg-brand hover:bg-brand-strong">
             {busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Salvar automação
           </Button>
         </div>
@@ -180,10 +179,10 @@ export default function Automation() {
 
       {isAdmin && <AIAssistantCard />}
 
-      <Card className="bg-[#111722] border-[#1E293B] mt-6 overflow-hidden" data-testid="alerts-history">
-        <div className="px-4 py-3 border-b border-[#1E293B] text-xs uppercase tracking-widest text-slate-400 font-mono">Últimos alertas enviados</div>
+      <Card className="bg-surface border-line mt-6 overflow-hidden" data-testid="alerts-history">
+        <div className="px-4 py-3 border-b border-line text-xs text-slate-400">Últimos alertas enviados</div>
         {alerts.length === 0 && <div className="p-4 text-sm text-slate-500 font-mono">Nenhum alerta ainda.</div>}
-        <div className="divide-y divide-[#1E293B]">
+        <div className="divide-y divide-line">
           {alerts.map(a => (
             <div key={a.id} className="px-4 py-2.5 text-sm">
               <div className="text-slate-100">{a.title}</div>
