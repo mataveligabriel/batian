@@ -39,6 +39,11 @@ def svc_port(p: int) -> int:
     return p if (p < 1024 or p in KNOWN_HIGH) else 0
 
 
+SIP_WINDOW_MAX = 50_000    # IPs de origem distintos por vítima numa janela de 10 s
+SIP_KEEP = 5_000           # quantos IPs de origem cada ataque guarda (os de maior volume)
+SRC_IP_TOP = 50            # quantos aparecem no ataque
+
+
 def ip_str(ver: int, v: int) -> str:
     return str(ipaddress.IPv4Address(v)) if ver == 4 else str(ipaddress.IPv6Address(v))
 
@@ -307,7 +312,7 @@ class Aggregator:
                             v = self.detail.get(vk)
                             if v is None:
                                 v = self.detail[vk] = {"b": 0, "p": 0, "syn": 0, "proto": {}, "sport": {}, "dport": {},
-                                                       "sas": {}, "if": set()}
+                                                       "sas": {}, "sip": {}, "if": set()}
                             v["b"] += b
                             v["p"] += p
                             if pr == 6 and fl & 0x02 and not fl & 0x10:
@@ -317,6 +322,12 @@ class Aggregator:
                             dp = f[F_DPORT]
                             v["dport"][dp] = v["dport"].get(dp, 0) + p
                             v["sas"][sas] = v["sas"].get(sas, 0) + b
+                            e = v["sip"].get(src)          # IP de origem: [bytes, pacotes, AS]
+                            if e is not None:
+                                e[0] += b
+                                e[1] += p
+                            elif len(v["sip"]) < SIP_WINDOW_MAX:
+                                v["sip"][src] = [b, p, sas]
                             v["if"].add(k_in)
         if st["flows"] % 20000 == 0:
             for x in self.m5.values():
@@ -397,7 +408,8 @@ class Aggregator:
             if st is None:
                 st = self.victims[vk] = {"victim": ip_str(*vk), "start": now, "windows": 0, "cold": 0, "alerted": False,
                                          "peak_bps": 0, "peak_pps": 0, "ifaces": set(), "src_as": {}, "proto": {},
-                                         "sport": {}, "dport": {}, "syn": 0, "p": 0, "type": ""}
+                                         "sport": {}, "dport": {}, "syn": 0, "p": 0, "type": "",
+                                         "sip": {}, "n_src": 0, "ver": vk[0]}
             st["windows"] += 1
             st["cold"] = 0
             st["last"] = now
@@ -413,6 +425,19 @@ class Aggregator:
                                      (v["sas"], st["src_as"])):
                     for a, n in src_d.items():
                         dst_d[a] = dst_d.get(a, 0) + n
+                sips = st["sip"]
+                for ip, (b2, p2, a2) in v["sip"].items():
+                    e = sips.get(ip)
+                    if e is None:
+                        sips[ip] = [b2, p2, a2]
+                        st["n_src"] += 1
+                    else:
+                        e[0] += b2
+                        e[1] += p2
+                if len(sips) > SIP_KEEP * 4:      # guarda os maiores; a contagem de origens continua
+                    keep = heapq.nlargest(SIP_KEEP, sips.items(), key=lambda kv: kv[1][0])
+                    sips.clear()
+                    sips.update(keep)
                 for dct in (st["sport"], st["dport"], st["src_as"]):
                     if len(dct) > 2000:
                         keep = heapq.nlargest(500, dct.items(), key=lambda kv: kv[1])
@@ -448,4 +473,7 @@ class Aggregator:
                 "peak_bps": st["peak_bps"], "peak_pps": st["peak_pps"], "cur_bps": st.get("cur_bps", 0),
                 "cur_pps": st.get("cur_pps", 0), "ifaces": sorted(st["ifaces"]), "src_as": top(st["src_as"], 8),
                 "sport": top(st["sport"], 5), "dport": top(st["dport"], 5),
+                "src_ip": [[ip_str(st.get("ver", 4), ip), e[0], e[1], e[2]]
+                           for ip, e in heapq.nlargest(SRC_IP_TOP, st.get("sip", {}).items(), key=lambda kv: kv[1][0])],
+                "n_src": st.get("n_src", 0),
                 "proto": [[a, b] for a, b in sorted(st["proto"].items(), key=lambda kv: -kv[1])[:4]]}

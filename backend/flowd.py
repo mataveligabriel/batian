@@ -243,7 +243,7 @@ class Collector:
             v = a["victim"]
             owners = sorted({o for k in a["ifaces"] for o in self.owners.get(k, ()) if o})
             fields = {"type": a["type"], "peak_bps": a["peak_bps"], "peak_pps": a["peak_pps"], "cur_bps": a["cur_bps"],
-                      "cur_pps": a["cur_pps"], "ifaces": a["ifaces"], "src_as": a["src_as"], "sport": a["sport"],
+                      "cur_pps": a["cur_pps"], "ifaces": a["ifaces"], "src_as": a["src_as"], "src_ip": a.get("src_ip", []), "n_src": a.get("n_src", 0), "sport": a["sport"],
                       "dport": a["dport"], "proto": a["proto"], "owners": owners, "updated": _iso(now),
                       "if_labels": {k: self.labels.get(k, k) for k in a["ifaces"]}}
             # série própria do ataque (média de 30 s a cada 10 s): o gráfico do ataque não depende do top-K de 5 min

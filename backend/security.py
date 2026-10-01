@@ -46,6 +46,20 @@ def verify_totp(secret: str, code: str, last_step: int = -1, t: Optional[float] 
     return None
 
 
+def clock_offset(secret: str, code: str, span: int = 20, t: Optional[float] = None) -> Optional[int]:
+    """Código certo mas fora da janela? Devolve a diferença em segundos (+ = celular adiantado em relação ao
+    servidor), procurando até span*30 s para cada lado. Só para diagnóstico — nunca para aceitar o código."""
+    code = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if len(code) != 6 or not secret:
+        return None
+    now = int((t or time.time()) // STEP)
+    for d in range(2, span + 1):
+        for step in (now + d, now - d):
+            if hmac.compare_digest(_code(secret, step), code):
+                return (step - now) * STEP
+    return None
+
+
 def otpauth_uri(secret: str, account: str) -> str:
     return (f"otpauth://totp/{quote(ISSUER)}:{quote(account)}?secret={secret}&issuer={quote(ISSUER)}"
             f"&algorithm=SHA1&digits=6&period={STEP}")

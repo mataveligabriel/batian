@@ -304,8 +304,17 @@ async def twofa_setup(user: dict = Depends(get_current_user)):
     u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
     if u.get("totp_enabled"):
         raise HTTPException(status_code=400, detail="2FA já está ativo. Desative antes de configurar outro celular.")
-    secret = security.new_secret()
-    await db.users.update_one({"id": user["id"]}, {"$set": {"totp_pending": vault.encrypt(secret)}})
+    # reabrir a tela mostra o mesmo QR (o app do celular já pode ter lido); renova depois de 30 min
+    secret, at = vault.decrypt(u.get("totp_pending", "")), u.get("totp_pending_at") or ""
+    fresh = False
+    try:
+        fresh = bool(secret) and datetime.now(timezone.utc) - datetime.fromisoformat(at) < timedelta(minutes=30)
+    except ValueError:
+        pass
+    if not fresh:
+        secret = security.new_secret()
+        await db.users.update_one({"id": user["id"]}, {"$set": {"totp_pending": vault.encrypt(secret),
+                                                                 "totp_pending_at": datetime.now(timezone.utc).isoformat()}})
     uri = security.otpauth_uri(secret, u["email"])
     return {"secret": secret, "uri": uri, "qr_svg": qrgen.svg(uri, scale=5)}
 
@@ -318,12 +327,20 @@ async def twofa_enable(body: TotpCode, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Gere o QR code primeiro")
     step = security.verify_totp(secret, body.code)
     if step is None:
-        raise HTTPException(status_code=400, detail="Código não confere. Confira a hora do celular e digite o código atual.")
+        off = security.clock_offset(secret, body.code)
+        if off is not None:
+            raise HTTPException(status_code=400, detail=(
+                f"O código é deste QR, mas o relógio do celular e o do servidor estão {abs(off)} s diferentes "
+                f"({'celular adiantado' if off > 0 else 'celular atrasado'} em relação ao servidor). Acerte a hora do "
+                "servidor (timedatectl set-ntp true) ou ative a hora automática no celular."))
+        raise HTTPException(status_code=400, detail=(
+            "Código não confere. Use o código da conta cuja chave é a mostrada aqui (no app autenticador pode haver "
+            "uma conta antiga 'Bastion' de outra tentativa — apague-a e leia este QR de novo)."))
     codes, hashes = security.new_recovery_codes()
     await db.users.update_one({"id": user["id"]}, {
         "$set": {"totp_enabled": True, "totp_secret": vault.encrypt(secret), "totp_last_step": step,
                  "totp_recovery": hashes, "totp_enabled_at": datetime.now(timezone.utc).isoformat()},
-        "$unset": {"totp_pending": ""}})
+        "$unset": {"totp_pending": "", "totp_pending_at": ""}})
     return {"enabled": True, "recovery_codes": codes}
 
 
@@ -3462,7 +3479,7 @@ async def flow_attacks(status: str = "", limit: int = 100, user: dict = Depends(
     q = {} if user.get("role") == "admin" else {"owners": user["id"]}
     if status in ("active", "ended"):
         q["status"] = status
-    items = await db.flow_attacks.find(q, {"_id": 0, "series": 0}).sort("start", -1).to_list(max(1, min(limit, 500)))
+    items = await db.flow_attacks.find(q, {"_id": 0, "series": 0, "src_ip": 0}).sort("start", -1).to_list(max(1, min(limit, 500)))
     asn = await _asn_db()
     for a in items:
         a["src_as"] = [[x, b, (asn.name(x) if asn and x else "")] for x, b in a.get("src_as") or []]
@@ -3478,6 +3495,7 @@ async def flow_attack(aid: str, user: dict = Depends(get_current_user)):
         raise HTTPException(404, "Ataque não encontrado")
     asn = await _asn_db()
     a["src_as"] = [[x, b, (asn.name(x) if asn and x else "")] for x, b in a.get("src_as") or []]
+    a["src_ip"] = [[ip, b, p, x, (asn.name(x) if asn and x else "")] for ip, b, p, x in a.get("src_ip") or []]
     return a
 
 

@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
-import { ShieldAlert, ShieldCheck, ChevronDown, ChevronRight, Siren, Info, ShieldBan } from "lucide-react";
+import { ShieldAlert, ShieldCheck, ChevronDown, ChevronRight, Siren, Info, ShieldBan, Copy } from "lucide-react";
+import { toast } from "sonner";
+import { copyText } from "@/lib/clipboard";
 import { MitigateDialog } from "@/components/flow/FlowMitigation";
 import { StackedChart } from "@/components/flow/StackedChart";
 import { STATUS } from "@/lib/netfmt";
@@ -16,6 +18,51 @@ function hint(a) {
   if (t === "UDP fragmentado") out.push("Filtro de fragmentos UDP para o IP atacado no upstream (Flowspec fragment).");
   if (t.includes("SYN")) out.push("SYN cookies / limite de SYN no servidor; no upstream, Flowspec TCP flags SYN para o destino.");
   return out;
+}
+
+/** Quem está mandando: os IPs de origem com mais tráfego para a vítima. */
+function SourceIps({ a }) {
+  const rows = a.src_ip || [];
+  const [all, setAll] = useState(false);
+  if (!rows.length) return null;
+  const total = (a.src_as || []).reduce((n, x) => n + (x[1] || 0), 0) || rows.reduce((n, x) => n + x[1], 0);
+  const shown = all ? rows : rows.slice(0, 12);
+  const t = a.type || "";
+  const note = t.startsWith("Amplificação")
+    ? "São refletores (servidores abertos usados na amplificação): os IPs são reais e dá para filtrar ou avisar os donos."
+    : (t.includes("SYN") || t.includes("TCP"))
+      ? "Em flood TCP/SYN os IPs de origem costumam ser falsificados: bloquear por IP ajuda pouco — o que resolve é o blackhole ou o filtro no upstream."
+      : "";
+  const copy = async () => {
+    const ok = await copyText(rows.map(r => r[0]).join("\n"));
+    ok ? toast.success(`${rows.length} IPs copiados`) : toast.error("Não consegui copiar");
+  };
+  return (
+    <div data-testid={`attack-src-ips-${a.id}`}>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-1">
+        <div className="text-[11px] text-slate-400">
+          IPs de origem — <span className="text-slate-200">{(a.n_src || rows.length).toLocaleString("pt-BR")}</span> distintos
+          {a.n_src > rows.length ? `, os ${rows.length} com mais tráfego` : ""}
+        </div>
+        <button onClick={copy} className="text-[11px] text-brand-soft hover:underline inline-flex items-center gap-1" data-testid="attack-copy-ips">
+          <Copy className="w-3 h-3" /> copiar lista
+        </button>
+        {rows.length > 12 && (
+          <button onClick={() => setAll(!all)} className="text-[11px] text-slate-400 hover:text-slate-200">{all ? "mostrar menos" : `ver os ${rows.length}`}</button>
+        )}
+      </div>
+      {note && <div className="text-[11px] text-slate-500 mb-1.5">{note}</div>}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-x-6 text-xs font-mono">
+        {shown.map(([ip, b, p, asn, name]) => (
+          <div key={ip} className="flex items-center gap-2 py-0.5 border-b border-line/60 min-w-0">
+            <span className="text-slate-200 w-[15ch] shrink-0 truncate" title={ip}>{ip}</span>
+            <span className="text-slate-500 truncate flex-1" title={name}>{asn ? `AS${asn}` : "AS ?"} {name}</span>
+            <span className="text-slate-400 shrink-0 tabular-nums">{total ? `${((b / total) * 100).toFixed(b / total < 0.01 ? 2 : 1)}%` : ""}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function AttackDetail({ a: base }) {
@@ -50,6 +97,7 @@ function AttackDetail({ a: base }) {
           {hint(a).map((h, i) => <div key={i} className="text-slate-300 text-[11px] leading-snug mb-1">• {h}</div>)}
         </div>
       </div>
+      <SourceIps a={a} />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div>
           <div className="text-[10px] text-slate-500 mb-1">Bits/s para {a.victim} (média de 30 s)</div>
