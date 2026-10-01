@@ -393,11 +393,16 @@ class WebProxy:
                 break
 
         host_hdr = dict(headers).get("host", f"127.0.0.1:{port}")
-        our = f"{scope.get('scheme', 'http')}://{host_hdr}"
+        # atrás do Caddy (HTTPS): ele entrega em http na porta original e avisa o esquema em X-Forwarded-Proto
+        peer = (scope.get("client") or ("", 0))[0]
+        scheme = scope.get("scheme", "http")
+        if peer in ("127.0.0.1", "::1") and dict(headers).get("x-forwarded-proto") == "https":
+            scheme = "https"
+        our = f"{scheme}://{host_hdr}"
         target = _origin(s.scheme, s.host, s.tport)
         fwd = []
         for k, v in headers:
-            if k in HOP or k.startswith("proxy-") or k in ("x-forwarded-for", "x-real-ip", "forwarded"):
+            if k in HOP or k.startswith("proxy-") or k.startswith("x-forwarded-") or k in ("x-real-ip", "forwarded", "via"):
                 continue
             if k == "cookie":
                 # o navegador manda para esta porta os cookies de todas as sessões (cookie não separa porta):
@@ -439,7 +444,7 @@ class WebProxy:
                 if lk == "location":
                     v = self._rewrite_location(s, v, our)
                 elif lk == "set-cookie":
-                    v = _fix_cookie(v, secure=scope.get("scheme") == "https")
+                    v = _fix_cookie(v, secure=scheme == "https")
                     s.cookie_names.add(v.split("=", 1)[0].strip())
                 out_headers.append((lk, v))
             ctype = resp.headers.get("content-type", "").lower()

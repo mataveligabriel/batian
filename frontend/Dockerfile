@@ -10,3 +10,5 @@ RUN yarn build
 FROM caddy:2-alpine
 COPY --from=build /app/build /srv
 COPY Caddyfile /etc/caddy/Caddyfile
+COPY entrypoint.sh /entrypoint.sh
+ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]

@@ -81,6 +81,11 @@ services:
     environment:
       BASTION_DOMAIN: ${BASTION_DOMAIN}
       BASTION_ALT: ${BASTION_ALT:-}
+      # HTTPS opcional (microfone/voz, PWA): IP ou domínio — o entrypoint acrescenta ao Caddyfile
+      BASTION_HTTPS_HOST: ${BASTION_HTTPS_HOST:-}
+      BASTION_HTTPS_PORT: ${BASTION_HTTPS_PORT:-8443}
+      WEB_PROXY_PORTS: ${WEB_PROXY_PORTS:-8090-8099}
+      WEB_PROXY_TLS_OFFSET: ${WEB_PROXY_TLS_OFFSET:-400}
     volumes:
       - caddy_data:/data
       - caddy_config:/config

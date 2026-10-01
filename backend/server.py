@@ -2453,8 +2453,10 @@ class WebOpenIn(BaseModel):
 
 @api.get("/web/info")
 async def web_info(_: dict = Depends(get_current_user)):
+    # com BASTION_HTTPS_HOST o Caddy atende cada porta também em HTTPS (porta + WEB_PROXY_TLS_OFFSET)
     return {"ports": web_proxy.live_ports, "enabled": bool(web_proxy.live_ports),
-            "idle_minutes": webproxy.IDLE_SECONDS // 60}
+            "idle_minutes": webproxy.IDLE_SECONDS // 60,
+            "tls_offset": int(os.environ.get("WEB_PROXY_TLS_OFFSET", "400")) if os.environ.get("BASTION_HTTPS_HOST") else 0}
 
 
 @api.get("/web/sessions")

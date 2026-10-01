@@ -502,14 +502,34 @@ Depois de falar ele volta a ouvir sozinho; tocar na esfera interrompe a fala. Em
   e ainda responde falando ao que for digitado. Para o microfone funcionar:
   - **Teste rápido no PC** (Chrome/Edge): `chrome://flags/#unsafely-treat-insecure-origin-as-secure` → cole
     `http://IP_DO_BASTION:8088` → Enabled → reiniciar o navegador.
-  - **Definitivo**: HTTPS. Com domínio, `BASTION_DOMAIN=bastion.seudominio.com` (certificado automático). Sem domínio,
-    acrescente um endereço https pelo IP no `deploy/.env` e rode o `update.sh`:
-    ```
-    BASTION_ALT=https://IP_DO_BASTION:8443
-    ```
-    ```bash
-    sudo ufw allow 8443/tcp
-    ```
-    O Caddy gera um certificado próprio; no primeiro acesso a `https://IP_DO_BASTION:8443` o navegador avisa que o
-    certificado não é reconhecido — aceite (Avançado → continuar). Por https o Acesso Web (seção 20) abre em aba separada.
+  - **Definitivo**: ligar o HTTPS do BastiON — seção 22.
 - O app do Windows (Nativefier) não tem reconhecimento de fala: use o Chrome/Edge.
+
+## 22. HTTPS (microfone/voz, Acesso Web dentro do app)
+
+O endereço atual em HTTP continua funcionando igual (inclusive o app do Windows). O HTTPS entra **junto**.
+No `deploy/.env` do servidor:
+
+**Só com o IP (sem domínio)**
+```
+BASTION_HTTPS_HOST=IP_DO_BASTION
+```
+```bash
+sudo ufw allow 8443/tcp && sudo ufw allow 8490:8499/tcp
+sudo bash /opt/bastion/deploy/update.sh
+```
+Acesse `https://IP_DO_BASTION:8443`. O certificado é gerado pelo próprio BastiON (Caddy), então o navegador avisa
+uma vez que não o reconhece: **Avançado → continuar**. Daí em diante o microfone (conversa por voz) funciona e o
+Acesso Web aparece dentro do app pelas portas 8490–8499 (cada porta do Acesso Web + 400, em HTTPS).
+Se a página do equipamento não aparecer dentro do app, use o botão **Nova aba** uma vez e aceite o certificado lá.
+
+**Com domínio** apontando para o servidor (certificado reconhecido, sem aviso — necessário para instalar o app
+no celular e receber notificações push):
+```
+BASTION_HTTPS_HOST=bastion.seudominio.com
+BASTION_HTTPS_PORT=443
+```
+(libere 80 e 443 além de 8490:8499).
+
+Outras portas: `BASTION_HTTPS_PORT=8443`, `WEB_PROXY_TLS_OFFSET=400`. Se a configuração de HTTPS tiver algum erro,
+o BastiON sobe só no endereço de sempre e mostra o motivo em `docker compose logs frontend`.

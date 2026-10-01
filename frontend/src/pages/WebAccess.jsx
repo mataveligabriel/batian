@@ -14,8 +14,10 @@ import { Globe, Plus, X, RotateCw, ExternalLink, Loader2, Server, Radio, ShieldA
 const DIRECT = "__direct__";
 
 // endereço da porta da sessão no mesmo host em que o BastiON foi aberto
-export function webSessionUrl(s, entry = true) {
-  const base = `${window.location.protocol}//${window.location.hostname}:${s.port}`;
+export function webSessionUrl(s, tlsOffset = 0, entry = true) {
+  // aberto por https: usa a porta HTTPS da sessão (porta + deslocamento), atendida pelo Caddy
+  const https = window.location.protocol === "https:" && tlsOffset > 0;
+  const base = `${https ? "https:" : "http:"}//${window.location.hostname}:${s.port + (https ? tlsOffset : 0)}`;
   return entry && s.entry ? base + s.entry : base + "/";
 }
 
@@ -158,7 +160,8 @@ export default function WebAccess() {
   const [dlg, setDlg] = useState(false);
   const [preset, setPreset] = useState(null);
   const [reloads, setReloads] = useState({});
-  const https = window.location.protocol === "https:";
+  const tls = info?.tls_offset || 0;
+  const https = window.location.protocol === "https:" && !tls;   // https sem portas seguras: só em aba separada
 
   const load = async () => {
     const [i, s, d, a] = await Promise.all([api.get("/web/info"), api.get("/web/sessions"), api.get("/devices"), api.get("/agents")]);
@@ -190,7 +193,7 @@ export default function WebAccess() {
     setSessions(prev => [...prev.filter(x => x.id !== s.id), s]);
     setActive(s.id);
     setReloads(r => ({ ...r, [s.id]: (r[s.id] || 0) + 1 }));
-    if (https) window.open(webSessionUrl(s), "_blank", "noopener");
+    if (https) window.open(webSessionUrl(s, tls), "_blank", "noopener");
   };
 
   const close = async (s) => {
@@ -238,14 +241,14 @@ export default function WebAccess() {
           <div className="flex flex-wrap items-center gap-2 py-2 text-xs font-mono">
             <span className="text-slate-200 truncate max-w-[40ch]" data-testid="web-cur-url">{cur.target}</span>
             <span className="text-slate-500">via {cur.via}</span>
-            <span className="text-slate-600">· porta {cur.port}</span>
+            <span className="text-slate-600">· porta {cur.port + (window.location.protocol === "https:" ? tls : 0)}</span>
             <div className="ml-auto flex gap-1">
               <Button size="sm" variant="ghost" title="Recarregar" data-testid="web-reload"
                 onClick={() => setReloads(r => ({ ...r, [cur.id]: (r[cur.id] || 0) + 1 }))} className="text-slate-300 hover:bg-slate-800 h-7">
                 <RotateCw className="w-3.5 h-3.5" /><span className="hidden sm:inline ml-1">Recarregar</span>
               </Button>
               <Button size="sm" variant="ghost" title="Abrir em nova aba" data-testid="web-newtab"
-                onClick={() => window.open(webSessionUrl(cur), "_blank", "noopener")} className="text-slate-300 hover:bg-slate-800 h-7">
+                onClick={() => window.open(webSessionUrl(cur, tls), "_blank", "noopener")} className="text-slate-300 hover:bg-slate-800 h-7">
                 <ExternalLink className="w-3.5 h-3.5" /><span className="hidden sm:inline ml-1">Nova aba</span>
               </Button>
             </div>
@@ -253,15 +256,15 @@ export default function WebAccess() {
           {https ? (
             <Card className="flex-1 flex flex-col items-center justify-center gap-3 bg-surface border-line text-center p-6" data-testid="web-https-note">
               <ShieldAlert className="w-8 h-8 text-amber-400" />
-              <div className="text-slate-200 text-sm max-w-md">Você abriu o BastiON por HTTPS e a página do equipamento vem pela porta {cur.port} em HTTP. O navegador não mostra uma dentro da outra, então ela abre numa aba separada.</div>
-              <Button onClick={() => window.open(webSessionUrl(cur), "_blank", "noopener")} className="bg-brand hover:bg-brand-strong">
+              <div className="text-slate-200 text-sm max-w-md">Você abriu o BastiON por HTTPS e a página do equipamento vem pela porta {cur.port} em HTTP. O navegador não mostra uma dentro da outra, então ela abre numa aba separada. Com BASTION_HTTPS_HOST configurado no servidor (README, seção 22) ela aparece aqui dentro.</div>
+              <Button onClick={() => window.open(webSessionUrl(cur, tls), "_blank", "noopener")} className="bg-brand hover:bg-brand-strong">
                 <ExternalLink className="w-4 h-4 mr-1.5" />Abrir {cur.label}
               </Button>
             </Card>
           ) : (
             <div className="relative flex-1 min-h-[320px] rounded-md border border-line overflow-hidden bg-white">
               {sessions.map(s => (
-                <iframe key={`${s.id}-${reloads[s.id] || 0}`} title={s.label} src={webSessionUrl(s)} data-testid={`web-frame-${s.id}`}
+                <iframe key={`${s.id}-${reloads[s.id] || 0}`} title={s.label} src={webSessionUrl(s, tls)} data-testid={`web-frame-${s.id}`}
                   allow="clipboard-read; clipboard-write; fullscreen" onLoad={refresh}
                   className={`absolute inset-0 w-full h-full border-0 ${s.id === active ? "block" : "hidden"}`} />
               ))}
