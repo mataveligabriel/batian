@@ -144,6 +144,16 @@ CHANNEL_PROMPT = {
             "evite tabelas largas. As propostas aparecem como um cartão com os botões Confirmar/Cancelar."),
 }
 
+# conversa por voz: a resposta é lida em voz alta pelo navegador
+VOICE_PROMPT = ("MODO VOZ: o usuário está FALANDO com você e a sua resposta será lida em voz alta. Responda como numa conversa: "
+                "frases curtas e naturais em português do Brasil, no máximo 3 ou 4 frases, indo direto ao resultado. "
+                "Não use Markdown, listas, tabelas, blocos de código, emojis nem símbolos; não dite saídas de comando. "
+                "Fale números e unidades por extenso do jeito que se fala (\"dois vírgula um giga\", \"menos dezoito dBm\"), "
+                "cite só os 2 ou 3 itens mais importantes e ofereça detalhar se ele quiser. "
+                "O texto pode vir com erros de reconhecimento de fala: nomes de equipamento podem estar escritos 'de ouvido' — "
+                "procure o equipamento mais parecido com list_devices e, se houver dúvida, confirme o nome em uma frase. "
+                "Para alterações, proponha normalmente e diga que o cartão de confirmação está na tela.")
+
 _DEV = {"type": "string", "description": "Nome exato (ou id) do equipamento, como retornado por list_devices."}
 TOOLS = [
     {
@@ -464,13 +474,13 @@ class AgentCore:
     async def save_conv(self, ctx: dict, messages: list):
         raise NotImplementedError
 
-    def _system(self, user: dict, s: dict) -> list:
+    def _system(self, user: dict, s: dict, voice: bool = False) -> list:
         now = datetime.now().strftime("%d/%m/%Y %H:%M")
         ctx = (f"Data/hora do servidor: {now}. Usuário do BastiON: {user.get('name') or user.get('email')}. "
                + ("Alterações permitidas (sempre via propose_config_change)." if s.get("ai_allow_changes")
                   else "ALTERAÇÕES DESATIVADAS pelo administrador: apenas consultas. Se pedirem mudança, explique e mostre os comandos como sugestão em texto, sem propor."))
         return [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": CHANNEL_PROMPT.get(self.channel, "") + " " + ctx}]
+                {"type": "text", "text": CHANNEL_PROMPT.get(self.channel, "") + " " + ctx + (" " + VOICE_PROMPT if voice else "")}]
 
     async def run_agent(self, ctx: dict, messages: list):
         s = ctx["settings"]
@@ -479,7 +489,7 @@ class AgentCore:
         ctx["out_limit"] = llm.tool_output_limit(cfg["provider"])
         try:
             for _ in range(MAX_STEPS):
-                resp = await llm.call(cfg, messages, self._system(ctx["user"], s), TOOLS, http=self.http,
+                resp = await llm.call(cfg, messages, self._system(ctx["user"], s, bool(ctx.get("voice"))), TOOLS, http=self.http,
                                       on_wait=lambda txt: self.out_wait(ctx, txt))
                 await self._track_usage(resp.get("usage") or {}, cfg["provider"])
                 content = _clean_assistant_content(resp.get("content"))
@@ -1252,7 +1262,7 @@ class WebAssistant(AgentCore):
         return t
 
     # ----- entrada -----
-    async def post(self, user: dict, text: str) -> dict:
+    async def post(self, user: dict, text: str, voice: bool = False) -> dict:
         s = await get_ai_settings(self.db)
         why = ai_ready(s)
         if not s.get("ai_web_enabled", True):
@@ -1267,10 +1277,10 @@ class WebAssistant(AgentCore):
             raise AIError("Ainda estou trabalhando no pedido anterior")
         d["busy"] = True
         await self._push(user["id"], {"kind": "user", "text": text})
-        self._spawn(self._run(user, s, text))
+        self._spawn(self._run(user, s, text, voice=voice))
         return await self.view(user["id"])
 
-    async def _run(self, user: dict, s: dict, text: str, feedback: bool = False):
+    async def _run(self, user: dict, s: dict, text: str, feedback: bool = False, voice: bool = False):
         d = await self._doc(user["id"])
         try:
             msgs = d.get("messages") or []
@@ -1280,7 +1290,7 @@ class WebAssistant(AgentCore):
             except Exception:
                 pass
             _append_user(msgs, text)
-            await self.run_agent({"user": user, "settings": s}, msgs)
+            await self.run_agent({"user": user, "settings": s, "voice": voice}, msgs)
         finally:
             d["busy"] = False
             d["rev"] = d.get("rev", 0) + 1

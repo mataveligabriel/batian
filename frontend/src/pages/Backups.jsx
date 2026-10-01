@@ -1,11 +1,11 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Archive, Play, Loader2, Eye, GitCompare, CheckCircle2, XCircle, Download, Server, HardDrive, FileSearch } from "lucide-react";
+import { Archive, Play, Loader2, Eye, GitCompare, CheckCircle2, XCircle, Download, Server, HardDrive, FileSearch, Search, ChevronDown, ChevronRight } from "lucide-react";
 import { BackupsManager } from "@/components/BackupsManager";
 import { ConfigSearch } from "@/components/ConfigSearch";
 
@@ -52,7 +52,17 @@ export default function Backups() {
   const wantDevice = useRef(params.get("device"));
   const wantDiff = useRef(params.get("diff"));
 
-  const loadSummary = async () => setSummary((await api.get("/backups/summary")).data);
+  const [tagsById, setTagsById] = useState({});          // device_id -> tags (vêm do cadastro do equipamento)
+  const [tag, setTag] = useState("");                    // "" = todas | nome da tag | "__none__" = sem tag
+  const [q, setQ] = useState("");
+  const [onlyFail, setOnlyFail] = useState(false);
+  const [closed, setClosed] = useState(() => new Set()); // grupos recolhidos
+
+  const loadSummary = async () => {
+    const [s, d] = await Promise.all([api.get("/backups/summary"), api.get("/devices").catch(() => ({ data: [] }))]);
+    setSummary(s.data);
+    setTagsById(Object.fromEntries((d.data || []).map(x => [x.id, x.tags || []])));
+  };
   const loadVersions = async (deviceId) => setVersions((await api.get("/backups", { params: { device_id: deviceId } })).data);
   useEffect(() => { loadSummary(); }, []);
   useEffect(() => { if (selected) { loadVersions(selected.device_id); setDiffSel([]); setDiff(null); } }, [selected]);
@@ -109,6 +119,37 @@ export default function Backups() {
     URL.revokeObjectURL(a.href);
   };
 
+  // organização por tag: filtro (chips), busca e grupos
+  const { allTags, countByTag, failTotal } = useMemo(() => {
+    const c = {}; let fail = 0;
+    for (const s of summary) {
+      const tg = tagsById[s.device_id] || [];
+      if (!tg.length) c.__none__ = (c.__none__ || 0) + 1;
+      for (const t of tg) c[t] = (c[t] || 0) + 1;
+      if (!s.last_ok) fail += 1;
+    }
+    return { allTags: Object.keys(c).filter(t => t !== "__none__").sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" })), countByTag: c, failTotal: fail };
+  }, [summary, tagsById]);
+  const shown = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return summary.filter(s => {
+      const tg = tagsById[s.device_id] || [];
+      if (tag === "__none__" ? tg.length : tag && !tg.includes(tag)) return false;
+      if (onlyFail && s.last_ok) return false;
+      return !t || s.device_name.toLowerCase().includes(t) || tg.some(x => x.toLowerCase().includes(t));
+    }).sort((a, b) => a.device_name.localeCompare(b.device_name, "pt-BR", { numeric: true, sensitivity: "base" }));
+  }, [summary, tagsById, tag, q, onlyFail]);
+  const groups = useMemo(() => {
+    if (tag) return [[tag, shown]];
+    const m = new Map();
+    for (const s of shown) {                            // em "Todas", cada equipamento fica no grupo da primeira tag dele
+      const g = (tagsById[s.device_id] || [])[0] || "__none__";
+      if (!m.has(g)) m.set(g, []);
+      m.get(g).push(s);
+    }
+    return [...m.entries()].sort((a, b) => (a[0] === "__none__") - (b[0] === "__none__") || a[0].localeCompare(b[0], "pt-BR", { sensitivity: "base" }));
+  }, [shown, tag, tagsById]);
+
   return (
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="backups-page">
       <div className="flex items-start justify-between mb-6 gap-4">
@@ -139,23 +180,72 @@ export default function Backups() {
       {tab === "devices" && (
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
         <Card className="bg-surface border-line lg:col-span-2 overflow-hidden">
-          <div className="px-4 py-3 border-b border-line text-xs text-slate-400">Equipamentos</div>
-          {summary.length === 0 && <div className="p-6 text-sm text-slate-500 font-mono">Nenhum backup ainda. Clique em "Backup agora".</div>}
-          <div className="divide-y divide-line max-h-[70vh] overflow-y-auto">
-            {summary.map(s => (
-              <button key={s.device_id} onClick={() => setSelected(s)} data-testid={`backup-device-${s.device_id}`}
-                      className={`w-full text-left px-4 py-3 hover:bg-slate-900/40 ${selected?.device_id === s.device_id ? "bg-panel" : ""}`}>
-                <div className="flex items-center justify-between">
-                  <div className="text-sm text-slate-100 font-medium flex items-center gap-2">
-                    {s.last_ok ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <XCircle className="w-3.5 h-3.5 text-red-400" />}
-                    {s.device_name}
-                  </div>
-                  <span className="text-[10px] font-mono text-slate-500">{s.ok_count}/{s.count} ok</span>
+          <div className="px-3 py-2.5 border-b border-line space-y-2">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar equipamento…" data-testid="backup-search"
+                     className="w-full h-8 pl-8 pr-2 rounded-md bg-sunken border border-line text-sm text-slate-100 focus:outline-none focus:border-brand" />
+            </div>
+            <div className="flex flex-wrap gap-1.5" data-testid="backup-tags">
+              {[["", "Todas", summary.length], ...allTags.map(t => [t, t, countByTag[t]]), ...(countByTag.__none__ ? [["__none__", "Sem tag", countByTag.__none__]] : [])].map(([v, l, n]) => (
+                <button key={v || "all"} onClick={() => setTag(v)} data-testid={`backup-tag-${v || "all"}`}
+                        className={`px-2 py-0.5 rounded-md text-xs border ${tag === v ? "bg-brand border-brand text-white" : "bg-surface border-line text-slate-300 hover:border-line2"}`}>
+                  {l} <span className={tag === v ? "text-white/70" : "text-slate-500"}>{n}</span>
+                </button>
+              ))}
+              {failTotal > 0 && (
+                <button onClick={() => setOnlyFail(!onlyFail)} data-testid="backup-only-fail" aria-pressed={onlyFail}
+                        className={`px-2 py-0.5 rounded-md text-xs border ${onlyFail ? "bg-red-500/20 border-red-400/50 text-red-200" : "border-line text-red-300 hover:border-red-400/40"}`}>
+                  com falha {failTotal}
+                </button>
+              )}
+            </div>
+            {tag && tag !== "__none__" && (
+              <button onClick={() => runAll(shown.map(x => x.device_id))} disabled={running || !shown.length} data-testid="backup-run-tag"
+                      className="text-xs text-brand-soft hover:underline disabled:opacity-50">Fazer backup agora dos {shown.length} de {tag}</button>
+            )}
+          </div>
+          {summary.length === 0 && <div className="p-6 text-sm text-slate-500">Nenhum backup ainda. Clique em "Backup agora".</div>}
+          {summary.length > 0 && shown.length === 0 && <div className="p-6 text-sm text-slate-500" data-testid="backup-empty">Nenhum equipamento com esse filtro.</div>}
+          <div className="max-h-[66vh] overflow-y-auto">
+            {groups.map(([g, list]) => {
+              const isClosed = closed.has(g) && !q;
+              const bad = list.filter(x => !x.last_ok).length;
+              return (
+                <div key={g} data-testid={`backup-group-${g}`}>
+                  {groups.length > 1 && (
+                    <button onClick={() => setClosed(prev => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; })}
+                            className="sticky top-0 z-10 w-full flex items-center gap-1.5 px-3 py-1.5 bg-panel border-y border-line text-xs text-slate-300 hover:text-slate-100" aria-expanded={!isClosed}>
+                      {isClosed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      <span className="font-medium">{g === "__none__" ? "Sem tag" : g}</span>
+                      <span className="text-slate-500">{list.length}</span>
+                      {bad > 0 && <span className="ml-auto text-red-300">{bad} com falha</span>}
+                    </button>
+                  )}
+                  {!isClosed && (
+                    <div className="divide-y divide-line">
+                      {list.map(s => (
+                        <button key={s.device_id} onClick={() => setSelected(s)} data-testid={`backup-device-${s.device_id}`}
+                                className={`w-full text-left px-4 py-2.5 hover:bg-white/[0.03] ${selected?.device_id === s.device_id ? "bg-panel" : ""}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm text-slate-100 font-medium flex items-center gap-2 min-w-0">
+                              {s.last_ok ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> : <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />}
+                              <span className="truncate">{s.device_name}</span>
+                            </div>
+                            <span className="text-[10px] font-mono text-slate-500 shrink-0">{s.ok_count}/{s.count} ok</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-x-2">
+                            <span className="font-mono">{s.device_type} · {fmt(s.last_at)}</span>
+                            {(tagsById[s.device_id] || []).filter(t => t !== g).map(t => <span key={t} className="px-1 rounded border border-line text-slate-400">{t}</span>)}
+                          </div>
+                          {!s.last_ok && s.last_error && <div className="text-[11px] font-mono text-red-400 mt-0.5 truncate">{s.last_error}</div>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div className="text-[11px] font-mono text-slate-500 mt-0.5">{s.device_type} · último: {fmt(s.last_at)}</div>
-                {!s.last_ok && s.last_error && <div className="text-[11px] font-mono text-red-400 mt-0.5 truncate">{s.last_error}</div>}
-              </button>
-            ))}
+              );
+            })}
           </div>
         </Card>
 

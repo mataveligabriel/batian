@@ -487,3 +487,29 @@ página do equipamento abre **numa aba separada** (botão **Abrir**). Por `http:
 Limitações: páginas que usam WebSocket (raras em equipamentos de rede) não funcionam por aqui; links fixos para
 **outro** IP (ex.: a OLT que abre a página de uma ONU em outro endereço) saem do Bastion — abra esse outro endereço
 por "Endereço por agente".
+
+## 21. Conversa por voz com o assistente
+
+No chat do assistente, botão **Voz**: abre a tela de conversa. Você fala, o BastiON transcreve, o assistente
+(o mesmo provedor do chat — Gemini, Groq, Claude…) consulta os equipamentos e a resposta é **lida em voz alta**.
+Depois de falar ele volta a ouvir sozinho; tocar na esfera interrompe a fala. Em ⚙ dá para escolher a voz
+(as vozes em português do aparelho) e a velocidade. Alterações de configuração continuam exigindo o clique em
+**Confirmar** no cartão da conversa escrita.
+
+- **Ouvir** usa o reconhecimento de fala do navegador (Chrome, Edge ou Safari; precisa de internet).
+  **Falar** usa as vozes do próprio aparelho. Não há custo extra nem chave nova.
+- O navegador **só libera o microfone em endereço seguro (https)**. Abrindo por `http://IP:porta` a tela explica
+  e ainda responde falando ao que for digitado. Para o microfone funcionar:
+  - **Teste rápido no PC** (Chrome/Edge): `chrome://flags/#unsafely-treat-insecure-origin-as-secure` → cole
+    `http://IP_DO_BASTION:8088` → Enabled → reiniciar o navegador.
+  - **Definitivo**: HTTPS. Com domínio, `BASTION_DOMAIN=bastion.seudominio.com` (certificado automático). Sem domínio,
+    acrescente um endereço https pelo IP no `deploy/.env` e rode o `update.sh`:
+    ```
+    BASTION_ALT=https://IP_DO_BASTION:8443
+    ```
+    ```bash
+    sudo ufw allow 8443/tcp
+    ```
+    O Caddy gera um certificado próprio; no primeiro acesso a `https://IP_DO_BASTION:8443` o navegador avisa que o
+    certificado não é reconhecido — aceite (Avançado → continuar). Por https o Acesso Web (seção 20) abre em aba separada.
+- O app do Windows (Nativefier) não tem reconhecimento de fala: use o Chrome/Edge.

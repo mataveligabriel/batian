@@ -72,6 +72,7 @@ export default function Login() {
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Entrar"}
           </Button>
         </form>
+        <p className="mt-6 text-center text-xs text-slate-500" data-testid="login-credit">Powered by <span className="text-slate-300 font-medium">Gabriel Mataveli</span></p>
       </div>
       <Toaster theme="dark" richColors position="top-right" />
     </div>

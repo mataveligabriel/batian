@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Bot, X, Send, Loader2, RotateCcw, Wrench, AlertTriangle, CheckCircle2, XCircle, Clock, ShieldAlert, Sparkles } from "lucide-react";
+import { Bot, X, Send, Loader2, RotateCcw, Wrench, AlertTriangle, CheckCircle2, XCircle, Clock, ShieldAlert, Sparkles, Mic } from "lucide-react";
+import { VoiceMode } from "@/components/VoiceMode";
 import { STATUS } from "@/lib/netfmt";
 
 const SUGGESTIONS = [
@@ -82,6 +83,7 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
   const [conv, setConv] = useState({ items: [], busy: false });
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [voice, setVoice] = useState(false);            // conversa por voz (tela cheia)
   const listRef = useRef(null);
   const inputRef = useRef(null);
   const lastRev = useRef(-1);
@@ -107,12 +109,12 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
     return () => window.removeEventListener("keydown", esc);
   }, [open]);
 
-  const send = async (t) => {
+  const send = async (t, opts) => {
     const msg = (t ?? text).trim();
-    if (!msg || conv.busy) return;
+    if (!msg || conv.busy) return false;
     setSending(true);
-    try { const { data } = await api.post("/assistant/messages", { text: msg }); lastRev.current = data.rev; setConv(data); setText(""); }
-    catch (e) { toast.error(formatApiError(e)); }
+    try { const { data } = await api.post("/assistant/messages", { text: msg, voice: !!opts?.voice }); lastRev.current = data.rev; setConv(data); if (!opts?.voice) setText(""); return true; }
+    catch (e) { toast.error(formatApiError(e)); return false; }
     finally { setSending(false); }
   };
   const decide = async (pid, action) => {
@@ -145,7 +147,12 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
               <div className="text-sm font-semibold text-slate-100">Assistente</div>
               <div className="text-[10px] font-mono text-slate-500 truncate">{enabled ? `${status.provider} · ${status.model}` : "não configurado"}</div>
             </div>
-            <button onClick={reset} disabled={conv.busy || !conv.items.length} className="ml-auto w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-100 disabled:opacity-30" title="Nova conversa" data-testid="assistant-reset"><RotateCcw className="w-4 h-4" /></button>
+            {enabled && (
+              <button onClick={() => setVoice(true)} className="ml-auto h-8 px-2.5 rounded-md flex items-center gap-1.5 text-xs text-on border border-on/30 bg-on/10 hover:bg-on/20" title="Conversar por voz" data-testid="assistant-voice">
+                <Mic className="w-3.5 h-3.5" /> Voz
+              </button>
+            )}
+            <button onClick={reset} disabled={conv.busy || !conv.items.length} className={`${enabled ? "" : "ml-auto "}w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-100 disabled:opacity-30`} title="Nova conversa" data-testid="assistant-reset"><RotateCcw className="w-4 h-4" /></button>
             <button onClick={() => setOpen(false)} className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-100" title="Fechar (Esc)" data-testid="assistant-close"><X className="w-5 h-5" /></button>
           </div>
 
@@ -196,6 +203,9 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
             </>
           )}
         </div>
+      )}
+      {voice && enabled && (
+        <VoiceMode conv={conv} send={send} status={status} onClose={() => setVoice(false)} onShowChat={() => { setVoice(false); setOpen(true); }} />
       )}
     </>
   );

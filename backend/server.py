@@ -2106,6 +2106,7 @@ async def ai_models(provider: str = "", key: str = "", base_url: str = "", _: di
 # ---------- Chat do assistente dentro do sistema ----------
 class ChatIn(BaseModel):
     text: str
+    voice: bool = False      # conversa por voz: resposta curta, para ser lida em voz alta
 
 
 def _chat_user(user: dict):
@@ -2135,7 +2136,7 @@ async def assistant_conversation(user: dict = Depends(get_current_user)):
 async def assistant_message(body: ChatIn, user: dict = Depends(get_current_user)):
     _chat_user(user)
     try:
-        return await web_assistant.post(user, body.text)
+        return await web_assistant.post(user, body.text, voice=body.voice)
     except ai_assistant.AIError as e:
         raise HTTPException(409 if "trabalhando" in str(e) else 400, str(e))
 
