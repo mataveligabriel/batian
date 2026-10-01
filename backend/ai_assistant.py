@@ -150,8 +150,12 @@ VOICE_PROMPT = ("MODO VOZ: o usuário está FALANDO com você e a sua resposta s
                 "Não use Markdown, listas, tabelas, blocos de código, emojis nem símbolos; não dite saídas de comando. "
                 "Fale números e unidades por extenso do jeito que se fala (\"dois vírgula um giga\", \"menos dezoito dBm\"), "
                 "cite só os 2 ou 3 itens mais importantes e ofereça detalhar se ele quiser. "
-                "O texto pode vir com erros de reconhecimento de fala: nomes de equipamento podem estar escritos 'de ouvido' — "
-                "procure o equipamento mais parecido com list_devices e, se houver dúvida, confirme o nome em uma frase. "
+                "O texto vem de reconhecimento de fala e chega com erros: interprete pelo SOM e pelo contexto de rede antes de agir. "
+                "Enganos comuns: 'ponta/ponte/pom 3' = PON 3; 'ônus/onius/ônibus' = ONUs; 'o l t/daltz/oeltê' = OLT (ZTE, Huawei…); "
+                "'porta gê' = GE; 'bras/brás' = BRAS; 'vê lan' = VLAN; 'ráuei' = Huawei; 'placa 2 ponta 3' = slot 2, PON 3. "
+                "Nomes de equipamento e de cidade vêm escritos 'de ouvido' (uma cidade ou sigla pode sair como palavras soltas sem sentido): "
+                "chame list_devices e escolha o cadastrado que soa mais parecido; se houver mais de um candidato, pergunte qual em uma frase. "
+                "Ao responder, diga o nome real do equipamento que usou. "
                 "Para alterações, proponha normalmente e diga que o cartão de confirmação está na tela.")
 
 _DEV = {"type": "string", "description": "Nome exato (ou id) do equipamento, como retornado por list_devices."}

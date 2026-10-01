@@ -11,7 +11,23 @@ import { copyText } from "@/lib/clipboard";
 const SR = typeof window !== "undefined" ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
 const TTS = typeof window !== "undefined" && "speechSynthesis" in window ? window.speechSynthesis : null;
 const PREF_KEY = "bastion_voice_prefs";
-const loadPrefs = () => { try { return { rate: 1.05, voice: "", ...JSON.parse(localStorage.getItem(PREF_KEY) || "{}") }; } catch { return { rate: 1.05, voice: "" }; } };
+const DEF = { rate: 1.05, voice: "", pause: 2.5 };       // pause: segundos de silêncio antes de enviar o que foi falado
+const loadPrefs = () => { try { return { ...DEF, ...JSON.parse(localStorage.getItem(PREF_KEY) || "{}") }; } catch { return { ...DEF }; } };
+
+// O reconhecimento de fala não conhece o vocabulário de rede: corrige os enganos mais comuns antes de mostrar e enviar.
+const TERMS = [
+  [/\b(?:[oô]ni[uo]s|[oô]nus|onuses|onu's|o n us?|[oô]nos)\b/gi, "ONUs"], [/\b(?:[oô]n[iu]|o n u)\b/gi, "ONU"],
+  [/\b(?:o l t|[oô]\s?eli?\s?t[eê]|[oó]leo t[eê]|olte?)\b/gi, "OLT"], [/\bd[ao]ltz?\b/gi, "da OLT ZTE"], [/\bz\s?t\s?e\b|\bz[eê] t[eê] [eé]\b|\bzetec?\b/gi, "ZTE"],
+  [/\bpont[ao]s?\s+(?=\d)/gi, "PON "], [/\b(?:p[oô]n|pom|põe)\s+(?=\d)/gi, "PON "], [/\bgepon\b|\bg pon\b|\bgipon\b/gi, "GPON"],
+  [/\bb[eê]\s?g[eê]\s?p[eê]\b|\bb g p\b/gi, "BGP"], [/\bo s p f\b|\b[oó] [eé]sse p[eê] [eé]fe\b/gi, "OSPF"], [/\bm p l s\b|\beme p[eê] ele [eé]sse\b/gi, "MPLS"],
+  [/\bv[eê]\s?lans?\b|\bvilans?\b|\bv lan\b/gi, "VLAN"], [/\bp[eê] p[eê] p[eê] o [eé]\b|\bpppoe\b|\bp p p o e\b/gi, "PPPoE"],
+  [/\b(?:ru[aá]u?ei|u[aá]u?ei|huawey|rauei|uawei|huawei)\b/gi, "Huawei"], [/\bj[uú]niper\b|\bjun[ií]per\b/gi, "Juniper"],
+  [/\bdata\s?com\b/gi, "Datacom"], [/\bmicro\s?ti[kc]k?\b|\bmikrotik\b/gi, "Mikrotik"], [/\bd[eê]\s?b[eê]\s?eme?\b|\bdbm\b/gi, "dBm"],
+  [/\beth[- ]?trunk\b|\bif trunk\b|\bet trunk\b/gi, "Eth-Trunk"], [/\bup\s?link\b/gi, "uplink"], [/\bbras\b/gi, "BRAS"], [/\bc g nat\b|\bcg nat\b|\bcgnat\b/gi, "CGNAT"],
+];
+// \b do JavaScript não entende letras acentuadas ("pê", "ônus"): troca por limites de palavra que entendem
+const TERMS_U = TERMS.map(([re, to]) => [new RegExp(re.source.replace(/\\b/g, (m, i, src) => (i === 0 || /[|(:]$/.test(src.slice(0, i)) ? "(?<![\\p{L}\\p{N}])" : "(?![\\p{L}\\p{N}])")), "giu"), to]);
+export function fixTerms(t) { let o = String(t || ""); for (const [re, to] of TERMS_U) o = o.replace(re, to); return o.replace(/\s+/g, " ").trim(); }
 
 /** Texto do chat -> texto para ser falado (sem Markdown, sem blocos de comando). */
 export function speakable(text) {
@@ -129,6 +145,8 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
   const [cfg, setCfg] = useState(false);
   const [typed, setTyped] = useState("");
   const rec = useRef(null);
+  const acc = useRef("");                               // fala acumulada (frases já fechadas pelo reconhecimento)
+  const timer = useRef(null);                           // espera de silêncio antes de enviar
   const alive = useRef(true);
   const want = useRef(false);                           // deve estar ouvindo
   const spoken = useRef(null);                          // id da última resposta já falada
@@ -157,25 +175,43 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
 
   const stopListening = useCallback(() => {
     want.current = false;
+    clearTimeout(timer.current); timer.current = null;
     try { rec.current?.abort(); } catch { /* já parado */ }
     rec.current = null;
   }, []);
 
-  const listen = useCallback(() => {
+  // Fala: junta tudo o que o reconhecimento entrega e só envia depois de `pause` segundos de silêncio
+  // (ou no toque em "Enviar"). Assim dá para respirar no meio da frase sem ele sair respondendo.
+  const pauseRef = useRef(prefs.pause); pauseRef.current = prefs.pause;
+  const flush = useCallback(() => {
+    clearTimeout(timer.current); timer.current = null;
+    const text = fixTerms(acc.current.trim());
+    acc.current = "";
+    want.current = false;
+    try { rec.current?.abort(); } catch { /* ok */ }
+    rec.current = null;
+    if (text) { silent.current = 0; ask(text); } else setState("idle");
+  }, [ask]);
+
+  const listen = useCallback((keep = false) => {
     if (!canListen || mutedRef.current || !alive.current) { setState("idle"); return; }
     try { rec.current?.abort(); } catch { /* ok */ }
     const r = new SR();
-    r.lang = "pt-BR"; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
-    let final = "";
+    r.lang = "pt-BR"; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+    if (!keep) { acc.current = ""; clearTimeout(timer.current); timer.current = null; }
+    let done = "";                                      // fechado nesta sessão do reconhecimento
     want.current = true;
     r.onresult = (e) => {
-      let interim = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
+      let interim = ""; done = "";
+      for (let i = 0; i < e.results.length; i++) {
         const tx = e.results[i][0].transcript;
-        if (e.results[i].isFinal) final += tx; else interim += tx;
+        if (e.results[i].isFinal) done += tx + " "; else interim += tx;
       }
-      setHeard((final + " " + interim).trim());
+      const all = (acc.current + " " + done + " " + interim).replace(/\s+/g, " ").trim();
+      setHeard(fixTerms(all));
       setLevel(Math.min(1, 0.35 + (interim.length % 9) / 12));
+      clearTimeout(timer.current);                      // cada palavra nova reinicia a espera
+      if (all) timer.current = setTimeout(() => { acc.current = all; flush(); }, Math.max(0.8, pauseRef.current) * 1000);
     };
     r.onerror = (e) => {
       if (e.error === "not-allowed" || e.error === "service-not-allowed") { want.current = false; setErr("O navegador bloqueou o microfone. Libere o microfone para este site (cadeado na barra de endereço) e toque de novo."); }
@@ -185,16 +221,17 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
     r.onend = () => {
       if (rec.current !== r || !alive.current) return;
       rec.current = null;
-      const text = final.trim();
-      if (text) { want.current = false; silent.current = 0; ask(text); return; }
+      if (done.trim()) acc.current = (acc.current + " " + done).replace(/\s+/g, " ").trim();
+      if (!want.current || mutedRef.current || stateRef.current !== "listening") { if (stateRef.current === "listening") setState("idle"); return; }
+      if (acc.current) { setTimeout(() => want.current && listen(true), 150); return; }   // o navegador fechou no meio: continua ouvindo a mesma fala
       silent.current += 1;                              // silêncio: tenta mais duas vezes e depois espera um toque
-      if (want.current && !mutedRef.current && stateRef.current === "listening" && silent.current < 3) setTimeout(() => want.current && listen(), 250);
+      if (silent.current < 3) setTimeout(() => want.current && listen(), 250);
       else { want.current = false; setState("idle"); }
     };
     rec.current = r;
-    setErr(""); setHeard(""); setState("listening");
+    setErr(""); if (!keep) setHeard(""); setState("listening");
     try { r.start(); } catch { setState("idle"); }
-  }, [canListen, ask]);
+  }, [canListen, ask, flush]);
 
   const stopSpeaking = useCallback(() => { try { TTS?.cancel(); } catch { /* ok */ } }, []);
 
@@ -239,9 +276,11 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
     return () => window.removeEventListener("keydown", esc, true);
   }, [onClose]);
 
+  const sendNow = () => { acc.current = heard; flush(); };      // não espera a pausa
   const tapOrb = () => {
     silent.current = 0;
     if (state === "speaking") { stopSpeaking(); setMuted(false); mutedRef.current = false; listen(); }
+    else if (state === "listening" && heard) sendNow();
     else if (state === "listening") { setMuted(true); mutedRef.current = true; stopListening(); setState("idle"); }
     else if (state === "idle") { setMuted(false); mutedRef.current = false; listen(); }
   };
@@ -278,6 +317,10 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
             <input type="range" min="0.8" max="1.5" step="0.05" value={prefs.rate} onChange={e => setPrefs({ ...prefs, rate: Number(e.target.value) })} />
             <span className="text-slate-400 tabular-nums w-10">{prefs.rate.toFixed(2)}×</span>
           </label>
+          <label className="flex items-center gap-2 text-slate-300" title="Quanto tempo de silêncio até ele entender que você terminou de falar">Esperar
+            <input type="range" min="1" max="6" step="0.5" value={prefs.pause} onChange={e => setPrefs({ ...prefs, pause: Number(e.target.value) })} data-testid="voice-pause" />
+            <span className="text-slate-400 tabular-nums w-24">{prefs.pause.toFixed(1)} s de silêncio</span>
+          </label>
           <button onClick={() => speak("Esta é a voz do assistente do BastiON.")} className="text-brand-soft hover:underline">testar</button>
         </div>
       )}
@@ -288,6 +331,7 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
           <Orb state={state} level={level} />
         </button>
         <div className="mt-2 text-base text-slate-200" data-testid="voice-state" aria-live="polite">{LABEL[state]}</div>
+        {state === "listening" && heard && <div className="text-xs text-slate-500">envio quando você parar por {prefs.pause.toFixed(1)} s — ou toque em Enviar</div>}
         {tool && <div className="mt-1 text-xs font-mono text-slate-500 max-w-xl truncate" data-testid="voice-tool">{tool}</div>}
         <div className="mt-4 w-full max-w-2xl text-center space-y-2 min-h-[5.5rem]">
           {heard && <div className="text-sm text-slate-400" data-testid="voice-heard">“{heard}”</div>}
@@ -325,6 +369,11 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
         {state === "speaking" && (
           <button onClick={() => { stopSpeaking(); listen(); }} className="h-12 px-4 rounded-full border border-line2 text-slate-200 hover:bg-white/5 flex items-center gap-2 text-sm" data-testid="voice-stop">
             <Square className="w-4 h-4" /> Parar de falar
+          </button>
+        )}
+        {state === "listening" && heard && (
+          <button onClick={sendNow} className="h-12 px-4 rounded-full bg-brand hover:bg-brand-strong text-white flex items-center gap-2 text-sm" data-testid="voice-send-now">
+            <Send className="w-4 h-4" /> Enviar
           </button>
         )}
         {canListen && (
