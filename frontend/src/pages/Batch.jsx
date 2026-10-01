@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -9,7 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Play, Loader2, Plus, Trash2, Pencil, Star } from "lucide-react";
+import { Play, Loader2, Plus, Trash2, Pencil, Star, Search, ChevronDown, ChevronRight } from "lucide-react";
 import { useLocation } from "react-router-dom";
 
 export default function Batch() {
@@ -40,7 +40,41 @@ export default function Batch() {
   useEffect(() => { load(); }, []);
 
   const toggle = (id) => setSelected(sel => sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]);
-  const toggleAll = () => setSelected(selected.length === devices.length ? [] : devices.map(d => d.id));
+
+  // organização por tag (pastas): filtro, busca e grupos que abrem/fecham e marcam todos de uma vez
+  const [tag, setTag] = useState("");                    // "" = todas | tag | "__none__" = sem tag
+  const [q, setQ] = useState("");
+  const [closed, setClosed] = useState(() => new Set());
+  const { allTags, countByTag } = useMemo(() => {
+    const c = {};
+    for (const d of devices) {
+      if (!(d.tags || []).length) c.__none__ = (c.__none__ || 0) + 1;
+      for (const t of d.tags || []) c[t] = (c[t] || 0) + 1;
+    }
+    return { allTags: Object.keys(c).filter(t => t !== "__none__").sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" })), countByTag: c };
+  }, [devices]);
+  const shown = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return devices.filter(d => {
+      const tg = d.tags || [];
+      if (tag === "__none__" ? tg.length : tag && !tg.includes(tag)) return false;
+      return !t || d.name.toLowerCase().includes(t) || (d.host || "").includes(t) || tg.some(x => x.toLowerCase().includes(t));
+    }).sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { numeric: true, sensitivity: "base" }));
+  }, [devices, tag, q]);
+  const groups = useMemo(() => {
+    if (tag) return [[tag, shown]];
+    const m = new Map();
+    for (const d of shown) {                             // em "Todas", cada equipamento fica na pasta da primeira tag
+      const g = (d.tags || [])[0] || "__none__";
+      if (!m.has(g)) m.set(g, []);
+      m.get(g).push(d);
+    }
+    return [...m.entries()].sort((a, b) => (a[0] === "__none__") - (b[0] === "__none__") || a[0].localeCompare(b[0], "pt-BR", { sensitivity: "base" }));
+  }, [shown, tag]);
+  const setMany = (ids, on) => setSelected(sel => on ? [...new Set([...sel, ...ids])] : sel.filter(x => !ids.includes(x)));
+  const shownIds = shown.map(d => d.id);
+  const allShownOn = shownIds.length > 0 && shownIds.every(id => selected.includes(id));
+  const toggleAll = () => setMany(shownIds, !allShownOn);       // marca/desmarca só o que está à vista
 
   const execute = async () => {
     if (selected.length === 0) return toast.error("Selecione ao menos 1 equipamento");
@@ -87,24 +121,60 @@ export default function Batch() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Devices selector */}
         <Card className="bg-surface border-line p-5 lg:col-span-1" data-testid="devices-selector">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-2">
             <div className="text-xs text-slate-400">Equipamentos ({selected.length}/{devices.length})</div>
-            <button onClick={toggleAll} data-testid="toggle-all-devices" className="text-xs text-brand-soft hover:underline font-mono">
-              {selected.length === devices.length ? "limpar" : "todos"}
-            </button>
+            <div className="flex items-center gap-3">
+              {selected.length > 0 && <button onClick={() => setSelected([])} data-testid="clear-selection" className="text-xs text-slate-400 hover:text-slate-100">limpar</button>}
+              <button onClick={toggleAll} data-testid="toggle-all-devices" className="text-xs text-brand-soft hover:underline">
+                {allShownOn ? "desmarcar" : "marcar"} {tag || q ? `os ${shownIds.length} listados` : "todos"}
+              </button>
+            </div>
           </div>
-          <div className="space-y-1 max-h-[520px] overflow-y-auto">
-            {devices.map(d => (
-              <label key={d.id} data-testid={`batch-device-${d.id}`}
-                     className="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-slate-800/60 cursor-pointer">
-                <Checkbox checked={selected.includes(d.id)} onCheckedChange={() => toggle(d.id)} />
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm text-slate-100 truncate">{d.name}</div>
-                  <div className="text-xs font-mono text-slate-500 truncate">{d.host}:{d.port}</div>
-                </div>
-                <span className={`w-2 h-2 rounded-full ${d.status === "online" ? "bg-emerald-400" : "bg-slate-600"}`} />
-              </label>
+          <div className="relative mb-2">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nome, IP ou tag…" data-testid="batch-search"
+                   className="w-full h-8 pl-8 pr-2 rounded-md bg-sunken border border-line text-sm text-slate-100 focus:outline-none focus:border-brand" />
+          </div>
+          <div className="flex flex-wrap gap-1.5 mb-2" data-testid="batch-tags">
+            {[["", "Todas", devices.length], ...allTags.map(t => [t, t, countByTag[t]]), ...(countByTag.__none__ ? [["__none__", "Sem tag", countByTag.__none__]] : [])].map(([v, l, n]) => (
+              <button key={v || "all"} onClick={() => setTag(v)} data-testid={`batch-tag-${v || "all"}`}
+                      className={`px-2 py-0.5 rounded-md text-xs border ${tag === v ? "bg-brand border-brand text-white" : "bg-surface border-line text-slate-300 hover:border-line2"}`}>
+                {l} <span className={tag === v ? "text-white/70" : "text-slate-500"}>{n}</span>
+              </button>
             ))}
+          </div>
+          <div className="max-h-[520px] overflow-y-auto -mx-2">
+            {shown.length === 0 && <div className="px-2 py-4 text-sm text-slate-500" data-testid="batch-empty">Nenhum equipamento com esse filtro.</div>}
+            {groups.map(([g, list]) => {
+              const ids = list.map(d => d.id);
+              const on = ids.filter(id => selected.includes(id)).length;
+              const isClosed = closed.has(g) && !q;
+              return (
+                <div key={g} data-testid={`batch-group-${g}`}>
+                  <div className="sticky top-0 z-10 flex items-center gap-2 px-2 py-1.5 bg-panel border-y border-line text-xs">
+                    <Checkbox checked={on === ids.length} onCheckedChange={() => setMany(ids, on !== ids.length)} aria-label={`Marcar todos de ${g === "__none__" ? "Sem tag" : g}`} data-testid={`batch-group-check-${g}`} />
+                    <button onClick={() => setClosed(prev => { const n = new Set(prev); n.has(g) ? n.delete(g) : n.add(g); return n; })}
+                            className="flex-1 flex items-center gap-1.5 text-slate-300 hover:text-slate-100 text-left" aria-expanded={!isClosed} data-testid={`batch-group-toggle-${g}`}>
+                      {isClosed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      <span className="font-medium">{g === "__none__" ? "Sem tag" : g}</span>
+                      <span className="text-slate-500">{on ? `${on}/` : ""}{ids.length}</span>
+                    </button>
+                  </div>
+                  {!isClosed && list.map(d => (
+                    <label key={d.id} data-testid={`batch-device-${d.id}`}
+                           className="flex items-center gap-3 px-2 py-1.5 hover:bg-white/[0.04] cursor-pointer">
+                      <Checkbox checked={selected.includes(d.id)} onCheckedChange={() => toggle(d.id)} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-slate-100 truncate">{d.name}</div>
+                        <div className="text-xs text-slate-500 truncate"><span className="font-mono">{d.host}:{d.port}</span>
+                          {(d.tags || []).filter(t => t !== g).map(t => <span key={t} className="ml-1.5 px-1 rounded border border-line text-slate-400">{t}</span>)}</div>
+                      </div>
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${d.status === "online" ? "bg-emerald-400" : "bg-slate-600"}`} title={d.status === "online" ? "online" : "offline"} />
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </Card>
 
