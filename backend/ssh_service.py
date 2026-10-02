@@ -14,7 +14,7 @@ SHELL_EXEC_TYPES = {"cisco", "huawei", "juniper", "datacom", "zte", "mikrotik"}
 PAGINATION_OFF = {
     "cisco": "terminal length 0",
     "huawei": "screen-length 0 temporary",
-    "datacom": "terminal length 0",
+    "datacom": "paginate false\nterminal length 0",   # DmOS usa "paginate false"; os Datacom antigos, "terminal length 0"
     "zte": "terminal length 0",
     "juniper": "set cli screen-length 0",
 }
@@ -25,6 +25,20 @@ LEGACY_ALGS = dict(
     mac_algs="+hmac-sha1,hmac-sha1-96,hmac-md5",
     server_host_key_algs="+ssh-rsa,ssh-dss",
 )
+
+# Paginação que sobrou ligada ("--More--", "---- More ----", "---(more 42%)---", "Press any key…"):
+# o leitor manda espaço sozinho até a saída acabar, em qualquer fabricante.
+PAGER_RE = re.compile(rb"(?:-+\s*\(?more(?:\s+\d+%)?\)?\s*-+|<-+\s*more\s*-+>|\(more\)|press any key to continue|"
+                      rb"--more--\s*or\s*\(q\)uit)[^\r\n]{0,40}$", re.I)
+_PAGER_TXT = re.compile(r"[ \t]*(?:-+\s*\(?more(?:\s+\d+%)?\)?\s*-+|<-+\s*more\s*-+>|\(more\)|press any key to continue)"
+                        r"[^\n\x08\r]{0,40}(?:[\x08 ]*\x08[\x08 ]*|\r[ \t]*\r?|\x1b\[[0-9;]*[A-Za-z])*[ \t]*", re.I)
+MAX_PAGES = 20000
+
+
+def at_pager(buf: bytes) -> bool:
+    tail = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", buf[-160:]).rstrip(b" \t\x00\x08")
+    return bool(PAGER_RE.search(tail))
+
 
 PROMPT_RE = re.compile(rb"[\r\n][^\r\n]{0,120}[#>$%\]] ?\s*$")
 
@@ -122,6 +136,7 @@ class SSHClientWrapper:
         sem prompt (comando lento ainda gerando saída) espera até `idle` segundos."""
         buf = b""
         deadline = time.monotonic() + hard
+        pages = 0
         while time.monotonic() < deadline:
             wait = min(idle, 1.0) if buf and PROMPT_RE.search(buf[-200:]) else idle
             try:
@@ -129,6 +144,10 @@ class SSHClientWrapper:
                 if not chunk:
                     break
                 buf += chunk
+                if at_pager(buf) and pages < MAX_PAGES:      # saída paginada: pede a próxima página
+                    pages += 1
+                    proc.stdin.write(b" ")
+                    deadline = max(deadline, time.monotonic() + 15)
             except asyncio.TimeoutError:
                 if buf:
                     break
@@ -138,8 +157,7 @@ class SSHClientWrapper:
         proc = await self.conn.create_process(term_type="vt100", term_size=(200, 100), encoding=None)
         try:
             await self._read_until_idle(proc, idle=1.5, hard=10)
-            pre = PAGINATION_OFF.get(self.device_type)
-            if pre:
+            for pre in (PAGINATION_OFF.get(self.device_type) or "").splitlines():
                 proc.stdin.write((pre + "\n").encode())
                 await self._read_until_idle(proc, idle=1.0, hard=8)
             out = b""
@@ -202,8 +220,7 @@ class ShellSession:
     async def open(self):
         self.proc = await self.w.conn.create_process(term_type="vt100", term_size=(200, 100), encoding=None)
         await self.w._read_until_idle(self.proc, idle=1.5, hard=10)
-        pre = PAGINATION_OFF.get(self.w.device_type)
-        if pre:
+        for pre in (PAGINATION_OFF.get(self.w.device_type) or "").splitlines():
             self.proc.stdin.write((pre + "\n").encode())
             await self.w._read_until_idle(self.proc, idle=1.0, hard=8)
 
@@ -240,8 +257,10 @@ class _ExecSession:
 
 
 def _clean_ansi(s: str) -> str:
+    s = _PAGER_TXT.sub("", s)                          # marcas de paginação e o "apaga" que vem depois
     s = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", s)
-    return s.replace("\r", "")
+    s = re.sub(r"[^\n]\x08", "", s) if "\x08" in s else s
+    return s.replace("\x08", "").replace("\r", "")
 
 
 async def tcp_ping(host: str, port: int, timeout: float = 3.0) -> Optional[float]:

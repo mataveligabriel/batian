@@ -176,7 +176,9 @@ class TelnetClientWrapper:
         self.resize_sync(cols, rows)
 
     async def _read_until_idle(self, idle: float = 1.5, hard: float = 60) -> bytes:
+        from ssh_service import at_pager, MAX_PAGES
         buf = b""
+        pages = 0
         deadline = time.monotonic() + hard
         while time.monotonic() < deadline:
             wait = min(idle, 1.0) if buf and PROMPT_RE.search(buf[-200:]) else idle
@@ -185,6 +187,10 @@ class TelnetClientWrapper:
                 if not chunk:
                     break
                 buf += chunk
+                if at_pager(buf) and pages < MAX_PAGES:      # saída paginada: pede a próxima página
+                    pages += 1
+                    self._send(b" ")
+                    deadline = max(deadline, time.monotonic() + 15)
             except asyncio.TimeoutError:
                 if buf:
                     break
@@ -195,8 +201,7 @@ class TelnetClientWrapper:
             await self.open_shell()
         await self._read_until_idle(idle=2.0, hard=15)
         from ssh_service import PAGINATION_OFF
-        pre = PAGINATION_OFF.get(self.device_type)
-        if pre:
+        for pre in (PAGINATION_OFF.get(self.device_type) or "").splitlines():
             self._send(pre.encode() + b"\r\n")
             await self._read_until_idle(idle=1.0, hard=8)
         out = b""
