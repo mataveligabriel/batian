@@ -533,3 +533,30 @@ BASTION_HTTPS_PORT=443
 
 Outras portas: `BASTION_HTTPS_PORT=8443`, `WEB_PROXY_TLS_OFFSET=400`. Se a configuração de HTTPS tiver algum erro,
 o BastiON sobe só no endereço de sempre e mostra o motivo em `docker compose logs frontend`.
+
+## 23. Backups na nuvem (Google Drive, OneDrive, Dropbox…)
+
+Em **Automação → Backups na nuvem** você escolhe o drive, a pasta e **quais tags** (ex.: FLEX) vão para a nuvem.
+Depois de cada backup (o diário e os manuais) o BastiON copia para o drive só o que ainda não foi:
+
+```
+gdrive:BastiON/FLEX/OLT ZTE FLEX GUACUI/2026-10-02_03-00-00.cfg
+```
+
+- Só **copia**: nunca apaga nada no drive. Por padrão vão as versões em que a configuração mudou (e a primeira
+  de cada equipamento); dá para mandar todas.
+- Se o envio falhar, sai alerta (Telegram/push), aparece no resumo diário e é tentado de novo no próximo backup.
+- As configurações têm senhas e chaves dos equipamentos: use uma pasta que só você acessa.
+
+**Autorizar o drive (uma vez)** — o envio usa o [rclone](https://rclone.org), que já vem no container:
+```bash
+sudo bash /opt/bastion/deploy/cloud-auth.sh            # Google Drive, com o nome "gdrive"
+sudo bash /opt/bastion/deploy/cloud-auth.sh onedrive onedrive   # outro tipo/nome
+```
+O script pede para você abrir, **no seu PC**, um túnel SSH (`ssh -N -L 53682:127.0.0.1:53682 root@IP_DO_SERVIDOR`)
+e mostra um link `http://127.0.0.1:53682/auth?...`. Abra o link no navegador do PC, entre na conta do Google e
+clique em Permitir. A autorização fica guardada no servidor (volume `bastion_data`) e sobrevive às atualizações.
+No Google Drive o BastiON só enxerga os arquivos que ele mesmo criou.
+
+Depois: Automação → Backups na nuvem → escolha o drive, marque as tags, **Testar acesso**, ligue e **Enviar agora**
+(a primeira vez manda o histórico das tags escolhidas).

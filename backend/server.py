@@ -50,6 +50,7 @@ import dailyreport
 import qrgen
 import security
 import webproxy
+import cloudsync
 import webpush
 import sharing
 import netanalysis
@@ -1409,7 +1410,14 @@ async def _send_daily_report() -> dict:
     return {"title": title, "text": text, "data": data, "results": res}
 
 
-scheduler = automation.Scheduler(db, _ping_everything, _backup_many, _send_daily_report)
+async def _backup_all_then_cloud() -> List[dict]:
+    """Backup diário e, em seguida, o envio das tags escolhidas para o drive na nuvem."""
+    results = await _backup_many()
+    _bg(cloudsync.run(db, automation.send_alert, "backup diário"))
+    return results
+
+
+scheduler = automation.Scheduler(db, _ping_everything, _backup_all_then_cloud, _send_daily_report)
 
 
 async def _telegram_token() -> str:
@@ -2227,7 +2235,44 @@ async def run_backups(payload: BackupRunPayload, user: dict = Depends(get_curren
     results = await _backup_many(payload.device_ids)
     if any(r.get("changed") and r.get("prev_id") for r in results):
         _bg(automation.notify_config_changes(db, results, f"backup manual por {user.get('email')}"))
+    _bg(cloudsync.run(db, automation.send_alert, "backup manual"))
     return {"results": results}
+
+
+# ---------- Backups na nuvem (rclone: Google Drive, OneDrive, Dropbox, S3…) ----------
+class CloudSettingsIn(BaseModel):
+    enabled: bool = False
+    remote: str = ""
+    folder: str = "BastiON"
+    tags: List[str] = []
+    only_changed: bool = True
+
+
+@api.get("/cloud/status")
+async def cloud_status(_: dict = Depends(require_admin)):
+    return await cloudsync.status(db)
+
+
+@api.put("/cloud/settings")
+async def cloud_put_settings(body: CloudSettingsIn, _: dict = Depends(require_admin)):
+    data = body.model_dump()
+    data["remote"] = data["remote"].strip().rstrip(":")
+    data["folder"] = data["folder"].strip().strip("/")[:200]
+    data["tags"] = sorted({t.strip() for t in data["tags"] if t.strip()})
+    if data["enabled"] and (not data["remote"] or not data["tags"]):
+        raise HTTPException(400, "Para ligar, escolha o drive e pelo menos uma tag")
+    await db.config.update_one({"key": "cloud"}, {"$set": data}, upsert=True)
+    return await cloudsync.status(db)
+
+
+@api.post("/cloud/test")
+async def cloud_test(body: CloudSettingsIn, _: dict = Depends(require_admin)):
+    return await cloudsync.test(body.remote, body.folder)
+
+
+@api.post("/cloud/run")
+async def cloud_run(_: dict = Depends(require_admin)):
+    return await cloudsync.run(db, None, "manual", force=True)
 
 
 _BG_TASKS: set = set()

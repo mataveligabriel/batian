@@ -17,6 +17,9 @@ services:
     restart: unless-stopped
     network_mode: host
     env_file: .env
+    # dados que sobrevivem à atualização: autorização do drive (rclone) e área de envio para a nuvem
+    volumes:
+      - bastion_data:/data
     depends_on:
       mongo:
         condition: service_healthy
@@ -93,6 +96,7 @@ services:
       - backend
 
 volumes:
+  bastion_data:
   mongo_data:
   ollama_data:
   caddy_data:

@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Activity, Archive, BellRing, Send, Zap, Loader2, ClipboardList, Eye } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { AIAssistantCard } from "@/components/AIAssistantCard";
+import { CloudBackupCard } from "@/components/CloudBackupCard";
 
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR") : "nunca";
 
@@ -176,6 +177,8 @@ export default function Automation() {
           </Button>
         </div>
       )}
+
+      {isAdmin && <CloudBackupCard />}
 
       {isAdmin && <AIAssistantCard />}
 

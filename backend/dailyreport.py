@@ -170,6 +170,14 @@ async def build(db, optics_names: Optional[Callable[[], Awaitable[Dict[str, Dict
         s += f"\n  assistente executou {ai_changes} alteração(ões) confirmada(s)"
     lines.append(s)
 
+    # backup na nuvem: só aparece quando o último envio falhou
+    cs = await db.config.find_one({"key": "cloud"}, {"_id": 0}) or {}
+    cst = await db.config.find_one({"key": "cloud_state"}, {"_id": 0}) or {}
+    if cs.get("enabled") and cst and not cst.get("ok", True):
+        attention += 1
+        lines.append(f"☁️ Backup na nuvem com falha: {cst.get('error') or 'veja Automação'}")
+    data.update(cloud_failed=bool(cs.get("enabled") and cst and not cst.get("ok", True)))
+
     local = now.astimezone()
     title = f"📋 Resumo do BastiON — {local.strftime('%d/%m %H:%M')}"
     head = "✅ Nada pedindo atenção agora." if attention == 0 else f"⚠️ {attention} item(ns) pedindo atenção."
