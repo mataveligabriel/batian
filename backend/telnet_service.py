@@ -175,40 +175,25 @@ class TelnetClientWrapper:
     async def resize(self, cols: int, rows: int):
         self.resize_sync(cols, rows)
 
-    async def _read_until_idle(self, idle: float = 1.5, hard: float = 60) -> bytes:
-        from ssh_service import at_pager, MAX_PAGES
-        buf = b""
-        pages = 0
-        deadline = time.monotonic() + hard
-        while time.monotonic() < deadline:
-            wait = min(idle, 1.0) if buf and PROMPT_RE.search(buf[-200:]) else idle
-            try:
-                chunk = await asyncio.wait_for(self.queue.get(), timeout=wait)
-                if not chunk:
-                    break
-                buf += chunk
-                if at_pager(buf) and pages < MAX_PAGES:      # saída paginada: pede a próxima página
-                    pages += 1
-                    self._send(b" ")
-                    deadline = max(deadline, time.monotonic() + 15)
-            except asyncio.TimeoutError:
-                if buf:
-                    break
-        return buf
+    async def _read_until_idle(self, idle: float = 1.5, hard: float = 60, prompt=None) -> bytes:
+        from ssh_service import read_reply
+        return await read_reply(lambda t: asyncio.wait_for(self.queue.get(), timeout=t), self._send, idle, hard, prompt)
 
     async def run_command(self, command: str, timeout: int = 60, idle: float = 1.5) -> dict:
         if not self._pump:
             await self.open_shell()
-        await self._read_until_idle(idle=2.0, hard=15)
-        from ssh_service import PAGINATION_OFF
+        banner = await self._read_until_idle(idle=2.0, hard=15)
+        from ssh_service import PAGINATION_OFF, learn_prompt
         for pre in (PAGINATION_OFF.get(self.device_type) or "").splitlines():
             self._send(pre.encode() + b"\r\n")
-            await self._read_until_idle(idle=1.0, hard=8)
+            banner = await self._read_until_idle(idle=1.0, hard=8) or banner
+        prompt = learn_prompt(banner) or getattr(self, "_prompt", None)
+        self._prompt = prompt
         out = b""
         for line in command.splitlines():
             if line.strip():
                 self._send(line.encode() + b"\r\n")
-                out += await self._read_until_idle(idle=idle, hard=timeout)
+                out += await self._read_until_idle(idle=idle, hard=timeout, prompt=prompt)
         return {"stdout": _clean_ansi(out.decode("utf-8", "replace")), "stderr": "", "exit_status": 0, "ok": True}
 
     async def shell(self):

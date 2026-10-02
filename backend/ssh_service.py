@@ -30,8 +30,11 @@ LEGACY_ALGS = dict(
 # o leitor manda espaço sozinho até a saída acabar, em qualquer fabricante.
 PAGER_RE = re.compile(rb"(?:-+\s*\(?more(?:\s+\d+%)?\)?\s*-+|<-+\s*more\s*-+>|\(more\)|press any key to continue|"
                       rb"--more--\s*or\s*\(q\)uit)[^\r\n]{0,40}$", re.I)
+_E = r"\x1b\[[0-9;]*[A-Za-z]"
+# marca de paginação + o "apaga" que vem depois dela (backspaces/espaços/backspaces, \r espaços \r ou ESC[nD espaços ESC[nD).
+# Não come os espaços seguintes: são a indentação da próxima linha da configuração.
 _PAGER_TXT = re.compile(r"[ \t]*(?:-+\s*\(?more(?:\s+\d+%)?\)?\s*-+|<-+\s*more\s*-+>|\(more\)|press any key to continue)"
-                        r"[^\n\x08\r]{0,40}(?:[\x08 ]*\x08[\x08 ]*|\r[ \t]*\r?|\x1b\[[0-9;]*[A-Za-z])*[ \t]*", re.I)
+                        r"[^\n\x08\r\x1b]{0,40}(?:\x08+ *\x08+|\x08+|\r[ \t]*\r|\r(?!\n)|(?:" + _E + r" *)+" + _E + r"|" + _E + r")?", re.I)
 MAX_PAGES = 20000
 
 
@@ -41,6 +44,76 @@ def at_pager(buf: bytes) -> bool:
 
 
 PROMPT_RE = re.compile(rb"[\r\n][^\r\n]{0,120}[#>$%\]] ?\s*$")
+
+PATIENCE = 12.0      # sem o prompt de volta: quanto silêncio aceitar no meio de uma saída (equipamento "pensando")
+PAGE_WAIT = 25.0     # depois de pedir a próxima página, quanto esperar ela chegar
+_QUESTION = re.compile(r"(\[y/n\]|\(y/n\)|yes/no|\by\|n\b|password|senha|username|login|continue\?|confirm|[:?])\s*$", re.I)
+_ANSI_B = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def learn_prompt(buf: bytes) -> Optional[str]:
+    """Do que o equipamento mostrou ao entrar, tira o 'miolo' do prompt (o nome do host):
+    'OLT-PENHA#' → 'OLT-PENHA', '<SW-CGS>' → 'SW-CGS', '[admin@MikroTik] >' → 'admin@MikroTik'."""
+    text = _ANSI_B.sub(b"", buf).decode("utf-8", "replace").replace("\r", "\n")
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    if not lines:
+        return None
+    last = lines[-1]
+    if len(last) > 80 or last[-1] not in "#>]$%":
+        return None
+    base = re.sub(r"[#>\]$%\s]+$", "", last).lstrip("<[").strip()
+    base = re.sub(r"\(.*$", "", base).strip()            # 'host(config)' → 'host'
+    return base if len(base) >= 2 else None
+
+
+def at_prompt(buf: bytes, base: str) -> bool:
+    """A última linha é o prompt deste equipamento (em qualquer modo: 'host#', '[host-if]', 'host(config)#')."""
+    tail = _ANSI_B.sub(b"", buf[-400:]).decode("utf-8", "replace").replace("\r", "\n")
+    if tail.endswith("\n"):
+        return False
+    last = tail.split("\n")[-1].strip()
+    return bool(last) and len(last) <= 160 and last[-1] in "#>]$%" and base in last
+
+
+async def read_reply(read, send, idle: float, hard: float, prompt: Optional[str] = None) -> bytes:
+    """Lê a resposta de um comando.
+    - Com o prompt conhecido: termina quando ele volta; silêncio no meio da saída é tolerado (PATIENCE).
+    - Paginação ('--More--'): manda espaço e espera a próxima página com folga (PAGE_WAIT).
+    - Sem prompt conhecido: regra antiga (para depois de `idle` s de silêncio).
+    read(timeout) devolve um pedaço (b'' = fim) ou levanta asyncio.TimeoutError; send(bytes) escreve."""
+    buf = b""
+    deadline = time.monotonic() + hard
+    pages, paging, mark = 0, False, 0
+    while time.monotonic() < deadline:
+        if paging:
+            wait = PAGE_WAIT
+        elif prompt and buf:
+            if at_prompt(buf, prompt):
+                wait = 0.35
+            else:
+                tail = _ANSI_B.sub(b"", buf[-200:]).decode("utf-8", "replace")
+                mid_line = not tail.endswith(("\n", "\r"))
+                wait = idle if (mid_line and _QUESTION.search(tail)) else (max(idle, 4.0) if mid_line else PATIENCE)
+        else:
+            wait = min(idle, 1.0) if buf and PROMPT_RE.search(buf[-200:]) else idle
+        try:
+            chunk = await read(min(wait, max(0.05, deadline - time.monotonic())))
+            if not chunk:
+                break
+            buf += chunk
+            if paging and _ANSI_B.sub(b"", chunk).strip(b" \t\r\n\x00\x08"):
+                paging = False                               # chegou conteúdo de verdade (não só o "apaga" do --More--)
+            if pages < MAX_PAGES and at_pager(buf[mark:]):   # saída paginada: pede a próxima página (uma vez por marca)
+                pages += 1
+                paging = True
+                mark = len(buf)
+                send(b" ")
+                deadline = max(deadline, time.monotonic() + PAGE_WAIT)
+        except asyncio.TimeoutError:
+            if buf:
+                break
+    return buf
+
 
 
 class Hop:
@@ -131,41 +204,25 @@ class SSHClientWrapper:
         except asyncssh.ChannelOpenError:
             return await self._run_in_shell(command, timeout, idle)
 
-    async def _read_until_idle(self, proc, idle: float = 1.2, hard: float = 60) -> bytes:
-        """Lê até o equipamento ficar quieto. Com o prompt visível no fim, basta ~1s de silêncio;
-        sem prompt (comando lento ainda gerando saída) espera até `idle` segundos."""
-        buf = b""
-        deadline = time.monotonic() + hard
-        pages = 0
-        while time.monotonic() < deadline:
-            wait = min(idle, 1.0) if buf and PROMPT_RE.search(buf[-200:]) else idle
-            try:
-                chunk = await asyncio.wait_for(proc.stdout.read(65536), timeout=wait)
-                if not chunk:
-                    break
-                buf += chunk
-                if at_pager(buf) and pages < MAX_PAGES:      # saída paginada: pede a próxima página
-                    pages += 1
-                    proc.stdin.write(b" ")
-                    deadline = max(deadline, time.monotonic() + 15)
-            except asyncio.TimeoutError:
-                if buf:
-                    break
-        return buf
+    async def _read_until_idle(self, proc, idle: float = 1.2, hard: float = 60, prompt: Optional[str] = None) -> bytes:
+        """Lê até o prompt voltar (ou, sem prompt conhecido, até o equipamento ficar quieto)."""
+        return await read_reply(lambda t: asyncio.wait_for(proc.stdout.read(65536), timeout=t), proc.stdin.write,
+                                idle, hard, prompt)
 
     async def _run_in_shell(self, command: str, timeout: int, idle: float = 1.5) -> dict:
         proc = await self.conn.create_process(term_type="vt100", term_size=(200, 100), encoding=None)
         try:
-            await self._read_until_idle(proc, idle=1.5, hard=10)
+            banner = await self._read_until_idle(proc, idle=1.5, hard=10)
             for pre in (PAGINATION_OFF.get(self.device_type) or "").splitlines():
                 proc.stdin.write((pre + "\n").encode())
-                await self._read_until_idle(proc, idle=1.0, hard=8)
+                banner = await self._read_until_idle(proc, idle=1.0, hard=8) or banner
+            prompt = learn_prompt(banner)
             out = b""
             for line in command.splitlines():
                 if not line.strip():
                     continue
                 proc.stdin.write((line + "\n").encode())
-                out += await self._read_until_idle(proc, idle=idle, hard=timeout)
+                out += await self._read_until_idle(proc, idle=idle, hard=timeout, prompt=prompt)
             text = _clean_ansi(out.decode("utf-8", "replace"))
             return {"stdout": text, "stderr": "", "exit_status": 0, "ok": True}
         finally:
@@ -219,17 +276,18 @@ class ShellSession:
 
     async def open(self):
         self.proc = await self.w.conn.create_process(term_type="vt100", term_size=(200, 100), encoding=None)
-        await self.w._read_until_idle(self.proc, idle=1.5, hard=10)
+        banner = await self.w._read_until_idle(self.proc, idle=1.5, hard=10)
         for pre in (PAGINATION_OFF.get(self.w.device_type) or "").splitlines():
             self.proc.stdin.write((pre + "\n").encode())
-            await self.w._read_until_idle(self.proc, idle=1.0, hard=8)
+            banner = await self.w._read_until_idle(self.proc, idle=1.0, hard=8) or banner
+        self.prompt = learn_prompt(banner)
 
     async def run(self, command: str, timeout: int = 60, idle: float = 1.5) -> str:
         out = b""
         for line in command.splitlines():
             if line.strip():
                 self.proc.stdin.write((line + "\n").encode())
-                out += await self.w._read_until_idle(self.proc, idle=idle, hard=timeout)
+                out += await self.w._read_until_idle(self.proc, idle=idle, hard=timeout, prompt=getattr(self, "prompt", None))
         return _clean_ansi(out.decode("utf-8", "replace"))
 
     async def close(self):
