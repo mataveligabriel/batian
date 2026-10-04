@@ -19,12 +19,15 @@ class UserCreate(BaseModel):
     password: str
     name: str
     role: str = "operator"  # 'admin' | 'operator'
+    modules: Optional[List[str]] = None   # módulos liberados (operador); None = todos
 
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     password: Optional[str] = None  # admin reset; empty keeps current
+    modules: Optional[List[str]] = None   # nova lista de módulos (operador)
+    modules_all: Optional[bool] = None    # True = volta a liberar todos os módulos
 
 
 class ChangePasswordPayload(BaseModel):

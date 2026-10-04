@@ -282,7 +282,8 @@ async def me(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
     sec = await _security_settings()
     return {"id": u["id"], "email": u["email"], "name": u.get("name", ""), "role": u.get("role", "operator"),
-            "totp_enabled": bool(u.get("totp_enabled")), "require_2fa": sec["require_2fa"]}
+            "totp_enabled": bool(u.get("totp_enabled")), "require_2fa": sec["require_2fa"],
+            "modules": u.get("modules") if isinstance(u.get("modules"), list) and u.get("role") == "operator" else None}
 
 
 # ---------- 2FA (app autenticador) e sessões ----------
@@ -459,6 +460,8 @@ async def create_user(payload: UserCreate, _: dict = Depends(require_admin)):
         "role": payload.role if payload.role in auth_mod.ROLES else "operator",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    if payload.modules is not None and doc["role"] == "operator":
+        doc["modules"] = auth_mod.clean_modules(payload.modules)
     await db.users.insert_one(doc)
     doc.pop("password_hash")
     doc.pop("_id", None)
@@ -484,9 +487,21 @@ async def update_user(user_id: str, payload: UserUpdate, current: dict = Depends
             raise HTTPException(status_code=400, detail="A senha deve ter pelo menos 6 caracteres")
         update["password_hash"] = hash_password(payload.password)
         update["token_version"] = int(u.get("token_version", 0)) + 1     # a senha trocada derruba as sessões dele
-    if update:
-        await db.users.update_one({"id": user_id}, {"$set": update})
+    unset = {}
+    if payload.modules_all or (update.get("role") or u.get("role")) != "operator":
+        if "modules" in u:
+            unset["modules"] = ""                       # todos os módulos (ou papel que não usa a lista)
+    elif payload.modules is not None:
+        update["modules"] = auth_mod.clean_modules(payload.modules)
+    if update or unset:
+        await db.users.update_one({"id": user_id}, {**({"$set": update} if update else {}), **({"$unset": unset} if unset else {})})
     return await db.users.find_one({"id": user_id}, USER_PUBLIC)
+
+
+@api.get("/modules")
+async def list_modules(_: dict = Depends(get_current_user)):
+    """Módulos que o administrador pode liberar por usuário."""
+    return [{"key": k, "label": l, "desc": d} for k, l, d in auth_mod.MODULES]
 
 
 @api.post("/auth/change-password")
@@ -2561,12 +2576,12 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
         return
     user_id = payload["sub"]
     user_email = payload["email"]
-    u = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1, "token_version": 1})
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1, "token_version": 1, "modules": 1})
     if u and int(payload.get("tv", 0)) != int(u.get("token_version", 0)):
         await ws.send_json({"type": "error", "message": "Sessão encerrada — entre novamente"})
         await ws.close()
         return
-    if not u or u.get("role") == "viewer":
+    if not u or u.get("role") == "viewer" or not auth_mod.has_module(u, "terminal"):
         await ws.send_json({"type": "error", "message": "Seu perfil não tem acesso ao terminal"})
         await ws.close()
         return

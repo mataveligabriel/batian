@@ -7,19 +7,21 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { ModulePicker } from "@/components/ModulePicker";
+import { modulesSummary } from "@/lib/modules";
 import { toast } from "sonner";
 import { UserPlus, Trash2, Pencil, Eye, ArrowLeftRight, Loader2, Network, Gauge, ShieldCheck, ShieldAlert, ShieldOff, XCircle } from "lucide-react";
 import { TransferDialog } from "@/components/TransferDialog";
 import { useAuth } from "@/context/AuthContext";
 
-const empty = { name: "", email: "", password: "", role: "operator" };
+const empty = { name: "", email: "", password: "", role: "operator", modules: null };
 const ROLE = {
   admin: { label: "Administrador", cls: "bg-brand/15 text-brand-soft border-brand/30" },
   operator: { label: "Operador", cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
   viewer: { label: "View", cls: "bg-amber-500/10 text-amber-300 border-amber-500/30" },
 };
 const RoleItems = () => (<>
-  <SelectItem value="operator">Operador — acesso completo aos próprios equipamentos</SelectItem>
+  <SelectItem value="operator">Operador — usa os módulos que você liberar, nos equipamentos dele</SelectItem>
   <SelectItem value="admin">Administrador — gerencia usuários e configurações</SelectItem>
   <SelectItem value="viewer">View — só Painel NOC, Dashboards e Mapas (leitura)</SelectItem>
 </>);
@@ -143,11 +145,12 @@ export default function Users() {
 
   const load = async () => setUsers((await api.get("/users")).data);
   const [editing, setEditing] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", role: "operator", password: "" });
-  const openEdit = (u) => { setEditing(u); setEditForm({ name: u.name, role: u.role, password: "" }); };
+  const [editForm, setEditForm] = useState({ name: "", role: "operator", password: "", modules: null });
+  const openEdit = (u) => { setEditing(u); setEditForm({ name: u.name, role: u.role, password: "", modules: Array.isArray(u.modules) ? u.modules : null }); };
   const saveEdit = async () => {
     try {
-      const { data } = await api.put(`/users/${editing.id}`, { name: editForm.name, role: editForm.role, password: editForm.password || null });
+      const { data } = await api.put(`/users/${editing.id}`, { name: editForm.name, role: editForm.role, password: editForm.password || null,
+        ...(editForm.role === "operator" ? (editForm.modules ? { modules: editForm.modules } : { modules_all: true }) : {}) });
       toast.success(editForm.password ? "Usuário atualizado e senha redefinida" : "Usuário atualizado");
       const becameViewer = editing.role !== "viewer" && data.role === "viewer";
       setEditing(null); load();
@@ -159,7 +162,7 @@ export default function Users() {
   const save = async () => {
     if (!form.email || !form.password || !form.name) return toast.error("Preencha todos os campos");
     try {
-      const { data } = await api.post("/users", form);
+      const { data } = await api.post("/users", { ...form, modules: form.role === "operator" ? form.modules : null });
       toast.success("Usuário criado"); setForm(empty); setOpen(false); load();
       if (data.role === "viewer") setAccess(data);   // já escolhe o que ele vai ver
     } catch (e) { toast.error(formatApiError(e)); }
@@ -206,6 +209,7 @@ export default function Users() {
                 <td className="px-4 py-3">
                   <Badge className={(ROLE[u.role] || ROLE.operator).cls}>{(ROLE[u.role] || ROLE.operator).label}</Badge>
                   {u.role === "viewer" && <span className="ml-2 text-[10px] font-mono text-slate-500">{(u.view_maps || []).length} mapa(s) · {(u.view_dashboards || []).length} dash</span>}
+                  {modulesSummary(u) && <span className="ml-2 text-[11px] text-slate-400" data-testid={`user-modules-${u.id}`}>{modulesSummary(u)}</span>}
                 </td>
                 <td className="px-4 py-3" data-testid={`user-2fa-${u.id}`}>
                   {u.totp_enabled
@@ -244,7 +248,7 @@ export default function Users() {
       </Card>
 
       <Dialog open={!!editing} onOpenChange={(v) => !v && setEditing(null)}>
-        <DialogContent className="bg-surface border-line text-slate-100" data-testid="edit-user-dialog">
+        <DialogContent className="bg-surface border-line text-slate-100 max-w-xl max-h-[92vh] overflow-y-auto" data-testid="edit-user-dialog">
           <DialogHeader><DialogTitle>Editar usuário — {editing?.email}</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div><Label>Nome</Label><Input data-testid="edit-user-name" value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} className="bg-sunken border-line font-mono" /></div>
@@ -255,6 +259,7 @@ export default function Users() {
                 <SelectContent className="bg-surface border-line text-slate-100"><RoleItems /></SelectContent>
               </Select>
             </div>
+            {editForm.role === "operator" && <ModulePicker value={editForm.modules} onChange={(m) => setEditForm({ ...editForm, modules: m })} />}
             <div>
               <Label>Nova senha (opcional — redefine sem excluir o usuário)</Label>
               <Input data-testid="edit-user-password" type="password" value={editForm.password} onChange={e => setEditForm({ ...editForm, password: e.target.value })} placeholder="deixe vazio para manter" className="bg-sunken border-line font-mono" />
@@ -271,7 +276,7 @@ export default function Users() {
       <TransferDialog open={!!transfer} onOpenChange={(v) => !v && setTransfer(null)} peer={transfer} />
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="bg-surface border-line text-slate-100">
+        <DialogContent className="bg-surface border-line text-slate-100 max-w-xl max-h-[92vh] overflow-y-auto" data-testid="new-user-dialog">
           <DialogHeader><DialogTitle>Novo usuário</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div><Label>Nome</Label><Input data-testid="user-form-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="bg-sunken border-line font-mono" /></div>
@@ -284,6 +289,7 @@ export default function Users() {
                 <SelectContent className="bg-surface border-line text-slate-100"><RoleItems /></SelectContent>
               </Select>
             </div>
+            {form.role === "operator" && <ModulePicker value={form.modules} onChange={(m) => setForm({ ...form, modules: m })} />}
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button>

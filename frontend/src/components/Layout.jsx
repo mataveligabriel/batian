@@ -16,6 +16,7 @@ import { VpnIndicator } from "@/components/VpnPanel";
 import { useIsMobile } from "@/lib/pwa";
 import { useTermPrefs } from "@/lib/termPrefs";
 import { Wordmark, LogoMark } from "@/components/Brand";
+import { canUse, PATH_MODULE } from "@/lib/modules";
 
 const NAV = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Painel NOC", testid: "nav-dashboard" },
@@ -61,11 +62,13 @@ export default function Layout() {
   const mini = prefs.sidebarCollapsed && !isMobile;
   const isViewer = user?.role === "viewer";
   const current = NAV.find(n => pathname === n.to || pathname.startsWith(n.to + "/"));
-  const nav = NAV.filter(n => (!n.adminOnly || user?.role === "admin") && (!isViewer || VIEWER_PATHS.includes(n.to)));
+  const allowed = (to) => !PATH_MODULE[to] || canUse(user, PATH_MODULE[to]);     // módulos liberados para este usuário
+  const nav = NAV.filter(n => (!n.adminOnly || user?.role === "admin") && (!isViewer || VIEWER_PATHS.includes(n.to)) && (isViewer || allowed(n.to)));
   const onDash = pathname.startsWith("/dashboards");
   const hidden = (onTerminal && prefs.focusMode) || (onDash && prefs.dashFocus);   // modo foco esconde o menu lateral
 
   if (isViewer && !VIEWER_PATHS.some(p => pathname === p || pathname.startsWith(p + "/"))) return <Navigate to="/dashboard" replace />;
+  if (!isViewer && current && !allowed(current.to)) return <Navigate to="/dashboard" replace />;   // módulo não liberado
 
   return (
     <div className="h-[var(--app-h,100dvh)] flex flex-col md:flex-row bg-canvas overflow-hidden">
@@ -126,7 +129,7 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
-        {!isViewer && <VpnIndicator mini={mini} />}
+        {!isViewer && canUse(user, "agents") && <VpnIndicator mini={mini} />}
 
         <div className={`border-t border-line p-2 ${mini ? "space-y-1" : "flex flex-wrap gap-1"}`}>
           <PushToggle mini={mini} />
@@ -174,9 +177,9 @@ export default function Layout() {
         <div className={`flex-1 min-h-0 flex flex-col ${onTerminal ? "hidden" : ""}`}>
           <Outlet />
         </div>
-        {!isViewer && <TerminalWorkspace visible={onTerminal} />}
+        {!isViewer && canUse(user, "terminal") && <TerminalWorkspace visible={onTerminal} />}
       </main>
-      {!isViewer && <AssistantChat hideButton={onTerminal || hidden} isAdmin={user?.role === "admin"} />}
+      {!isViewer && canUse(user, "assistant") && <AssistantChat hideButton={onTerminal || hidden} isAdmin={user?.role === "admin"} />}
       <Toaster theme="dark" richColors position={isMobile ? "top-center" : "top-right"} />
     </div>
   );

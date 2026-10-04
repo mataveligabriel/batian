@@ -8,6 +8,7 @@ import { Activity, Server, Radio, Clock, RefreshCw, Zap, ArrowUpRight } from "lu
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { NocPanels } from "@/components/noc/NocPanels";
+import { canUse } from "@/lib/modules";
 
 const Stat = ({ label, value, sub, color, icon: Icon, testid }) => (
   <Card
@@ -47,6 +48,7 @@ function ViewerNoc({ user }) {
 }
 
 function FullNoc() {
+  const { user } = useAuth();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const nav = useNavigate();
@@ -113,7 +115,7 @@ function FullNoc() {
               color="border-line bg-white/[0.03] text-slate-400" icon={Clock} />
       </div>
 
-      <div className="mt-6"><NocPanels /></div>
+      {(canUse(user, "maps") || canUse(user, "dashboards")) && <div className="mt-6"><NocPanels /></div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-6">
         <Card className="bg-surface border-line p-5 lg:col-span-2" data-testid="recent-sessions-card">
@@ -121,9 +123,9 @@ function FullNoc() {
             <div>
               <h2 className="font-heading text-base font-semibold text-slate-100">Sessões recentes</h2>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => nav("/sessions")} className="text-slate-400 hover:text-slate-100" data-testid="view-all-sessions">
+            {canUse(user, "sessions") && <Button variant="ghost" size="sm" onClick={() => nav("/sessions")} className="text-slate-400 hover:text-slate-100" data-testid="view-all-sessions">
               Ver tudo <ArrowUpRight className="w-3.5 h-3.5 ml-1" />
-            </Button>
+            </Button>}
           </div>
           <div className="divide-y divide-line">
             {(stats?.recent_sessions || []).length === 0 && (
@@ -146,22 +148,30 @@ function FullNoc() {
         <Card className="bg-surface border-line p-5" data-testid="quick-actions-card">
           <h2 className="font-heading text-base font-semibold text-slate-100">Atalhos</h2>
           <div className="mt-4 space-y-2">
-            <Button onClick={() => nav("/terminal")} data-testid="quick-open-terminal"
-              className="w-full justify-start font-normal bg-white/[0.03] border border-line text-slate-200 hover:bg-white/[0.07] hover:text-slate-50">
-              Abrir terminal SSH
-            </Button>
-            <Button onClick={() => nav("/batch")} data-testid="quick-batch"
-              className="w-full justify-start font-normal bg-white/[0.03] border border-line text-slate-200 hover:bg-white/[0.07] hover:text-slate-50">
-              Executar script em lote
-            </Button>
-            <Button onClick={() => nav("/devices")} data-testid="quick-devices"
-              className="w-full justify-start font-normal bg-white/[0.03] border border-line text-slate-200 hover:bg-white/[0.07] hover:text-slate-50">
-              Gerenciar equipamentos
-            </Button>
-            <Button onClick={() => nav("/agents")} data-testid="quick-agents"
-              className="w-full justify-start font-normal bg-white/[0.03] border border-line text-slate-200 hover:bg-white/[0.07] hover:text-slate-50">
-              Ver agentes remotos
-            </Button>
+            {canUse(user, "terminal") && (
+              <Button onClick={() => nav("/terminal")} data-testid="quick-open-terminal"
+                className="w-full justify-start font-normal bg-white/[0.03] border border-line text-slate-200 hover:bg-white/[0.07] hover:text-slate-50">
+                Abrir terminal SSH
+              </Button>
+            )}
+            {canUse(user, "batch") && (
+              <Button onClick={() => nav("/batch")} data-testid="quick-batch"
+                className="w-full justify-start font-normal bg-white/[0.03] border border-line text-slate-200 hover:bg-white/[0.07] hover:text-slate-50">
+                Executar script em lote
+              </Button>
+            )}
+            {canUse(user, "devices") && (
+              <Button onClick={() => nav("/devices")} data-testid="quick-devices"
+                className="w-full justify-start font-normal bg-white/[0.03] border border-line text-slate-200 hover:bg-white/[0.07] hover:text-slate-50">
+                Gerenciar equipamentos
+              </Button>
+            )}
+            {canUse(user, "agents") && (
+              <Button onClick={() => nav("/agents")} data-testid="quick-agents"
+                className="w-full justify-start font-normal bg-white/[0.03] border border-line text-slate-200 hover:bg-white/[0.07] hover:text-slate-50">
+                Ver agentes remotos
+              </Button>
+            )}
           </div>
         </Card>
       </div>

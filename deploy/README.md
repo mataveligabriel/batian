@@ -560,3 +560,33 @@ No Google Drive o BastiON só enxerga os arquivos que ele mesmo criou.
 
 Depois: Automação → Backups na nuvem → escolha o drive, marque as tags, **Testar acesso**, ligue e **Enviar agora**
 (a primeira vez manda o histórico das tags escolhidas).
+
+## 24. Módulos por usuário (o que cada operador pode acessar)
+
+Em **Usuários → Novo usuário / editar**, com o papel **operator**, aparece a lista **Módulos que este usuário acessa**.
+Marque só o que ele deve usar; o resto some do menu e a API recusa (erro 403), mesmo que ele digite o endereço na mão.
+
+| Módulo | Libera |
+|---|---|
+| Equipamentos | cadastrar, editar, importar e testar equipamentos |
+| Terminal SSH | abrir sessão SSH/Telnet |
+| Acesso Web | abrir a página web dos equipamentos |
+| Mapas de rede | mapas, tráfego, alarmes e análise |
+| Dashboards | consumo e sinal óptico |
+| Análise de Flow | tráfego por AS/IP, ataques, mitigação |
+| Execução em Lote | comandos em vários equipamentos e scripts |
+| Agentes Remotos | jump hosts, túneis e VPNs |
+| Chave SSH Global | chave e credencial padrão |
+| Histórico | sessões e comandos executados |
+| Backups | configurações, comparação e busca |
+| Assistente IA | chat e voz |
+
+Atalhos prontos: **Tudo**, **Só monitoramento** (mapas, dashboards, flow), **Só acesso aos equipamentos** (terminal, acesso
+web) e **Operação** (terminal, lote, backups).
+
+- O **Painel NOC** e a própria conta (senha, 2FA) ficam sempre liberados.
+- **admin** acessa tudo; **viewer** continua vendo só os mapas/dashboards liberados para ele. Operadores antigos (sem lista)
+  continuam com tudo, até você editar.
+- Os módulos limitam **telas e ações**. Os **equipamentos** que o usuário enxerga continuam sendo os dele: para ele usar
+  os seus, passe com **Enviar** (ou **Transferir**, na tela de Usuários).
+- A mudança vale na hora para a API; o menu dele atualiza ao recarregar a página.
