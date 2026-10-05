@@ -575,6 +575,7 @@ Marque só o que ele deve usar; o resto some do menu e a API recusa (erro 403), 
 | Dashboards | consumo e sinal óptico |
 | Análise de Flow | tráfego por AS/IP, ataques, mitigação |
 | Execução em Lote | comandos em vários equipamentos e scripts |
+| Looking Glass | ping, traceroute e rota BGP a partir dos roteadores liberados |
 | Agentes Remotos | jump hosts, túneis e VPNs |
 | Chave SSH Global | chave e credencial padrão |
 | Histórico | sessões e comandos executados |
@@ -590,3 +591,23 @@ web) e **Operação** (terminal, lote, backups).
 - Os módulos limitam **telas e ações**. Os **equipamentos** que o usuário enxerga continuam sendo os dele: para ele usar
   os seus, passe com **Enviar** (ou **Transferir**, na tela de Usuários).
 - A mudança vale na hora para a API; o menu dele atualiza ao recarregar a página.
+
+## 25. Looking Glass (interno)
+
+Menu **Looking Glass**: escolha um ou mais roteadores, o tipo de consulta (**Ping**, **Traceroute**, **Rota BGP**,
+**Vizinhos BGP**) e o destino. O BastiON entra no roteador, roda o comando do fabricante e mostra a saída. Marcando
+mais de um roteador você compara a mesma consulta lado a lado.
+
+- **Configurar** (só admin): marque quais roteadores ficam disponíveis. Enquanto nenhum estiver marcado, a tela fica vazia.
+- Quem tem o módulo **Looking Glass** consulta esses roteadores mesmo sem ser dono do equipamento e sem ver IP ou senha.
+  Operadores que já têm lista de módulos precisam receber este módulo em **Usuários**.
+- Ninguém digita comando: o destino tem de ser um IP, um prefixo (`200.160.0.0/20`, só em Rota BGP) ou um nome
+  (`registro.br`, em ping/traceroute). Qualquer outra coisa é recusada.
+- Uma consulta por vez em cada roteador, até 20 por minuto por usuário (`LG_PER_MIN`), 90 s por consulta (`LG_TIMEOUT`).
+  Tudo fica no **Histórico** com o tipo `lg` e o comando executado.
+- O login usado é o cadastrado no equipamento. Para abrir ao público depois, o ideal é um usuário só de leitura no roteador.
+
+**Comandos por fabricante** — em Configurar dá para trocar o modelo de cada consulta (vazio = padrão). Marcadores:
+`{target}` destino como digitado, `{addr}` só o endereço, `{len}` tamanho do prefixo, `{addr_len}` "endereço tamanho".
+Padrões prontos para Huawei, Juniper, Cisco, MikroTik (RouterOS 7), Datacom, ZTE e Linux (FRR). Os de Huawei, Juniper
+e Cisco são os usuais; confira os de Datacom, ZTE e MikroTik no seu equipamento e ajuste se o comando for outro.

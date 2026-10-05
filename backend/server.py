@@ -51,6 +51,7 @@ import qrgen
 import security
 import webproxy
 import cloudsync
+import lookingglass
 import webpush
 import sharing
 import netanalysis
@@ -1348,6 +1349,119 @@ async def batch_execute(payload: BatchExecPayload, user: dict = Depends(get_curr
 
     results = await asyncio.gather(*[_run(d) for d in payload.device_ids])
     return {"results": results}
+
+
+# ---------- Looking Glass (interno) ----------
+_lg_locks: dict = {}
+_lg_hits: dict = {}
+LG_PER_MIN = int(os.environ.get("LG_PER_MIN", "20"))
+LG_TIMEOUT = int(os.environ.get("LG_TIMEOUT", "90"))
+
+
+class LGQueryIn(BaseModel):
+    device_id: str
+    query: str
+    target: str = ""
+    v6: bool = False
+
+
+class LGRoutersIn(BaseModel):
+    device_ids: List[str]
+
+
+class LGCommandsIn(BaseModel):
+    commands: dict
+
+
+async def _lg_overrides() -> dict:
+    return (await db.config.find_one({"key": "lg"}, {"_id": 0}) or {}).get("commands") or {}
+
+
+def _lg_router(d: dict) -> dict:
+    return {"id": d["id"], "name": d["name"], "device_type": d.get("device_type"), "tags": d.get("tags") or [],
+            "status": d.get("status")}
+
+
+@api.get("/lg/routers")
+async def lg_routers(user: dict = Depends(get_current_user)):
+    """Roteadores liberados para consulta: valem para todos com o módulo, não só para o dono do equipamento."""
+    devs = await db.devices.find({"looking_glass": True, "device_type": {"$in": lookingglass.VENDORS}}, {"_id": 0}).to_list(500)
+    devs.sort(key=lambda d: d["name"].lower())
+    return {"routers": [_lg_router(d) for d in devs],
+            "queries": [{"key": k, "label": v[0], "needs_target": v[1], "allow_host": v[2], "allow_prefix": v[3]}
+                        for k, v in lookingglass.QUERIES.items()],
+            "can_manage": user.get("role") == "admin"}
+
+
+@api.post("/lg/query")
+async def lg_query(body: LGQueryIn, user: dict = Depends(get_current_user)):
+    dev = await db.devices.find_one({"id": body.device_id, "looking_glass": True}, {"_id": 0})
+    if not dev:
+        raise HTTPException(status_code=404, detail="Roteador não está liberado no Looking Glass")
+    try:
+        cmd = lookingglass.build(dev.get("device_type") or "", body.query, body.target, await _lg_overrides(), body.v6)
+    except lookingglass.LGError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    now = time.time()
+    hits = [t for t in _lg_hits.get(user["id"], []) if now - t < 60]
+    if len(hits) >= LG_PER_MIN:
+        raise HTTPException(status_code=429, detail=f"Muitas consultas — limite de {LG_PER_MIN} por minuto. Aguarde um pouco.")
+    _lg_hits[user["id"]] = hits + [now]
+    lock = _lg_locks.setdefault(dev["id"], asyncio.Lock())
+    started = datetime.now(timezone.utc)
+    ok, out, err = False, "", ""
+    async with lock:                                       # uma consulta por vez em cada roteador
+        try:
+            c = await _connect_device(dev)
+            try:
+                res = await c.run_command(cmd, timeout=LG_TIMEOUT, idle=2.0)
+            finally:
+                await c.close()
+            raw = res["stdout"] if isinstance(res["stdout"], str) else res["stdout"].decode("utf-8", "replace")
+            out = lookingglass.tidy(raw, cmd)[-60000:]
+            ok = bool(res["ok"])
+            err = "" if ok else ((res.get("stderr") or "").strip() or "O roteador não respondeu a tempo")
+        except Exception as e:
+            err = str(e) or type(e).__name__
+    ended = datetime.now(timezone.utc)
+    await db.sessions.insert_one({
+        "id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
+        "device_id": dev["id"], "device_name": dev["name"], "started_at": started.isoformat(),
+        "ended_at": ended.isoformat(), "duration_seconds": int((ended - started).total_seconds()),
+        "kind": "lg", "command": cmd,
+    })
+    return {"ok": ok, "router": dev["name"], "command": cmd, "output": out, "error": err,
+            "seconds": round((ended - started).total_seconds(), 1)}
+
+
+@api.get("/lg/admin")
+async def lg_admin(_: dict = Depends(require_admin)):
+    devs = await db.devices.find({"device_type": {"$in": lookingglass.VENDORS}}, {"_id": 0}).to_list(5000)
+    devs.sort(key=lambda d: d["name"].lower())
+    ov = await _lg_overrides()
+    return {"devices": [{**_lg_router(d), "host": d.get("host"), "looking_glass": bool(d.get("looking_glass"))} for d in devs],
+            "vendors": lookingglass.VENDORS, "template_keys": lookingglass.TEMPLATE_KEYS,
+            "defaults": lookingglass.DEFAULT_COMMANDS, "overrides": ov}
+
+
+@api.put("/lg/admin/routers")
+async def lg_set_routers(body: LGRoutersIn, _: dict = Depends(require_admin)):
+    ids = list(dict.fromkeys(body.device_ids))[:500]
+    await db.devices.update_many({"looking_glass": True, "id": {"$nin": ids}}, {"$set": {"looking_glass": False}})
+    if ids:
+        await db.devices.update_many({"id": {"$in": ids}, "device_type": {"$in": lookingglass.VENDORS}},
+                                     {"$set": {"looking_glass": True}})
+    return {"ok": True, "count": await db.devices.count_documents({"looking_glass": True})}
+
+
+@api.put("/lg/admin/commands")
+async def lg_set_commands(body: LGCommandsIn, _: dict = Depends(require_admin)):
+    try:
+        ov = lookingglass.clean_overrides(body.commands)
+    except lookingglass.LGError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.config.update_one({"key": "lg"}, {"$set": {"commands": ov}}, upsert=True)
+    return {"ok": True, "overrides": ov}
 
 
 # ---------- Automation: settings, alerts, backups, scheduler ----------

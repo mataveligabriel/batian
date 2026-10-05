@@ -8,6 +8,7 @@ export const MODULES = [
   { key: "dashboards", label: "Dashboards", path: "/dashboards", desc: "consumo e sinal óptico" },
   { key: "flow", label: "Análise de Flow", path: "/flow", desc: "tráfego por AS/IP, ataques, mitigação" },
   { key: "batch", label: "Execução em Lote", path: "/batch", desc: "comandos em vários equipamentos" },
+  { key: "lg", label: "Looking Glass", path: "/lg", desc: "ping, traceroute e rota BGP" },
   { key: "agents", label: "Agentes Remotos", path: "/agents", desc: "jump hosts, túneis e VPNs" },
   { key: "sshkey", label: "Chave SSH Global", path: "/ssh-key", desc: "chave e credencial padrão" },
   { key: "sessions", label: "Histórico", path: "/sessions", desc: "sessões e comandos executados" },
@@ -20,7 +21,7 @@ export const PATH_MODULE = Object.fromEntries(MODULES.filter(m => m.path).map(m 
 // combinações prontas para começar
 export const PRESETS = [
   { label: "Tudo", keys: null },
-  { label: "Só monitoramento", keys: ["maps", "dashboards", "flow"] },
+  { label: "Só monitoramento", keys: ["maps", "dashboards", "flow", "lg"] },
   { label: "Só acesso aos equipamentos", keys: ["terminal", "web"] },
   { label: "Operação (terminal, lote, backups)", keys: ["terminal", "web", "batch", "backups", "sessions"] },
 ];

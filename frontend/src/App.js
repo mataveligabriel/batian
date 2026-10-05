@@ -10,6 +10,7 @@ import Dashboard from "@/pages/Dashboard";
 import Devices from "@/pages/Devices";
 import Terminal from "@/pages/Terminal";
 import Batch from "@/pages/Batch";
+import LookingGlass from "@/pages/LookingGlass";
 import Agents from "@/pages/Agents";
 import SshKey from "@/pages/SshKey";
 import Sessions from "@/pages/Sessions";
@@ -51,6 +52,7 @@ function App() {
             <Route path="/terminal/:deviceId" element={<Terminal />} />
             <Route path="/web" element={<WebAccess />} />
             <Route path="/batch" element={<Batch />} />
+            <Route path="/lg" element={<LookingGlass />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/ssh-key" element={<SshKey />} />
             <Route path="/sessions" element={<Sessions />} />
