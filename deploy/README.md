@@ -571,6 +571,7 @@ Marque só o que ele deve usar; o resto some do menu e a API recusa (erro 403), 
 | Equipamentos | cadastrar, editar, importar e testar equipamentos |
 | Terminal SSH | abrir sessão SSH/Telnet |
 | Acesso Web | abrir a página web dos equipamentos |
+| Área de Trabalho Remota | sessões RDP (Windows) pelo navegador |
 | Mapas de rede | mapas, tráfego, alarmes e análise |
 | Dashboards | consumo e sinal óptico |
 | Análise de Flow | tráfego por AS/IP, ataques, mitigação |
@@ -678,3 +679,27 @@ um e diz se é Huawei, Cisco, Datacom, Juniper, ZTE, MikroTik etc.
 - 8 equipamentos em paralelo (`SCAN_PARALLEL`). IP sem resposta custa ~8 s por protocolo. O resultado fica disponível
   por 1 hora; reiniciar o BastiON no meio perde o teste.
 - Precisa do módulo **Equipamentos**. Fica registrado no Histórico (tipo `scan`).
+
+## 28. Área de Trabalho Remota (RDP no navegador)
+
+Menu **Área de Trabalho**: abre a área de trabalho de um computador Windows (RDP) dentro do BastiON, sem instalar nada
+na sua máquina.
+
+- **Conexão rápida**: IP ou nome, porta (3389), usuário, domínio (opcional — também aceita `DOMINIO\usuario`) e senha.
+  Nada é salvo.
+- **Nova conexão**: salva o computador com nome e tags. A senha fica cifrada e não volta para o navegador; sem senha
+  salva, ela é pedida a cada conexão.
+- **Sair por**: direto do BastiON ou por um **agente** (jump), para computadores que só respondem de dentro da rede.
+- Na sessão: **Ctrl+Alt+Del**, tela cheia, **Enviar área de transferência** (texto daqui → remoto; o que você copia no
+  remoto vem sozinho — precisa de HTTPS, seção 22) e **Desconectar**. A tela remota acompanha o tamanho da janela.
+- **Segurança**: *Automática* serve para quase tudo. Windows antigo sem NLA: *RDP antigo*. Se recusar, tente *NLA* ou *TLS*.
+- Cada sessão fica no **Histórico** (tipo `rdp`, com destino, usuário e duração). Módulo **Área de Trabalho Remota** em Usuários.
+
+Como funciona: o container **guacd** (Apache Guacamole) faz o RDP e o BastiON repassa a tela pelo WebSocket. O guacd
+não tem senha própria, por isso escuta só em `127.0.0.1:4822` — o `update.sh` confere e para o serviço se ele aparecer
+aberto para fora. Não libere a porta 4822 no firewall.
+
+- "guacd não está respondendo": `cd /opt/bastion/deploy && docker compose logs --tail 30 guacd`.
+- No computador de destino: Área de Trabalho Remota habilitada, usuário com permissão e porta 3389 liberada a partir
+  do BastiON (ou do agente).
+- Som, impressora e transferência de arquivos ficam desligados nesta versão.

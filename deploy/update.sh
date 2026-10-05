@@ -47,6 +47,11 @@ for i in $(seq 1 30); do
   curl -fsS http://127.0.0.1:8001/api/ >/dev/null 2>&1 && { echo "OK: backend respondendo"; break; }
   sleep 3
 done
+# guacd (Área de Trabalho Remota) não tem senha: só pode escutar em 127.0.0.1. Se aparecer aberto para fora, é parado.
+if (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep -E '(0\.0\.0\.0|\*|\[::\]|:::)[:.]4822[[:space:]]' >/dev/null; then
+  echo "!! O guacd está escutando em todas as interfaces (porta 4822) — parando por segurança. Mande esta mensagem para análise."
+  docker compose stop guacd >/dev/null 2>&1 || true
+fi
 # 3) confere se todos os serviços ficaram de pé (ex.: o frontend/Caddy) e tenta subir de novo o que faltar
 sleep 3
 missing=""

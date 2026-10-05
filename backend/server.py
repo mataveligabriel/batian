@@ -54,6 +54,7 @@ import cloudsync
 import lookingglass
 import rpki
 import vendorscan
+import rdp
 import webpush
 import sharing
 import netanalysis
@@ -1758,6 +1759,215 @@ async def scan_get(job_id: str, user: dict = Depends(get_current_user)):
 async def scan_cancel(job_id: str, user: dict = Depends(get_current_user)):
     _scan_job(job_id, user)["cancel"] = True
     return {"ok": True}
+
+
+# ---------- Área de Trabalho Remota (RDP pelo navegador, via guacd) ----------
+_rdp_tickets: dict = {}
+
+
+class RdpHostIn(BaseModel):
+    name: str
+    host: str
+    port: int = 3389
+    username: str = ""
+    domain: str = ""
+    password: Optional[str] = None            # None = não mexe na senha salva; "" = apaga
+    agent_id: Optional[str] = None
+    security: str = "any"
+    layout: str = "pt-br-qwerty"
+    tags: List[str] = []
+
+
+class RdpConnectIn(BaseModel):
+    host_id: Optional[str] = None
+    host: str = ""
+    port: int = 3389
+    username: str = ""
+    domain: str = ""
+    password: str = ""
+    agent_id: Optional[str] = None
+    security: str = "any"
+    layout: str = "pt-br-qwerty"
+    admin: bool = False
+
+
+def _rdp_public(d: dict) -> dict:
+    return {**{k: v for k, v in d.items() if k not in ("password", "_id")}, "has_password": bool(d.get("password"))}
+
+
+async def _rdp_host_doc(body: RdpHostIn, user: dict, existing: Optional[dict] = None) -> dict:
+    try:
+        host, port = rdp.clean_target(body.host, body.port)
+    except rdp.RdpError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="Dê um nome para a conexão")
+    if body.agent_id:
+        await _get_agent_for(user, body.agent_id)
+    username, domain = rdp.split_user(body.username, body.domain)
+    doc = {"name": body.name.strip()[:80], "host": host, "port": port, "username": username[:120], "domain": domain[:120],
+           "agent_id": body.agent_id or None, "security": body.security if body.security in rdp.SECURITY else "any",
+           "layout": body.layout if body.layout in rdp.LAYOUTS else "pt-br-qwerty",
+           "tags": [t.strip()[:30] for t in body.tags if t.strip()][:10]}
+    if body.password is None:
+        doc["password"] = (existing or {}).get("password", "")
+    else:
+        doc["password"] = vault.encrypt(body.password) if body.password else ""
+    return doc
+
+
+@api.get("/rdp/hosts")
+async def rdp_hosts(user: dict = Depends(get_current_user)):
+    docs = await db.rdp_hosts.find(_scope(user), {"_id": 0}).to_list(2000)
+    docs.sort(key=lambda d: d["name"].lower())
+    ok = True
+    try:
+        _, w = await asyncio.wait_for(asyncio.open_connection(rdp.GUACD_HOST, rdp.GUACD_PORT), 2)
+        w.close()
+    except Exception:
+        ok = False
+    return {"hosts": [_rdp_public(d) for d in docs], "guacd": ok, "layouts": list(rdp.LAYOUTS), "security": list(rdp.SECURITY)}
+
+
+@api.post("/rdp/hosts")
+async def rdp_host_create(body: RdpHostIn, user: dict = Depends(get_current_user)):
+    doc = {"id": str(uuid.uuid4()), "owner_id": user["id"], "created_at": datetime.now(timezone.utc).isoformat(),
+           **await _rdp_host_doc(body, user)}
+    await db.rdp_hosts.insert_one(dict(doc))
+    return _rdp_public(doc)
+
+
+@api.put("/rdp/hosts/{host_id}")
+async def rdp_host_update(host_id: str, body: RdpHostIn, user: dict = Depends(get_current_user)):
+    cur = await db.rdp_hosts.find_one({"id": host_id, **_scope(user)}, {"_id": 0})
+    if not cur:
+        raise HTTPException(status_code=404, detail="Conexão não encontrada")
+    upd = await _rdp_host_doc(body, user, cur)
+    await db.rdp_hosts.update_one({"id": host_id}, {"$set": upd})
+    return _rdp_public({**cur, **upd})
+
+
+@api.delete("/rdp/hosts/{host_id}")
+async def rdp_host_delete(host_id: str, user: dict = Depends(get_current_user)):
+    r = await db.rdp_hosts.delete_one({"id": host_id, **_scope(user)})
+    if not r.deleted_count:
+        raise HTTPException(status_code=404, detail="Conexão não encontrada")
+    return {"ok": True}
+
+
+@api.post("/rdp/connect")
+async def rdp_connect(body: RdpConnectIn, user: dict = Depends(get_current_user)):
+    """Prepara a sessão e devolve um bilhete de uso único (60 s) para o WebSocket. A senha não volta ao navegador."""
+    if body.host_id:
+        h = await db.rdp_hosts.find_one({"id": body.host_id, **_scope(user)}, {"_id": 0})
+        if not h:
+            raise HTTPException(status_code=404, detail="Conexão não encontrada")
+        t = {"name": h["name"], "host": h["host"], "port": h["port"], "username": body.username.strip() or h.get("username", ""),
+             "domain": h.get("domain", ""), "password": body.password or vault.decrypt(h.get("password", "")),
+             "agent_id": h.get("agent_id"), "security": h.get("security", "any"), "layout": h.get("layout", "pt-br-qwerty")}
+        if body.username.strip():
+            t["username"], t["domain"] = rdp.split_user(body.username, body.domain or h.get("domain", ""))
+    else:
+        try:
+            host, port = rdp.clean_target(body.host, body.port)
+        except rdp.RdpError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        username, domain = rdp.split_user(body.username, body.domain)
+        t = {"name": host, "host": host, "port": port, "username": username, "domain": domain, "password": body.password,
+             "agent_id": body.agent_id or None, "security": body.security, "layout": body.layout}
+    if t["agent_id"]:
+        await _get_agent_for(user, t["agent_id"])
+    if not t["username"] or not t["password"]:
+        raise HTTPException(status_code=400, detail="Informe usuário e senha")
+    now = time.time()
+    for k in [k for k, v in _rdp_tickets.items() if now - v["ts"] > 60]:
+        _rdp_tickets.pop(k, None)
+    ticket = os.urandom(18).hex()
+    _rdp_tickets[ticket] = {**t, "admin": body.admin, "ts": now, "user_id": user["id"]}
+    return {"ticket": ticket, "name": t["name"], "target": f"{t['host']}:{t['port']}"}
+
+
+@app.websocket("/api/ws/rdp/{ticket}")
+async def ws_rdp(ws: WebSocket, ticket: str, token: str = Query(...), w: int = Query(1280), h: int = Query(720)):
+    await ws.accept(subprotocol="guacamole")
+    await ws.send_text(rdp.tunnel_hello())
+
+    async def fail(msg: str, code: str = "519"):
+        try:
+            await ws.send_text(rdp.enc("error", msg, code))
+            await ws.close()
+        except Exception:
+            pass
+    try:
+        payload = decode_token(token)
+    except HTTPException:
+        return await fail("Sessão do BastiON inválida — entre novamente", "769")
+    u = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "role": 1, "token_version": 1, "modules": 1})
+    if not u or int(payload.get("tv", 0)) != int(u.get("token_version", 0)) or u.get("role") == "viewer" \
+            or not auth_mod.has_module(u, "rdp"):
+        return await fail("Seu usuário não tem acesso à Área de Trabalho Remota", "771")
+    t = _rdp_tickets.pop(ticket, None)
+    if not t or t["user_id"] != payload["sub"] or time.time() - t["ts"] > 60:
+        return await fail("Pedido de conexão expirado — clique em Conectar de novo", "776")
+
+    width, height = rdp.clamp_size(w, h)
+    session_id, started = os.urandom(8).hex(), datetime.now(timezone.utc)
+    await db.sessions.insert_one({"id": session_id, "user_id": payload["sub"], "user_email": payload["email"], "device_id": None,
+                                  "device_name": f"RDP {t['name']} ({t['host']}:{t['port']}) como {t['username']}",
+                                  "started_at": started.isoformat(), "ended_at": None, "duration_seconds": None, "kind": "rdp"})
+    tun, g = None, rdp.Guacd()
+    try:
+        host, port = t["host"], t["port"]
+        if t["agent_id"]:
+            priv, _, _ = await _get_ssh_key()
+            wrapper = SSHClientWrapper([_agent_hop(a, priv) for a in await _agent_chain(t["agent_id"])])
+            await wrapper.connect()
+            tun = webproxy.Tunnel(wrapper)
+            host, port = "127.0.0.1", await tun.local(t["host"], t["port"])
+        await g.open(rdp.rdp_params(host, port, t["username"], t["password"], t["domain"], width, height,
+                                    t["security"], t["layout"], t["admin"]), width, height)
+        t["password"] = ""
+
+        async def down():
+            while True:
+                block = await g.read()
+                if block is None:
+                    break
+                await ws.send_text(block)
+
+        async def up():
+            while True:
+                msg = await ws.receive_text()
+                if rdp.is_internal(msg):
+                    if "4.ping" in msg[:12]:
+                        await ws.send_text(msg)
+                    continue
+                g.write(msg)
+        tasks = [asyncio.create_task(down()), asyncio.create_task(up())]
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for p in pending:
+            p.cancel()
+        for d in done:
+            e = d.exception()
+            if e and not isinstance(e, WebSocketDisconnect):
+                logger.info(f"rdp {t['host']}: {type(e).__name__}: {e}")
+    except rdp.RdpError as e:
+        await fail(str(e))
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        await fail(str(e)[:200] or type(e).__name__)
+    finally:
+        await g.close()
+        if tun:
+            await tun.close()
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        ended = datetime.now(timezone.utc)
+        await db.sessions.update_one({"id": session_id}, {"$set": {"ended_at": ended.isoformat(),
+                                                                  "duration_seconds": int((ended - started).total_seconds())}})
 
 
 # ---------- Automation: settings, alerts, backups, scheduler ----------
