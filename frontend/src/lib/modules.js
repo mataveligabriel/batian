@@ -9,6 +9,7 @@ export const MODULES = [
   { key: "flow", label: "Análise de Flow", path: "/flow", desc: "tráfego por AS/IP, ataques, mitigação" },
   { key: "batch", label: "Execução em Lote", path: "/batch", desc: "comandos em vários equipamentos" },
   { key: "lg", label: "Looking Glass", path: "/lg", desc: "ping, traceroute e rota BGP" },
+  { key: "rpki", label: "RPKI", path: "/rpki", desc: "ROAs e certificação dos ASNs" },
   { key: "agents", label: "Agentes Remotos", path: "/agents", desc: "jump hosts, túneis e VPNs" },
   { key: "sshkey", label: "Chave SSH Global", path: "/ssh-key", desc: "chave e credencial padrão" },
   { key: "sessions", label: "Histórico", path: "/sessions", desc: "sessões e comandos executados" },

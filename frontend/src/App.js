@@ -11,6 +11,7 @@ import Devices from "@/pages/Devices";
 import Terminal from "@/pages/Terminal";
 import Batch from "@/pages/Batch";
 import LookingGlass from "@/pages/LookingGlass";
+import Rpki from "@/pages/Rpki";
 import Agents from "@/pages/Agents";
 import SshKey from "@/pages/SshKey";
 import Sessions from "@/pages/Sessions";
@@ -53,6 +54,7 @@ function App() {
             <Route path="/web" element={<WebAccess />} />
             <Route path="/batch" element={<Batch />} />
             <Route path="/lg" element={<LookingGlass />} />
+            <Route path="/rpki" element={<Rpki />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/ssh-key" element={<SshKey />} />
             <Route path="/sessions" element={<Sessions />} />

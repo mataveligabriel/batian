@@ -74,6 +74,22 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
+  # opcional: Krill (NLnet Labs) — autoridade certificadora RPKI dos ASNs gerenciados. O BastiON é a tela (menu RPKI).
+  # Ative com: sudo bash deploy/rpki-setup.sh. Escuta só em 127.0.0.1; as chaves ficam no volume krill_data.
+  krill:
+    image: ${KRILL_IMAGE:-nlnetlabs/krill:latest}
+    profiles: ["rpki"]
+    restart: unless-stopped
+    environment:
+      KRILL_ADMIN_TOKEN: ${KRILL_ADMIN_TOKEN:-}
+      KRILL_FQDN: localhost:${KRILL_PORT:-3000}
+      KRILL_LOG_LEVEL: warn
+      TZ: UTC
+    ports:
+      - "127.0.0.1:${KRILL_PORT:-3000}:3000"
+    volumes:
+      - krill_data:/var/krill/data
+
   frontend:
     build:
       context: ../frontend
@@ -97,6 +113,7 @@ services:
 
 volumes:
   bastion_data:
+  krill_data:
   mongo_data:
   ollama_data:
   caddy_data:

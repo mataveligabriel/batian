@@ -52,6 +52,7 @@ import security
 import webproxy
 import cloudsync
 import lookingglass
+import rpki
 import webpush
 import sharing
 import netanalysis
@@ -134,6 +135,7 @@ async def startup():
     global _flow_asn_task
     _flow_asn_task = asyncio.create_task(_flow_asn_loop())
     _bg(_auto_discover_loop())
+    _bg(_rpki_watch_loop())
     await db.flow_mitigations.create_index([("status", 1), ("created_at", -1)])
     await db.flow_mitigations.create_index("id")
     try:
@@ -1462,6 +1464,193 @@ async def lg_set_commands(body: LGCommandsIn, _: dict = Depends(require_admin)):
         raise HTTPException(status_code=400, detail=str(e))
     await db.config.update_one({"key": "lg"}, {"$set": {"commands": ov}}, upsert=True)
     return {"ok": True, "overrides": ov}
+
+
+# ---------- RPKI (Krill ao lado; o BastiON é a tela) ----------
+class RpkiCaIn(BaseModel):
+    handle: str
+    label: str = ""
+
+
+class RpkiXmlIn(BaseModel):
+    xml: str
+    name: str = "nicbr"
+
+
+class RpkiRoasIn(BaseModel):
+    added: List[dict] = []
+    removed: List[dict] = []
+
+
+def _rpki_http(e: "rpki.RpkiError"):
+    return HTTPException(status_code=e.status, detail=str(e))
+
+
+async def _rpki_log(user: dict, handle: str, action: str, detail: str):
+    await db.rpki_log.insert_one({"id": os.urandom(8).hex(), "at": datetime.now(timezone.utc).isoformat(), "handle": handle,
+                                  "user_email": user.get("email"), "action": action, "detail": detail[:2000]})
+
+
+@api.get("/rpki/status")
+async def rpki_status(user: dict = Depends(get_current_user)):
+    out = {"configured": rpki.configured(), "online": False, "cas": [], "can_manage": user.get("role") == "admin"}
+    if not out["configured"]:
+        return out
+    out.update(await rpki.info())
+    if not out["online"]:
+        return out
+    try:
+        handles = await rpki.list_cas()
+    except rpki.RpkiError as e:
+        out.update(online=False, error=str(e))
+        return out
+    labels = {d["handle"]: d.get("label", "") for d in await db.rpki_cas.find({}, {"_id": 0}).to_list(1000)}
+
+    async def one(h):
+        try:
+            d = await rpki.ca_detail(h)
+        except rpki.RpkiError as e:
+            d = {"handle": h, "error": str(e), "asns": [], "ipv4": [], "ipv6": [], "parents": [], "repo": False}
+        d["label"] = labels.get(h, "")
+        return d
+    out["cas"] = list(await asyncio.gather(*[one(h) for h in handles]))
+    return out
+
+
+@api.post("/rpki/cas")
+async def rpki_create_ca(body: RpkiCaIn, user: dict = Depends(require_admin)):
+    try:
+        h = rpki.check_handle(body.handle)
+        await rpki.create_ca(h)
+    except rpki.RpkiError as e:
+        raise _rpki_http(e)
+    await db.rpki_cas.update_one({"handle": h}, {"$set": {"handle": h, "label": body.label.strip()[:80]}}, upsert=True)
+    await _rpki_log(user, h, "ca_criada", body.label.strip()[:80])
+    return {"ok": True, "handle": h}
+
+
+@api.delete("/rpki/cas/{handle}")
+async def rpki_delete_ca(handle: str, confirm: str = "", user: dict = Depends(require_admin)):
+    if confirm != handle:
+        raise HTTPException(status_code=400, detail="Digite o identificador da CA para confirmar")
+    try:
+        await rpki.delete_ca(handle)
+    except rpki.RpkiError as e:
+        raise _rpki_http(e)
+    await db.rpki_cas.delete_one({"handle": handle})
+    await _rpki_log(user, handle, "ca_removida", "")
+    return {"ok": True}
+
+
+@api.get("/rpki/cas/{handle}")
+async def rpki_ca(handle: str, user: dict = Depends(get_current_user)):
+    try:
+        d = await rpki.ca_detail(handle)
+        d["roas"] = await rpki.roas(handle) if d["parents"] else []
+        an = await rpki.analysis(handle) if d["parents"] else {"available": False, "roa_state": {}, "announcements": []}
+        if user.get("role") == "admin":
+            d["child_request"] = await rpki.child_request(handle)
+            d["publisher_request"] = await rpki.publisher_request(handle)
+    except rpki.RpkiError as e:
+        raise _rpki_http(e)
+    for r in d["roas"]:
+        r["status"] = an["roa_state"].get(f"{r['asn']}|{r['prefix']}|{r['max_length']}")
+        r["warnings"] = rpki.roa_warnings(r)
+    d["analysis_available"] = an.get("available", False)
+    d["announcements"] = an["announcements"][:500]
+    d["label"] = ((await db.rpki_cas.find_one({"handle": handle}, {"_id": 0})) or {}).get("label", "")
+    d["log"] = await db.rpki_log.find({"handle": handle}, {"_id": 0}).sort("at", -1).to_list(30)
+    return d
+
+
+@api.post("/rpki/cas/{handle}/repo")
+async def rpki_set_repo(handle: str, body: RpkiXmlIn, user: dict = Depends(require_admin)):
+    try:
+        await rpki.set_repo(handle, body.xml)
+    except rpki.RpkiError as e:
+        raise _rpki_http(e)
+    await _rpki_log(user, handle, "repositorio_configurado", "")
+    return {"ok": True}
+
+
+@api.post("/rpki/cas/{handle}/parents")
+async def rpki_add_parent(handle: str, body: RpkiXmlIn, user: dict = Depends(require_admin)):
+    try:
+        await rpki.add_parent(handle, body.name or "nicbr", body.xml)
+    except rpki.RpkiError as e:
+        raise _rpki_http(e)
+    await _rpki_log(user, handle, "pai_vinculado", body.name or "nicbr")
+    return {"ok": True}
+
+
+@api.post("/rpki/cas/{handle}/roas/check")
+async def rpki_check_roas(handle: str, body: RpkiRoasIn, user: dict = Depends(get_current_user)):
+    """Valida e devolve os avisos antes de salvar (nada é alterado)."""
+    try:
+        d = await rpki.ca_detail(handle)
+        added = [rpki.clean_roa(r) for r in body.added]
+    except rpki.RpkiError as e:
+        raise _rpki_http(e)
+    return {"added": [{**r, "warnings": rpki.roa_warnings(r, d)} for r in added]}
+
+
+@api.post("/rpki/cas/{handle}/roas")
+async def rpki_update_roas(handle: str, body: RpkiRoasIn, user: dict = Depends(get_current_user)):
+    if not body.added and not body.removed:
+        raise HTTPException(status_code=400, detail="Nada para alterar")
+    try:
+        added = [rpki.clean_roa(r) for r in body.added]
+        removed = [rpki.clean_roa(r) for r in body.removed]
+        await rpki.update_roas(handle, added, removed)
+    except rpki.RpkiError as e:
+        raise _rpki_http(e)
+    fmt = lambda r: f"AS{r['asn']} {r['prefix']} max /{r['max_length']}"
+    await _rpki_log(user, handle, "roas", "; ".join([f"+ {fmt(r)}" for r in added] + [f"- {fmt(r)}" for r in removed]))
+    return {"ok": True, "added": len(added), "removed": len(removed)}
+
+
+RPKI_WATCH_HOURS = float(os.environ.get("RPKI_WATCH_HOURS", "6"))
+
+
+async def _rpki_watch_once() -> List[str]:
+    """Avisa quando um anúncio passa a ser INVÁLIDO ou quando a CA para de sincronizar. Só o que é novo."""
+    if not rpki.configured():
+        return []
+    prev = set((await db.config.find_one({"key": "rpki_watch"}, {"_id": 0}) or {}).get("problems") or [])
+    now, lines = set(), {}
+    for h in await rpki.list_cas():
+        d = await rpki.ca_detail(h)
+        for p in d["parents"]:
+            if p["ok"] is False:
+                k = f"{h}|pai|{p['name']}"
+                now.add(k)
+                lines[k] = f"- {h}: sem sincronizar com {p['name']} ({p['error'] or 'erro'})"
+        if d.get("repo_ok") is False:
+            k = f"{h}|repo"
+            now.add(k)
+            lines[k] = f"- {h}: não está publicando ({d.get('repo_error') or 'erro'})"
+        if d["parents"]:
+            for a in (await rpki.analysis(h))["announcements"]:
+                if a["level"] == "bad":
+                    k = f"{h}|{a['asn']}|{a['prefix']}"
+                    now.add(k)
+                    lines[k] = f"- {h}: AS{a['asn']} {a['prefix']} — {a['text']}"
+    await db.config.update_one({"key": "rpki_watch"}, {"$set": {"problems": sorted(now), "at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    fresh = [lines[k] for k in sorted(now - prev)]
+    if fresh:
+        await automation.send_alert(db, "⚠️ RPKI: anúncio inválido ou CA sem sincronizar", "\n".join(fresh[:30]),
+                                    push_url="/rpki", push_tag="rpki")
+    return fresh
+
+
+async def _rpki_watch_loop():
+    await asyncio.sleep(120)
+    while True:
+        try:
+            await _rpki_watch_once()
+        except Exception as e:
+            logger.warning(f"rpki watch: {e}")
+        await asyncio.sleep(RPKI_WATCH_HOURS * 3600)
 
 
 # ---------- Automation: settings, alerts, backups, scheduler ----------

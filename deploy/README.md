@@ -576,6 +576,7 @@ Marque só o que ele deve usar; o resto some do menu e a API recusa (erro 403), 
 | Análise de Flow | tráfego por AS/IP, ataques, mitigação |
 | Execução em Lote | comandos em vários equipamentos e scripts |
 | Looking Glass | ping, traceroute e rota BGP a partir dos roteadores liberados |
+| RPKI | ROAs e certificação dos ASNs gerenciados |
 | Agentes Remotos | jump hosts, túneis e VPNs |
 | Chave SSH Global | chave e credencial padrão |
 | Histórico | sessões e comandos executados |
@@ -611,3 +612,50 @@ mais de um roteador você compara a mesma consulta lado a lado.
 `{target}` destino como digitado, `{addr}` só o endereço, `{len}` tamanho do prefixo, `{addr_len}` "endereço tamanho".
 Padrões prontos para Huawei, Juniper, Cisco, MikroTik (RouterOS 7), Datacom, ZTE e Linux (FRR). Os de Huawei, Juniper
 e Cisco são os usuais; confira os de Datacom, ZTE e MikroTik no seu equipamento e ajuste se o comando for outro.
+
+## 26. RPKI — certificar ASNs e gerenciar ROAs (Krill)
+
+O BastiON vira a tela de um **Krill** (NLnet Labs), que roda num container ao lado e guarda as chaves, assina os ROAs
+e publica. Cada rede/ASN que você gerencia é uma **CA** separada. O modelo é o **RPKI delegado**, o que o Registro.br usa.
+
+**Ativar (uma vez):**
+
+```bash
+sudo bash /opt/bastion/deploy/rpki-setup.sh
+```
+
+O script cria o token, liga o perfil `rpki` no `deploy/.env`, sobe o Krill (só em `127.0.0.1:3000`, nada exposto) e
+reinicia o backend. O servidor precisa de saída HTTPS para a internet (falar com o Registro.br e baixar a tabela do RIPE RIS).
+
+**Cadastrar um ASN** — menu **RPKI → Nova CA** (ex.: `LINK10`). Depois, com o login do titular no portal do Registro.br:
+
+1. **Servidor de publicação**: copie/baixe o *publisher request*, informe no portal e cole de volta o *repository response*.
+2. **Pai (Registro.br)**: copie/baixe o *child request*, informe no portal e cole de volta o *parent response*.
+
+Em alguns minutos os recursos (ASN e blocos) aparecem na CA e a tela de ROAs é liberada. Os nomes dos campos no portal
+podem variar; o que importa é qual XML vai e qual volta — a tela recusa se você colar o XML trocado.
+
+**ROAs** — informe ASN de origem, prefixo e tamanho máximo (vazio = igual ao prefixo, o recomendado). Antes de
+publicar, a tela mostra os avisos (tamanho máximo aberto demais, prefixo fora dos recursos). A coluna **Situação** e a
+lista **Anúncios que pedem atenção** vêm da comparação do Krill com a tabela global (RIPE RIS): anúncio inválido,
+anúncio sem ROA, ROA sem anúncio. Toda alteração fica no histórico da CA, com quem fez.
+
+**Alertas** — a cada 6 h (`RPKI_WATCH_HOURS`) o BastiON avisa no Telegram/push quando um anúncio passa a ser inválido
+ou quando uma CA para de sincronizar com o pai ou de publicar.
+
+**Permissões** — módulo **RPKI** em Usuários: quem tem o módulo cria e remove ROAs; criar/remover CA e fazer o vínculo
+é só do admin.
+
+**Cópia de segurança (importante)** — as chaves das CAs ficam no volume `krill_data`. Se ele se perder, é preciso
+refazer o vínculo de todos os ASNs no Registro.br.
+
+```bash
+sudo bash /opt/bastion/deploy/rpki-backup.sh          # gera /opt/bastion-backups/krill-AAAAMMDD-HHMMSS.tar.gz
+```
+
+Guarde o arquivo fora do servidor (ele contém chaves privadas). Vale colocar no cron semanal.
+
+- Porta 3000 ocupada? Ponha `KRILL_PORT=3010` e `KRILL_URL=https://127.0.0.1:3010` no `.env` antes do setup.
+- Fixar a versão do Krill: `KRILL_IMAGE=nlnetlabs/krill:vX.Y.Z` no `.env`.
+- Problemas: `cd /opt/bastion/deploy && docker compose --profile rpki logs --tail 50 krill`.
+- Isto cobre **assinar** (ROAs). Fazer os roteadores **validarem** rotas recebidas (validador + RTR) é outra peça.
