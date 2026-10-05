@@ -53,6 +53,7 @@ import webproxy
 import cloudsync
 import lookingglass
 import rpki
+import vendorscan
 import webpush
 import sharing
 import netanalysis
@@ -1651,6 +1652,112 @@ async def _rpki_watch_loop():
         except Exception as e:
             logger.warning(f"rpki watch: {e}")
         await asyncio.sleep(RPKI_WATCH_HOURS * 3600)
+
+
+# ---------- Identificar fabricante por lista de IPs ----------
+_scan_jobs: dict = {}
+SCAN_PARALLEL = int(os.environ.get("SCAN_PARALLEL", "8"))
+
+
+class ScanIn(BaseModel):
+    targets: str
+    username: str = ""
+    password: str = ""
+    protocol: str = "auto"
+    port: Optional[int] = None
+    agent_id: Optional[str] = None
+
+
+def _scan_public(j: dict) -> dict:
+    return {k: j[k] for k in ("id", "total", "done", "finished", "results", "invalid", "protocol", "username", "agent_id",
+                              "agent_name", "error", "started_at")}
+
+
+async def _scan_run(job: dict, targets: List[dict], password: str, hops: List[Hop]):
+    chain = None
+    try:
+        tunnel = None
+        if hops:
+            chain = SSHClientWrapper(hops)
+            await chain.connect()
+            tunnel = chain.conn
+        sem = asyncio.Semaphore(SCAN_PARALLEL)
+
+        async def one(i: int, t: dict):
+            async with sem:
+                if job.get("cancel"):
+                    r = {"host": t["host"], "name": t.get("name") or "", "status": "skipped", "error": "cancelado"}
+                else:
+                    try:
+                        r = await asyncio.wait_for(vendorscan.probe(t, job["protocol"], job["username"], password, tunnel), 150)
+                    except Exception as e:
+                        r = {"host": t["host"], "name": t.get("name") or "", "status": "error",
+                             "error": "demorou demais" if isinstance(e, asyncio.TimeoutError) else str(e)[:140]}
+            job["results"][i] = r
+            job["done"] += 1
+        await asyncio.gather(*[one(i, t) for i, t in enumerate(targets)])
+    except Exception as e:
+        job["error"] = str(e)[:300]
+    finally:
+        job["finished"] = True
+        if chain:
+            await chain.close()
+
+
+@api.post("/discover/scan")
+async def scan_start(body: ScanIn, user: dict = Depends(get_current_user)):
+    if body.protocol not in ("ssh", "telnet", "auto"):
+        raise HTTPException(status_code=400, detail="Protocolo inválido")
+    if body.port is not None and not 1 <= body.port <= 65535:
+        raise HTTPException(status_code=400, detail="Porta inválida")
+    try:
+        targets, invalid = vendorscan.parse_targets(body.targets, body.port)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not targets:
+        raise HTTPException(status_code=400, detail="Cole pelo menos um IP (um por linha)")
+    priv, default_user, default_pw = await _get_ssh_key()
+    username, password = body.username.strip() or default_user, body.password or default_pw
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Informe usuário e senha (ou defina a credencial padrão em Chave SSH Global)")
+    if sum(1 for j in _scan_jobs.values() if j["owner"] == user["id"] and not j["finished"]) >= 1:
+        raise HTTPException(status_code=409, detail="Já existe uma identificação sua em andamento — aguarde terminar ou cancele")
+    hops, agent_name = [], ""
+    if body.agent_id:
+        ag = await _get_agent_for(user, body.agent_id)
+        agent_name = ag["name"]
+        hops = [_agent_hop(a, priv) for a in await _agent_chain(body.agent_id)]
+    now = time.time()
+    for k in [k for k, j in _scan_jobs.items() if now - j["ts"] > 3600]:
+        _scan_jobs.pop(k, None)
+    job = {"id": os.urandom(8).hex(), "owner": user["id"], "ts": now, "total": len(targets), "done": 0, "finished": False,
+           "results": [None] * len(targets), "invalid": invalid[:50], "protocol": body.protocol, "username": username,
+           "agent_id": body.agent_id or None, "agent_name": agent_name, "error": "",
+           "started_at": datetime.now(timezone.utc).isoformat()}
+    _scan_jobs[job["id"]] = job
+    _bg(_scan_run(job, targets, password, hops))
+    await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"], "device_id": None,
+                                  "device_name": f"Identificação de fabricante — {len(targets)} IP(s)" + (f" via {agent_name}" if agent_name else ""),
+                                  "started_at": job["started_at"], "ended_at": job["started_at"], "duration_seconds": 0, "kind": "scan"})
+    return _scan_public(job)
+
+
+def _scan_job(job_id: str, user: dict) -> dict:
+    j = _scan_jobs.get(job_id)
+    if not j or j["owner"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Identificação não encontrada (expira após 1 hora ou ao reiniciar o BastiON)")
+    return j
+
+
+@api.get("/discover/scan/{job_id}")
+async def scan_get(job_id: str, user: dict = Depends(get_current_user)):
+    return _scan_public(_scan_job(job_id, user))
+
+
+@api.post("/discover/scan/{job_id}/cancel")
+async def scan_cancel(job_id: str, user: dict = Depends(get_current_user)):
+    _scan_job(job_id, user)["cancel"] = True
+    return {"ok": True}
 
 
 # ---------- Automation: settings, alerts, backups, scheduler ----------

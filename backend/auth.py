@@ -118,6 +118,7 @@ _MOD_RULES = [
     ("*", r"/api/(monitor|optics)(/.*)?", ("maps", "dashboards")),
     ("*", r"/api/dashboards(/.*)?", ("dashboards",)),
     ("*", r"/api/flow(/.*)?", ("flow",)),
+    ("*", r"/api/discover(/.*)?", ("devices",)),
     ("*", r"/api/lg(/.*)?", ("lg",)),
     ("*", r"/api/rpki(/.*)?", ("rpki",)),
     ("GET", r"/api/scripts", ("batch", "terminal")),

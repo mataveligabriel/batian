@@ -11,9 +11,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy, Send, Globe } from "lucide-react";
+import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy, Send, Globe, Radar } from "lucide-react";
 import { TransferDialog } from "@/components/TransferDialog";
 import { ImportDevicesDialog } from "@/components/ImportDevicesDialog";
+import { VendorScanDialog } from "@/components/VendorScanDialog";
 import { ExportDevicesDialog } from "@/components/ExportDevicesDialog";
 import { BulkEditDevicesDialog } from "@/components/BulkEditDevicesDialog";
 
@@ -35,6 +36,7 @@ export default function Devices() {
   const [cloneOf, setCloneOf] = useState(null);
   const [form, setForm] = useState(emptyDevice);
   const [importOpen, setImportOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
@@ -196,6 +198,10 @@ export default function Devices() {
           <p className="hidden md:block text-slate-400 mt-2 text-sm">Cadastre hosts com porta SSH customizada e associe a um agente proxy.</p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setScanOpen(true)} data-testid="scan-devices-btn" title="Cole uma lista de IPs e descubra o fabricante de cada um"
+                  className="border-line bg-panel text-slate-200 hover:bg-slate-800">
+            <Radar className="w-4 h-4 md:mr-2" /><span className="hidden md:inline">Identificar por lista</span>
+          </Button>
           <Button variant="outline" onClick={() => setImportOpen(true)} data-testid="import-devices-btn"
                   className="border-line bg-panel text-slate-200 hover:bg-slate-800">
             <Upload className="w-4 h-4 md:mr-2" /><span className="hidden md:inline">Importar CSV</span>
@@ -210,6 +216,7 @@ export default function Devices() {
         </div>
       </div>
       <ImportDevicesDialog open={importOpen} onOpenChange={setImportOpen} onDone={load} />
+      <VendorScanDialog open={scanOpen} onOpenChange={setScanOpen} agents={agents} onDone={load} />
       <ExportDevicesDialog open={exportOpen} onOpenChange={setExportOpen} total={devices.length} filteredIds={filteredIds} selectedIds={selectedIds} />
       <TransferDialog open={sendOpen} onOpenChange={setSendOpen} preset={{ device_ids: [...selected], tab: "devices" }} />
       <BulkEditDevicesDialog open={bulkOpen} onOpenChange={setBulkOpen} deviceIds={selectedIds} agents={agents} deviceTypes={DEVICE_TYPES} onDone={load} />

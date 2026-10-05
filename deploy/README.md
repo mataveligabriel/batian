@@ -659,3 +659,22 @@ Guarde o arquivo fora do servidor (ele contém chaves privadas). Vale colocar no
 - Fixar a versão do Krill: `KRILL_IMAGE=nlnetlabs/krill:vX.Y.Z` no `.env`.
 - Problemas: `cd /opt/bastion/deploy && docker compose --profile rpki logs --tail 50 krill`.
 - Isto cobre **assinar** (ROAs). Fazer os roteadores **validarem** rotas recebidas (validador + RTR) é outra peça.
+
+## 27. Identificar fabricante por lista de IPs
+
+**Equipamentos → Identificar por lista**: cole os IPs (um por linha), informe usuário e senha, e o BastiON entra em cada
+um e diz se é Huawei, Cisco, Datacom, Juniper, ZTE, MikroTik etc.
+
+- **Lista**: `IP`, `IP:porta`, `IP nome` (ou `nome IP`) ou uma rede em CIDR (até /22). Máximo de 1024 endereços por vez.
+- **Protocolo**: *SSH, depois Telnet* (o Telnet só é tentado quando o SSH não abre), *só SSH* ou *só Telnet*.
+- **Sair por**: direto do BastiON ou por um agente (jump) — use o agente quando os IPs só respondem de dentro da rede.
+- É feita **uma** tentativa de login por equipamento, para não bloquear a conta. Depois de entrar, só comandos de
+  leitura (`display version`, `show version`, `show platform`, `show system`).
+- Como decide: identificação do servidor SSH, texto de boas-vindas, formato do prompt e a resposta do comando de
+  versão. A coluna Fabricante mostra a confiança quando não é alta; passe o mouse para ver a pista usada.
+- Resultado: filtro por fabricante, **Copiar** (cola no Excel), **CSV**, e **Cadastrar em Equipamentos** os marcados —
+  já com fabricante, protocolo, porta, usuário/senha, agente e as tags que você informar.
+- A senha fica só na memória durante o teste; só é gravada (cifrada) nos equipamentos que você mandar cadastrar.
+- 8 equipamentos em paralelo (`SCAN_PARALLEL`). IP sem resposta custa ~8 s por protocolo. O resultado fica disponível
+  por 1 hora; reiniciar o BastiON no meio perde o teste.
+- Precisa do módulo **Equipamentos**. Fica registrado no Histórico (tipo `scan`).
