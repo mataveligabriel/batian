@@ -280,3 +280,101 @@ async def probe(target: dict, protocol: str, username: str, password: str, tunne
         return {**res, "protocol": "telnet", "port": port, **r}
     port = target.get("port") or 23
     return {**res, "protocol": "telnet", "port": port, **(await probe_telnet(host, port, username, password, tunnel))}
+
+
+# ---------- Execução em lote por lista de IPs (sem cadastro) ----------
+async def _exec(read, send, ssh_id: str, banner: bytes, dtype: str, command: str, timeout: int, nl: bytes = b"\n") -> dict:
+    """Na sessão já aberta: descobre o fabricante se preciso (para desligar a paginação certa) e roda os comandos."""
+    from ssh_service import PAGINATION_OFF
+    text = _clean_ansi(banner.decode("utf-8", "replace"))
+    prompt = learn_prompt(banner)
+    label = VENDOR_LABEL.get(dtype, "")
+    if dtype == "auto":
+        c = classify(ssh_id, text)
+        for cmd in probes_for(text):
+            if c["vendor"] and c["confidence"] != "baixa":
+                break
+            send(cmd.encode() + nl)
+            text += "\n" + _clean_ansi((await read_reply(read, send, 1.5, 12, prompt)).decode("utf-8", "replace"))[-20000:]
+            c = classify(ssh_id, text)
+        dtype, label = c["vendor"] or "other", c["label"]
+    for pre in (PAGINATION_OFF.get(dtype) or "").splitlines():
+        send(pre.encode() + nl)
+        await read_reply(read, send, 1.0, 8, prompt)
+    out = b""
+    for line in command.splitlines():
+        if line.strip():
+            send(line.encode() + nl)
+            out += await read_reply(read, send, 1.5, timeout, prompt)
+    return {"status": "ok", "vendor": dtype, "label": label, "hostname": (prompt or "").split("@")[-1],
+            "output": _clean_ansi(out.decode("utf-8", "replace"))[-400000:]}
+
+
+async def run_ssh(host, port, username, password, tunnel, dtype, command, timeout) -> dict:
+    kw = dict(username=username, password=password, known_hosts=None, client_keys=None, connect_timeout=CONNECT_TIMEOUT,
+              login_timeout=20, preferred_auth="password,keyboard-interactive", **LEGACY_ALGS)
+    try:
+        conn = await (tunnel.connect_ssh(host, port=port, **kw) if tunnel else asyncssh.connect(host, port=port, **kw))
+    except Exception as e:
+        st, msg = _why(e)
+        return {"status": st, "error": msg}
+    try:
+        proc = await conn.create_process(term_type="vt100", term_size=(200, 100), encoding=None)
+        read = lambda t: asyncio.wait_for(proc.stdout.read(65536), timeout=t)
+        try:
+            banner = await read_reply(read, proc.stdin.write, 1.5, 10)
+            return await _exec(read, proc.stdin.write, str(conn.get_extra_info("server_version") or ""), banner, dtype, command, timeout)
+        finally:
+            proc.close()
+    except Exception as e:
+        return {"status": "error", "error": f"entrou, mas a sessão falhou: {str(e)[:120] or type(e).__name__}"}
+    finally:
+        conn.close()
+
+
+async def run_telnet(host, port, username, password, tunnel, dtype, command, timeout) -> dict:
+    t = TelnetClientWrapper([], host, port, username=username, password=password, device_type="other")
+    try:
+        opener = tunnel.open_connection(host, port) if tunnel else asyncio.open_connection(host, port)
+        t.reader, t.writer = await asyncio.wait_for(opener, timeout=CONNECT_TIMEOUT)
+    except Exception as e:
+        st, msg = _why(e)
+        return {"status": st, "error": msg}
+    try:
+        await t.open_shell(200, 100)
+        read = lambda tm: asyncio.wait_for(t.queue.get(), timeout=tm)
+        first = await read_reply(read, t._send, 2.5, 20)
+        head = _clean_ansi(first.decode("utf-8", "replace"))
+        if not head.strip():
+            return {"status": "error", "error": "a porta abriu, mas o equipamento não mostrou nada"}
+        if _AUTH_FAIL.search(head[-600:]) or _ASK_LOGIN.search(head.strip()[-200:]):
+            return {"status": "auth", "error": "usuário ou senha recusados"}
+        return await _exec(read, t._send, "", first, dtype, command, timeout, b"\r\n")
+    except Exception as e:
+        return {"status": "error", "error": (str(e) or type(e).__name__)[:140]}
+    finally:
+        try:
+            if t._pump:
+                t._pump.cancel()
+            if t.writer:
+                t.writer.close()
+        except Exception:
+            pass
+
+
+async def run(target: dict, protocol: str, username: str, password: str, tunnel, dtype: str, command: str, timeout: int = 60) -> dict:
+    """Mesma regra de protocolo do `probe`: no automático, o Telnet só entra se o SSH não abrir."""
+    host = target["host"]
+    res = {"host": host, "name": target.get("name") or ""}
+    if protocol in ("ssh", "auto"):
+        port = target.get("port") or 22
+        r = await run_ssh(host, port, username, password, tunnel, dtype, command, timeout)
+        if protocol == "ssh" or r["status"] in ("ok", "auth", "error"):
+            return {**res, "protocol": "ssh", "port": port, **r}
+        ssh_err = r.get("error", "")
+        r = await run_telnet(host, 23, username, password, tunnel, dtype, command, timeout)
+        if r["status"] in ("down", "closed"):
+            return {**res, "protocol": "", "port": None, "status": "down", "error": f"SSH: {ssh_err} · Telnet: {r.get('error')}"}
+        return {**res, "protocol": "telnet", "port": 23, **r}
+    port = target.get("port") or 23
+    return {**res, "protocol": "telnet", "port": port, **(await run_telnet(host, port, username, password, tunnel, dtype, command, timeout))}

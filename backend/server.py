@@ -1674,7 +1674,7 @@ def _scan_public(j: dict) -> dict:
                               "agent_name", "error", "started_at")}
 
 
-async def _scan_run(job: dict, targets: List[dict], password: str, hops: List[Hop]):
+async def _scan_run(job: dict, targets: List[dict], password: str, hops: List[Hop], work=None, per_host: float = 150):
     chain = None
     try:
         tunnel = None
@@ -1690,7 +1690,8 @@ async def _scan_run(job: dict, targets: List[dict], password: str, hops: List[Ho
                     r = {"host": t["host"], "name": t.get("name") or "", "status": "skipped", "error": "cancelado"}
                 else:
                     try:
-                        r = await asyncio.wait_for(vendorscan.probe(t, job["protocol"], job["username"], password, tunnel), 150)
+                        coro = work(t, tunnel) if work else vendorscan.probe(t, job["protocol"], job["username"], password, tunnel)
+                        r = await asyncio.wait_for(coro, per_host)
                     except Exception as e:
                         r = {"host": t["host"], "name": t.get("name") or "", "status": "error",
                              "error": "demorou demais" if isinstance(e, asyncio.TimeoutError) else str(e)[:140]}
@@ -1741,6 +1742,79 @@ async def scan_start(body: ScanIn, user: dict = Depends(get_current_user)):
                                   "device_name": f"Identificação de fabricante — {len(targets)} IP(s)" + (f" via {agent_name}" if agent_name else ""),
                                   "started_at": job["started_at"], "ended_at": job["started_at"], "duration_seconds": 0, "kind": "scan"})
     return _scan_public(job)
+
+
+class AdhocBatchIn(ScanIn):
+    command: str = ""
+    script_id: Optional[str] = None
+    device_type: str = "auto"
+    timeout: int = 60
+
+
+@api.post("/batch/adhoc")
+async def batch_adhoc(body: AdhocBatchIn, user: dict = Depends(get_current_user)):
+    """Execução em lote numa lista de IPs, com usuário/senha informados na hora — nada é cadastrado."""
+    command = body.command
+    if body.script_id and not command.strip():
+        sc = await db.scripts.find_one({"id": body.script_id}, {"_id": 0})
+        if not sc:
+            raise HTTPException(status_code=404, detail="Script não encontrado")
+        command = sc["content"]
+    if not command.strip():
+        raise HTTPException(status_code=400, detail="Comando ou script obrigatório")
+    if body.protocol not in ("ssh", "telnet", "auto"):
+        raise HTTPException(status_code=400, detail="Protocolo inválido")
+    if body.device_type != "auto" and body.device_type not in DEVICE_TYPES:
+        raise HTTPException(status_code=400, detail="Tipo de equipamento inválido")
+    if body.port is not None and not 1 <= body.port <= 65535:
+        raise HTTPException(status_code=400, detail="Porta inválida")
+    try:
+        targets, invalid = vendorscan.parse_targets(body.targets, body.port)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not targets:
+        raise HTTPException(status_code=400, detail="Cole pelo menos um IP (um por linha)")
+    priv, default_user, default_pw = await _get_ssh_key()
+    username, password = body.username.strip() or default_user, body.password or default_pw
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Informe usuário e senha (ou defina a credencial padrão em Chave SSH Global)")
+    if sum(1 for j in _scan_jobs.values() if j["owner"] == user["id"] and not j["finished"]) >= 1:
+        raise HTTPException(status_code=409, detail="Já existe uma execução/identificação sua em andamento — aguarde terminar ou pare")
+    hops, agent_name = [], ""
+    if body.agent_id:
+        ag = await _get_agent_for(user, body.agent_id)
+        agent_name = ag["name"]
+        hops = [_agent_hop(a, priv) for a in await _agent_chain(body.agent_id)]
+    timeout = max(5, min(int(body.timeout or 60), 600))
+    now = time.time()
+    for k in [k for k, j in _scan_jobs.items() if now - j["ts"] > 3600]:
+        _scan_jobs.pop(k, None)
+    job = {"id": os.urandom(8).hex(), "owner": user["id"], "ts": now, "total": len(targets), "done": 0, "finished": False,
+           "results": [None] * len(targets), "invalid": invalid[:50], "protocol": body.protocol, "username": username,
+           "agent_id": body.agent_id or None, "agent_name": agent_name, "error": "",
+           "started_at": datetime.now(timezone.utc).isoformat()}
+    _scan_jobs[job["id"]] = job
+    lines = len([l for l in command.splitlines() if l.strip()])
+
+    def work(t, tunnel):
+        return vendorscan.run(t, body.protocol, username, password, tunnel, body.device_type, command, timeout)
+    _bg(_scan_run(job, targets, password, hops, work, per_host=60 + timeout * lines + 40))
+    await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"], "device_id": None,
+                                  "device_name": f"Lote por IP — {len(targets)} endereço(s)" + (f" via {agent_name}" if agent_name else ""),
+                                  "started_at": job["started_at"], "ended_at": job["started_at"], "duration_seconds": 0,
+                                  "kind": "batch", "command": command[:2000]})
+    return _scan_public(job)
+
+
+@api.get("/batch/adhoc/{job_id}")
+async def batch_adhoc_get(job_id: str, user: dict = Depends(get_current_user)):
+    return _scan_public(_scan_job(job_id, user))
+
+
+@api.post("/batch/adhoc/{job_id}/cancel")
+async def batch_adhoc_cancel(job_id: str, user: dict = Depends(get_current_user)):
+    _scan_job(job_id, user)["cancel"] = True
+    return {"ok": True}
 
 
 def _scan_job(job_id: str, user: dict) -> dict:

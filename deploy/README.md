@@ -703,3 +703,19 @@ aberto para fora. Não libere a porta 4822 no firewall.
 - No computador de destino: Área de Trabalho Remota habilitada, usuário com permissão e porta 3389 liberada a partir
   do BastiON (ou do agente).
 - Som, impressora e transferência de arquivos ficam desligados nesta versão.
+
+## 29. Execução em Lote por lista de IPs (sem cadastrar)
+
+**Execução em Lote → Lista de IPs**: cole os IPs, informe usuário e senha e rode o comando (ou um script salvo) em
+todos, sem cadastrar nenhum equipamento.
+
+- A lista aceita o mesmo formato da seção 27 (`IP`, `IP:porta`, `IP nome`, rede até /22; máximo de 1024).
+- **Protocolo**, **porta** e **Sair por** (direto ou por um agente) funcionam como na identificação por lista.
+- **Fabricante**: *Descobrir sozinho* identifica cada equipamento ao entrar (para desligar a paginação certa) — ou
+  fixe o fabricante quando a lista é toda igual, o que poupa um comando por equipamento.
+- Uma tentativa de login por equipamento; 8 em paralelo. A senha não é gravada e nada é cadastrado.
+- Os resultados chegam aos poucos, com nome (lido do prompt), protocolo e fabricante. **Copiar tudo** e **baixar .txt**
+  juntam todas as saídas.
+- "sucesso" quer dizer que entrou e o comando foi enviado; se o equipamento recusou o comando (sintaxe de outro
+  fabricante), a mensagem de erro dele aparece na saída. Em lista com fabricantes misturados, rode um fabricante por vez.
+- Fica no Histórico (tipo `batch`) com o comando executado. Só uma execução/identificação por usuário de cada vez.

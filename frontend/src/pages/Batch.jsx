@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -9,7 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Play, Loader2, Plus, Trash2, Pencil, Star, Search, ChevronDown, ChevronRight } from "lucide-react";
+import { Play, Loader2, Plus, Trash2, Pencil, Star, Search, ChevronDown, ChevronRight, Copy, Download, Square } from "lucide-react";
 import { useLocation } from "react-router-dom";
 
 export default function Batch() {
@@ -24,6 +24,42 @@ export default function Batch() {
   const [newScript, setNewScript] = useState({ name: "", content: "", description: "", quick: false });
   const [editingScript, setEditingScript] = useState(null);
   const [showNew, setShowNew] = useState(false);
+
+  // modo "Lista de IPs": roda sem cadastrar — usuário/senha informados na hora
+  const [mode, setMode] = useState("saved");
+  const [adhoc, setAdhoc] = useState({ targets: "", username: "", password: "", protocol: "auto", port: "", agent_id: "", device_type: "auto" });
+  const [agents, setAgents] = useState([]);
+  const [job, setJob] = useState(null);
+  const pollRef = useRef(null);
+  const ipCount = useMemo(() => adhoc.targets.split("\n").filter(l => l.split("#")[0].trim()).length, [adhoc.targets]);
+  useEffect(() => { api.get("/agents").then(r => setAgents(r.data)).catch(() => {}); return () => clearTimeout(pollRef.current); }, []);
+  const ST = { auth: "login recusado", closed: "porta fechada", down: "sem resposta", error: "erro", skipped: "cancelado" };
+  const fromJob = (j) => (j.results || []).map((r, i) => r && ({ device_id: `ip-${i}`, device_name: r.name || r.hostname || r.host, host: `${r.host}${r.protocol ? ` · ${r.protocol}/${r.port}` : ""}${r.label ? ` · ${r.label}` : ""}`,
+    ok: r.status === "ok", exit_status: r.status === "ok" ? 0 : -1, stdout: r.output || "", stderr: "", error: r.status === "ok" ? "" : `${ST[r.status] || r.status}${r.error && r.error !== ST[r.status] ? ` — ${r.error}` : ""}`, ip: r.host })).filter(Boolean);
+  const poll = (id) => {
+    clearTimeout(pollRef.current);
+    pollRef.current = setTimeout(async () => {
+      try {
+        const { data } = await api.get(`/batch/adhoc/${id}`); setJob(data); setResults(fromJob(data));
+        if (!data.finished) poll(id);
+        else { setRunning(false); const ok = data.results.filter(r => r?.status === "ok").length; toast.success(`Concluído: ${ok} de ${data.total} executaram`); }
+      } catch (e) { toast.error(formatApiError(e)); setRunning(false); }
+    }, 1500);
+  };
+  const executeAdhoc = async () => {
+    if (!ipCount) return toast.error("Cole ao menos 1 IP");
+    if (!scriptId && !inline.trim()) return toast.error("Selecione um script ou digite um comando");
+    setRunning(true); setResults([]); setJob(null);
+    try {
+      const { data } = await api.post("/batch/adhoc", { ...adhoc, port: adhoc.port ? Number(adhoc.port) : null, agent_id: adhoc.agent_id || null,
+        command: inline.trim(), script_id: inline.trim() ? null : scriptId || null, timeout: Number(timeout) || 60 });
+      setJob(data); poll(data.id);
+    } catch (e) { toast.error(formatApiError(e)); setRunning(false); }
+  };
+  const stopAdhoc = async () => { try { await api.post(`/batch/adhoc/${job.id}/cancel`); toast("Parando — os que já começaram terminam"); } catch (e) { toast.error(formatApiError(e)); } };
+  const allText = () => results.map(r => `===== ${r.device_name} (${r.host}) — ${r.ok ? "ok" : "FALHA: " + r.error} =====\n${r.stdout || ""}`).join("\n\n");
+  const copyAll = () => navigator.clipboard?.writeText(allText()).then(() => toast.success("Copiado"), () => toast.error("Não consegui copiar — use Baixar"));
+  const downloadAll = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([allText()], { type: "text/plain" })); a.download = "lote.txt"; a.click(); URL.revokeObjectURL(a.href); };
 
   const location = useLocation();
   const load = async () => {
@@ -77,6 +113,8 @@ export default function Batch() {
   const toggleAll = () => setMany(shownIds, !allShownOn);       // marca/desmarca só o que está à vista
 
   const execute = async () => {
+    if (mode === "ips") return executeAdhoc();
+    setJob(null);
     if (selected.length === 0) return toast.error("Selecione ao menos 1 equipamento");
     if (!scriptId && !inline.trim()) return toast.error("Selecione um script ou digite um comando");
     setRunning(true); setResults([]);
@@ -121,6 +159,41 @@ export default function Batch() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Devices selector */}
         <Card className="bg-surface border-line p-5 lg:col-span-1" data-testid="devices-selector">
+          <div className="flex rounded-md border border-line overflow-hidden mb-3 text-sm">
+            {[["saved", "Cadastrados"], ["ips", "Lista de IPs"]].map(([v, l]) => (
+              <button key={v} onClick={() => setMode(v)} disabled={running} data-testid={`batch-mode-${v}`}
+                      className={`flex-1 h-8 ${mode === v ? "bg-brand text-white" : "bg-sunken text-slate-400 hover:text-slate-200"}`}>{l}</button>
+            ))}
+          </div>
+          {mode === "ips" && (
+            <div className="space-y-2.5" data-testid="batch-adhoc">
+              <div>
+                <Label className="text-xs text-slate-400">IPs, um por linha ({ipCount})</Label>
+                <Textarea value={adhoc.targets} onChange={e => setAdhoc({ ...adhoc, targets: e.target.value })} rows={10} spellCheck={false} data-testid="adhoc-targets"
+                          placeholder={"172.16.40.118\n172.20.10.3  PAE-ANITA\n172.20.50.51:2222\n172.20.66.0/28"} className="bg-sunken border-line font-mono text-xs" />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div><Label className="text-xs text-slate-400">Usuário</Label><Input value={adhoc.username} onChange={e => setAdhoc({ ...adhoc, username: e.target.value })} autoComplete="off" placeholder="vazio = padrão" className="bg-sunken border-line font-mono" data-testid="adhoc-user" /></div>
+                <div><Label className="text-xs text-slate-400">Senha</Label><Input type="password" value={adhoc.password} onChange={e => setAdhoc({ ...adhoc, password: e.target.value })} autoComplete="new-password" className="bg-sunken border-line font-mono" data-testid="adhoc-pass" /></div>
+              </div>
+              <div className="grid grid-cols-[1fr_80px] gap-2">
+                <div><Label className="text-xs text-slate-400">Protocolo</Label>
+                  <select value={adhoc.protocol} onChange={e => setAdhoc({ ...adhoc, protocol: e.target.value })} className="w-full h-9 rounded-md bg-sunken border border-line text-sm text-slate-200 px-2">
+                    <option value="auto">SSH, depois Telnet</option><option value="ssh">Só SSH</option><option value="telnet">Só Telnet</option></select></div>
+                <div><Label className="text-xs text-slate-400">Porta</Label><Input value={adhoc.port} onChange={e => setAdhoc({ ...adhoc, port: e.target.value.replace(/\D/g, "").slice(0, 5) })} placeholder={adhoc.protocol === "telnet" ? "23" : "22"} className="bg-sunken border-line font-mono" /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div><Label className="text-xs text-slate-400">Fabricante</Label>
+                  <select value={adhoc.device_type} onChange={e => setAdhoc({ ...adhoc, device_type: e.target.value })} data-testid="adhoc-type" className="w-full h-9 rounded-md bg-sunken border border-line text-sm text-slate-200 px-2">
+                    <option value="auto">Descobrir sozinho</option>{[["huawei", "Huawei"], ["cisco", "Cisco"], ["datacom", "Datacom"], ["juniper", "Juniper"], ["zte", "ZTE"], ["mikrotik", "MikroTik"], ["linux", "Linux"], ["other", "Outro"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></div>
+                <div><Label className="text-xs text-slate-400">Sair por</Label>
+                  <select value={adhoc.agent_id} onChange={e => setAdhoc({ ...adhoc, agent_id: e.target.value })} className="w-full h-9 rounded-md bg-sunken border border-line text-sm text-slate-200 px-2">
+                    <option value="">Direto do BastiON</option>{agents.map(a => <option key={a.id} value={a.id}>Agente {a.name}</option>)}</select></div>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">Nada é cadastrado e a senha não é gravada. Uma tentativa de login por equipamento. Se a lista mistura fabricantes, use um comando que exista em todos ou rode um fabricante por vez.</p>
+            </div>
+          )}
+          {mode === "saved" && <>
           <div className="flex items-center justify-between mb-2">
             <div className="text-xs text-slate-400">Equipamentos ({selected.length}/{devices.length})</div>
             <div className="flex items-center gap-3">
@@ -176,6 +249,7 @@ export default function Batch() {
               );
             })}
           </div>
+          </>}
         </Card>
 
         {/* Script picker + inline + run */}
@@ -230,8 +304,18 @@ export default function Batch() {
 
           <Button onClick={execute} disabled={running} data-testid="execute-batch-btn" className="bg-brand hover:bg-brand-strong w-full">
             {running ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Play className="w-4 h-4 mr-2" />}
-            Executar em {selected.length} equipamento(s)
+            {mode === "ips" ? `Executar em ${ipCount} IP(s)` : `Executar em ${selected.length} equipamento(s)`}
           </Button>
+          {mode === "ips" && job && (
+            <div className="mt-3 flex items-center gap-3" data-testid="adhoc-progress">
+              <div className="flex-1">
+                <div className="h-1.5 rounded bg-sunken overflow-hidden"><div className={`h-full ${job.finished ? "bg-on" : "bg-brand"} transition-all`} style={{ width: `${Math.round(100 * job.done / Math.max(1, job.total))}%` }} /></div>
+                <div className="text-[11px] text-slate-500 font-mono mt-1">{job.done}/{job.total} {job.finished ? "— concluído" : "— executando…"}{job.agent_name ? ` · via ${job.agent_name}` : ""} · usuário {job.username}</div>
+              </div>
+              {!job.finished && <Button size="sm" variant="outline" className="border-line text-slate-200" onClick={stopAdhoc}><Square className="w-3.5 h-3.5 mr-1.5" />Parar</Button>}
+            </div>
+          )}
+          {mode === "ips" && job?.invalid?.length > 0 && <div className="text-xs text-amber-300 mt-2">Linhas ignoradas: {job.invalid.join(" · ")}</div>}
 
           {scripts.length > 0 && (
             <div className="mt-4">
@@ -257,7 +341,11 @@ export default function Batch() {
 
       {results.length > 0 && (
         <div className="mt-6 space-y-3" data-testid="batch-results">
-          <div className="text-xs text-slate-400">Resultados</div>
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <span>Resultados — {results.filter(r => r.ok).length} ok, {results.filter(r => !r.ok).length} com falha</span>
+            <button onClick={copyAll} className="ml-auto flex items-center gap-1 hover:text-slate-100" data-testid="batch-copy-all"><Copy className="w-3 h-3" />copiar tudo</button>
+            <button onClick={downloadAll} className="flex items-center gap-1 hover:text-slate-100"><Download className="w-3 h-3" />baixar .txt</button>
+          </div>
           {results.map(r => (
             <Card key={r.device_id} className="bg-surface border-line p-4">
               <div className="flex items-center justify-between mb-2">
