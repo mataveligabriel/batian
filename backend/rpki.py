@@ -16,7 +16,6 @@ import httpx
 KRILL_URL = os.environ.get("KRILL_URL", "https://127.0.0.1:3000").rstrip("/")
 KRILL_TOKEN = os.environ.get("KRILL_ADMIN_TOKEN", "")
 _HANDLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
-_NS = "{http://www.hactrust.net/2010/rpki-setup/}"
 MAX_XML = 100_000
 
 
@@ -161,14 +160,15 @@ def parse_setup_xml(xml: str, expect: str) -> dict:
         root = ET.fromstring(xml)
     except ET.ParseError:
         raise RpkiError("Isto não é um XML válido — cole o arquivo inteiro, do <" + expect + " até o fim")
-    tag = root.tag.replace(_NS, "")
+    tag = root.tag.split("}")[-1]                          # ignora o namespace do XML
     if tag != expect:
         other = {"child_request": "este é o pedido (o que sai daqui); cole a RESPOSTA que o Registro.br devolve",
                  "publisher_request": "este é o pedido (o que sai daqui); cole a RESPOSTA do servidor de publicação",
                  "parent_response": "esta é a resposta do pai (Registro.br) — ela vai no passo 2",
                  "repository_response": "esta é a resposta do servidor de publicação — ela vai no passo 1"}.get(tag)
         raise RpkiError(f"XML errado para este passo: {other or 'esperava <' + expect + '>'}")
-    ta = root.find(_NS + ("parent_bpki_ta" if expect == "parent_response" else "repository_bpki_ta"))
+    want = "parent_bpki_ta" if expect == "parent_response" else "repository_bpki_ta"
+    ta = next((c for c in root if c.tag.split("}")[-1] == want), None)
     cert = re.sub(r"\s+", "", (ta.text if ta is not None else "") or "")
     if not cert:
         raise RpkiError("XML incompleto (falta o certificado)")
