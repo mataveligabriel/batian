@@ -17,6 +17,8 @@ if grep -Eq '^COMPOSE_PROFILES=.*vpn' .env 2>/dev/null && [ "$(id -u)" -eq 0 ]; 
   modprobe ppp_generic 2>/dev/null || true
   [ -e /dev/ppp ] || mknod /dev/ppp c 108 0 2>/dev/null || echo "!! /dev/ppp indisponível neste servidor (VPS OpenVZ/LXC?) — a VPN não vai subir"
   grep -qx ppp_generic /etc/modules 2>/dev/null || echo ppp_generic >> /etc/modules
+  # OpenVPN (tun), PPTP (GRE + MPPE) e L2TP: módulos do kernel, quando existirem neste servidor
+  for m in tun ppp_mppe ip_gre nf_conntrack_pptp l2tp_ppp; do modprobe "$m" 2>/dev/null || true; done
 fi
 # 1) compila tudo ANTES de mexer nos containers: enquanto isso o sistema continua no ar com a versão
 #    anterior, e se a compilação falhar (rede, erro no código) nada é derrubado.

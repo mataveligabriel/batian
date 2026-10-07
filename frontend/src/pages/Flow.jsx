@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
-import { Compass, Layers, ShieldAlert, Cable, Settings2, ShieldBan, Handshake } from "lucide-react";
+import { Compass, Layers, ShieldAlert, Cable, Settings2, ShieldBan, Handshake, Bug } from "lucide-react";
 import { FlowExplorer } from "@/components/flow/FlowExplorer";
 import { FlowContents } from "@/components/flow/FlowContents";
 import { FlowAttacks } from "@/components/flow/FlowAttacks";
@@ -9,12 +9,13 @@ import { FlowInterfaces } from "@/components/flow/FlowInterfaces";
 import { FlowSettings } from "@/components/flow/FlowSettings";
 import { FlowMitigation } from "@/components/flow/FlowMitigation";
 import { FlowPeering } from "@/components/flow/FlowPeering";
+import { FlowBotnet } from "@/components/flow/FlowBotnet";
 import { STATUS } from "@/lib/netfmt";
 import { fixedColors } from "@/components/flow/flowlib";
 
 const tabBtn = (on) => `flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${on ? "border-brand text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`;
 const TABS = [["explorar", "Explorar", Compass], ["conteudos", "Conteúdos", Layers], ["ataques", "Ataques", ShieldAlert],
-              ["mitigacao", "Mitigação", ShieldBan], ["peering", "Peering", Handshake],
+              ["mitigacao", "Mitigação", ShieldBan], ["botnet", "Botnet (BNG)", Bug], ["peering", "Peering", Handshake],
               ["interfaces", "Interfaces", Cable], ["config", "Configuração", Settings2]];
 
 export default function Flow() {
@@ -25,6 +26,7 @@ export default function Flow() {
   const [liveAt, setLiveAt] = useState(null);
   const [groups, setGroups] = useState([]);
   const [active, setActive] = useState(0);
+  const [bots, setBots] = useState(0);
   const [err, setErr] = useState("");
 
   const loadIfaces = useCallback(async () => { const { data } = await api.get("/flow/interfaces"); setIfaces(data.items); setLiveAt(data.live_at); }, []);
@@ -58,6 +60,7 @@ export default function Flow() {
             <button key={k} className={tabBtn(tab === k)} onClick={() => setTab(k)} data-testid={`flow-tab-${k}`}>
               <I className="w-4 h-4" /> {l}
               {k === "ataques" && active > 0 && <span className="text-[10px] font-mono font-bold px-1.5 rounded-full text-white" style={{ background: STATUS.critical }} data-testid="attack-badge">{active}</span>}
+              {k === "botnet" && bots > 0 && <span className="text-[10px] font-mono font-bold px-1.5 rounded-full text-white" style={{ background: STATUS.warning }} data-testid="botnet-badge">{bots}</span>}
             </button>
           ))}
         </div>
@@ -68,6 +71,7 @@ export default function Flow() {
         {tab === "conteudos" && <FlowContents ifaces={ifaces} groups={groups} presets={settings?.presets || []} reload={loadGroups} ifColors={ifColors} groupColors={groupColors} />}
         {tab === "ataques" && <FlowAttacks settings={settings} onCount={setActive} />}
         {tab === "mitigacao" && <FlowMitigation />}
+        {tab === "botnet" && <FlowBotnet onCount={setBots} />}
         {tab === "peering" && <FlowPeering goConfig={() => setTab("config")} goIfaces={() => setTab("interfaces")} />}
         {tab === "interfaces" && <FlowInterfaces ifaces={ifaces} liveAt={liveAt} reload={loadIfaces} />}
         {tab === "config" && <FlowSettings settings={settings} reload={loadSettings} />}

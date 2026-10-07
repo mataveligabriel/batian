@@ -165,7 +165,7 @@ export default function Agents() {
         </div>
       )}
 
-      <VpnSection vpns={vpnData.items} daemon={vpnData.daemon} reload={reloadVpns} openId={params.get("vpn")} onOpened={() => setParams({}, { replace: true })} />
+      <VpnSection vpns={vpnData.items} daemon={vpnData.daemon} caps={vpnData.caps} reload={reloadVpns} openId={params.get("vpn")} onOpened={() => setParams({}, { replace: true })} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {agents.map(a => (

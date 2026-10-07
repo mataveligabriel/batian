@@ -47,8 +47,8 @@ services:
       mongo:
         condition: service_healthy
 
-  # opcional: VPN SSL da Fortinet (openfortivpn) para jumps que só respondem por VPN.
-  # Ative com COMPOSE_PROFILES=vpn no deploy/.env (o update.sh prepara o /dev/ppp).
+  # opcional: VPNs cliente (FortiGate SSL, OpenVPN, PPTP, L2TP/IPsec) para jumps que só respondem por VPN.
+  # Ative com COMPOSE_PROFILES=vpn no deploy/.env (o update.sh prepara o /dev/ppp e os módulos do kernel).
   vpn:
     build: ../backend
     command: ["python", "vpnd.py"]
@@ -60,6 +60,9 @@ services:
       - NET_ADMIN
     devices:
       - /dev/ppp:/dev/ppp
+    # /dev/net/tun (OpenVPN): o serviço cria o nó dentro do container; aqui só a permissão de uso
+    device_cgroup_rules:
+      - "c 10:200 rwm"
     depends_on:
       mongo:
         condition: service_healthy

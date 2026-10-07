@@ -20,6 +20,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import asndb  # noqa: E402
+import botnet  # noqa: E402
 import flowagg  # noqa: E402
 import flowproto  # noqa: E402
 import flowstore  # noqa: E402
@@ -67,6 +68,10 @@ class Collector:
         self.db = db
         self.alert = alert                  # async (db, title, text, push_url, push_tag)
         self.agg = flowagg.Aggregator()
+        self.bot = botnet.Detector()
+        self.bot_ids: dict = {}
+        self.bot_feeds_at = 0.0
+        self.bot_feed_sig = None
         self.cache = flowproto.TemplateCache()
         self.cfg = dict(flowstore.DEFAULTS)
         self.exp: dict = {}
@@ -107,8 +112,14 @@ class Collector:
             st["rate"] = info["rate"]
         st["last"] = time.time()
         add = self.agg.add
-        for f in flows:
-            add(f)
+        if self.bot.on:
+            badd = self.bot.add
+            for f in flows:
+                add(f)
+                badd(f)
+        else:
+            for f in flows:
+                add(f)
 
     def _exp(self, ip: str, kind: str):
         st = self.exp.get(ip)
@@ -167,6 +178,15 @@ class Collector:
                     log.info(f"base de ASN carregada ({len(a)} faixas)")
             except Exception as e:
                 log.warning(f"base de ASN: {e}")
+        bcfg = {**botnet.DEFAULTS, **{k: v for k, v in (await db.config.find_one({"key": "flow_botnet"}, {"_id": 0}) or {}).items() if k in botnet.DEFAULTS}}
+        feeds = await db.config.find_one({"key": "flow_botnet_feeds"}, {"_id": 0}) or {}
+        sig = (str(sorted(bcfg.items(), key=lambda kv: kv[0])), feeds.get("at"))
+        if sig != self.bot_feed_sig:                       # só reconfigura quando algo mudou (a lista de C2 pode ser grande)
+            self.bot.configure(bcfg, feeds.get("ips") or [])
+            self.bot_feed_sig = sig
+        if bcfg["enabled"] and bcfg["feeds"] and (time.time() - self.bot_feeds_at > 6 * 3600 or feeds.get("urls") != bcfg["feeds"]):
+            self.bot_feeds_at = time.time()
+            self._spawn(self._safe("feeds", self.refresh_feeds(bcfg["feeds"])))
         ret = (cfg.get("retention_days"), cfg.get("hourly_days"))
         if ret != self._ret:
             await flowstore.ensure_indexes(db, cfg)
@@ -219,6 +239,62 @@ class Collector:
             for d in docs:
                 d["ts"] = ts
             await self.db.flow_1m.insert_many(docs, ordered=False)
+
+    # ---------- botnet nos assinantes (flow dos BNGs) ----------
+    async def refresh_feeds(self, urls):
+        import httpx
+        ips, errors = [], {}
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+            for u in urls:
+                try:
+                    r = await c.get(u)
+                    r.raise_for_status()
+                    got = botnet.parse_feed(r.text[:8_000_000])
+                    ips += got
+                    if not got:
+                        errors[u] = "nenhum IP reconhecido na lista"
+                except Exception as e:
+                    errors[u] = f"{type(e).__name__}: {str(e)[:120]}"
+        ips = list(dict.fromkeys(ips))[:300_000]
+        await self.db.config.update_one({"key": "flow_botnet_feeds"}, {"$set": {"ips": ips, "count": len(ips), "errors": errors,
+                                                                               "urls": list(urls), "at": _iso(time.time())}}, upsert=True)
+        log.info(f"feeds de C2: {len(ips)} endereços" + (f", {len(errors)} feed(s) com erro" if errors else ""))
+
+    async def tick_botnet(self, now: float):
+        bot = self.bot
+        events = bot.tick(60, now)
+        await self.db.flow_live.replace_one({"_id": "botnet"}, {"_id": "botnet", "at": _iso(now), "on": bot.on, "flows": bot.stats["flows"],
+                                                                "subs": bot.stats["subs"], "c2": bot.c2_count, "open": len(bot.open)}, upsert=True)
+        bot.stats["flows"] = 0
+        starts = []
+        for ev, a in events:
+            key = (a["ip"], a["kind"])
+            fields = {"exporter": a["exporter"], "peak": a["peak"], "cur": a["cur"], "unit": a["unit"], "detail": a["detail"],
+                      "targets": a["targets"], "port": a.get("port"), "ports": a.get("ports"), "bps": a.get("bps"),
+                      "minutes": a["windows"], "updated": _iso(now)}
+            if ev == "start":
+                iid = uuid.uuid4().hex[:12]
+                self.bot_ids[key] = iid
+                await self.db.flow_botnet.insert_one({"id": iid, "ip": a["ip"], "kind": a["kind"], "status": "active",
+                                                      "start": _iso(a["start"]), "end": None, **fields})
+                starts.append(a)
+            elif key in self.bot_ids:
+                if ev == "end":
+                    fields.update(status="ended", end=_iso(now), cur=0)
+                    await self.db.flow_botnet.update_one({"id": self.bot_ids.pop(key)}, {"$set": fields})
+                else:
+                    await self.db.flow_botnet.update_one({"id": self.bot_ids[key]}, {"$set": fields})
+        if starts and bot.cfg.get("alert") and self.alert:
+            starts.sort(key=lambda a: -botnet.SEVERITY.get(a["kind"], 0))
+            lines = [f"- {a['ip']}: {botnet.KINDS[a['kind']]} — {a['detail']}" + (f" → {a['targets'][0][0]}" if a["kind"] in ("ddos", "c2") and a["targets"] else "")
+                     for a in starts[:8]]
+            if len(starts) > 8:
+                lines.append(f"… e mais {len(starts) - 8}")
+            try:
+                await self.alert(self.db, f"🦠 Botnet: {len(starts)} assinante(s) suspeito(s)" if len(starts) > 1 else f"🦠 Botnet: assinante {starts[0]['ip']} suspeito",
+                                 "\n".join(lines), push_url="/flow?tab=botnet", push_tag="botnet")
+            except Exception as e:
+                log.warning(f"alerta botnet: {e}")
 
     async def tick300(self, now: float):
         raw = self.agg.take_5m()
@@ -317,6 +393,7 @@ class Collector:
     async def run(self):
         await self.db.flow_attacks.update_many({"status": "active"},
                                                {"$set": {"status": "ended", "end": _iso(time.time()), "note": "coletor reiniciado"}})
+        await self.db.flow_botnet.update_many({"status": "active"}, {"$set": {"status": "ended", "end": _iso(time.time()), "note": "coletor reiniciado"}})
         await self._safe("templates", self.load_templates())
         await self._safe("config", self.reload())
         if self.ports is None:
@@ -332,6 +409,7 @@ class Collector:
             await self._safe("10s", self.tick10(now))
             if t % 60 == 0:
                 await self._safe("1min", self.tick60(now))
+                await self._safe("botnet", self.tick_botnet(now))
             if t % 300 == 0:
                 self._spawn(self._safe("5min", self.tick300(now)))
             if t % 30 == 0:

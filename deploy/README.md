@@ -719,3 +719,69 @@ todos, sem cadastrar nenhum equipamento.
 - "sucesso" quer dizer que entrou e o comando foi enviado; se o equipamento recusou o comando (sintaxe de outro
   fabricante), a mensagem de erro dele aparece na saída. Em lista com fabricantes misturados, rode um fabricante por vez.
 - Fica no Histórico (tipo `batch`) com o comando executado. Só uma execução/identificação por usuário de cada vez.
+
+## 30. VPNs cliente: OpenVPN, PPTP e L2TP/IPsec (além do FortiGate SSL)
+
+Em **Agentes Remotos → VPNs no servidor → Nova VPN** escolha o tipo. O BastiON é sempre o **cliente**: ele disca para o
+servidor de VPN do cliente/POP, e os agentes (jumps) marcados com aquela VPN passam a ser alcançados por dentro dela.
+
+| Tipo | O que informar |
+|---|---|
+| FortiGate SSL | gateway, porta, usuário, senha (token na hora de conectar) |
+| OpenVPN | o arquivo **.ovpn** (colar ou escolher) + usuário/senha se o servidor pedir |
+| PPTP | servidor, usuário, senha; *Exigir criptografia* (MPPE-128/MS-CHAPv2) ligado por padrão |
+| L2TP/IPsec | servidor, usuário, senha e a **chave pré-compartilhada**; sem chave vira L2TP puro |
+
+- **Redes pela VPN**: liste as redes do outro lado (ex.: `10.50.0.0/16`). Os IPs dos agentes marcados com a VPN entram
+  sozinhos. A rota padrão do servidor **nunca** vai para a VPN, mesmo que o servidor da VPN mande.
+- **OpenVPN**: os certificados precisam estar embutidos no .ovpn (blocos `<ca>`, `<cert>`, `<key>`, `<tls-auth>`/`<tls-crypt>`).
+  Por segurança o BastiON descarta scripts (`up`, `down`, `script-security`), `redirect-gateway`, rotas e DNS do arquivo
+  — a tela mostra o que foi ignorado. Chave privada com senha não é suportada. O arquivo fica cifrado no banco.
+- **PPTP**: usa TCP 1723 + GRE (protocolo 47). Se "não respondeu ao PPP", o GRE está bloqueado no caminho.
+- **L2TP/IPsec**: IKEv1 com chave, modo transporte (UDP 500/4500 + 1701). Se o próprio servidor do BastiON já roda
+  outro IPsec (strongSwan/Libreswan), os dois disputam as portas 500/4500.
+- Senhas e chave não voltam para o navegador nem aparecem no log da conexão. Se a VPN cair, chega o alerta e é só
+  clicar em Conectar de novo (não há reconexão automática).
+
+**No servidor**: precisa do serviço de VPN ligado (`COMPOSE_PROFILES=vpn` no `deploy/.env`, como na VPN FortiGate) e de
+um `sudo bash /opt/bastion/deploy/update.sh` para a imagem ganhar os programas novos (openvpn, pptp, xl2tpd, strongSwan).
+Se algum pacote não existir na versão do Debian da imagem, o build não quebra: a tela de Nova VPN avisa qual tipo
+ficou indisponível. Log do serviço: `cd /opt/bastion/deploy && docker compose logs --tail 50 vpn`.
+
+## 31. Botnet nos assinantes (flow dos BNGs)
+
+Aba **Análise de Flow → Botnet (BNG)**: acha clientes com comportamento de máquina infectada usando o flow que os
+BNGs/BRAS exportam, e pergunta ao BNG qual é o login do assinante.
+
+**O que é detectado** (por IP de assinante, minuto a minuto, só no tráfego que sai do cliente):
+
+| Tipo | Sinal |
+|---|---|
+| Participando de ataque | muitos pacotes pequenos / SYN para um destino só, ou UDP pesado para um IP |
+| Varredura / propagação | muitos destinos por minuto numa porta típica de botnet (23, 2323, 7547, 5555, 8291, 445, 37215…) |
+| Envio de spam | SMTP (porta 25) para muitos servidores |
+| Refletor de amplificação | resposta DNS/NTP/SSDP/Memcached… saindo do cliente em volume |
+| Comando-e-controle | qualquer contato com um IP da sua lista de C2 ou dos feeds |
+
+**Configurar** (admin):
+
+1. **BNGs que exportam flow**: para cada um, o equipamento cadastrado (é por ele que o BastiON consulta o assinante,
+   via SSH) e o **IP de origem do flow** (pode ser a loopback, diferente do IP de gerência). A tela avisa se o coletor
+   ainda não recebeu flow daquele IP.
+2. **Faixas dos assinantes**: CGNAT (`100.64.0.0/10`) e os blocos públicos entregues a clientes.
+3. Limites, lista de C2, feeds (ex.: `https://feodotracker.abuse.ch/downloads/ipblocklist.txt`), ignorados e alertas.
+
+**No BNG**: exporte NetFlow v9/IPFIX (ou sFlow) para o BastiON nas portas da aba Configuração (2055/6343), amostrando
+o tráfego **de entrada nas interfaces/sessões dos assinantes** — é ali que o IP do cliente aparece antes do CGNAT. Se o
+flow for coletado só depois do NAT, o IP visto é o público compartilhado e não dá para saber qual cliente é.
+Não precisa cadastrar as interfaces do BNG em "Interfaces": a detecção de botnet lê o flow do BNG inteiro.
+
+**Quem é o assinante**: com *Perguntar ao BNG* ligado, o BastiON roda um comando de consulta e mostra login, MAC,
+interface e VLAN. Padrões: Huawei `display access-user ip-address {ip}`, Juniper `show subscribers address {ip} detail`,
+MikroTik `/ppp active print detail where address={ip}`; os de Cisco, ZTE, Datacom e accel-ppp são palpites — ajuste em
+*ajustar comandos de consulta*. São só comandos de leitura: o BastiON **não derruba nem bloqueia** o cliente.
+
+- Incidente abre depois de 2 minutos seguidos (C2 abre no primeiro) e encerra após 15 minutos quieto.
+- Com flow amostrado (1:1000, por exemplo) só aparece quem faz volume; para pegar varredura fraca, baixe o limite de
+  destinos por minuto. Se um cliente legítimo aparecer (servidor de e-mail, jogo), suba o limite ou ponha em ignorados.
+- Alertas vão para o Telegram/push agrupados por minuto. **Tratado** tira o incidente da lista de ativos.

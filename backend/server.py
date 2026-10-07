@@ -55,6 +55,8 @@ import lookingglass
 import rpki
 import vendorscan
 import rdp
+import vpnconf
+import botnet
 import webpush
 import sharing
 import netanalysis
@@ -138,8 +140,11 @@ async def startup():
     _flow_asn_task = asyncio.create_task(_flow_asn_loop())
     _bg(_auto_discover_loop())
     _bg(_rpki_watch_loop())
+    _bg(_botnet_lookup_loop())
     await db.flow_mitigations.create_index([("status", 1), ("created_at", -1)])
     await db.flow_mitigations.create_index("id")
+    await db.flow_botnet.create_index([("status", 1), ("start", -1)])
+    await db.flow_botnet.create_index("id")
     try:
         await web_proxy.start()
     except Exception as e:
@@ -2042,6 +2047,135 @@ async def ws_rdp(ws: WebSocket, ticket: str, token: str = Query(...), w: int = Q
         ended = datetime.now(timezone.utc)
         await db.sessions.update_one({"id": session_id}, {"$set": {"ended_at": ended.isoformat(),
                                                                   "duration_seconds": int((ended - started).total_seconds())}})
+
+
+# ---------- Botnet nos assinantes (flow dos BNGs) ----------
+async def _botnet_cfg() -> dict:
+    doc = await db.config.find_one({"key": "flow_botnet"}, {"_id": 0}) or {}
+    return {**botnet.DEFAULTS, **{k: v for k, v in doc.items() if k in botnet.DEFAULTS}}
+
+
+async def _botnet_device(cfg: dict, exporter: str) -> Optional[dict]:
+    """Equipamento (BNG) por trás de um exportador: o escolhido na configuração, o que tem esse IP, ou o das interfaces de flow."""
+    did = (cfg.get("devices") or {}).get(exporter)
+    if did:
+        d = await db.devices.find_one({"id": did}, {"_id": 0})
+        if d:
+            return d
+    d = await db.devices.find_one({"host": exporter}, {"_id": 0})
+    if d:
+        return d
+    i = await db.flow_ifaces.find_one({"exporter": exporter}, {"_id": 0, "device_id": 1})
+    return await db.devices.find_one({"id": i["device_id"]}, {"_id": 0}) if i else None
+
+
+async def _botnet_lookup(inc: dict, cfg: dict) -> dict:
+    """Pergunta ao BNG quem está com o IP do incidente (login PPPoE/IPoE, MAC, interface)."""
+    now = datetime.now(timezone.utc).isoformat()
+    dev = await _botnet_device(cfg, inc.get("exporter") or "")
+    if not dev:
+        sub = {"found": False, "reason": "o BNG deste flow não está ligado a um equipamento cadastrado (configure em Botnet → BNGs)", "at": now}
+    else:
+        vendor = dev.get("device_type") or "other"
+        try:
+            cmd = botnet.lookup_command(vendor, inc["ip"], cfg.get("lookup_commands"))
+        except ValueError:
+            cmd = None
+        if not cmd:
+            sub = {"found": False, "reason": f"sem comando de consulta para o tipo {vendor} (defina em Botnet → Configurar)", "at": now, "device": dev["name"]}
+        else:
+            try:
+                c = await _connect_device(dev)
+                try:
+                    res = await c.run_command(cmd, timeout=25)
+                finally:
+                    await c.close()
+                raw = res["stdout"] if isinstance(res["stdout"], str) else res["stdout"].decode("utf-8", "replace")
+                sub = {**botnet.parse_subscriber(raw), "raw": raw[-3000:], "command": cmd, "at": now, "device": dev["name"]}
+                if not sub["found"] and not sub.get("reason"):
+                    sub["reason"] = "não reconheci o login na resposta do BNG — veja a saída e ajuste o comando"
+            except Exception as e:
+                sub = {"found": False, "reason": f"não consegui consultar o BNG: {str(e)[:160]}", "at": now, "device": dev["name"]}
+    await db.flow_botnet.update_one({"id": inc["id"]}, {"$set": {"sub": sub}, "$inc": {"sub_tries": 1}})
+    return sub
+
+
+async def _botnet_lookup_loop():
+    await asyncio.sleep(45)
+    sem = asyncio.Semaphore(3)
+    while True:
+        try:
+            cfg = await _botnet_cfg()
+            if cfg["enabled"] and cfg["lookup"]:
+                todo = await db.flow_botnet.find({"status": "active", "sub.found": {"$ne": True}, "sub_tries": {"$not": {"$gte": 2}}},
+                                                 {"_id": 0}).sort("start", -1).to_list(20)
+
+                async def one(i):
+                    async with sem:
+                        await _botnet_lookup(i, cfg)
+                await asyncio.gather(*[one(i) for i in todo])
+        except Exception as e:
+            logger.warning(f"botnet lookup: {e}")
+        await asyncio.sleep(30)
+
+
+@api.get("/flow/botnet")
+async def flow_botnet(user: dict = Depends(get_current_user), days: int = 7):
+    cfg = await _botnet_cfg()
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 90)))).isoformat()
+    items = await db.flow_botnet.find({"$or": [{"status": "active"}, {"start": {"$gte": since}}]}, {"_id": 0}).sort("start", -1).to_list(1000)
+    for i in items:
+        i["label"] = botnet.KINDS.get(i["kind"], i["kind"])
+        i["severity"] = botnet.SEVERITY.get(i["kind"], 1)
+        if i.get("sub"):
+            i["sub"] = {k: v for k, v in i["sub"].items() if k != "raw" or user.get("role") != "viewer"}
+    items.sort(key=lambda i: (i["status"] != "active", bool(i.get("ack")), -i["severity"]))     # estável: mantém os mais novos primeiro
+    exps = await db.flow_exporters.find({}, {"_id": 1, "kind": 1, "fps": 1, "last": 1}).to_list(2000)
+    devs = await db.devices.find({}, {"_id": 0, "id": 1, "name": 1, "host": 1, "device_type": 1}).to_list(10000) if user.get("role") == "admin" else []
+    feeds = await db.config.find_one({"key": "flow_botnet_feeds"}, {"_id": 0, "ips": 0}) or {}
+    return {"settings": cfg if user.get("role") == "admin" else {"enabled": cfg["enabled"], "exporters": cfg["exporters"]},
+            "status": await db.flow_live.find_one({"_id": "botnet"}, {"_id": 0}) or {}, "items": items,
+            "kinds": botnet.KINDS, "scan_ports": {str(k): v for k, v in botnet.SCAN_PORTS.items()},
+            "seen_exporters": [{"ip": e["_id"], "kind": e.get("kind"), "fps": e.get("fps"), "last": e.get("last")} for e in exps],
+            "devices": devs, "lookup_defaults": botnet.LOOKUP_COMMANDS, "feeds": feeds, "can_manage": user.get("role") == "admin"}
+
+
+@api.put("/flow/botnet/settings")
+async def flow_botnet_settings(body: dict, _: dict = Depends(require_admin)):
+    try:
+        cfg = botnet.clean_settings(body or {})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if cfg["enabled"] and not cfg["exporters"]:
+        raise HTTPException(400, "Escolha pelo menos um BNG (o IP que exporta o flow)")
+    if cfg["enabled"] and not cfg["subscriber_prefixes"]:
+        raise HTTPException(400, "Informe as faixas de IP dos assinantes")
+    await db.config.update_one({"key": "flow_botnet"}, {"$set": cfg}, upsert=True)
+    return cfg
+
+
+@api.post("/flow/botnet/{iid}/lookup")
+async def flow_botnet_lookup(iid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    inc = await db.flow_botnet.find_one({"id": iid}, {"_id": 0})
+    if not inc:
+        raise HTTPException(404, "Incidente não encontrado")
+    return await _botnet_lookup(inc, await _botnet_cfg())
+
+
+class BotnetAckIn(BaseModel):
+    ack: bool = True
+    note: str = ""
+
+
+@api.post("/flow/botnet/{iid}/ack")
+async def flow_botnet_ack(iid: str, body: BotnetAckIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    r = await db.flow_botnet.update_one({"id": iid}, {"$set": {"ack": bool(body.ack), "ack_note": body.note.strip()[:300],
+                                                               "ack_by": user.get("email"), "ack_at": datetime.now(timezone.utc).isoformat()}})
+    if not r.matched_count:
+        raise HTTPException(404, "Incidente não encontrado")
+    return {"ok": True}
 
 
 # ---------- Automation: settings, alerts, backups, scheduler ----------
@@ -4546,13 +4680,17 @@ async def _flow_asn_loop():
 # ---------- VPN SSL (FortiGate) no servidor ----------
 class VpnProfileIn(BaseModel):
     name: str
-    host: str
-    port: int = 443
-    username: str
+    type: str = "fortinet"               # fortinet | openvpn | pptp | l2tp  (sempre cliente)
+    host: str = ""
+    port: Optional[int] = None
+    username: str = ""
     password: Optional[str] = None       # write-only; vazio mantém
     realm: str = ""
     routes: List[str] = []
     trusted_certs: List[str] = []
+    ovpn_config: Optional[str] = None    # OpenVPN: conteúdo do .ovpn (write-only; vazio mantém)
+    psk: Optional[str] = None            # L2TP/IPsec: chave pré-compartilhada (write-only; None mantém, "" apaga)
+    mppe: bool = True                    # PPTP: exigir criptografia MPPE-128
 
 
 class VpnConnectIn(BaseModel):
@@ -4560,8 +4698,11 @@ class VpnConnectIn(BaseModel):
 
 
 def _vpn_public(p: dict, st: Optional[dict]) -> dict:
-    out = {k: v for k, v in p.items() if k not in ("password", "_id")}
+    out = {k: v for k, v in p.items() if k not in ("password", "_id", "psk", "ovpn_config")}
+    out["type"] = p.get("type") or "fortinet"
     out["has_password"] = bool(p.get("password"))
+    out["has_psk"] = bool(p.get("psk"))
+    out["has_config"] = bool(p.get("ovpn_config"))
     st = st or {}
     out["status"] = {k: st.get(k) for k in ("state", "since", "iface", "ip", "routes", "error", "pending_cert", "prompt", "log", "updated", "diag", "diag_at")}
     out["status"]["state"] = st.get("state") or "disconnected"
@@ -4583,8 +4724,37 @@ async def _get_vpn_for(user: dict, vid: str) -> dict:
     return p
 
 
-def _vpn_clean(body: VpnProfileIn) -> dict:
+def _vpn_clean(body: VpnProfileIn, cur: Optional[dict] = None) -> dict:
     import ipaddress as _ipa
+    kind = body.type if body.type in vpnconf.TYPES else None
+    if not kind:
+        raise HTTPException(400, "Tipo de VPN inválido")
+    if cur and (cur.get("type") or "fortinet") != kind:
+        raise HTTPException(400, "Não dá para trocar o tipo de uma VPN já criada — apague e crie outra")
+    extra: dict = {"type": kind}
+    if kind == "openvpn":
+        if body.ovpn_config and body.ovpn_config.strip():
+            try:
+                cfg, rhost, rport, dropped, needs_auth = vpnconf.clean_ovpn(body.ovpn_config)
+            except vpnconf.VpnConfError as e:
+                raise HTTPException(400, str(e))
+            extra.update(ovpn_config=vault.encrypt(cfg), ovpn_dropped=dropped[:30], ovpn_auth=needs_auth)
+            body.host, body.port = rhost, rport
+        elif cur and cur.get("ovpn_config"):
+            body.host, body.port = cur["host"], cur["port"]
+        else:
+            raise HTTPException(400, "Cole o conteúdo do arquivo .ovpn")
+    if body.port is None:
+        body.port = vpnconf.DEFAULT_PORT[kind]
+    if kind == "pptp":
+        body.port = 1723
+        extra["mppe"] = bool(body.mppe)
+    if kind == "l2tp":
+        body.port = 1701
+        if body.psk is not None:
+            if len(body.psk) > 256 or "\n" in body.psk:
+                raise HTTPException(400, "Chave pré-compartilhada inválida")
+            extra["psk"] = vault.encrypt(body.psk) if body.psk else ""
     host = body.host.strip().removeprefix("https://").removeprefix("http://").split("/")[0]
     if ":" in host and host.count(":") == 1:
         host, port = host.split(":")
@@ -4593,8 +4763,12 @@ def _vpn_clean(body: VpnProfileIn) -> dict:
         raise HTTPException(400, "Gateway inválido (use o IP ou nome, ex.: vpn.empresa.com.br)")
     if not 1 <= body.port <= 65535:
         raise HTTPException(400, "Porta inválida")
-    if not body.name.strip() or not body.username.strip():
-        raise HTTPException(400, "Informe nome e usuário")
+    if not body.name.strip():
+        raise HTTPException(400, "Informe o nome da VPN")
+    if not body.username.strip() and kind != "openvpn":
+        raise HTTPException(400, "Informe o usuário")
+    if re.search(r"[\r\n]", body.username):
+        raise HTTPException(400, "Usuário inválido")
     routes = []
     for r in body.routes:
         for part in str(r).replace(",", " ").split():
@@ -4607,7 +4781,7 @@ def _vpn_clean(body: VpnProfileIn) -> dict:
             routes.append(str(n))
     certs = [c.strip().lower() for c in body.trusted_certs if re.fullmatch(r"[0-9a-fA-F]{64}", c.strip())]
     return {"name": body.name.strip()[:60], "host": host, "port": int(body.port), "username": body.username.strip(),
-            "realm": body.realm.strip()[:60], "routes": list(dict.fromkeys(routes)), "trusted_certs": list(dict.fromkeys(certs))}
+            "realm": body.realm.strip()[:60], "routes": list(dict.fromkeys(routes)), "trusted_certs": list(dict.fromkeys(certs)), **extra}
 
 
 @api.get("/vpns")
@@ -4622,15 +4796,21 @@ async def list_vpns(user: dict = Depends(get_current_user)):
         o = _vpn_public(p, st.get(p["id"]))
         o["agents"] = [a["name"] for a in agents if a.get("vpn_id") == p["id"]]
         out.append(o)
-    return {"items": out, "daemon": await _vpn_daemon_ok()}
+    d = await db.vpn_status.find_one({"_id": "_daemon"}, {"_id": 0, "caps": 1}) or {}
+    return {"items": out, "daemon": await _vpn_daemon_ok(), "caps": d.get("caps") or {},
+            "types": [{"key": k, "label": v} for k, v in vpnconf.TYPES.items()]}
 
 
 @api.post("/vpns")
 async def create_vpn(body: VpnProfileIn, user: dict = Depends(get_current_user)):
     _no_viewer(user)
-    if not body.password:
+    data = _vpn_clean(body)
+    needs_pw = data["type"] != "openvpn" or bool(data["username"])
+    if needs_pw and not body.password:
         raise HTTPException(400, "Informe a senha da VPN")
-    doc = {"id": str(uuid.uuid4()), "owner_id": user["id"], **_vpn_clean(body), "password": vault.encrypt(body.password),
+    if data["type"] == "openvpn" and data.get("ovpn_auth") and not data["username"]:
+        raise HTTPException(400, "Este .ovpn pede usuário e senha (auth-user-pass) — preencha os dois")
+    doc = {"id": str(uuid.uuid4()), "owner_id": user["id"], **data, "password": vault.encrypt(body.password) if body.password else "",
            "created_at": datetime.now(timezone.utc).isoformat()}
     await db.vpn_profiles.insert_one(doc)
     return _vpn_public(doc, None)
@@ -4640,9 +4820,13 @@ async def create_vpn(body: VpnProfileIn, user: dict = Depends(get_current_user))
 async def update_vpn(vid: str, body: VpnProfileIn, user: dict = Depends(get_current_user)):
     _no_viewer(user)
     cur = await _get_vpn_for(user, vid)
-    data = _vpn_clean(body)
+    data = _vpn_clean(body, cur)
     if body.password:
         data["password"] = vault.encrypt(body.password)
+    if data["type"] == "openvpn" and (data.get("ovpn_auth", cur.get("ovpn_auth"))) and not data["username"]:
+        raise HTTPException(400, "Este .ovpn pede usuário e senha (auth-user-pass) — preencha os dois")
+    if data["username"] and not (body.password or cur.get("password")):
+        raise HTTPException(400, "Informe a senha da VPN")
     await db.vpn_profiles.update_one({"id": vid}, {"$set": data})
     return _vpn_public({**cur, **data}, await db.vpn_status.find_one({"_id": vid}))
 
