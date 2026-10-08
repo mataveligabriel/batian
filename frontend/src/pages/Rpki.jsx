@@ -145,8 +145,8 @@ function CaDetail({ handle, canManage, onChanged }) {
         <Card className="bg-surface border-line overflow-hidden">
           <div className="px-4 md:px-5 py-3 border-b border-line text-sm text-slate-200">ROAs <span className="text-slate-500 font-mono text-xs">({d.roas.length})</span></div>
           <form onSubmit={add} className="px-4 md:px-5 py-3 border-b border-line flex flex-wrap items-end gap-2 bg-sunken">
-            <div><Label className="text-[11px] text-slate-400">ASN de origem</Label><Input value={form.asn} onChange={e => setForm({ ...form, asn: e.target.value.replace(/[^0-9]/g, "") })} placeholder="65010" className="h-8 w-28 bg-panel border-line font-mono mt-1" data-testid="roa-asn" /></div>
-            <div className="flex-1 min-w-[180px]"><Label className="text-[11px] text-slate-400">Prefixo</Label><Input value={form.prefix} onChange={e => setForm({ ...form, prefix: e.target.value })} placeholder="200.160.0.0/20" spellCheck={false} className="h-8 bg-panel border-line font-mono mt-1" data-testid="roa-prefix" /></div>
+            <div><Label className="text-[11px] text-slate-400">ASN de origem</Label><Input value={form.asn} onChange={e => setForm({ ...form, asn: e.target.value.replace(/[^0-9]/g, "") })} placeholder="64500" className="h-8 w-28 bg-panel border-line font-mono mt-1" data-testid="roa-asn" /></div>
+            <div className="flex-1 min-w-[180px]"><Label className="text-[11px] text-slate-400">Prefixo</Label><Input value={form.prefix} onChange={e => setForm({ ...form, prefix: e.target.value })} placeholder="203.0.113.0/24" spellCheck={false} className="h-8 bg-panel border-line font-mono mt-1" data-testid="roa-prefix" /></div>
             <div><Label className="text-[11px] text-slate-400">Tam. máx.</Label><Input value={form.max_length} onChange={e => setForm({ ...form, max_length: e.target.value.replace(/[^0-9]/g, "") })} placeholder="= prefixo" className="h-8 w-24 bg-panel border-line font-mono mt-1" data-testid="roa-max" /></div>
             <div className="flex-1 min-w-[140px]"><Label className="text-[11px] text-slate-400">Comentário</Label><Input value={form.comment} onChange={e => setForm({ ...form, comment: e.target.value })} maxLength={120} className="h-8 bg-panel border-line mt-1" /></div>
             <Button type="submit" size="sm" className="h-8 bg-brand hover:bg-brand-strong" data-testid="roa-add"><Plus className="w-4 h-4 mr-1" />Adicionar</Button>
@@ -254,7 +254,7 @@ export default function Rpki() {
         <Card className="bg-surface border-line p-10 text-center" data-testid="rpki-empty">
           <FileBadge className="w-8 h-8 mx-auto text-slate-600 mb-3" />
           <div className="text-slate-200">Nenhuma CA ainda</div>
-          <div className="text-sm text-slate-500 mt-1">{st.can_manage ? "Crie uma CA para cada rede/ASN que você gerencia (ex.: LINK10)." : "Peça ao administrador para criar a CA do ASN."}</div>
+          <div className="text-sm text-slate-500 mt-1">{st.can_manage ? "Crie uma CA para cada rede/ASN que você gerencia (ex.: REDE-A)." : "Peça ao administrador para criar a CA do ASN."}</div>
         </Card>
       ) : (
         <>
@@ -275,9 +275,9 @@ export default function Rpki() {
           <DialogHeader><DialogTitle>Nova CA</DialogTitle></DialogHeader>
           <form onSubmit={create} className="space-y-3">
             <div><Label className="text-slate-300">Identificador</Label>
-              <Input value={creating?.handle || ""} onChange={e => setCreating({ ...creating, handle: e.target.value.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32) })} placeholder="LINK10" autoFocus className="bg-sunken border-line font-mono mt-1" data-testid="rpki-new-handle" />
+              <Input value={creating?.handle || ""} onChange={e => setCreating({ ...creating, handle: e.target.value.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32) })} placeholder="REDE-A" autoFocus className="bg-sunken border-line font-mono mt-1" data-testid="rpki-new-handle" />
               <p className="text-[11px] text-slate-500 mt-1">Letras, números, - e _. Não dá para trocar depois.</p></div>
-            <div><Label className="text-slate-300">Nome (opcional)</Label><Input value={creating?.label || ""} onChange={e => setCreating({ ...creating, label: e.target.value })} placeholder="Link10 Telecom — AS65010" className="bg-sunken border-line mt-1" /></div>
+            <div><Label className="text-slate-300">Nome (opcional)</Label><Input value={creating?.label || ""} onChange={e => setCreating({ ...creating, label: e.target.value })} placeholder="Provedor Exemplo — AS64500" className="bg-sunken border-line mt-1" /></div>
             <DialogFooter><Button type="button" variant="ghost" onClick={() => setCreating(null)}>Cancelar</Button>
               <Button type="submit" disabled={busy || !creating?.handle} className="bg-brand hover:bg-brand-strong" data-testid="rpki-new-save">{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Criar</Button></DialogFooter>
           </form>

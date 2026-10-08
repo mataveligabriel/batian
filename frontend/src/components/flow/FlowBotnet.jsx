@@ -73,10 +73,10 @@ function ConfigDialog({ data, onClose, onSaved }) {
           </div>
           <div className="grid sm:grid-cols-2 gap-3">
             <div><Label>Faixas de IP dos assinantes</Label>
-              <Textarea value={f.subscriber_prefixes} onChange={e => setF({ ...f, subscriber_prefixes: e.target.value })} rows={3} spellCheck={false} placeholder={"100.64.0.0/10\n177.223.238.0/23"} className={`${inputCls} font-mono text-xs mt-1`} data-testid="botnet-prefixes" />
+              <Textarea value={f.subscriber_prefixes} onChange={e => setF({ ...f, subscriber_prefixes: e.target.value })} rows={3} spellCheck={false} placeholder={"100.64.0.0/10\n203.0.113.0/24"} className={`${inputCls} font-mono text-xs mt-1`} data-testid="botnet-prefixes" />
               <div className="text-[11px] text-slate-500 mt-1">CGNAT e blocos públicos entregues aos clientes. Só o tráfego com origem nessas faixas é analisado.</div></div>
             <div><Label>Assinantes ignorados</Label>
-              <Textarea value={f.ignore} onChange={e => setF({ ...f, ignore: e.target.value })} rows={3} spellCheck={false} placeholder={"177.223.238.25\n177.223.239.0/28"} className={`${inputCls} font-mono text-xs mt-1`} />
+              <Textarea value={f.ignore} onChange={e => setF({ ...f, ignore: e.target.value })} rows={3} spellCheck={false} placeholder={"203.0.113.25\n198.51.100.0/28"} className={`${inputCls} font-mono text-xs mt-1`} />
               <div className="text-[11px] text-slate-500 mt-1">Clientes com servidor de e-mail, scanner autorizado, etc.</div></div>
           </div>
           <div><Label>Destinos ignorados (nunca contam como alvo de ataque)</Label>

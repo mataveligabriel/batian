@@ -170,7 +170,7 @@ export default function Batch() {
               <div>
                 <Label className="text-xs text-slate-400">IPs, um por linha ({ipCount})</Label>
                 <Textarea value={adhoc.targets} onChange={e => setAdhoc({ ...adhoc, targets: e.target.value })} rows={10} spellCheck={false} data-testid="adhoc-targets"
-                          placeholder={"172.16.40.118\n172.20.10.3  PAE-ANITA\n172.20.50.51:2222\n172.20.66.0/28"} className="bg-sunken border-line font-mono text-xs" />
+                          placeholder={"10.0.0.1\n10.0.0.2  SW-CORE-01\n10.0.10.5:2222\n10.0.20.0/28"} className="bg-sunken border-line font-mono text-xs" />
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div><Label className="text-xs text-slate-400">Usuário</Label><Input value={adhoc.username} onChange={e => setAdhoc({ ...adhoc, username: e.target.value })} autoComplete="off" placeholder="vazio = padrão" className="bg-sunken border-line font-mono" data-testid="adhoc-user" /></div>

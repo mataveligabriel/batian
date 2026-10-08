@@ -53,7 +53,7 @@ export function MitigateDialog({ target, onClose, onDone }) {
                 <div className="text-xs text-slate-400">{target.type} · pico {fmtRate(target.peak_bps)}</div></div>
             ) : (
               <div><Label className="text-xs">IP atacado (seu)</Label>
-                <Input value={ip} onChange={e => setIp(e.target.value)} placeholder="177.223.239.10" className={`${inputCls} font-mono`} data-testid="mit-ip" autoFocus /></div>
+                <Input value={ip} onChange={e => setIp(e.target.value)} placeholder="203.0.113.10" className={`${inputCls} font-mono`} data-testid="mit-ip" autoFocus /></div>
             )}
             <div>
               <Label className="text-xs">Duração</Label>
@@ -146,7 +146,7 @@ function Settings({ cfg, reload }) {
           <label className="ml-auto flex items-center gap-2 text-xs text-slate-300">ligado <Switch checked={!!f.enabled} onCheckedChange={v => setF({ ...f, enabled: v })} disabled={ro} data-testid="mit-enabled" /></label></div>
         <div className="grid grid-cols-2 gap-3">
           {fld("AS (o mesmo das bordas)", "local_as", "iBGP", "263009", "mit-as")}
-          {fld("Router-ID", "router_id", "normalmente o IP do servidor", "177.223.238.158", "mit-rid")}
+          {fld("Router-ID", "router_id", "normalmente o IP do servidor", "203.0.113.1", "mit-rid")}
           {fld("IP de origem (opcional)", "local_address", "o IP que a borda vê como vizinho", "")}
           {fld("Next-hop de descarte", "next_hop", "na borda: rota estática → NULL0", "192.0.2.1")}
           {fld("Community de blackhole", "comm_txt", "65535:666 ou, com AS de 4 bytes, 263009:666:0", "65535:666", "mit-comm")}
@@ -170,7 +170,7 @@ function Settings({ cfg, reload }) {
         </div>
         <div>
           <Label className="text-xs">Nunca fazer blackhole de (DNS, servidores, gateways…)</Label>
-          <Textarea value={f.prot_txt} onChange={e => setF({ ...f, prot_txt: e.target.value })} disabled={ro} rows={2} className={`${inputCls} font-mono text-xs`} placeholder={"177.223.239.53/32\n177.223.238.0/28"} />
+          <Textarea value={f.prot_txt} onChange={e => setF({ ...f, prot_txt: e.target.value })} disabled={ro} rows={2} className={`${inputCls} font-mono text-xs`} placeholder={"203.0.113.53/32\n198.51.100.0/28"} />
           <div className="text-[10px] text-slate-500 mt-0.5">Só IPs (/32) dentro dos seus blocos próprios ({(cfg.own_prefixes || []).join(", ") || "cadastre em Configuração"}) podem ser mitigados. A rota vai sempre com NO_EXPORT.</div>
         </div>
         {!ro ? <Button onClick={save} disabled={busy} className="bg-brand hover:bg-brand-strong" data-testid="mit-save">{busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Save className="w-4 h-4 mr-1" />}Salvar</Button>

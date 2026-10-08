@@ -31,7 +31,7 @@ function Fields({ f, set, agents, meta, quick }) {
         <select value={f.security} onChange={e => set({ ...f, security: e.target.value })} className={`${sel} mt-1`}>{(meta.security || []).map(s => <option key={s} value={s}>{SEC[s] || s}</option>)}</select></div>
       <div className="col-span-3 sm:col-span-2"><Label className="text-slate-300">Teclado remoto</Label>
         <select value={f.layout} onChange={e => set({ ...f, layout: e.target.value })} className={`${sel} mt-1`}>{(meta.layouts || []).map(s => <option key={s} value={s}>{LAY[s] || s}</option>)}</select></div>
-      {!quick && <div className="col-span-6"><Label className="text-slate-300">Tags <span className="text-slate-500">(separe por vírgula)</span></Label><Input value={f.tags} onChange={e => set({ ...f, tags: e.target.value })} placeholder="LINK10, servidores" className="mt-1 bg-sunken border-line" /></div>}
+      {!quick && <div className="col-span-6"><Label className="text-slate-300">Tags <span className="text-slate-500">(separe por vírgula)</span></Label><Input value={f.tags} onChange={e => set({ ...f, tags: e.target.value })} placeholder="servers, routers" className="mt-1 bg-sunken border-line" /></div>}
     </div>
   );
 }

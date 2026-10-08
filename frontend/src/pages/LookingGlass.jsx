@@ -87,7 +87,7 @@ function ManageDialog({ open, onClose, onSaved }) {
                 <div className="text-[11px] text-slate-400">Endereço para passar a quem quiser consultar: <a href={pubUrl} target="_blank" rel="noreferrer" className="font-mono text-brand-soft hover:underline" data-testid="lg-pub-url">{pubUrl}</a>
                   {data.public_port ? <> — libere a porta TCP {data.public_port} no firewall.</> : null} Só aparecem os roteadores marcados como "público" na lista acima.</div>
                 <div className="grid sm:grid-cols-2 gap-3">
-                  <div><Label className="text-[11px] text-slate-400">Título da página</Label><Input value={pub.title} onChange={e => setPub({ ...pub, title: e.target.value })} placeholder="Looking Glass — AS263112" className="mt-1 h-8 bg-panel border-line text-xs" data-testid="lg-pub-title" /></div>
+                  <div><Label className="text-[11px] text-slate-400">Título da página</Label><Input value={pub.title} onChange={e => setPub({ ...pub, title: e.target.value })} placeholder="Looking Glass — AS64500" className="mt-1 h-8 bg-panel border-line text-xs" data-testid="lg-pub-title" /></div>
                   <div><Label className="text-[11px] text-slate-400">Contato exibido (opcional)</Label><Input value={pub.contact} onChange={e => setPub({ ...pub, contact: e.target.value })} placeholder="noc@empresa.com.br" className="mt-1 h-8 bg-panel border-line text-xs" /></div>
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-300">

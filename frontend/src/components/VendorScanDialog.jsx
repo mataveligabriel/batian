@@ -88,7 +88,7 @@ export function VendorScanDialog({ open, onOpenChange, agents = [], onDone }) {
             <div>
               <Label className="text-slate-300">Lista de IPs <span className="text-slate-500 font-mono text-xs">({count})</span></Label>
               <Textarea value={form.targets} onChange={e => setForm({ ...form, targets: e.target.value })} rows={16} spellCheck={false} autoFocus
-                placeholder={"10.1.1.249\n10.1.1.50  SW-CORE\n172.16.40.118:2222\n172.20.50.0/28"} className="mt-1.5 bg-sunken border-line font-mono text-xs" data-testid="scan-targets" />
+                placeholder={"10.0.0.1\n10.0.0.2  SW-CORE-01\n10.0.10.5:2222\n10.0.20.0/28"} className="mt-1.5 bg-sunken border-line font-mono text-xs" data-testid="scan-targets" />
               <p className="text-[11px] text-slate-500 mt-1.5">Um por linha. Opcional: <code>IP:porta</code>, um nome depois do IP, ou uma rede (até /22). Máximo de 1024 endereços.</p>
             </div>
             <div className="space-y-3 min-w-0">
@@ -148,7 +148,7 @@ export function VendorScanDialog({ open, onOpenChange, agents = [], onDone }) {
             {job.finished && (
               <div className="flex items-end gap-3 flex-wrap border-t border-line pt-3">
                 <div className="flex-1 min-w-[200px]"><Label className="text-[11px] text-slate-400">Tags para os cadastrados (separe por vírgula)</Label>
-                  <Input value={tags} onChange={e => setTags(e.target.value)} placeholder="LINK10" className="mt-1 h-9 bg-sunken border-line" data-testid="scan-tags" /></div>
+                  <Input value={tags} onChange={e => setTags(e.target.value)} placeholder="routers" className="mt-1 h-9 bg-sunken border-line" data-testid="scan-tags" /></div>
                 <Button onClick={save} disabled={saving || !picked.size} className="bg-brand hover:bg-brand-strong" data-testid="scan-save">{saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}Cadastrar {picked.size} em Equipamentos</Button>
                 <p className="w-full text-[11px] text-slate-500">Cadastra com o fabricante, protocolo e porta encontrados, o usuário e a senha usados aqui{job.agent_name ? ` e o agente ${job.agent_name}` : ""}. Quem já existe com o mesmo nome e IP é pulado.</p>
               </div>
