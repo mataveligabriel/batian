@@ -1410,7 +1410,7 @@ async def batch_execute(payload: BatchExecPayload, user: dict = Depends(get_curr
 # ---------- Gerador de script de OLT (ZTE TITAN) ----------
 @api.get("/oltgen/models")
 async def oltgen_models(_: dict = Depends(get_current_user)):
-    return {"modes": oltgen.ONU_MODES, "models": [{"key": k, **v} for k, v in oltgen.MODELS.items()],
+    return {"modes": oltgen.ONU_MODES, "platforms": oltgen.PLATFORMS, "models": [{"key": k, **v} for k, v in oltgen.MODELS.items()],
             "onu_types": [{"name": k, "eth": e, "pots": p, "wifi": bool(w)} for k, (e, p, w) in oltgen.ONU_TYPES.items()]}
 
 
@@ -1479,9 +1479,11 @@ async def oltgen_uncfg(body: OltCardsIn, user: dict = Depends(get_current_user))
             if not oltgen.parse_uncfg(text) and re.search(r"invalid|error|%", text, re.I):
                 text = _out_text(await cli.run_command("show pon onu uncfg", timeout=60))
             onus = oltgen.parse_uncfg(text)
+            plat = "c300" if re.search(r"gpon-(onu|olt)_", text) else "titan"
             free: dict = {}
             for pon in list(dict.fromkeys(o["pon"] for o in onus))[:16]:
-                cfg = _out_text(await cli.run_command(f"show running-config interface gpon_olt-{pon}", timeout=60))
+                sl, pt = (int(x) for x in pon.split("/")[1:3])
+                cfg = _out_text(await cli.run_command(f"show running-config interface {oltgen.pon_if(plat, sl, pt)}", timeout=60))
                 used = set(oltgen.used_onu_ids(cfg))
                 free[pon] = [i for i in range(1, 129) if i not in used]
         finally:
@@ -1497,7 +1499,7 @@ async def oltgen_uncfg(body: OltCardsIn, user: dict = Depends(get_current_user))
     for o in onus:
         ids = free.get(o["pon"]) or []
         out.append({**o, "free_id": ids.pop(0) if ids else None})
-    return {"device": dev["name"], "onus": out, "raw": text[-4000:]}
+    return {"device": dev["name"], "platform": plat, "onus": out, "raw": text[-4000:]}
 
 
 # ---------- Looking Glass (interno) ----------

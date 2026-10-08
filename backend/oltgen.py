@@ -13,13 +13,31 @@ from typing import Dict, List, Optional, Tuple
 # Mapas de placas. Só o C620 tem mapa fixo conferido (2 slots de serviço com 16 PON, controladoras 4 e 5 com 4 uplinks).
 # Nos chassis maiores a quantidade e a posição das placas mudam de OLT para OLT: lê-se o `show card` ou preenche à mão.
 MODELS: Dict[str, dict] = {
-    "C620": {"label": "ZXA10 C620", "note": "Modular 2U: slots 1 e 2 de serviço (16 PON cada), uplinks nas controladoras 4 e 5.",
+    "C620": {"label": "ZXA10 C620", "platform": "titan", "note": "Modular 2U: slots 1 e 2 de serviço (16 PON cada), uplinks nas controladoras 4 e 5.",
              "pon": [{"slot": 1, "ports": 16}, {"slot": 2, "ports": 16}],
              "uplinks": [{"slot": 4, "ports": 4, "prefix": "xgei"}, {"slot": 5, "ports": 4, "prefix": "xgei"}]},
-    "C600": {"label": "ZXA10 C600", "note": "Chassi grande: use “Ler placas da OLT” ou informe os slots instalados.", "pon": [], "uplinks": []},
-    "C650": {"label": "ZXA10 C650", "note": "Chassi médio: use “Ler placas da OLT” ou informe os slots instalados.", "pon": [], "uplinks": []},
-    "C610": {"label": "ZXA10 C610", "note": "Compacta: use “Ler placas da OLT” ou informe as portas.", "pon": [], "uplinks": []},
+    "C600": {"label": "ZXA10 C600", "platform": "titan", "note": "Chassi grande: use “Ler placas da OLT” ou informe os slots instalados.", "pon": [], "uplinks": []},
+    "C650": {"label": "ZXA10 C650", "platform": "titan", "note": "Chassi médio: use “Ler placas da OLT” ou informe os slots instalados.", "pon": [], "uplinks": []},
+    "C610": {"label": "ZXA10 C610", "platform": "titan", "note": "Compacta: use “Ler placas da OLT” ou informe as portas.", "pon": [], "uplinks": []},
+    # série anterior (ZXAN V2.x): nomes gpon-olt_1/x/y e comandos próprios
+    "C300": {"label": "ZXA10 C300", "platform": "c300", "note": "Chassi C300: use “Ler placas da OLT” ou informe os slots (PON GTGO/GTGH; uplink HUVQ/GUFQ ou controladora).",
+             "pon": [], "uplinks": []},
+    "C320": {"label": "ZXA10 C320", "platform": "c300", "note": "C320: use “Ler placas da OLT” ou informe os slots (PON e uplinks da controladora SMXA).",
+             "pon": [], "uplinks": []},
 }
+PLATFORMS = {"titan": "TITAN (C600/C650/C620/C610)", "c300": "C300 / C320"}
+
+
+def pon_if(plat: str, slot: int, port: int) -> str:
+    return f"gpon-olt_1/{slot}/{port}" if plat == "c300" else f"gpon_olt-1/{slot}/{port}"
+
+
+def onu_if_name(plat: str, slot: int, port: int, onu: int) -> str:
+    return f"gpon-onu_1/{slot}/{port}:{onu}" if plat == "c300" else f"gpon_onu-1/{slot}/{port}:{onu}"
+
+
+def up_if(plat: str, prefix: str, slot: int, port: int) -> str:
+    return f"{prefix}_1/{slot}/{port}" if plat == "c300" else f"{prefix}-1/{slot}/{port}"
 
 # perfis de ONU: nome -> (portas ethernet, portas pots, wifi)
 ONU_TYPES: Dict[str, Tuple[int, int, int]] = {
@@ -145,9 +163,11 @@ def generate(p: dict) -> dict:
     if model not in MODELS:
         raise GenError("Modelo desconhecido")
     comments = bool(p.get("comments", True))
+    plat = MODELS[model]["platform"]
+    c300 = plat == "c300"
     pons, ups = clean_boards(p.get("pon"), p.get("uplinks"))
-    up_names = [f"{u['prefix']}-1/{u['slot']}/{i + 1}" for u in ups for i in range(u["ports"]) if u["enabled"][i]]
-    all_up = {f"{u['prefix']}-1/{u['slot']}/{i + 1}" for u in ups for i in range(u["ports"])}
+    up_names = [up_if(plat, u["prefix"], u["slot"], i + 1) for u in ups for i in range(u["ports"]) if u["enabled"][i]]
+    all_up = {up_if(plat, u["prefix"], u["slot"], i + 1) for u in ups for i in range(u["ports"])}
     warns: List[str] = []
     out: List[str] = []
 
@@ -179,6 +199,8 @@ def generate(p: dict) -> dict:
         i_ups = pick_ups(m.get("in_uplinks"), "Gerência inband")
         if not i_ups:
             raise GenError("Gerência inband: escolha a uplink por onde a VLAN de gerência chega")
+    if c300 and out_on and in_on and o_gw and i_gw:
+        warns.append("No C300 as duas rotas padrão ficam na mesma tabela: deixe só um gateway (outband ou inband).")
     if (out_on or in_on) and not ((out_on and o_gw) or (in_on and i_gw)):
         warns.append("Nenhum gateway de gerência informado: a OLT só será alcançada pela rede local da gerência.")
 
@@ -215,7 +237,7 @@ def generate(p: dict) -> dict:
         for b in pons:
             for i, on in enumerate(b["enabled"]):
                 if on:
-                    out += [f"interface gpon_olt-1/{b['slot']}/{i + 1}", " no shutdown", "exit"]
+                    out += [f"interface {pon_if(plat, b['slot'], i + 1)}", " no shutdown", "exit"]
     sel_up = set(up_names)
     up_vlans: Dict[str, List[int]] = {}
     if v.get("enabled"):
@@ -236,16 +258,19 @@ def generate(p: dict) -> dict:
         blank(); c("VLANs")
         for n in all_vlans:
             out.append(f"vlan {n}")
+            kw = "name" if c300 else "description"
             if in_on and n == i_vlan:
-                out.append(" description GERENCIA")
+                out.append(f" {kw} GERENCIA")
             elif v_desc:
-                out.append(f" description {v_desc}")
+                out.append(f" {kw} {v_desc}")
             out.append("exit")
 
     if up_names:
         blank(); c("Uplinks")
         for n in up_names:
             out += [f"interface {n}", " no shutdown"]
+            if c300 and up_vlans.get(n):
+                out.append(" switchport mode trunk")
             for r in _ranges(up_vlans.get(n, [])):
                 out.append(f" switchport vlan {r} tag")
             out.append("exit")
@@ -253,9 +278,9 @@ def generate(p: dict) -> dict:
     # ---- gerência ----
     if out_on:
         blank(); c("Gerência outband (porta MGMT)")
-        out += ["interface mgmt_eth", f" ip address {o_ip} {o_mask}", "exit"]
+        out += [f"interface {'mng1' if c300 else 'mgmt_eth'}", f" ip address {o_ip} {o_mask}", "exit"]
         if o_gw:
-            out.append(f"ip route vrf mng 0.0.0.0 0.0.0.0 {o_gw}")
+            out.append(f"ip route 0.0.0.0 0.0.0.0 {o_gw}" if c300 else f"ip route vrf mng 0.0.0.0 0.0.0.0 {o_gw}")
     if in_on:
         blank(); c(f"Gerência inband (VLAN {i_vlan})")
         out += [f"interface vlan{i_vlan}", f" ip address {i_ip} {i_mask}", "exit"]
@@ -269,7 +294,8 @@ def generate(p: dict) -> dict:
         out.append("pon")
         for t in onus:
             eth, pots, wifi = ONU_TYPES[t]
-            out.append(f" onu-type {t} gpon max-tcont 5 max-gemport 32 max-switchperslot 2 max-flow-perswitch 8 max-iphost 5")
+            out.append(f" onu-type {t} gpon max-tcont 7 max-gemport 32 max-switch-perslot 8 max-flow-perswitch 8 max-iphost 2" if c300
+                       else f" onu-type {t} gpon max-tcont 5 max-gemport 32 max-switchperslot 2 max-flow-perswitch 8 max-iphost 5")
             out += [f" onu-type-if {t} eth_0/{i}" for i in range(1, eth + 1)]
             out += [f" onu-type-if {t} pots_0/{i}" for i in range(1, pots + 1)]
             if wifi:
@@ -286,8 +312,11 @@ def generate(p: dict) -> dict:
         out.append("gpon")
         for name, kbps in speeds:
             out.append(f" profile tcont {name} type 4 maximum {kbps}")
+        if c300:
+            for name, kbps in speeds:
+                out.append(f" profile traffic {name} sir {kbps} pir {kbps}")
         out.append("exit")
-        for name, kbps in speeds:
+        for name, kbps in (speeds if not c300 else []):
             out.append(f"traffic-profile {name} cir {kbps} cbs 1024 pir {kbps} pbs 1024 color-mode blind "
                        "policer-type enhanced_mef coupling-flag enable")
 
@@ -300,7 +329,9 @@ def generate(p: dict) -> dict:
             out.append(f"ntp server {_ip(x, 'Servidor NTP')}")
 
     sv = p.get("autosave") or {}
-    if sv.get("enabled"):
+    if sv.get("enabled") and c300:
+        warns.append("Salvamento automático diário não está disponível para C300 neste gerador: grave com write.")
+    elif sv.get("enabled"):
         t = str(sv.get("time") or "").strip()
         if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?", t):
             raise GenError("Horário do salvamento automático inválido (HH:MM)")
@@ -310,7 +341,9 @@ def generate(p: dict) -> dict:
         out.append(f"auto-write everyday {t}")
 
     bk = p.get("backup") or {}
-    if bk.get("enabled"):
+    if bk.get("enabled") and c300:
+        warns.append("Backup por FTP não está disponível para C300 neste gerador: use os Backups do BastiON.")
+    elif bk.get("enabled"):
         srv = _ip(bk.get("server"), "Servidor de backup")
         bu, bp = _safe(bk.get("username"), "Usuário do FTP"), _safe(bk.get("password"), "Senha do FTP")
         path = str(bk.get("path") or "").strip() or host
@@ -325,8 +358,11 @@ def generate(p: dict) -> dict:
         blank(); c("Acesso remoto")
         if a.get("ssh"):
             out.append("ssh server enable")
-        if a.get("telnet"):
+            if c300:
+                out.append("ssh server version 2")
+        if a.get("telnet") and not c300:
             out.append("line telnet server enable")
+        if a.get("telnet"):
             warns.append("Telnet manda usuário e senha sem criptografia; prefira só SSH.")
     if (a.get("user") or "").strip():
         u = str(a["user"]).strip()
@@ -336,8 +372,11 @@ def generate(p: dict) -> dict:
         if len(pw) < 8:
             raise GenError("Senha do usuário local: mínimo de 8 caracteres")
         blank(); c("Usuário local administrador")
-        out += ["system-user", f" user-name {u}", f"  password {pw}", "  bind authentication-template 1",
-                "  bind authorization-template 1", " exit", "exit"]
+        if c300:
+            out.append(f"username {u} password {pw} privilege 15")
+        else:
+            out += ["system-user", f" user-name {u}", f"  password {pw}", "  bind authentication-template 1",
+                    "  bind authorization-template 1", " exit", "exit"]
 
     sn = p.get("snmp") or {}
     if sn.get("enabled"):
@@ -356,7 +395,7 @@ def generate(p: dict) -> dict:
         c("grava a configuração (responda yes se a OLT pedir confirmação)")
         out.append("write")
 
-    secrets = bool((a.get("user") or "").strip() or bk.get("enabled") or sn.get("enabled"))
+    secrets = bool((a.get("user") or "").strip() or (bk.get("enabled") and not c300) or sn.get("enabled"))
     if secrets:
         warns.append("O script tem senha/comunidade em texto: não guarde nem envie esse arquivo por canais abertos.")
     return {"script": "\n".join(out) + "\n", "lines": len(out), "warnings": warns,
@@ -383,7 +422,7 @@ def parse_show_card(text: str) -> dict:
         elif card.startswith(("GF", "GT", "XG", "GP", "XF")):
             pon.append(info)
         else:
-            ups.append({**info, "prefix": "xgei"})
+            ups.append({**info, "prefix": "gei" if card.startswith(("GU", "GE")) else "xgei"})
     return {"pon": pon, "uplinks": ups, "others": others}
 
 
@@ -394,7 +433,7 @@ ONU_MODES = {
     "transparent": "Transparente (a ONU repassa o que vier, com ou sem tag)",
 }
 _SN_RE = re.compile(r"^[A-Za-z0-9]{4}[0-9A-Fa-f]{8}$")
-_PON_RE = re.compile(r"^(?:gpon_olt-)?1/(\d{1,2})/(\d{1,2})$")
+_PON_RE = re.compile(r"^(?:gpon_olt-|gpon-olt_)?1/(\d{1,2})/(\d{1,2})$")
 
 
 def _pon(v: str) -> Tuple[int, int]:
@@ -416,7 +455,12 @@ def _label(v: str, what: str, need: bool = False) -> str:
 
 
 def onu_script(p: dict) -> dict:
-    """Script de autorização de uma ONU (TITAN: gpon_onu + vport + pon-onu-mng)."""
+    """Script de autorização de uma ONU.
+    TITAN: gpon_onu + vport + pon-onu-mng · C300: gpon-onu (service-port com vport) + pon-onu-mng."""
+    plat = str(p.get("platform") or "titan")
+    if plat not in PLATFORMS:
+        raise GenError("Série da OLT inválida")
+    c300 = plat == "c300"
     slot, port = _pon(p.get("pon"))
     onu_id = _int(p.get("onu_id"), "ID da ONU")
     if not 1 <= onu_id <= 128:
@@ -448,17 +492,20 @@ def onu_script(p: dict) -> dict:
         warns.append("Modo transparente: a VLAN do cliente segue tagueada da ONU até a OLT; o equipamento do cliente define as tags.")
 
     comments = bool(p.get("comments", True))
-    onu_if = f"gpon_onu-1/{slot}/{port}:{onu_id}"
+    onu_if = onu_if_name(plat, slot, port, onu_id)
     out: List[str] = []
     if comments:
         out.append(f"! Autorização da ONU {sn} ({otype}) em {onu_if} · VLAN {vlan} · modo {mode}")
     out.append("configure terminal")
-    out += [f"interface gpon_olt-1/{slot}/{port}", f" onu {onu_id} type {otype} sn {sn}", "exit"]
+    out += [f"interface {pon_if(plat, slot, port)}", f" onu {onu_id} type {otype} sn {sn}", "exit"]
     out += [f"interface {onu_if}", f" name {name}"]
     if desc:
         out.append(f" description {desc}")
-    out += [f" tcont 1 profile {tcont}", " gemport 1 tcont 1", "exit"]
-    out += [f"interface vport-1/{slot}/{port}.{onu_id}:1", f" service-port 1 user-vlan {uvlan} vlan {vlan}", "exit"]
+    out += [f" tcont 1 profile {tcont}", " gemport 1 tcont 1"]
+    if c300:
+        out += [f" service-port 1 vport 1 user-vlan {uvlan} vlan {vlan}", "exit"]
+    else:
+        out += ["exit", f"interface vport-1/{slot}/{port}.{onu_id}:1", f" service-port 1 user-vlan {uvlan} vlan {vlan}", "exit"]
     out += [f"pon-onu-mng {onu_if}", f" service 1 gemport 1 vlan {uvlan}"]
     for e in ports:
         if mode == "tag":
@@ -475,7 +522,7 @@ def onu_script(p: dict) -> dict:
 
 
 _UNCFG_SN = re.compile(r"\b([A-Z]{4}[0-9A-F]{8})\b")
-_PON_ANY = re.compile(r"gpon[_-]olt[_-]?(\d+)/(\d+)/(\d+)", re.I)
+_PON_ANY = re.compile(r"gpon[_-](?:olt|onu)[_-]?(\d+)/(\d+)/(\d+)", re.I)
 _ONU_CFG = re.compile(r"^\s*onu\s+(\d+)\s+type\s+(\S+)\s+sn\s+(\S+)", re.M | re.I)
 
 

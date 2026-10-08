@@ -24,7 +24,7 @@ const DEFAULT = {
 const SECRET = (f) => ({ ...f, access: { ...f.access, password: "" }, backup: { ...f.backup, password: "" }, snmp: { ...f.snmp, community: "" } });
 const load = () => { try { const v = JSON.parse(localStorage.getItem(KEY) || "null"); return v ? { ...DEFAULT, ...v } : null; } catch { return null; } };
 const board = (b, on) => ({ slot: b.slot, ports: b.ports, prefix: b.prefix, enabled: Array.from({ length: b.ports }, () => on) });
-const upName = (u, i) => `${u.prefix || "xgei"}-1/${u.slot}/${i + 1}`;
+const upName = (u, i, plat) => (plat === "c300" ? `${u.prefix || "xgei"}_1/${u.slot}/${i + 1}` : `${u.prefix || "xgei"}-1/${u.slot}/${i + 1}`);
 
 const sec = "rounded-lg border border-line bg-sunken/40 p-4 space-y-3";
 const inp = "bg-sunken border-line font-mono h-9";
@@ -57,7 +57,7 @@ function Field({ label, children, hint }) {
   );
 }
 
-function BoardsEditor({ title, boards, onChange, kind, testid }) {
+function BoardsEditor({ title, boards, onChange, kind, testid, plat }) {
   const set = (i, patch) => onChange(boards.map((b, j) => (j === i ? { ...b, ...patch } : b)));
   const resize = (i, ports) => {
     const n = Math.max(1, Math.min(kind === "pon" ? 64 : 32, parseInt(ports, 10) || 1));
@@ -98,7 +98,7 @@ function BoardsEditor({ title, boards, onChange, kind, testid }) {
             </div>
             <div className="flex flex-wrap gap-1">
               {b.enabled.map((on, k) => (
-                <Toggle key={k} on={on} label={kind === "pon" ? k + 1 : upName(b, k)} testid={`${testid}-p-${i}-${k}`}
+                <Toggle key={k} on={on} label={kind === "pon" ? k + 1 : upName(b, k, plat)} testid={`${testid}-p-${i}-${k}`}
                   onClick={() => set(i, { enabled: b.enabled.map((x, z) => (z === k ? !x : x)) })} />
               ))}
             </div>
@@ -109,8 +109,8 @@ function BoardsEditor({ title, boards, onChange, kind, testid }) {
   );
 }
 
-function UplinkPick({ uplinks, value, onChange, testid }) {
-  const names = uplinks.flatMap(u => Array.from({ length: u.ports }, (_, i) => upName(u, i)));
+function UplinkPick({ uplinks, value, onChange, testid, plat }) {
+  const names = uplinks.flatMap(u => Array.from({ length: u.ports }, (_, i) => upName(u, i, plat)));
   if (!names.length) return <div className="text-xs text-slate-500">Cadastre as placas de uplink na primeira aba.</div>;
   return (
     <div className="flex flex-wrap gap-1" data-testid={testid}>
@@ -190,6 +190,7 @@ function OltActivation() {
 
   const up = (k, patch) => setF(cur => ({ ...cur, [k]: { ...cur[k], ...patch } }));
   const model = meta?.models.find(m => m.key === f.model);
+  const plat = model?.platform || "titan";
 
   function applyModel(cur, key, m = meta) {
     const md = m?.models.find(x => x.key === key);
@@ -266,8 +267,8 @@ function OltActivation() {
           {tab === "ports" && (
             <div className="space-y-3">
               <div className="text-xs text-slate-400">Ative só as portas das placas instaladas. Confira com <span className="font-mono">show card</span> e <span className="font-mono">show interface brief</span>.</div>
-              <BoardsEditor title="Placas PON (gpon_olt)" kind="pon" boards={f.pon} onChange={pon => setF({ ...f, pon })} testid="oltgen-pon" />
-              <BoardsEditor title="Placas com uplink" kind="uplink" boards={f.uplinks} onChange={uplinks => setF({ ...f, uplinks })} testid="oltgen-up" />
+              <BoardsEditor plat={plat} title={`Placas PON (${plat === "c300" ? "gpon-olt" : "gpon_olt"})`} kind="pon" boards={f.pon} onChange={pon => setF({ ...f, pon })} testid="oltgen-pon" />
+              <BoardsEditor plat={plat} title="Placas com uplink" kind="uplink" boards={f.uplinks} onChange={uplinks => setF({ ...f, uplinks })} testid="oltgen-up" />
               <div className="text-xs font-mono text-slate-500" data-testid="oltgen-count">{ponCount} PON e {upCount} uplinks marcadas</div>
             </div>
           )}
@@ -295,7 +296,7 @@ function OltActivation() {
                       <Field label="Gateway"><Input value={f.mgmt.in_gw} onChange={e => up("mgmt", { in_gw: e.target.value })} placeholder="198.51.100.1" className={inp} /></Field>
                     </div>
                     <Field label="Uplink(s) por onde a gerência chega">
-                      <UplinkPick uplinks={f.uplinks} value={f.mgmt.in_uplinks} onChange={v => up("mgmt", { in_uplinks: v })} testid="oltgen-in-ups" />
+                      <UplinkPick plat={plat} uplinks={f.uplinks} value={f.mgmt.in_uplinks} onChange={v => up("mgmt", { in_uplinks: v })} testid="oltgen-in-ups" />
                     </Field>
                   </>
                 )}
@@ -315,7 +316,7 @@ function OltActivation() {
                       <Field label="Descrição"><Input value={f.vlans.description} onChange={e => up("vlans", { description: e.target.value })} className={inp} /></Field>
                     </div>
                     <Field label="Uplinks que levam essas VLANs">
-                      <UplinkPick uplinks={f.uplinks} value={f.vlans.uplinks} onChange={v => up("vlans", { uplinks: v })} testid="oltgen-vlan-ups" />
+                      <UplinkPick plat={plat} uplinks={f.uplinks} value={f.vlans.uplinks} onChange={v => up("vlans", { uplinks: v })} testid="oltgen-vlan-ups" />
                     </Field>
                   </>
                 )}
@@ -411,7 +412,7 @@ function OltActivation() {
 
 // ---------- Autorizar ONU ----------
 const ONU_KEY = "bastion_oltgen_onu";
-const ONU_DEFAULT = { pon: "1/1/1", onu_id: "1", type: "ZTE-F660", sn: "", name: "", description: "", vlan: "100", user_vlan: "",
+const ONU_DEFAULT = { platform: "titan", pon: "1/1/1", onu_id: "1", type: "ZTE-F660", sn: "", name: "", description: "", vlan: "100", user_vlan: "",
   tcont_profile: "1G", mode: "tag", ports: [1], write: true, comments: true };
 const MODE_INFO = [
   ["tag", "VLAN tag", "A porta da ONU entrega sem tag e a ONU marca a VLAN do cliente. O mais comum (roteador do cliente em PPPoE/DHCP)."],
@@ -451,6 +452,7 @@ function OnuAuthorize({ meta, devices }) {
     try {
       const { data } = await api.post("/oltgen/uncfg", { device_id: devId });
       setFound(data);
+      if (data.platform) set({ platform: data.platform });
       if (!data.onus.length) toast.info(`${data.device}: nenhuma ONU esperando autorização`);
     } catch (e) { toast.error(formatApiError(e)); } finally { setSearching(false); }
   };
@@ -490,6 +492,12 @@ function OnuAuthorize({ meta, devices }) {
         </Card>
 
         <div className={sec}>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400">Série da OLT</span>
+            {Object.entries(meta?.platforms || { titan: "TITAN (C600/C650/C620/C610)", c300: "C300 / C320" }).map(([k, l]) => (
+              <Toggle key={k} on={f.platform === k} label={l} testid={`onu-plat-${k}`} onClick={() => set({ platform: k })} />
+            ))}
+          </div>
           <div className="grid sm:grid-cols-3 gap-3">
             <Field label="Porta PON" hint="slot/porta, ex.: 1/1/3"><Input value={f.pon} onChange={e => set({ pon: e.target.value })} className={inp} data-testid="onu-pon" /></Field>
             <Field label="ID da ONU" hint="1 a 128, livre na PON"><Input value={f.onu_id} onChange={e => set({ onu_id: e.target.value })} className={inp} data-testid="onu-id" /></Field>
@@ -551,7 +559,7 @@ export default function OltScript() {
     <div className="flex-1 overflow-y-auto" data-testid="oltgen-page">
       <div className="px-4 md:px-6 pt-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="hidden md:block text-xs text-slate-400">ZTE · linha TITAN · GPON</div>
+          <div className="hidden md:block text-xs text-slate-400">ZTE · TITAN e C300/C320 · GPON</div>
           <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Script de OLT</h1>
         </div>
         <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm">

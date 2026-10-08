@@ -818,9 +818,13 @@ devem ver os seus: eles passam a enxergar, **ao vivo**, as suas interfaces monit
 que entram por essas interfaces — com a marca "compartilhada por …", sem poder editar nem apagar. O que você mudar
 aparece para eles na hora; desmarcar tira o acesso. Cada um continua podendo ter as próprias interfaces e conteúdos.
 
-## 34. Script de OLT ZTE (linha TITAN)
+## 34. Script de OLT ZTE (TITAN e C300/C320)
 
-Menu **Script de OLT** (módulo "Scripts de OLT"): monta o script de ativação de uma OLT ZTE C600/C650/C620/C610.
+Menu **Script de OLT** (módulo "Scripts de OLT"): monta o script de ativação de uma OLT ZTE C600/C650/C620/C610 (TITAN) ou C300/C320.
+No C300/C320 os nomes mudam (`gpon-olt_1/x/y`, `xgei_1/x/y`, `gpon-onu_…`) e os comandos seguem a série: VLAN com `name`,
+uplink com `switchport mode trunk`, gerência outband na `mng1`, usuário com `username … privilege 15`, perfis em
+`gpon` (`profile tcont` + `profile traffic`) e service-port dentro da `gpon-onu` (`service-port 1 vport 1 …`).
+Salvamento diário e backup por FTP não são gerados para C300.
 
 - **Placas e portas:** o C620 já vem com o mapa (slots 1 e 2 de PON, uplinks nas controladoras 4 e 5). Nos outros
   modelos, escolha uma OLT ZTE já cadastrada e clique em **Ler placas da OLT** — o BastiON roda `show card` (só leitura)
