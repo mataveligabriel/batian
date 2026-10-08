@@ -9,7 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Globe, Plus, X, RotateCw, ExternalLink, Loader2, Server, Radio, ShieldAlert } from "lucide-react";
+import { Globe, Plus, X, RotateCw, ExternalLink, Loader2, Server, Radio, ShieldAlert, Bookmark, BookmarkCheck, Pencil, Trash2 } from "lucide-react";
 
 const DIRECT = "__direct__";
 
@@ -148,6 +148,62 @@ function OpenDialog({ open, onOpenChange, devices, agents, isAdmin, preset, onOp
   );
 }
 
+// salvar / editar uma página: nome, endereço e por onde sai (equipamento, agente ou direto)
+function SaveDialog({ item, onOpenChange, devices, agents, isAdmin, onSaved, onDeleted }) {
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (item) { setName(item.name || ""); setUrl(item.url || ""); setBusy(false); } }, [item]);
+  if (!item) return null;
+  const dev = item.device_id && devices.find(d => d.id === item.device_id);
+  const via = item.device_id ? `${dev?.name || "equipamento"} · ${dev?.agent_id ? (agents.find(a => a.id === dev.agent_id)?.name || "agente") : "BastiON (direto)"}`
+    : item.agent_id ? (agents.find(a => a.id === item.agent_id)?.name || "agente") : "BastiON (direto do servidor)";
+  const save = async () => {
+    if (!name.trim()) return toast.error("Dê um nome para a página");
+    if (!url.trim()) return toast.error("Informe o endereço");
+    setBusy(true);
+    try {
+      const body = { name, url, device_id: item.device_id || null, agent_id: item.device_id ? null : (item.agent_id || null) };
+      const r = item.id ? await api.put(`/web/saved/${item.id}`, body) : await api.post("/web/saved", body);
+      toast.success(item.id ? "Página atualizada" : "Página salva");
+      onSaved(r.data); onOpenChange(false);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
+  };
+  const del = async () => {
+    setBusy(true);
+    try { await api.delete(`/web/saved/${item.id}`); toast.success("Página removida das salvas"); onDeleted(item.id); onOpenChange(false); }
+    catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
+  };
+  return (
+    <Dialog open={!!item} onOpenChange={onOpenChange}>
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-lg" data-testid="web-save-dialog">
+        <DialogHeader><DialogTitle>{item.id ? "Editar página salva" : "Salvar página"}</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label htmlFor="web-save-name">Nome</Label>
+            <Input id="web-save-name" value={name} onChange={e => setName(e.target.value)} maxLength={60} placeholder="ex.: Mapa do backbone"
+              onKeyDown={e => e.key === "Enter" && save()} data-testid="web-save-name" className="bg-sunken border-line mt-1" />
+          </div>
+          <div>
+            <Label htmlFor="web-save-url">Endereço</Label>
+            <Input id="web-save-url" value={url} onChange={e => setUrl(e.target.value)} placeholder="http://10.0.0.1:8080/mapa"
+              onKeyDown={e => e.key === "Enter" && save()} data-testid="web-save-url" className="bg-sunken border-line font-mono mt-1" />
+            <div className="text-[11px] text-slate-500 mt-1">Se você navegou dentro da página (ex.: abriu um mapa), cole aqui o endereço exato para ela já abrir nele.</div>
+          </div>
+          <div className="text-xs font-mono text-slate-400" data-testid="web-save-via">sai por: <span className="text-slate-200">{via}</span>{!item.device_id && !item.agent_id && !isAdmin ? " (só administrador)" : ""}</div>
+        </div>
+        <DialogFooter className="gap-2">
+          {item.id && <Button variant="outline" onClick={del} disabled={busy} data-testid="web-save-delete" className="border-red-800/60 bg-transparent text-red-300 hover:bg-red-950/40 sm:mr-auto"><Trash2 className="w-4 h-4 mr-1.5" />Remover</Button>}
+          <Button variant="outline" onClick={() => onOpenChange(false)} className="border-line bg-transparent">Cancelar</Button>
+          <Button onClick={save} disabled={busy} data-testid="web-save-submit" className="bg-brand hover:bg-brand-strong">
+            {busy ? <Loader2 className="w-4 h-4 animate-spin mr-1.5" /> : <Bookmark className="w-4 h-4 mr-1.5" />}Salvar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function WebAccess() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -160,12 +216,16 @@ export default function WebAccess() {
   const [dlg, setDlg] = useState(false);
   const [preset, setPreset] = useState(null);
   const [reloads, setReloads] = useState({});
+  const [saved, setSaved] = useState([]);
+  const [editing, setEditing] = useState(null);          // página salva sendo criada/editada
+  const [opening, setOpening] = useState("");
   const tls = info?.tls_offset || 0;
   const https = window.location.protocol === "https:" && !tls;   // https sem portas seguras: só em aba separada
 
   const load = async () => {
     const [i, s, d, a] = await Promise.all([api.get("/web/info"), api.get("/web/sessions"), api.get("/devices"), api.get("/agents")]);
     setInfo(i.data); setSessions(s.data); setDevices(d.data); setAgents(a.data);
+    api.get("/web/saved").then(r => setSaved(r.data)).catch(() => {});
     setActive(cur => (s.data.some(x => x.id === cur) ? cur : s.data[s.data.length - 1]?.id || null));
     return d.data;
   };
@@ -203,6 +263,17 @@ export default function WebAccess() {
   };
 
   const cur = sessions.find(s => s.id === active);
+  const sameRoute = (p, s) => (p.device_id || null) === (s.device_id || null) && (p.device_id || (p.agent_id || null) === (s.agent_id || null));
+  const curSaved = cur && saved.find(p => sameRoute(p, cur) && p.url.replace(/\/+$/, "") === cur.url.replace(/\/+$/, ""));
+  const sortSaved = (list) => [...list].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+
+  const openSaved = async (p) => {
+    setOpening(p.id);
+    try {
+      const r = await api.post("/web/sessions", { url: p.url, device_id: p.device_id || null, agent_id: p.device_id ? null : (p.agent_id || null), name: p.name });
+      opened(r.data);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setOpening(""); }
+  };
 
   return (
     <div className="flex-1 flex flex-col min-h-0" data-testid="web-page">
@@ -210,11 +281,36 @@ export default function WebAccess() {
         <div>
           <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Acesso Web</h1>
         </div>
+        <div className="flex gap-2">
+        {cur && (
+          <Button variant="outline" data-testid="web-save-btn" className="border-line bg-transparent text-slate-200 hover:bg-slate-800"
+            onClick={() => setEditing(curSaved || { name: cur.label, url: cur.url, device_id: cur.device_id, agent_id: cur.agent_id })}>
+            {curSaved ? <BookmarkCheck className="w-4 h-4 mr-1.5 text-brand-soft" /> : <Bookmark className="w-4 h-4 mr-1.5" />}{curSaved ? "Salva" : "Salvar página"}
+          </Button>
+        )}
         <Button onClick={() => { setPreset(null); setDlg(true); }} disabled={info && !info.enabled}
           className="bg-brand hover:bg-brand-strong" data-testid="web-new-btn">
           <Plus className="w-4 h-4 mr-1.5" />Abrir página
         </Button>
+        </div>
       </div>
+
+      {saved.length > 0 && (
+        <div className="px-4 md:px-6 pb-2 flex items-center gap-1.5 overflow-x-auto" data-testid="web-saved">
+          <span className="text-[11px] font-mono text-slate-500 shrink-0 mr-1">Salvas</span>
+          {saved.map(p => (
+            <div key={p.id} className="group flex items-center shrink-0 rounded-md border border-line bg-sunken text-xs">
+              <button onClick={() => openSaved(p)} disabled={!!opening || (info && !info.enabled)} title={p.url} data-testid={`web-saved-${p.id}`}
+                className="flex items-center gap-1.5 pl-2 pr-1.5 h-7 text-slate-300 hover:text-slate-100 disabled:opacity-60">
+                {opening === p.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bookmark className="w-3.5 h-3.5 text-brand-soft" />}
+                <span className="max-w-[200px] truncate">{p.name}</span>
+              </button>
+              <button onClick={() => setEditing(p)} title="Editar ou remover" data-testid={`web-saved-edit-${p.id}`}
+                className="px-1.5 h-7 border-l border-line text-slate-500 hover:text-slate-200"><Pencil className="w-3 h-3" /></button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {info && !info.enabled && (
         <Card className="mx-4 md:mx-6 mb-3 p-3 bg-amber-950/30 border-amber-700/40 text-amber-200 text-sm" data-testid="web-disabled">
@@ -276,12 +372,16 @@ export default function WebAccess() {
           <div className="text-center max-w-md space-y-2" data-testid="web-empty">
             <Globe className="w-10 h-10 text-slate-600 mx-auto" />
             <div className="text-slate-200">Nenhuma página aberta</div>
+            {saved.length > 0 && <div className="text-sm text-slate-400">Clique numa página salva acima para abrir.</div>}
             <div className="text-sm text-slate-500">Abra a interface web de um equipamento (http/https) pelo mesmo caminho do terminal: pelos agentes ou direto do servidor. Também dá para abrir pelo ícone <Globe className="w-3.5 h-3.5 inline" /> na lista de Equipamentos.</div>
             {info?.idle_minutes ? <div className="text-xs text-slate-600 font-mono">sessões sem uso fecham sozinhas em {info.idle_minutes} min</div> : null}
           </div>
         </div>
       )}
 
+      <SaveDialog item={editing} onOpenChange={(v) => !v && setEditing(null)} devices={devices} agents={agents} isAdmin={isAdmin}
+        onSaved={(p) => setSaved(prev => sortSaved([...prev.filter(x => x.id !== p.id), p]))}
+        onDeleted={(id) => setSaved(prev => prev.filter(x => x.id !== id))} />
       <OpenDialog open={dlg} onOpenChange={setDlg} devices={devices} agents={agents} isAdmin={isAdmin} preset={preset} onOpened={opened} />
     </div>
   );

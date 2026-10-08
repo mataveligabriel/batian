@@ -3537,6 +3537,7 @@ class WebOpenIn(BaseModel):
     url: str
     device_id: Optional[str] = None
     agent_id: Optional[str] = None      # sem equipamento: agente escolhido; vazio = direto do servidor (admin)
+    name: Optional[str] = None          # nome mostrado na aba (páginas salvas)
 
 
 @api.get("/web/info")
@@ -3569,7 +3570,8 @@ async def web_open(payload: WebOpenIn, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Abrir direto do servidor é só para administradores — escolha um agente")
     try:
         webproxy.parse_target(payload.url)
-        s = await web_proxy.open(user, payload.url, agent_id=agent_id, device_id=device_id, label=label)
+        s = await web_proxy.open(user, payload.url, agent_id=agent_id, device_id=device_id,
+                                 label=_web_name(payload.name) or label)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except VpnDown as e:
@@ -3581,6 +3583,71 @@ async def web_open(payload: WebOpenIn, user: dict = Depends(get_current_user)):
     if device_id:
         await db.devices.update_one({"id": device_id}, {"$set": {"web_url": payload.url.strip()}})
     return s
+
+
+def _web_name(v: Optional[str]) -> str:
+    return re.sub(r"[\r\n<>]", " ", str(v or "")).strip()[:60]
+
+
+class WebSavedIn(BaseModel):
+    name: str
+    url: str
+    device_id: Optional[str] = None
+    agent_id: Optional[str] = None      # vazio e sem equipamento = direto do servidor (admin)
+
+
+async def _web_saved_check(body: WebSavedIn, user: dict) -> dict:
+    name = _web_name(body.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="Dê um nome para a página")
+    url = (body.url or "").strip()
+    try:
+        webproxy.parse_target(url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    device_id, agent_id = body.device_id or None, body.agent_id or None
+    if device_id:
+        await _get_device_for(user, device_id)
+        agent_id = None
+    elif agent_id:
+        await _get_agent_for(user, agent_id)
+    elif user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Abrir direto do servidor é só para administradores — escolha um agente")
+    return {"name": name, "url": url[:2000], "device_id": device_id, "agent_id": agent_id}
+
+
+@api.get("/web/saved")
+async def web_saved_list(user: dict = Depends(get_current_user)):
+    rows = await db.web_saved.find({"owner_id": user["id"]}, {"_id": 0, "owner_id": 0}).to_list(500)
+    return sorted(rows, key=lambda r: r["name"].lower())
+
+
+@api.post("/web/saved")
+async def web_saved_add(body: WebSavedIn, user: dict = Depends(get_current_user)):
+    doc = await _web_saved_check(body, user)
+    if await db.web_saved.count_documents({"owner_id": user["id"]}) >= 500:
+        raise HTTPException(status_code=400, detail="Limite de 500 páginas salvas")
+    doc.update({"id": str(uuid.uuid4()), "owner_id": user["id"], "created_at": datetime.now(timezone.utc).isoformat()})
+    await db.web_saved.insert_one(dict(doc))
+    doc.pop("owner_id", None)
+    return doc
+
+
+@api.put("/web/saved/{sid}")
+async def web_saved_edit(sid: str, body: WebSavedIn, user: dict = Depends(get_current_user)):
+    doc = await _web_saved_check(body, user)
+    r = await db.web_saved.update_one({"id": sid, "owner_id": user["id"]}, {"$set": doc})
+    if not r.matched_count:
+        raise HTTPException(status_code=404, detail="Página salva não encontrada")
+    return {**doc, "id": sid}
+
+
+@api.delete("/web/saved/{sid}")
+async def web_saved_del(sid: str, user: dict = Depends(get_current_user)):
+    r = await db.web_saved.delete_one({"id": sid, "owner_id": user["id"]})
+    if not r.deleted_count:
+        raise HTTPException(status_code=404, detail="Página salva não encontrada")
+    return {"ok": True}
 
 
 @api.delete("/web/sessions/{sid}")
