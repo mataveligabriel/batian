@@ -9,9 +9,12 @@ import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Globe, Plus, X, RotateCw, ExternalLink, Loader2, Server, Radio, ShieldAlert, Bookmark, BookmarkCheck, Pencil, Trash2 } from "lucide-react";
+import { Globe, Plus, X, RotateCw, ExternalLink, Loader2, Server, Radio, ShieldAlert, Bookmark, BookmarkCheck, Pencil, Trash2, ZoomIn, ZoomOut } from "lucide-react";
 
 const DIRECT = "__direct__";
+const ZOOM_KEY = "bastion_web_zoom";                    // zoom lembrado por endereço (origem) neste navegador
+const ZOOMS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const loadZooms = () => { try { return JSON.parse(localStorage.getItem(ZOOM_KEY) || "{}") || {}; } catch { return {}; } };
 
 // endereço da porta da sessão no mesmo host em que o BastiON foi aberto
 export function webSessionUrl(s, tlsOffset = 0, entry = true) {
@@ -219,6 +222,7 @@ export default function WebAccess() {
   const [saved, setSaved] = useState([]);
   const [editing, setEditing] = useState(null);          // página salva sendo criada/editada
   const [opening, setOpening] = useState("");
+  const [zooms, setZooms] = useState(loadZooms);         // { "http://host:porta": 0.75 }
   const tls = info?.tls_offset || 0;
   const https = window.location.protocol === "https:" && !tls;   // https sem portas seguras: só em aba separada
 
@@ -263,6 +267,18 @@ export default function WebAccess() {
   };
 
   const cur = sessions.find(s => s.id === active);
+  const zoomOf = (s) => zooms[s.target] || 1;
+  const setZoom = (s, z) => setZooms(prev => {
+    const next = { ...prev };
+    if (Math.abs(z - 1) < 0.001) delete next[s.target]; else next[s.target] = z;
+    try { localStorage.setItem(ZOOM_KEY, JSON.stringify(next)); } catch { /* sem armazenamento */ }
+    return next;
+  });
+  const stepZoom = (s, dir) => {
+    const z = zoomOf(s);
+    const nx = dir > 0 ? ZOOMS.find(v => v > z + 0.001) : [...ZOOMS].reverse().find(v => v < z - 0.001);
+    if (nx) setZoom(s, nx);
+  };
   const sameRoute = (p, s) => (p.device_id || null) === (s.device_id || null) && (p.device_id || (p.agent_id || null) === (s.agent_id || null));
   const curSaved = cur && saved.find(p => sameRoute(p, cur) && p.url.replace(/\/+$/, "") === cur.url.replace(/\/+$/, ""));
   const sortSaved = (list) => [...list].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
@@ -338,7 +354,17 @@ export default function WebAccess() {
             <span className="text-slate-200 truncate max-w-[40ch]" data-testid="web-cur-url">{cur.target}</span>
             <span className="text-slate-500">via {cur.via}</span>
             <span className="text-slate-600">· porta {cur.port + (window.location.protocol === "https:" ? tls : 0)}</span>
-            <div className="ml-auto flex gap-1">
+            <div className="ml-auto flex gap-1 items-center">
+              {!https && (
+                <div className="flex items-center rounded-md border border-line mr-1" data-testid="web-zoom">
+                  <button onClick={() => stepZoom(cur, -1)} disabled={zoomOf(cur) <= ZOOMS[0]} title="Diminuir zoom" data-testid="web-zoom-out"
+                    className="px-1.5 h-7 text-slate-300 hover:bg-slate-800 disabled:opacity-40 rounded-l-md"><ZoomOut className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => setZoom(cur, 1)} title="Voltar para 100%" data-testid="web-zoom-reset"
+                    className="px-1.5 h-7 min-w-[3.2rem] text-slate-200 hover:bg-slate-800 border-x border-line tabular-nums">{Math.round(zoomOf(cur) * 100)}%</button>
+                  <button onClick={() => stepZoom(cur, 1)} disabled={zoomOf(cur) >= ZOOMS[ZOOMS.length - 1]} title="Aumentar zoom" data-testid="web-zoom-in"
+                    className="px-1.5 h-7 text-slate-300 hover:bg-slate-800 disabled:opacity-40 rounded-r-md"><ZoomIn className="w-3.5 h-3.5" /></button>
+                </div>
+              )}
               <Button size="sm" variant="ghost" title="Recarregar" data-testid="web-reload"
                 onClick={() => setReloads(r => ({ ...r, [cur.id]: (r[cur.id] || 0) + 1 }))} className="text-slate-300 hover:bg-slate-800 h-7">
                 <RotateCw className="w-3.5 h-3.5" /><span className="hidden sm:inline ml-1">Recarregar</span>
@@ -359,11 +385,17 @@ export default function WebAccess() {
             </Card>
           ) : (
             <div className="relative flex-1 min-h-[320px] rounded-md border border-line overflow-hidden bg-white">
-              {sessions.map(s => (
-                <iframe key={`${s.id}-${reloads[s.id] || 0}`} title={s.label} src={webSessionUrl(s, tls)} data-testid={`web-frame-${s.id}`}
-                  allow="clipboard-read; clipboard-write; fullscreen" onLoad={refresh}
-                  className={`absolute inset-0 w-full h-full border-0 ${s.id === active ? "block" : "hidden"}`} />
-              ))}
+              {sessions.map(s => {
+                // zoom: a página do equipamento é de outra origem, então o quadro inteiro é escalado
+                // (maior/menor por dentro e transform scale por fora), e os cliques continuam no lugar certo
+                const z = zoomOf(s);
+                return (
+                  <iframe key={`${s.id}-${reloads[s.id] || 0}`} title={s.label} src={webSessionUrl(s, tls)} data-testid={`web-frame-${s.id}`}
+                    allow="clipboard-read; clipboard-write; fullscreen" onLoad={refresh}
+                    style={z === 1 ? undefined : { width: `${100 / z}%`, height: `${100 / z}%`, transform: `scale(${z})`, transformOrigin: "0 0" }}
+                    className={`absolute inset-0 w-full h-full border-0 ${s.id === active ? "block" : "hidden"}`} />
+                );
+              })}
             </div>
           )}
         </div>
