@@ -21,25 +21,33 @@ function ManageDialog({ open, onClose, onSaved }) {
   const [vendor, setVendor] = useState("huawei");
   const [cmds, setCmds] = useState({});
   const [saving, setSaving] = useState(false);
+  const [pub, setPub] = useState(null);                 // acesso público (sem login, porta própria)
+  const [pubSel, setPubSel] = useState(new Set());
   useEffect(() => {
     if (!open) return;
     setData(null); setQ("");
     api.get("/lg/admin").then(({ data }) => {
       setData(data); setSel(new Set(data.devices.filter(d => d.looking_glass).map(d => d.id)));
       setCmds(JSON.parse(JSON.stringify(data.overrides || {})));
+      setPub({ ...data.public, password: "" }); setPubSel(new Set(data.public?.routers || []));
     }).catch(e => { toast.error(formatApiError(e)); onClose(); });
   }, [open]);
   const shown = useMemo(() => {
     const t = q.trim().toLowerCase();
     return (data?.devices || []).filter(d => !t || `${d.name} ${d.host} ${(d.tags || []).join(" ")} ${d.device_type}`.toLowerCase().includes(t));
   }, [data, q]);
-  const toggle = (id) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggle = (id) => { setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; }); setPubSel(s => { const n = new Set(s); n.delete(id); return n; }); };
+  const togglePub = (id) => setPubSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const setQ1 = (k, on) => setPub(p => ({ ...p, queries: on ? [...new Set([...p.queries, k])] : p.queries.filter(x => x !== k) }));
+  const pubUrl = data?.public_port ? `http://${window.location.hostname}:${data.public_port}` : `${window.location.origin}/looking-glass`;
   const setTpl = (k, v) => setCmds(c => ({ ...c, [vendor]: { ...(c[vendor] || {}), [k]: v } }));
   const save = async () => {
     setSaving(true);
     try {
       await api.put("/lg/admin/commands", { commands: cmds });
       await api.put("/lg/admin/routers", { device_ids: [...sel] });
+      await api.put("/lg/admin/public", { ...pub, per_min: Number(pub.per_min) || 6, per_day: Number(pub.per_day) || 200, routers: [...pubSel].filter(id => sel.has(id)),
+        password: pub.password ? pub.password : (pub.username && data.public?.has_password && pub.username === data.public.username ? null : "") });
       toast.success("Looking Glass atualizado"); onSaved(); onClose();
     } catch (e) { toast.error(formatApiError(e)); } finally { setSaving(false); }
   };
@@ -62,6 +70,8 @@ function ManageDialog({ open, onClose, onSaved }) {
                   <label key={d.id} className="flex items-center gap-3 px-3 py-2 text-sm cursor-pointer hover:bg-panel" data-testid={`lg-dev-${d.id}`}>
                     <Checkbox checked={sel.has(d.id)} onCheckedChange={() => toggle(d.id)} />
                     <span className="text-slate-200 truncate">{d.name}</span>
+                    {sel.has(d.id) && <button type="button" onClick={(e) => { e.preventDefault(); togglePub(d.id); }} data-testid={`lg-pub-${d.id}`}
+                      className={`px-1.5 py-0.5 rounded border text-[10px] ${pubSel.has(d.id) ? "border-on text-on bg-on/10" : "border-line text-slate-500 hover:text-slate-300"}`}>{pubSel.has(d.id) ? "público ✓" : "tornar público"}</button>}
                     <span className="font-mono text-[11px] text-slate-500">{d.host}</span>
                     <span className="ml-auto text-[10px] font-mono text-slate-500">{VENDOR[d.device_type] || d.device_type}{(d.tags || []).length ? ` · ${d.tags.join(", ")}` : ""}</span>
                   </label>
@@ -70,6 +80,34 @@ function ManageDialog({ open, onClose, onSaved }) {
               </div>
               <p className="text-[11px] text-slate-500 mt-1.5">Quem tem o módulo Looking Glass consulta estes roteadores mesmo sem ter acesso ao equipamento. Marque só roteadores de borda/núcleo.</p>
             </div>
+            {pub && (
+              <div className="border border-line rounded-md p-3 bg-sunken space-y-3" data-testid="lg-public-box">
+                <div className="flex items-center gap-2 text-sm text-slate-200"><Checkbox id="lgp-enabled" checked={!!pub.enabled} onCheckedChange={v => setPub(p => ({ ...p, enabled: !!v }))} data-testid="lg-pub-enabled" />
+                  <label htmlFor="lgp-enabled" className="cursor-pointer">Acesso público (sem login)</label> <span className="text-slate-500 font-mono text-xs">{pubSel.size} roteador(es)</span></div>
+                <div className="text-[11px] text-slate-400">Endereço para passar a quem quiser consultar: <a href={pubUrl} target="_blank" rel="noreferrer" className="font-mono text-brand-soft hover:underline" data-testid="lg-pub-url">{pubUrl}</a>
+                  {data.public_port ? <> — libere a porta TCP {data.public_port} no firewall.</> : null} Só aparecem os roteadores marcados como "público" na lista acima.</div>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div><Label className="text-[11px] text-slate-400">Título da página</Label><Input value={pub.title} onChange={e => setPub({ ...pub, title: e.target.value })} placeholder="Looking Glass — AS263112" className="mt-1 h-8 bg-panel border-line text-xs" data-testid="lg-pub-title" /></div>
+                  <div><Label className="text-[11px] text-slate-400">Contato exibido (opcional)</Label><Input value={pub.contact} onChange={e => setPub({ ...pub, contact: e.target.value })} placeholder="noc@empresa.com.br" className="mt-1 h-8 bg-panel border-line text-xs" /></div>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-300">
+                  <span className="text-slate-400">Consultas:</span>
+                  {[["ping", "Ping"], ["trace", "Traceroute"], ["route", "Rota BGP"], ["summary", "Vizinhos BGP"]].map(([k, l]) => (
+                    <span key={k} className="flex items-center gap-1.5"><Checkbox id={`lgpq-${k}`} checked={pub.queries.includes(k)} onCheckedChange={(v) => setQ1(k, !!v)} data-testid={`lg-pub-q-${k}`} /><label htmlFor={`lgpq-${k}`} className="cursor-pointer">{l}</label></span>))}
+                  <span className="ml-auto flex items-center gap-1.5 text-slate-400">por visitante: <Input value={pub.per_min} onChange={e => setPub({ ...pub, per_min: e.target.value.replace(/\D/g, "") })} className="h-7 w-12 bg-panel border-line font-mono text-xs px-1.5" />/min
+                    <Input value={pub.per_day} onChange={e => setPub({ ...pub, per_day: e.target.value.replace(/\D/g, "") })} className="h-7 w-16 bg-panel border-line font-mono text-xs px-1.5" />/dia</span>
+                </div>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div><Label className="text-[11px] text-slate-400">Usuário só de leitura nos roteadores (recomendado)</Label><Input value={pub.username} onChange={e => setPub({ ...pub, username: e.target.value })} autoComplete="off" placeholder="vazio = usa o login do equipamento" className="mt-1 h-8 bg-panel border-line font-mono text-xs" data-testid="lg-pub-user" /></div>
+                  <div><Label className="text-[11px] text-slate-400">Senha desse usuário</Label><Input type="password" value={pub.password} onChange={e => setPub({ ...pub, password: e.target.value })} autoComplete="new-password" placeholder={data.public?.has_password ? "•••••• (mantida)" : ""} className="mt-1 h-8 bg-panel border-line font-mono text-xs" /></div>
+                </div>
+                <div className="text-[11px] text-slate-500">O visitante só informa IP ou prefixo público (nada de rede interna nem nomes), não vê o comando nem o IP do roteador, e uma consulta roda por vez em cada roteador. "Vizinhos BGP" mostra todos os seus peers: deixe desmarcado se não quiser expor.</div>
+                {data.public_log?.length > 0 && (
+                  <details className="text-[11px]"><summary className="cursor-pointer text-slate-400">Últimas consultas públicas ({data.public_24h} nas últimas 24 h)</summary>
+                    <div className="mt-1 max-h-32 overflow-y-auto font-mono text-slate-400 space-y-0.5">{data.public_log.map((l, i) => <div key={i}>{new Date(l.ts).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })} · {l.ip} · {l.router} · {l.query} {l.target}{l.ok ? "" : " · falhou"}</div>)}</div></details>
+                )}
+              </div>
+            )}
             <div>
               <div className="flex items-center gap-2 mb-2 flex-wrap">
                 <Label className="text-slate-300 mr-1">Comandos por fabricante</Label>

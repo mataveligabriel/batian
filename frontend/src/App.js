@@ -11,6 +11,7 @@ import Devices from "@/pages/Devices";
 import Terminal from "@/pages/Terminal";
 import Batch from "@/pages/Batch";
 import LookingGlass from "@/pages/LookingGlass";
+import PublicLookingGlass from "@/pages/PublicLookingGlass";
 import Rpki from "@/pages/Rpki";
 import Rdp from "@/pages/Rdp";
 import Agents from "@/pages/Agents";
@@ -41,6 +42,8 @@ function ProtectedShell() {
 }
 
 function App() {
+  // Looking Glass público: página avulsa, sem login e sem o resto do app
+  if (window.location.pathname.replace(/\/+$/, "") === "/looking-glass") return <PublicLookingGlass />;
   return (
     <AuthProvider>
       <BrowserRouter>

@@ -145,6 +145,7 @@ async def startup():
     await db.flow_mitigations.create_index("id")
     await db.flow_botnet.create_index([("status", 1), ("start", -1)])
     await db.flow_botnet.create_index("id")
+    await db.lg_public_log.create_index("ts", expireAfterSeconds=30 * 86400)
     try:
         await web_proxy.start()
     except Exception as e:
@@ -1448,9 +1449,16 @@ async def lg_admin(_: dict = Depends(require_admin)):
     devs = await db.devices.find({"device_type": {"$in": lookingglass.VENDORS}}, {"_id": 0}).to_list(5000)
     devs.sort(key=lambda d: d["name"].lower())
     ov = await _lg_overrides()
+    pub = await _lg_public_cfg()
+    plog = await db.lg_public_log.find({}, {"_id": 0}).sort("ts", -1).to_list(30)
+    for x in plog:
+        x["ts"] = x["ts"].isoformat() if hasattr(x["ts"], "isoformat") else str(x["ts"])
+    p24 = await db.lg_public_log.count_documents({"ts": {"$gte": datetime.now(timezone.utc) - timedelta(hours=24)}})
     return {"devices": [{**_lg_router(d), "host": d.get("host"), "looking_glass": bool(d.get("looking_glass"))} for d in devs],
             "vendors": lookingglass.VENDORS, "template_keys": lookingglass.TEMPLATE_KEYS,
-            "defaults": lookingglass.DEFAULT_COMMANDS, "overrides": ov}
+            "defaults": lookingglass.DEFAULT_COMMANDS, "overrides": ov,
+            "public": {**{k: v for k, v in pub.items() if k != "password"}, "has_password": bool(pub.get("password"))},
+            "public_port": LG_PUBLIC_PORT, "public_log": plog, "public_24h": p24}
 
 
 @api.put("/lg/admin/routers")
@@ -1471,6 +1479,140 @@ async def lg_set_commands(body: LGCommandsIn, _: dict = Depends(require_admin)):
         raise HTTPException(status_code=400, detail=str(e))
     await db.config.update_one({"key": "lg"}, {"$set": {"commands": ov}}, upsert=True)
     return {"ok": True, "overrides": ov}
+
+
+# ---------- Looking Glass público (sem login, numa porta própria) ----------
+LG_PUBLIC_PORT = int(os.environ.get("LG_PUBLIC_PORT", "8089") or 0)
+_lgp_hits: dict = {}        # ip -> [instantes]
+_lgp_day: dict = {}         # (dia, ip) -> contagem
+_lgp_wait: dict = {}        # roteador -> quantos esperando
+
+
+async def _lg_public_cfg() -> dict:
+    doc = (await db.config.find_one({"key": "lg"}, {"_id": 0}) or {}).get("public") or {}
+    return {**lookingglass.PUBLIC_DEFAULTS, **doc}
+
+
+async def _lg_public_routers(cfg: dict) -> List[dict]:
+    if not cfg["routers"]:
+        return []
+    devs = await db.devices.find({"id": {"$in": cfg["routers"]}, "looking_glass": True,
+                                  "device_type": {"$in": lookingglass.VENDORS}}, {"_id": 0}).to_list(200)
+    devs.sort(key=lambda d: d["name"].lower())
+    return devs
+
+
+@api.get("/public/lg")
+async def lg_public_info():
+    cfg = await _lg_public_cfg()
+    if not cfg["enabled"]:
+        return {"enabled": False}
+    devs = await _lg_public_routers(cfg)
+    return {"enabled": True, "title": cfg["title"], "contact": cfg["contact"],
+            "routers": [{"id": d["id"], "name": d["name"]} for d in devs],
+            "queries": [{"key": k, "label": lookingglass.QUERIES[k][0], "needs_target": lookingglass.QUERIES[k][1],
+                         "allow_prefix": lookingglass.QUERIES[k][3]} for k in cfg["queries"]],
+            "per_min": cfg["per_min"]}
+
+
+class LGPublicIn(BaseModel):
+    router: str
+    query: str
+    target: str = ""
+    v6: bool = False
+
+
+@api.post("/public/lg/query")
+async def lg_public_query(body: LGPublicIn, request: Request):
+    cfg = await _lg_public_cfg()
+    if not cfg["enabled"]:
+        raise HTTPException(status_code=404, detail="Looking Glass público desligado")
+    ip = security.client_ip(request)
+    if body.query not in cfg["queries"]:
+        raise HTTPException(status_code=400, detail="Consulta não disponível")
+    if body.router not in cfg["routers"]:
+        raise HTTPException(status_code=404, detail="Roteador não disponível")
+    dev = await db.devices.find_one({"id": body.router, "looking_glass": True}, {"_id": 0})
+    if not dev:
+        raise HTTPException(status_code=404, detail="Roteador não disponível")
+    try:
+        lookingglass.check_public_target(body.target, body.query)
+        cmd = lookingglass.build(dev.get("device_type") or "", body.query, body.target, await _lg_overrides(), body.v6)
+    except lookingglass.LGError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    now = time.time()
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    if len(_lgp_hits) > 20000 or len(_lgp_day) > 50000:      # limpeza barata
+        for k in [k for k, v in _lgp_hits.items() if not v or now - v[-1] > 60]:
+            _lgp_hits.pop(k, None)
+        for k in [k for k in _lgp_day if k[0] != day]:
+            _lgp_day.pop(k, None)
+    hits = [t for t in _lgp_hits.get(ip, []) if now - t < 60]
+    if len(hits) >= cfg["per_min"]:
+        raise HTTPException(status_code=429, detail=f"Muitas consultas — o limite é de {cfg['per_min']} por minuto. Aguarde um pouco.")
+    if _lgp_day.get((day, ip), 0) >= cfg["per_day"]:
+        raise HTTPException(status_code=429, detail="Limite diário de consultas atingido para o seu endereço.")
+    if _lgp_wait.get(dev["id"], 0) >= 3:
+        raise HTTPException(status_code=429, detail="Este roteador está ocupado com outras consultas. Tente em instantes.")
+    _lgp_hits[ip] = hits + [now]
+    _lgp_day[(day, ip)] = _lgp_day.get((day, ip), 0) + 1
+    if cfg["username"]:                                    # credencial só de leitura, própria do Looking Glass público
+        dev = {**dev, "username": cfg["username"], "password": cfg.get("password") or ""}
+    lock = _lg_locks.setdefault(dev["id"], asyncio.Lock())
+    started = datetime.now(timezone.utc)
+    ok, out, err = False, "", ""
+    _lgp_wait[dev["id"]] = _lgp_wait.get(dev["id"], 0) + 1
+    try:
+        async with lock:
+            try:
+                c = await _connect_device(dev)
+                try:
+                    res = await c.run_command(cmd, timeout=60, idle=2.0)
+                finally:
+                    await c.close()
+                raw = res["stdout"] if isinstance(res["stdout"], str) else res["stdout"].decode("utf-8", "replace")
+                out = lookingglass.tidy(raw, cmd)[-30000:]
+                ok = bool(res["ok"])
+                err = "" if ok else "O roteador não respondeu a tempo."
+            except Exception as e:
+                logger.info(f"lg público {dev['name']}: {e}")
+                err = "Não foi possível consultar este roteador agora."      # detalhes internos não vão para fora
+    finally:
+        _lgp_wait[dev["id"]] = max(0, _lgp_wait.get(dev["id"], 1) - 1)
+    ended = datetime.now(timezone.utc)
+    await db.lg_public_log.insert_one({"ts": started, "ip": ip, "router": dev["name"], "query": body.query,
+                                       "target": body.target.strip()[:80], "ok": ok,
+                                       "seconds": round((ended - started).total_seconds(), 1)})
+    return {"ok": ok, "router": dev["name"], "output": out, "error": err, "seconds": round((ended - started).total_seconds(), 1)}
+
+
+class LGPublicCfgIn(BaseModel):
+    enabled: bool = False
+    title: str = "Looking Glass"
+    contact: str = ""
+    queries: List[str] = []
+    per_min: int = 6
+    per_day: int = 200
+    username: str = ""
+    password: Optional[str] = None            # None = mantém; "" = apaga
+    routers: List[str] = []
+
+
+@api.put("/lg/admin/public")
+async def lg_set_public(body: LGPublicCfgIn, _: dict = Depends(require_admin)):
+    cur = await _lg_public_cfg()
+    try:
+        cfg = lookingglass.clean_public(body.model_dump(exclude={"password"}), cur)
+    except lookingglass.LGError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if body.password is not None:
+        cfg["password"] = vault.encrypt(body.password) if body.password else ""
+    if not cfg["username"]:
+        cfg["password"] = ""
+    if cfg["enabled"] and not cfg["routers"]:
+        raise HTTPException(status_code=400, detail="Marque pelo menos um roteador como público")
+    await db.config.update_one({"key": "lg"}, {"$set": {"public": cfg}}, upsert=True)
+    return {"ok": True}
 
 
 # ---------- RPKI (Krill ao lado; o BastiON é a tela) ----------

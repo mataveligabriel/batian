@@ -116,6 +116,9 @@ services:
       BASTION_HTTPS_PORT: ${BASTION_HTTPS_PORT:-8443}
       WEB_PROXY_PORTS: ${WEB_PROXY_PORTS:-8090-8099}
       WEB_PROXY_TLS_OFFSET: ${WEB_PROXY_TLS_OFFSET:-400}
+      # Looking Glass público: porta própria (0 desliga). Com HTTPS ligado, também em LG_PUBLIC_TLS_PORT (porta + 400)
+      LG_PUBLIC_PORT: ${LG_PUBLIC_PORT:-8089}
+      LG_PUBLIC_TLS_PORT: ${LG_PUBLIC_TLS_PORT:-}
     volumes:
       - caddy_data:/data
       - caddy_config:/config

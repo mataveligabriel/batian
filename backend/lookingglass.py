@@ -142,6 +142,46 @@ def commands_for(vendor: str, overrides: Optional[dict] = None) -> Dict[str, str
     return base
 
 
+PUBLIC_QUERIES = ("ping", "trace", "route")
+PUBLIC_DEFAULTS = {"enabled": False, "title": "Looking Glass", "contact": "", "queries": list(PUBLIC_QUERIES), "per_min": 6,
+                   "per_day": 200, "username": "", "password": "", "routers": []}
+
+
+def check_public_target(raw: str, query: str) -> None:
+    """Regras extras do acesso público: só IP (ou prefixo) e só endereço de internet — nada de rede interna."""
+    raw = (raw or "").strip()
+    if not QUERIES.get(query, ("", False))[1]:
+        return
+    try:
+        net = ipaddress.ip_network(raw, strict=False)
+    except ValueError:
+        raise LGError("Informe um endereço IP" + (" ou prefixo" if QUERIES[query][3] else "") + " (nomes não são aceitos)")
+    a = net.network_address
+    if not a.is_global or a.is_multicast or (net.version == 4 and net.prefixlen < 8) or (net.version == 6 and net.prefixlen < 16):
+        raise LGError("Destino não permitido: use um endereço público da internet")
+
+
+def clean_public(body: dict, cur: Optional[dict] = None) -> dict:
+    cur = {**PUBLIC_DEFAULTS, **(cur or {})}
+    out = dict(cur)
+    out["enabled"] = bool(body.get("enabled", cur["enabled"]))
+    out["title"] = re.sub(r"[\r\n<>]", " ", str(body.get("title", cur["title"]) or "")).strip()[:80] or "Looking Glass"
+    out["contact"] = re.sub(r"[\r\n<>]", " ", str(body.get("contact", cur["contact"]) or "")).strip()[:120]
+    qs = [q for q in (body.get("queries") if "queries" in body else cur["queries"]) or [] if q in QUERIES]
+    out["queries"] = qs or list(PUBLIC_QUERIES)
+    for k, lo, hi in (("per_min", 1, 60), ("per_day", 1, 100000)):
+        try:
+            out[k] = max(lo, min(hi, int(body.get(k, cur[k]))))
+        except (TypeError, ValueError):
+            raise LGError("Limite inválido")
+    u = str(body.get("username", cur["username"]) or "").strip()
+    if re.search(r"[\s\"'\\]", u) or len(u) > 64:
+        raise LGError("Usuário inválido")
+    out["username"] = u
+    out["routers"] = [str(x)[:64] for x in (body.get("routers") if "routers" in body else cur["routers"]) or []][:200]
+    return out
+
+
 def build(vendor: str, query: str, raw_target: str, overrides: Optional[dict] = None, v6: bool = False) -> str:
     """Comando final para o roteador. `v6` vale para a consulta sem destino (resumo)."""
     if vendor not in DEFAULT_COMMANDS:

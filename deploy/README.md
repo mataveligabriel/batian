@@ -785,3 +785,28 @@ MikroTik `/ppp active print detail where address={ip}`; os de Cisco, ZTE, Dataco
 - Com flow amostrado (1:1000, por exemplo) só aparece quem faz volume; para pegar varredura fraca, baixe o limite de
   destinos por minuto. Se um cliente legítimo aparecer (servidor de e-mail, jogo), suba o limite ou ponha em ignorados.
 - Alertas vão para o Telegram/push agrupados por minuto. **Tratado** tira o incidente da lista de ativos.
+
+## 32. Looking Glass público (porta própria, sem login)
+
+Para passar a clientes e outros provedores: `http://IP_DO_BASTION:8089`. A página só tem o Looking Glass — quem entra
+por essa porta não alcança o login nem o resto da API (o Caddy só repassa `/api/public/lg`).
+
+**Ligar**: menu **Looking Glass → Configurar → Acesso público**.
+
+1. Na lista de roteadores, marque o roteador no Looking Glass e clique em **tornar público** nos que podem aparecer.
+2. Marque **Acesso público**, ajuste o título (ex.: `Looking Glass — AS263112`), o contato e as consultas liberadas.
+3. Salve e libere a porta **TCP 8089** no firewall do servidor.
+
+**Travas** (valem sempre):
+- o visitante informa só **IP ou prefixo público** — nomes, redes privadas, CGNAT, loopback e multicast são recusados;
+- não vê o comando executado, o IP do roteador nem mensagens de erro internas;
+- limite por visitante (padrão 6/min e 200/dia), uma consulta por vez em cada roteador e no máximo 3 na fila;
+- **Vizinhos BGP** vem desligado (mostraria todos os seus peers).
+
+**Recomendado**: crie nos roteadores um **usuário só de leitura** e informe em *Usuário só de leitura nos roteadores* —
+o acesso público passa a entrar com ele, e não com o seu login. As consultas ficam registradas por 30 dias (IP do
+visitante, roteador, consulta) e as últimas aparecem em Configurar.
+
+- Outra porta: `LG_PUBLIC_PORT=8189` no `deploy/.env` (ou `0` para não abrir porta nenhuma) e `update.sh`.
+- Com HTTPS ligado (seção 22), a página também responde em `https://HOST:8489` (`LG_PUBLIC_TLS_PORT`).
+- A saída do traceroute e da rota BGP mostra saltos e next-hops da sua rede, como em qualquer looking glass.
