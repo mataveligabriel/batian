@@ -11,6 +11,7 @@ import Devices from "@/pages/Devices";
 import Terminal from "@/pages/Terminal";
 import Batch from "@/pages/Batch";
 import LookingGlass from "@/pages/LookingGlass";
+import OltScript from "@/pages/OltScript";
 import PublicLookingGlass from "@/pages/PublicLookingGlass";
 import Rpki from "@/pages/Rpki";
 import Rdp from "@/pages/Rdp";
@@ -58,6 +59,7 @@ function App() {
             <Route path="/web" element={<WebAccess />} />
             <Route path="/batch" element={<Batch />} />
             <Route path="/lg" element={<LookingGlass />} />
+            <Route path="/olt-script" element={<OltScript />} />
             <Route path="/rpki" element={<Rpki />} />
             <Route path="/rdp" element={<Rdp />} />
             <Route path="/agents" element={<Agents />} />

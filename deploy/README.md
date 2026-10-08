@@ -813,7 +813,22 @@ visitante, roteador, consulta) e as últimas aparecem em Configurar.
 
 ## 33. Compartilhar o Flow com outros usuários
 
-Interfaces e conteúdos do Flow são de cada usuário. Em **Análise de Flow → Compartilhar**, marque os usuários que
+Interfaces e conteúdos do Flow são de cada usuário. Só o **administrador** compartilha: em **Análise de Flow → Compartilhar**, marque os usuários que
 devem ver os seus: eles passam a enxergar, **ao vivo**, as suas interfaces monitoradas, os seus conteúdos e os ataques
 que entram por essas interfaces — com a marca "compartilhada por …", sem poder editar nem apagar. O que você mudar
 aparece para eles na hora; desmarcar tira o acesso. Cada um continua podendo ter as próprias interfaces e conteúdos.
+
+## 34. Script de OLT ZTE (linha TITAN)
+
+Menu **Script de OLT** (módulo "Scripts de OLT"): monta o script de ativação de uma OLT ZTE C600/C650/C620/C610.
+
+- **Placas e portas:** o C620 já vem com o mapa (slots 1 e 2 de PON, uplinks nas controladoras 4 e 5). Nos outros
+  modelos, escolha uma OLT ZTE já cadastrada e clique em **Ler placas da OLT** — o BastiON roda `show card` (só leitura)
+  e monta os slots sozinho — ou adicione os slots à mão. Marque as portas PON e as uplinks a ativar.
+- **Gerência:** outband (porta MGMT, rota na VRF mng) e/ou inband (VLAN, IP e a uplink por onde ela chega).
+- **Serviços:** faixa de VLANs de clientes e as uplinks que as levam, perfis de ONU e perfis de banda (100M, 1G…).
+- **Sistema / Acesso:** NTP, salvamento diário (`auto-write`), backup por FTP, SSH/Telnet, usuário local e SNMP v2c.
+
+O script aparece ao lado enquanto você preenche (copiar ou baixar .txt). Nada é enviado para a OLT. Linhas marcadas
+com CONFERIR (NTP, SNMP, perfis de ONU) variam conforme a versão do firmware. Senhas e comunidades não ficam salvas no
+navegador, mas entram no script: trate o arquivo como confidencial.

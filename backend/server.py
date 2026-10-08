@@ -55,6 +55,7 @@ import lookingglass
 import rpki
 import vendorscan
 import rdp
+import oltgen
 import vpnconf
 import botnet
 import webpush
@@ -1404,6 +1405,52 @@ async def batch_execute(payload: BatchExecPayload, user: dict = Depends(get_curr
 
     results = await asyncio.gather(*[_run(d) for d in payload.device_ids])
     return {"results": results}
+
+
+# ---------- Gerador de script de OLT (ZTE TITAN) ----------
+@api.get("/oltgen/models")
+async def oltgen_models(_: dict = Depends(get_current_user)):
+    return {"models": [{"key": k, **v} for k, v in oltgen.MODELS.items()],
+            "onu_types": [{"name": k, "eth": e, "pots": p, "wifi": bool(w)} for k, (e, p, w) in oltgen.ONU_TYPES.items()]}
+
+
+@api.post("/oltgen/generate")
+async def oltgen_generate(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    try:
+        return oltgen.generate(body or {})
+    except (oltgen.GenError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e) or "Parâmetros inválidos")
+
+
+class OltCardsIn(BaseModel):
+    device_id: str
+
+
+@api.post("/oltgen/read-cards")
+async def oltgen_read_cards(body: OltCardsIn, user: dict = Depends(get_current_user)):
+    """Lê o `show card` de uma OLT cadastrada para montar as placas do formulário (só leitura)."""
+    _no_viewer(user)
+    dev = await _get_device_for(user, body.device_id)
+    try:
+        cli = await _connect_device(dev)
+        try:
+            res = await cli.run_command("show card", timeout=60)
+        finally:
+            await cli.close()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui ler a OLT: {e}"[:300])
+    text = res.get("stdout") or ""
+    if not isinstance(text, str):
+        text = text.decode("utf-8", "replace")
+    cards = oltgen.parse_show_card(text)
+    if not cards["pon"] and not cards["uplinks"]:
+        raise HTTPException(status_code=422, detail="A saída do show card não trouxe placas reconhecíveis — preencha os slots à mão.")
+    await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
+                                  "device_id": dev["id"], "device_name": dev["name"], "kind": "batch",
+                                  "started_at": datetime.now(timezone.utc).isoformat(),
+                                  "ended_at": datetime.now(timezone.utc).isoformat(), "duration_seconds": 0})
+    return {**cards, "device": dev["name"], "raw": text[-6000:]}
 
 
 # ---------- Looking Glass (interno) ----------

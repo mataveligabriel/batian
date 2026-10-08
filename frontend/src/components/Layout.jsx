@@ -8,7 +8,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp,
+  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -30,6 +30,7 @@ const NAV = [
   { to: "/batch", icon: Play, label: "Execução em Lote", testid: "nav-batch" },
   { to: "/lg", icon: Telescope, label: "Looking Glass", testid: "nav-lg" },
   { to: "/rpki", icon: FileBadge, label: "RPKI", testid: "nav-rpki" },
+  { to: "/olt-script", icon: Cpu, label: "Script de OLT", testid: "nav-oltgen" },
   { to: "/agents", icon: Radio, label: "Agentes Remotos", testid: "nav-agents" },
   { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key" },
   { to: "/sessions", icon: History, label: "Histórico", testid: "nav-sessions" },
