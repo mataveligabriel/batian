@@ -131,7 +131,7 @@ export function TransferDialog({ open, onOpenChange, peer = null, preset = {}, o
             <select value={targetId} onChange={e => setTargetId(e.target.value)} data-testid="transfer-target"
                     className="w-full h-9 bg-sunken border border-line rounded px-2 text-sm">
               <option value="">Escolha o usuário…</option>
-              {targets.map(t => <option key={t.id} value={t.id}>{t.name} · {t.email} ({ROLE_LABEL[t.role] || t.role})</option>)}
+              {targets.map(t => <option key={t.id} value={t.id}>{t.name}{t.email ? ` · ${t.email}` : ""} ({ROLE_LABEL[t.role] || t.role})</option>)}
             </select>
             {!isAdmin && <div className="text-[11px] text-slate-500 mt-1">Você pode enviar para um administrador.</div>}
           </div>

@@ -3941,7 +3941,10 @@ async def transfer_targets(user: dict = Depends(get_current_user)):
     if user.get("role") != "admin":
         q["role"] = "admin"
     rows = await db.users.find(q, USER_PUBLIC).to_list(1000)
-    return sorted((_user_brief(u) for u in rows), key=lambda u: (u["role"] != "admin", u["name"].lower()))
+    out = sorted((_user_brief(u) for u in rows), key=lambda u: (u["role"] != "admin", u["name"].lower()))
+    if user.get("role") != "admin":            # quem não é admin vê só o nome do administrador, sem e-mail
+        out = [{"id": u["id"], "name": u["name"], "email": "", "role": u["role"]} for u in out]
+    return out
 
 
 @api.get("/transfer/assets")
@@ -4239,15 +4242,20 @@ class FlowShareIn(BaseModel):
 async def flow_get_share(user: dict = Depends(get_current_user)):
     _no_viewer(user)
     doc = await db.flow_shares.find_one({"owner_id": user["id"]}, {"_id": 0}) or {}
-    users = await db.users.find({"id": {"$ne": user["id"]}, "role": {"$ne": "viewer"}}, {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1}).to_list(1000)
-    users.sort(key=lambda u: (u.get("name") or u["email"]).lower())
-    return {"user_ids": doc.get("user_ids") or [], "users": users,
+    users = []
+    if user.get("role") == "admin":            # só o administrador vê a lista de usuários e compartilha
+        users = await db.users.find({"id": {"$ne": user["id"]}, "role": {"$ne": "viewer"}}, {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1}).to_list(1000)
+        users.sort(key=lambda u: (u.get("name") or u["email"]).lower())
+    return {"user_ids": (doc.get("user_ids") or []) if user.get("role") == "admin" else [], "users": users,
+            "can_share": user.get("role") == "admin",
             "from": [{"id": k, "name": v} for k, v in (await _flow_sharers(user)).items()]}
 
 
 @api.put("/flow/shares")
 async def flow_put_share(body: FlowShareIn, user: dict = Depends(get_current_user)):
     _no_viewer(user)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Só o administrador compartilha o Flow")
     valid = {u["id"] async for u in db.users.find({"id": {"$in": body.user_ids}, "role": {"$ne": "viewer"}}, {"_id": 0, "id": 1})}
     ids = [i for i in dict.fromkeys(body.user_ids) if i in valid and i != user["id"]]
     await db.flow_shares.update_one({"owner_id": user["id"]}, {"$set": {"owner_id": user["id"], "user_ids": ids}}, upsert=True)
