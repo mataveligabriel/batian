@@ -810,3 +810,10 @@ visitante, roteador, consulta) e as últimas aparecem em Configurar.
 - Outra porta: `LG_PUBLIC_PORT=8189` no `deploy/.env` (ou `0` para não abrir porta nenhuma) e `update.sh`.
 - Com HTTPS ligado (seção 22), a página também responde em `https://HOST:8489` (`LG_PUBLIC_TLS_PORT`).
 - A saída do traceroute e da rota BGP mostra saltos e next-hops da sua rede, como em qualquer looking glass.
+
+## 33. Compartilhar o Flow com outros usuários
+
+Interfaces e conteúdos do Flow são de cada usuário. Em **Análise de Flow → Compartilhar**, marque os usuários que
+devem ver os seus: eles passam a enxergar, **ao vivo**, as suas interfaces monitoradas, os seus conteúdos e os ataques
+que entram por essas interfaces — com a marca "compartilhada por …", sem poder editar nem apagar. O que você mudar
+aparece para eles na hora; desmarcar tira o acesso. Cada um continua podendo ter as próprias interfaces e conteúdos.

@@ -224,13 +224,13 @@ export function FlowInterfaces({ ifaces, liveAt, reload }) {
             <tbody>
               {ifaces.map(i => (
                 <tr key={i.id} className="border-t border-line" data-testid={`fif-${i.id}`}>
-                  <td className="py-1.5 pr-2"><div className="text-slate-100">{i.device_name} · {i.if_name}</div><div className="text-[10px] text-slate-500">ifIndex {i.if_index}</div></td>
+                  <td className="py-1.5 pr-2"><div className="text-slate-100">{i.device_name} · {i.if_name}</div><div className="text-[10px] text-slate-500">ifIndex {i.if_index}{i.shared && <span className="ml-2 text-brand-soft" data-testid="fif-shared">compartilhada por {i.owner_name}</span>}</div></td>
                   <td className="text-slate-400 pr-2">{i.exporter}</td>
-                  <td className="pr-2"><select value={i.role} onChange={e => upd(i, { role: e.target.value })} className={selCls}>{Object.entries(ROLE_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></td>
-                  <td className="pr-2"><Input defaultValue={i.label} onBlur={e => e.target.value !== i.label && upd(i, { label: e.target.value })} className={`${inputCls} h-8 text-xs w-44`} /></td>
+                  <td className="pr-2">{i.shared ? <span className="text-slate-300">{ROLE_LABEL[i.role] || i.role}</span> : <select value={i.role} onChange={e => upd(i, { role: e.target.value })} className={selCls}>{Object.entries(ROLE_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>}</td>
+                  <td className="pr-2">{i.shared ? <span className="text-slate-300">{i.label}</span> : <Input defaultValue={i.label} onBlur={e => e.target.value !== i.label && upd(i, { label: e.target.value })} className={`${inputCls} h-8 text-xs w-44`} />}</td>
                   <td className="text-right text-slate-100 whitespace-nowrap">{fmtRate(i.live?.in?.bps)}</td>
                   <td className="text-right text-slate-300 whitespace-nowrap">{fmtRate(i.live?.out?.bps)}</td>
-                  <td className="text-right pl-2"><button onClick={() => del(i)} className="text-slate-500 hover:text-red-400" title="Parar de monitorar"><Trash2 className="w-3.5 h-3.5" /></button></td>
+                  <td className="text-right pl-2">{!i.shared && <button onClick={() => del(i)} className="text-slate-500 hover:text-red-400" title="Parar de monitorar"><Trash2 className="w-3.5 h-3.5" /></button>}</td>
                 </tr>
               ))}
             </tbody>

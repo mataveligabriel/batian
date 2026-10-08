@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
-import { Compass, Layers, ShieldAlert, Cable, Settings2, ShieldBan, Handshake, Bug } from "lucide-react";
+import { Compass, Layers, ShieldAlert, Cable, Settings2, ShieldBan, Handshake, Bug, Share2 } from "lucide-react";
+import { FlowShareDialog } from "@/components/flow/FlowShare";
 import { FlowExplorer } from "@/components/flow/FlowExplorer";
 import { FlowContents } from "@/components/flow/FlowContents";
 import { FlowAttacks } from "@/components/flow/FlowAttacks";
@@ -27,6 +28,7 @@ export default function Flow() {
   const [groups, setGroups] = useState([]);
   const [active, setActive] = useState(0);
   const [bots, setBots] = useState(0);
+  const [share, setShare] = useState(false);
   const [err, setErr] = useState("");
 
   const loadIfaces = useCallback(async () => { const { data } = await api.get("/flow/interfaces"); setIfaces(data.items); setLiveAt(data.live_at); }, []);
@@ -54,7 +56,11 @@ export default function Flow() {
     <div className="flex-1 flex flex-col min-h-0" data-testid="flow-page">
       <div className="px-4 md:px-6 pt-4">
         <div className="hidden md:block text-xs text-slate-400">NetFlow · IPFIX · sFlow</div>
-        <h1 className="hidden md:block font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Análise de Flow</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="hidden md:block font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Análise de Flow</h1>
+          <button onClick={() => setShare(true)} className="ml-auto mt-1 flex items-center gap-1.5 text-xs text-slate-300 border border-line rounded-md px-2.5 h-8 hover:bg-slate-800" data-testid="flow-share-btn"><Share2 className="w-3.5 h-3.5" />Compartilhar</button>
+        </div>
+        {share && <FlowShareDialog onClose={() => setShare(false)} />}
         <div className="flex gap-1 md:mt-4 border-b border-line overflow-x-auto whitespace-nowrap">
           {TABS.map(([k, l, I]) => (
             <button key={k} className={tabBtn(tab === k)} onClick={() => setTab(k)} data-testid={`flow-tab-${k}`}>

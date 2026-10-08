@@ -137,6 +137,13 @@ export default function Agents() {
     return names;
   };
 
+  const pruneAgents = async () => {
+    try {
+      const { data } = await api.post("/agents/prune");
+      toast.success(data.removed ? `${data.removed} jump(s) sem uso removido(s)` : "Nenhum jump sem uso");
+      load();
+    } catch (e) { toast.error(formatApiError(e)); }
+  };
   return (
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="agents-page">
       <div className="flex items-start justify-between mb-6 gap-4">
@@ -151,6 +158,12 @@ export default function Agents() {
           {isAdmin && (
             <Button variant="outline" onClick={openBastion} data-testid="bastion-settings-btn" className="border-line bg-panel text-slate-200 hover:bg-slate-800">
               <Settings2 className="w-4 h-4 mr-2" /> Configurar BastiON
+            </Button>
+          )}
+          {agents.some(a => a.copied_from) && (
+            <Button variant="outline" onClick={pruneAgents} data-testid="prune-agents-btn" title="Remove os jumps que vieram junto com equipamentos enviados e que não são mais usados"
+                    className="border-line bg-panel text-slate-200 hover:bg-slate-800">
+              <Trash2 className="w-4 h-4 mr-2" /> Remover jumps sem uso
             </Button>
           )}
           <Button onClick={openNew} data-testid="add-agent-btn" className="bg-brand hover:bg-brand-strong">

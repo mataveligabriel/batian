@@ -141,6 +141,7 @@ async def startup():
     _bg(_auto_discover_loop())
     _bg(_rpki_watch_loop())
     _bg(_botnet_lookup_loop())
+    _bg(_prune_all_copied_agents_once())
     await db.flow_mitigations.create_index([("status", 1), ("created_at", -1)])
     await db.flow_mitigations.create_index("id")
     await db.flow_botnet.create_index([("status", 1), ("start", -1)])
@@ -1056,9 +1057,51 @@ async def update_device(device_id: str, payload: DeviceCreate, user: dict = Depe
     return _public(await db.devices.find_one({"id": device_id}, {"_id": 0}))
 
 
+async def _prune_copied_agents(owner_id: str) -> int:
+    """Apaga os jumps que este usuário RECEBEU (copiados no Enviar) e que não servem mais a nenhum equipamento ou
+    conexão de Área de Trabalho dele. Os jumps que o próprio usuário criou nunca são apagados."""
+    agents = {a["id"]: a async for a in db.agents.find({"owner_id": owner_id}, {"_id": 0, "id": 1, "parent_agent_id": 1, "copied_from": 1})}
+    copies = [aid for aid, a in agents.items() if a.get("copied_from")]
+    if not copies:
+        return 0
+    used = {d["agent_id"] async for d in db.devices.find({"owner_id": owner_id, "agent_id": {"$nin": [None, ""]}}, {"_id": 0, "agent_id": 1})}
+    used |= {h["agent_id"] async for h in db.rdp_hosts.find({"owner_id": owner_id, "agent_id": {"$nin": [None, ""]}}, {"_id": 0, "agent_id": 1})}
+    keep = set()
+    for aid in used:                                       # o jump usado e toda a cadeia de saltos acima dele
+        seen = 0
+        while aid and aid in agents and aid not in keep and seen < 10:
+            keep.add(aid)
+            aid = agents[aid].get("parent_agent_id")
+            seen += 1
+    drop = [aid for aid in copies if aid not in keep]
+    if drop:
+        await db.agents.delete_many({"id": {"$in": drop}, "owner_id": owner_id})
+        await db.agents.update_many({"owner_id": owner_id, "parent_agent_id": {"$in": drop}}, {"$set": {"parent_agent_id": None}})
+        logger.info(f"jumps recebidos sem uso removidos ({owner_id}): {len(drop)}")
+    return len(drop)
+
+
+async def _prune_all_copied_agents_once():
+    """Uma vez: limpa os jumps recebidos que já tinham ficado sobrando antes desta versão."""
+    if await db.config.find_one({"key": "agents_pruned_v1"}):
+        return
+    total = 0
+    for uid in await db.agents.distinct("owner_id", {"copied_from": {"$nin": [None, ""]}}):
+        total += await _prune_copied_agents(uid)
+    await db.config.update_one({"key": "agents_pruned_v1"}, {"$set": {"at": datetime.now(timezone.utc).isoformat(), "removed": total}}, upsert=True)
+
+
+@api.post("/agents/prune")
+async def prune_agents(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return {"removed": await _prune_copied_agents(user["id"])}
+
+
 @api.delete("/devices/{device_id}")
 async def delete_device(device_id: str, user: dict = Depends(get_current_user)):
     r = await db.devices.delete_one({"id": device_id, **_scope(user)})
+    if r.deleted_count:
+        await _prune_copied_agents(user["id"])
     return {"deleted": r.deleted_count}
 
 
@@ -1104,6 +1147,8 @@ async def bulk_delete_devices(payload: DeviceIdsPayload, user: dict = Depends(ge
     if not payload.device_ids:
         return {"deleted": 0}
     r = await db.devices.delete_many({"id": {"$in": payload.device_ids}, **_scope(user)})
+    if r.deleted_count:
+        await _prune_copied_agents(user["id"])
     return {"deleted": r.deleted_count}
 
 
@@ -2303,6 +2348,19 @@ async def flow_botnet_lookup(iid: str, user: dict = Depends(get_current_user)):
     if not inc:
         raise HTTPException(404, "Incidente não encontrado")
     return await _botnet_lookup(inc, await _botnet_cfg())
+
+
+class BotnetBulkAckIn(BaseModel):
+    ids: List[str]
+
+
+@api.post("/flow/botnet/ack-bulk")
+async def flow_botnet_ack_bulk(body: BotnetBulkAckIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    ids = list(dict.fromkeys(body.ids))[:2000]
+    r = await db.flow_botnet.update_many({"id": {"$in": ids}}, {"$set": {"ack": True, "ack_by": user.get("email"),
+                                                                        "ack_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True, "count": r.modified_count}
 
 
 class BotnetAckIn(BaseModel):
@@ -4143,8 +4201,57 @@ class FlowQueryIn(BaseModel):
     by_block: bool = False
 
 
+async def _flow_sharers(user: dict) -> dict:
+    """Donos que compartilharam o Flow (interfaces e conteúdos) com este usuário: {owner_id: nome}."""
+    owners = [s["owner_id"] async for s in db.flow_shares.find({"user_ids": user["id"]}, {"_id": 0, "owner_id": 1}) if s["owner_id"] != user["id"]]
+    if not owners:
+        return {}
+    return {u["id"]: (u.get("name") or u["email"]) async for u in db.users.find({"id": {"$in": owners}}, {"_id": 0, "id": 1, "name": 1, "email": 1})}
+
+
 async def _flow_ifaces_of(user: dict) -> List[dict]:
-    return await db.flow_ifaces.find({"owner_id": user["id"]}, {"_id": 0}).to_list(2000)
+    """As interfaces do usuário e as compartilhadas com ele (só leitura, marcadas com shared/owner_name)."""
+    mine = await db.flow_ifaces.find({"owner_id": user["id"]}, {"_id": 0}).to_list(2000)
+    sharers = await _flow_sharers(user)
+    if sharers:
+        have = {i["key"] for i in mine}
+        for i in await db.flow_ifaces.find({"owner_id": {"$in": list(sharers)}}, {"_id": 0}).to_list(4000):
+            if i["key"] not in have:
+                have.add(i["key"])
+                mine.append({**i, "shared": True, "owner_name": sharers.get(i["owner_id"], "?")})
+    return mine
+
+
+async def _flow_groups_of(user: dict) -> List[dict]:
+    mine = await db.flow_groups.find({"owner_id": user["id"]}, {"_id": 0}).to_list(1000)
+    sharers = await _flow_sharers(user)
+    if sharers:
+        for g in await db.flow_groups.find({"owner_id": {"$in": list(sharers)}}, {"_id": 0}).to_list(2000):
+            mine.append({**g, "shared": True, "owner_name": sharers.get(g["owner_id"], "?")})
+    return mine
+
+
+class FlowShareIn(BaseModel):
+    user_ids: List[str] = []
+
+
+@api.get("/flow/shares")
+async def flow_get_share(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    doc = await db.flow_shares.find_one({"owner_id": user["id"]}, {"_id": 0}) or {}
+    users = await db.users.find({"id": {"$ne": user["id"]}, "role": {"$ne": "viewer"}}, {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1}).to_list(1000)
+    users.sort(key=lambda u: (u.get("name") or u["email"]).lower())
+    return {"user_ids": doc.get("user_ids") or [], "users": users,
+            "from": [{"id": k, "name": v} for k, v in (await _flow_sharers(user)).items()]}
+
+
+@api.put("/flow/shares")
+async def flow_put_share(body: FlowShareIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    valid = {u["id"] async for u in db.users.find({"id": {"$in": body.user_ids}, "role": {"$ne": "viewer"}}, {"_id": 0, "id": 1})}
+    ids = [i for i in dict.fromkeys(body.user_ids) if i in valid and i != user["id"]]
+    await db.flow_shares.update_one({"owner_id": user["id"]}, {"$set": {"owner_id": user["id"], "user_ids": ids}}, upsert=True)
+    return {"ok": True, "user_ids": ids}
 
 
 def _valid_ip(s: str) -> str:
@@ -4264,7 +4371,7 @@ async def flow_list_ifaces(user: dict = Depends(get_current_user)):
     items = await _flow_ifaces_of(user)
     live = (await db.flow_live.find_one({"_id": "live"}, {"_id": 0}) or {})
     lv = live.get("ifaces") or {}
-    names = {d["id"]: d.get("name") async for d in db.devices.find(_scope(user), {"_id": 0, "id": 1, "name": 1})}
+    names = {d["id"]: d.get("name") async for d in db.devices.find({"id": {"$in": list({i["device_id"] for i in items})}}, {"_id": 0, "id": 1, "name": 1})}
     for i in items:
         i["device_name"] = names.get(i["device_id"], "(equipamento removido)")
         i["live"] = lv.get(i["key"]) or {}
@@ -4324,7 +4431,7 @@ async def flow_del_iface(iid: str, user: dict = Depends(get_current_user)):
 @api.get("/flow/groups")
 async def flow_list_groups(user: dict = Depends(get_current_user)):
     _no_viewer(user)
-    return await db.flow_groups.find({"owner_id": user["id"]}, {"_id": 0}).sort("name", 1).to_list(1000)
+    return sorted(await _flow_groups_of(user), key=lambda g: (bool(g.get("shared")), g["name"].lower()))
 
 
 def _group_doc(body: FlowGroupIn) -> dict:
@@ -4396,7 +4503,7 @@ async def _flow_query_run(body: FlowQueryIn, user: dict) -> dict:
     if not sel:
         raise HTTPException(400, "Escolha pelo menos uma interface monitorada")
     keys = list(dict.fromkeys(i["key"] for i in sel))
-    groups = await db.flow_groups.find({"owner_id": user["id"]}, {"_id": 0}).to_list(1000)
+    groups = await _flow_groups_of(user)
     gname = {g["id"]: g["name"] for g in groups}
     filt = body.filter.model_dump()
     if filt.get("dim") == "group":

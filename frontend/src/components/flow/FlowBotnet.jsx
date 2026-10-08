@@ -29,7 +29,7 @@ const NUM = [["ddos_pps", "Flood: pacotes/s para um destino", "pacote médio peq
 
 function ConfigDialog({ data, onClose, onSaved }) {
   const s = data.settings;
-  const [f, setF] = useState({ ...s, subscriber_prefixes: lines(s.subscriber_prefixes), c2_ips: lines(s.c2_ips), feeds: lines(s.feeds), ignore: lines(s.ignore),
+  const [f, setF] = useState({ ...s, subscriber_prefixes: lines(s.subscriber_prefixes), c2_ips: lines(s.c2_ips), feeds: lines(s.feeds), ignore: lines(s.ignore), ignore_dst: lines(s.ignore_dst),
     bngs: s.exporters.map(e => ({ exporter: e, device_id: s.devices?.[e] || "" })), lookup_commands: { ...(s.lookup_commands || {}) } });
   const [busy, setBusy] = useState(false);
   const [showCmd, setShowCmd] = useState(false);
@@ -41,7 +41,7 @@ function ConfigDialog({ data, onClose, onSaved }) {
     setBusy(true);
     const bngs = f.bngs.filter(b => b.exporter.trim());
     const body = { ...f, exporters: bngs.map(b => b.exporter.trim()), devices: Object.fromEntries(bngs.filter(b => b.device_id).map(b => [b.exporter.trim(), b.device_id])),
-      subscriber_prefixes: split(f.subscriber_prefixes), c2_ips: split(f.c2_ips), feeds: split(f.feeds), ignore: split(f.ignore) };
+      subscriber_prefixes: split(f.subscriber_prefixes), c2_ips: split(f.c2_ips), feeds: split(f.feeds), ignore: split(f.ignore), ignore_dst: split(f.ignore_dst) };
     delete body.bngs;
     try { await api.put("/flow/botnet/settings", body); toast.success("Configuração salva — o coletor aplica em até 30 s"); onSaved(); }
     catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
@@ -79,6 +79,9 @@ function ConfigDialog({ data, onClose, onSaved }) {
               <Textarea value={f.ignore} onChange={e => setF({ ...f, ignore: e.target.value })} rows={3} spellCheck={false} placeholder={"177.223.238.25\n177.223.239.0/28"} className={`${inputCls} font-mono text-xs mt-1`} />
               <div className="text-[11px] text-slate-500 mt-1">Clientes com servidor de e-mail, scanner autorizado, etc.</div></div>
           </div>
+          <div><Label>Destinos ignorados (nunca contam como alvo de ataque)</Label>
+            <Textarea value={f.ignore_dst} onChange={e => setF({ ...f, ignore_dst: e.target.value })} rows={2} spellCheck={false} placeholder={"45.197.34.82\n200.10.20.0/24"} className={`${inputCls} font-mono text-xs mt-1`} data-testid="botnet-ignore-dst" />
+            <div className="text-[11px] text-slate-500 mt-1">Servidor de jogo, IPTV, parceiro… O tráfego para os seus prefixos próprios (Flow → Configuração) e entre assinantes já é ignorado.</div></div>
           <div>
             <Label>Limites</Label>
             <div className="grid sm:grid-cols-2 gap-x-3 gap-y-2 mt-1.5">
@@ -188,6 +191,10 @@ export function FlowBotnet({ onCount }) {
   const load = async () => { try { const { data: d } = await api.get("/flow/botnet"); setData(d); onCount?.(d.items.filter(i => i.status === "active" && !i.ack).length); } catch (e) { toast.error(formatApiError(e)); } };
   useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const shown = useMemo(() => (data?.items || []).filter(i => (filter === "all" || (filter === "active" ? i.status === "active" && !i.ack : filter === "ack" ? i.ack : i.status !== "active")) && (!kind || i.kind === kind)), [data, filter, kind]);
+  const ackAll = async () => {
+    if (!window.confirm(`Marcar ${shown.length} incidente(s) como tratados?`)) return;
+    try { const { data: r } = await api.post("/flow/botnet/ack-bulk", { ids: shown.map(i => i.id) }); toast.success(`${r.count} marcado(s) como tratados`); load(); } catch (e) { toast.error(formatApiError(e)); }
+  };
   if (!data) return <div className="p-8 text-slate-500"><Loader2 className="w-5 h-5 animate-spin" /></div>;
   const st = data.status || {};
   const on = data.settings.enabled;
@@ -218,6 +225,7 @@ export function FlowBotnet({ onCount }) {
             <span className="w-px h-5 bg-line mx-1" />
             <button className={chip(!kind)} onClick={() => setKind("")}>todos os tipos</button>
             {Object.entries(data.kinds).map(([k, l]) => <button key={k} className={chip(kind === k)} onClick={() => setKind(kind === k ? "" : k)} data-testid={`botnet-k-${k}`}>{l.split(" (")[0]}{counts[k] ? ` · ${counts[k]}` : ""}</button>)}
+            {filter === "active" && shown.length > 1 && <button className="ml-auto text-xs text-slate-400 hover:text-on flex items-center gap-1" onClick={ackAll} data-testid="botnet-ack-all"><Check className="w-3.5 h-3.5" />marcar os {shown.length} como tratados</button>}
           </div>
           {!shown.length ? (
             <div className="border border-line rounded-lg bg-surface p-8 text-center text-sm text-slate-400" data-testid="botnet-empty"><ShieldCheck className="w-6 h-6 mx-auto mb-2" style={{ color: STATUS.good }} />{filter === "active" ? "Nenhum assinante suspeito agora." : "Nada nesta lista."}</div>

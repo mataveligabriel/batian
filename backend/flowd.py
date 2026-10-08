@@ -155,6 +155,7 @@ class Collector:
         monitored, roles, labels, owners = {}, {}, {}, {}
         dev_ids = {i.get("device_id") for i in ifaces}
         devs = {d["id"]: d.get("name") for d in await db.devices.find({"id": {"$in": list(dev_ids)}}, {"_id": 0, "id": 1, "name": 1}).to_list(10000)}
+        shares = {d["owner_id"]: d.get("user_ids") or [] for d in await db.flow_shares.find({}, {"_id": 0}).to_list(1000)}
         for i in ifaces:
             k = i["key"]
             monitored[(i["exporter"], int(i["if_index"]))] = k
@@ -162,6 +163,7 @@ class Collector:
             labels[k] = f"{devs.get(i.get('device_id'), i['exporter'])} · {i.get('if_name') or i['if_index']}" + (
                 f" ({i['label']})" if i.get("label") else "")
             owners.setdefault(k, set()).add(i.get("owner_id"))
+            owners[k].update(shares.get(i.get("owner_id"), ()))     # quem recebeu o Flow compartilhado também vê os ataques
         self.agg.configure(monitored, roles, groups, cfg.get("own_prefixes") or [], cfg.get("attack"),
                            cfg.get("ignore_prefixes") or [])
         self.labels, self.owners, self.cfg = labels, owners, cfg
@@ -180,9 +182,9 @@ class Collector:
                 log.warning(f"base de ASN: {e}")
         bcfg = {**botnet.DEFAULTS, **{k: v for k, v in (await db.config.find_one({"key": "flow_botnet"}, {"_id": 0}) or {}).items() if k in botnet.DEFAULTS}}
         feeds = await db.config.find_one({"key": "flow_botnet_feeds"}, {"_id": 0}) or {}
-        sig = (str(sorted(bcfg.items(), key=lambda kv: kv[0])), feeds.get("at"))
+        sig = (str(sorted(bcfg.items(), key=lambda kv: kv[0])), feeds.get("at"), tuple(cfg.get("own_prefixes") or []))
         if sig != self.bot_feed_sig:                       # só reconfigura quando algo mudou (a lista de C2 pode ser grande)
-            self.bot.configure(bcfg, feeds.get("ips") or [])
+            self.bot.configure(bcfg, feeds.get("ips") or [], cfg.get("own_prefixes") or [])
             self.bot_feed_sig = sig
         if bcfg["enabled"] and bcfg["feeds"] and (time.time() - self.bot_feeds_at > 6 * 3600 or feeds.get("urls") != bcfg["feeds"]):
             self.bot_feeds_at = time.time()

@@ -189,8 +189,9 @@ export function FlowContents({ ifaces, groups, presets, reload, ifColors, groupC
             <div key={g.id} className={`px-2.5 py-2 cursor-pointer ${cur?.id === g.id && mode === "where" ? "bg-brand/15" : "hover:bg-slate-800/40"}`} onClick={() => { setSel(g.id); setMode("where"); }} data-testid={`group-${g.id}`}>
               <div className="flex items-center gap-1">
                 <span className="text-sm text-slate-100 truncate">{g.name}</span>
+                {g.shared ? <span className="ml-auto text-[10px] text-brand-soft shrink-0" title={`Compartilhado por ${g.owner_name}`} data-testid="group-shared">de {g.owner_name}</span> : <>
                 <button onClick={(e) => { e.stopPropagation(); setDlg(g); }} className="ml-auto text-slate-500 hover:text-slate-200" title="Editar"><Pencil className="w-3.5 h-3.5" /></button>
-                <button onClick={(e) => { e.stopPropagation(); del(g); }} className="text-slate-500 hover:text-red-400" title="Apagar"><Trash2 className="w-3.5 h-3.5" /></button>
+                <button onClick={(e) => { e.stopPropagation(); del(g); }} className="text-slate-500 hover:text-red-400" title="Apagar"><Trash2 className="w-3.5 h-3.5" /></button></>}
               </div>
               <div className="text-[10px] font-mono text-slate-500 truncate">{g.asns.length ? `AS ${g.asns.join(", ")}` : ""}{g.asns.length && g.prefixes.length ? " · " : ""}{g.prefixes.length ? `${g.prefixes.length} bloco(s)` : ""}</div>
             </div>

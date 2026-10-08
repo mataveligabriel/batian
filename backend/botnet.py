@@ -36,6 +36,7 @@ DEFAULTS = {
     "c2_ips": [],                    # sua lista de IPs/redes de C2
     "feeds": [],                     # URLs de listas (um IP ou CIDR por linha), atualizadas a cada 6 h
     "ignore": [],                    # assinantes que não geram incidente (servidor de e-mail do cliente, scanner autorizado…)
+    "ignore_dst": [],                # destinos que nunca contam como alvo de flood (servidor de jogo, IPTV, parceiro…)
     "alert": True,
     "lookup": True,                  # perguntar ao BNG quem é o assinante
     "lookup_commands": {},           # fabricante -> comando (vazio = padrão)
@@ -158,7 +159,7 @@ def clean_settings(body: dict) -> dict:
         except ValueError:
             raise ValueError(f"IP de BNG inválido: {e}")
     cfg["exporters"] = list(dict.fromkeys(exps))[:200]
-    for k, cap in (("subscriber_prefixes", 500), ("c2_ips", 20000), ("ignore", 2000)):
+    for k, cap in (("subscriber_prefixes", 500), ("c2_ips", 20000), ("ignore", 2000), ("ignore_dst", 2000)):
         nets = []
         for c in body.get(k) if k in body else DEFAULTS[k]:
             c = str(c).strip()
@@ -195,17 +196,20 @@ class Detector:
         self.exporters: set = set()
         self.subs = PrefixSet()
         self.ignore = PrefixSet()
+        self.quiet_dst = PrefixSet()                       # destinos que não contam como alvo de flood
         self.c2 = PrefixSet()
         self.c2_count = 0
         self.src: Dict[Tuple[int, int], dict] = {}
         self.open: Dict[Tuple[int, int, str], dict] = {}
         self.stats = {"flows": 0, "subs": 0}
 
-    def configure(self, cfg: dict, feed_ips: List[str] = ()):
+    def configure(self, cfg: dict, feed_ips: List[str] = (), own_prefixes: List[str] = ()):
         self.cfg = {**DEFAULTS, **(cfg or {})}
         self.exporters = set(self.cfg["exporters"])
         self.subs = PrefixSet([(c, True) for c in self.cfg["subscriber_prefixes"]])
         self.ignore = PrefixSet([(c, True) for c in self.cfg["ignore"]])
+        # tráfego para a própria rede (servidores, cache, IPTV, outros assinantes) não é ataque contra a internet
+        self.quiet_dst = PrefixSet([(c, True) for c in list(self.cfg["ignore_dst"]) + list(own_prefixes or []) + list(self.cfg["subscriber_prefixes"])])
         nets = list(dict.fromkeys(list(self.cfg["c2_ips"]) + list(feed_ips or [])))
         self.c2 = PrefixSet([(c, True) for c in nets])
         self.c2_count = len(nets)
@@ -234,7 +238,7 @@ class Detector:
         d = s["dst"].get(dst)
         if d is None:
             if len(s["dst"]) < MAX_DST:
-                d = s["dst"][dst] = [0, 0, 0, 0, {}]         # pacotes, bytes, UDP fora de 443 (bytes), SYN, portas
+                d = s["dst"][dst] = [0, 0, 0, 0, {}, 0, 0]   # pacotes, bytes, UDP fora de 443 (bytes), SYN, portas, pacotes/bytes sem ACK
         if d is not None:
             d[0] += p
             d[1] += b
@@ -244,6 +248,9 @@ class Detector:
                 d[3] += p
             if len(d[4]) < 20:
                 d[4][dp] = d[4].get(dp, 0) + p
+            if not (pr == 6 and fl & 0x10):                 # ACK de TCP é resposta de download, nunca flood
+                d[5] += p
+                d[6] += b
         if dp in SCAN_PORTS and (syn or pr == 17):
             st = s["scan"].get(dp)
             if st is None:
@@ -265,12 +272,15 @@ class Detector:
     def _findings(self, ver: int, s: dict, span: float) -> List[dict]:
         cfg, out = self.cfg, []
         worst = None
-        for dst, (p, b, udp, syn, ports) in s["dst"].items():
+        quiet = self.quiet_dst
+        for dst, (p, b, udp, syn, ports, sp, sb) in s["dst"].items():
+            if quiet and quiet.match(ver, dst):
+                continue
             pps = p / span
             why = None
             if syn / span >= cfg["syn_pps"]:
                 why = "SYN flood"
-            elif pps >= cfg["ddos_pps"] and p and b / p <= 200:
+            elif sp / span >= cfg["ddos_pps"] and sb / sp <= 200:
                 why = "flood de pacotes pequenos"
             elif udp * 8 / span >= cfg["ddos_bps"]:
                 why = "flood UDP"
