@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw } from "lucide-react";
+import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search } from "lucide-react";
 
 const KEY = "bastion_oltgen_form";                       // formulário lembrado neste navegador, sem senhas
 const TABS = [["ports", "Placas e portas"], ["mgmt", "Gerência"], ["services", "Serviços"], ["system", "Sistema"], ["access", "Acesso"]];
@@ -120,7 +120,42 @@ function UplinkPick({ uplinks, value, onChange, testid }) {
   );
 }
 
-export default function OltScript() {
+function ScriptCard({ out, err, busy }) {
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(out?.script || ""); toast.success("Script copiado"); } catch { toast.error("Não consegui copiar"); }
+  };
+  const download = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([out?.script || ""], { type: "text/plain;charset=utf-8" }));
+    a.download = out?.filename || "olt.txt"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  return (
+    <Card className="bg-surface border-line flex flex-col min-h-[480px] xl:sticky xl:top-4 xl:max-h-[calc(100vh-6rem)] min-w-0" data-testid="oltgen-result">
+          <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-line">
+            <Cpu className="w-4 h-4 text-brand-soft" />
+            <div className="text-sm text-slate-200 font-mono truncate">{out?.filename || "script"}</div>
+            {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />}
+            <span className="text-[11px] font-mono text-slate-500">{out ? `${out.lines} linhas` : ""}</span>
+            <div className="ml-auto flex gap-1.5">
+              <Button size="sm" onClick={copy} disabled={!out || !!err} className="bg-brand hover:bg-brand-strong h-8" data-testid="oltgen-copy"><Copy className="w-3.5 h-3.5 mr-1.5" />Copiar</Button>
+              <Button size="sm" variant="outline" onClick={download} disabled={!out || !!err} className="border-line bg-transparent h-8" data-testid="oltgen-download"><Download className="w-3.5 h-3.5 mr-1.5" />.txt</Button>
+            </div>
+          </div>
+          {err && <div className="mx-4 mt-3 rounded-md border border-red-800/60 bg-red-950/30 px-3 py-2 text-sm text-red-200" data-testid="oltgen-error">{err}</div>}
+          {!err && out?.warnings?.length > 0 && (
+            <div className="mx-4 mt-3 space-y-1" data-testid="oltgen-warnings">
+              {out.warnings.map((w, i) => <div key={i} className="flex gap-2 text-xs text-amber-200"><AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />{w}</div>)}
+            </div>
+          )}
+          <pre className={`flex-1 overflow-auto m-0 px-4 py-3 text-[12.5px] leading-relaxed font-mono text-slate-200 whitespace-pre ${err ? "opacity-40" : ""}`} data-testid="oltgen-script">
+            {(out?.script || "").split("\n").map((l, i) => <div key={i} className={l.startsWith("!") ? "text-slate-500" : ""}>{l || " "}</div>)}
+          </pre>
+          <div className="px-4 py-2 border-t border-line text-[11px] text-slate-500">Revise os comandos e a versão do firmware antes de aplicar na OLT.</div>
+        </Card>
+  );
+}
+
+function OltActivation() {
   const [meta, setMeta] = useState(null);
   const [f, setF] = useState(() => load() || DEFAULT);
   const [tab, setTab] = useState("ports");
@@ -178,21 +213,11 @@ export default function OltScript() {
   const upCount = f.uplinks.reduce((a, b) => a + b.enabled.filter(Boolean).length, 0);
   const speedsText = useMemo(() => f.speeds.join(", "), [f.speeds]);
 
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(out?.script || ""); toast.success("Script copiado"); } catch { toast.error("Não consegui copiar"); }
-  };
-  const download = () => {
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([out?.script || ""], { type: "text/plain;charset=utf-8" }));
-    a.download = out?.filename || "olt.txt"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  };
-
   return (
-    <div className="flex-1 overflow-y-auto" data-testid="oltgen-page">
-      <div className="px-4 md:px-6 pt-4 pb-2 flex flex-wrap items-end justify-between gap-3">
+    <div data-testid="oltgen-activation">
+      <div className="px-4 md:px-6 pt-2 pb-2 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="hidden md:block text-xs text-slate-400">ZTE · linha TITAN · GPON</div>
-          <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Script de OLT</h1>
+          <h2 className="font-heading text-xl font-semibold tracking-tight text-slate-100 mt-1">Ativação da OLT</h2>
         </div>
         <Button variant="outline" className="border-line bg-transparent text-slate-300" data-testid="oltgen-reset"
           onClick={() => setF(applyModel({ ...DEFAULT }, "C620"))}><RotateCcw className="w-4 h-4 mr-1.5" />Limpar</Button>
@@ -378,29 +403,167 @@ export default function OltScript() {
           )}
         </div>
 
-        <Card className="bg-surface border-line flex flex-col min-h-[480px] xl:sticky xl:top-4 xl:max-h-[calc(100vh-6rem)] min-w-0" data-testid="oltgen-result">
-          <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-line">
-            <Cpu className="w-4 h-4 text-brand-soft" />
-            <div className="text-sm text-slate-200 font-mono truncate">{out?.filename || "script"}</div>
-            {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />}
-            <span className="text-[11px] font-mono text-slate-500">{out ? `${out.lines} linhas` : ""}</span>
-            <div className="ml-auto flex gap-1.5">
-              <Button size="sm" onClick={copy} disabled={!out || !!err} className="bg-brand hover:bg-brand-strong h-8" data-testid="oltgen-copy"><Copy className="w-3.5 h-3.5 mr-1.5" />Copiar</Button>
-              <Button size="sm" variant="outline" onClick={download} disabled={!out || !!err} className="border-line bg-transparent h-8" data-testid="oltgen-download"><Download className="w-3.5 h-3.5 mr-1.5" />.txt</Button>
+        <ScriptCard out={out} err={err} busy={busy} />
+      </div>
+    </div>
+  );
+}
+
+// ---------- Autorizar ONU ----------
+const ONU_KEY = "bastion_oltgen_onu";
+const ONU_DEFAULT = { pon: "1/1/1", onu_id: "1", type: "ZTE-F660", sn: "", name: "", description: "", vlan: "100", user_vlan: "",
+  tcont_profile: "1G", mode: "tag", ports: [1], write: true, comments: true };
+const MODE_INFO = [
+  ["tag", "VLAN tag", "A porta da ONU entrega sem tag e a ONU marca a VLAN do cliente. O mais comum (roteador do cliente em PPPoE/DHCP)."],
+  ["hybrid", "Híbrida", "A VLAN do cliente sai sem tag na porta (VLAN padrão) e a porta ainda aceita outras VLANs com tag."],
+  ["transparent", "Transparente", "A ONU repassa tudo como vier; quem marca as VLANs é o equipamento do cliente."],
+];
+
+function OnuAuthorize({ meta, devices }) {
+  const [f, setF] = useState(() => {
+    try { return { ...ONU_DEFAULT, ...JSON.parse(localStorage.getItem(ONU_KEY) || "{}"), sn: "", name: "", description: "" }; } catch { return ONU_DEFAULT; }
+  });
+  const [out, setOut] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [devId, setDevId] = useState("");
+  const [found, setFound] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const seq = useRef(0);
+  const ethMax = meta?.onu_types.find(o => o.name === f.type)?.eth || 4;
+
+  useEffect(() => {
+    const { sn, name, description, ...keep } = f;
+    try { localStorage.setItem(ONU_KEY, JSON.stringify(keep)); } catch { /* sem armazenamento */ }
+    if (!f.sn || !f.name) { setOut(null); setErr(""); setBusy(false); return undefined; }
+    const n = ++seq.current; setBusy(true);
+    const t = setTimeout(() => {
+      api.post("/oltgen/onu", f).then(r => { if (n === seq.current) { setOut(r.data); setErr(""); } })
+        .catch(e => { if (n === seq.current) setErr(formatApiError(e)); })
+        .finally(() => { if (n === seq.current) setBusy(false); });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [f]);
+
+  const search = async () => {
+    if (!devId) return toast.error("Escolha a OLT cadastrada");
+    setSearching(true); setFound(null);
+    try {
+      const { data } = await api.post("/oltgen/uncfg", { device_id: devId });
+      setFound(data);
+      if (!data.onus.length) toast.info(`${data.device}: nenhuma ONU esperando autorização`);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setSearching(false); }
+  };
+  const use = (o) => setF(cur => ({ ...cur, pon: o.pon, sn: o.sn, onu_id: o.free_id ? String(o.free_id) : cur.onu_id }));
+  const set = (patch) => setF(cur => ({ ...cur, ...patch }));
+
+  return (
+    <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="onu-page">
+      <div className="space-y-4 min-w-0">
+        <Card className="bg-surface border-line p-4 space-y-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex-1 min-w-[200px]">
+              <Field label="Buscar ONUs esperando autorização numa OLT cadastrada">
+                <select value={devId} onChange={e => setDevId(e.target.value)} data-testid="onu-device"
+                  className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+                  <option value="">{devices.length ? "Escolha a OLT…" : "Nenhum equipamento ZTE cadastrado"}</option>
+                  {devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host}</option>)}
+                </select>
+              </Field>
             </div>
+            <Button onClick={search} disabled={searching || !devId} variant="outline" className="border-line bg-transparent h-9" data-testid="onu-search">
+              {searching ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}Buscar não autorizadas
+            </Button>
           </div>
-          {err && <div className="mx-4 mt-3 rounded-md border border-red-800/60 bg-red-950/30 px-3 py-2 text-sm text-red-200" data-testid="oltgen-error">{err}</div>}
-          {!err && out?.warnings?.length > 0 && (
-            <div className="mx-4 mt-3 space-y-1" data-testid="oltgen-warnings">
-              {out.warnings.map((w, i) => <div key={i} className="flex gap-2 text-xs text-amber-200"><AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />{w}</div>)}
+          {found && found.onus.length > 0 && (
+            <div className="border border-line rounded-md divide-y divide-line" data-testid="onu-found">
+              {found.onus.map((o, i) => (
+                <div key={i} className="flex items-center gap-3 px-3 py-1.5 text-xs font-mono">
+                  <span className="text-slate-400 w-20">{o.pon}</span>
+                  <span className="text-slate-100 flex-1">{o.sn}</span>
+                  <span className="text-slate-500">ID livre {o.free_id ?? "—"}</span>
+                  <Button size="sm" variant="ghost" onClick={() => use(o)} className="h-6 px-2 text-brand-soft hover:bg-slate-800" data-testid={`onu-use-${i}`}>Usar</Button>
+                </div>
+              ))}
             </div>
           )}
-          <pre className={`flex-1 overflow-auto m-0 px-4 py-3 text-[12.5px] leading-relaxed font-mono text-slate-200 whitespace-pre ${err ? "opacity-40" : ""}`} data-testid="oltgen-script">
-            {(out?.script || "").split("\n").map((l, i) => <div key={i} className={l.startsWith("!") ? "text-slate-500" : ""}>{l || " "}</div>)}
-          </pre>
-          <div className="px-4 py-2 border-t border-line text-[11px] text-slate-500">Revise os comandos e a versão do firmware antes de aplicar na OLT.</div>
         </Card>
+
+        <div className={sec}>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <Field label="Porta PON" hint="slot/porta, ex.: 1/1/3"><Input value={f.pon} onChange={e => set({ pon: e.target.value })} className={inp} data-testid="onu-pon" /></Field>
+            <Field label="ID da ONU" hint="1 a 128, livre na PON"><Input value={f.onu_id} onChange={e => set({ onu_id: e.target.value })} className={inp} data-testid="onu-id" /></Field>
+            <Field label="Serial (SN)"><Input value={f.sn} onChange={e => set({ sn: e.target.value.toUpperCase().trim() })} placeholder="ZTEGC1A2B3C4" className={inp} data-testid="onu-sn" /></Field>
+          </div>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <Field label="Tipo (onu-type)">
+              <Input value={f.type} onChange={e => set({ type: e.target.value })} list="onu-types" className={inp} data-testid="onu-type" />
+              <datalist id="onu-types">{(meta?.onu_types || []).map(o => <option key={o.name} value={o.name} />)}</datalist>
+            </Field>
+            <Field label="Nome do cliente"><Input value={f.name} onChange={e => set({ name: e.target.value })} placeholder="cliente_0001" className={inp} data-testid="onu-name" /></Field>
+            <Field label="Descrição"><Input value={f.description} onChange={e => set({ description: e.target.value })} placeholder="opcional" className={inp} /></Field>
+          </div>
+        </div>
+
+        <div className={sec}>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <Field label="VLAN do cliente"><Input value={f.vlan} onChange={e => set({ vlan: e.target.value })} className={inp} data-testid="onu-vlan" /></Field>
+            <Field label="VLAN na ONU" hint="vazio = a mesma (sem tradução)"><Input value={f.user_vlan} onChange={e => set({ user_vlan: e.target.value })} className={inp} data-testid="onu-uvlan" /></Field>
+            <Field label="Perfil de banda (T-CONT)" hint="nome criado na OLT, ex.: 1G"><Input value={f.tcont_profile} onChange={e => set({ tcont_profile: e.target.value })} className={inp} data-testid="onu-tcont" /></Field>
+          </div>
+          <div className="grid sm:grid-cols-3 gap-2" data-testid="onu-modes">
+            {MODE_INFO.map(([k, l, d]) => (
+              <button key={k} type="button" onClick={() => set({ mode: k })} data-testid={`onu-mode-${k}`}
+                className={`flex flex-col items-start justify-start text-left rounded-md border p-2.5 transition-colors ${f.mode === k ? "border-brand/70 bg-brand/15" : "border-line hover:border-slate-500"}`}>
+                <div className={`text-sm font-semibold ${f.mode === k ? "text-brand-soft" : "text-slate-200"}`}>{l}</div>
+                <div className="text-[11px] text-slate-400 mt-0.5 leading-snug">{d}</div>
+              </button>
+            ))}
+          </div>
+          <Field label="Portas ethernet da ONU">
+            <div className="flex flex-wrap gap-1">
+              {Array.from({ length: Math.max(ethMax, ...f.ports) }, (_, i) => i + 1).map(n => (
+                <Toggle key={n} on={f.ports.includes(n)} label={`eth ${n}`} testid={`onu-eth-${n}`}
+                  onClick={() => set({ ports: f.ports.includes(n) ? f.ports.filter(x => x !== n) : [...f.ports, n].sort((a, b) => a - b) })} />
+              ))}
+            </div>
+          </Field>
+          <Check id="onu-wr" checked={f.write} onChange={v => set({ write: v })}>Gravar no final (write)</Check>
+        </div>
       </div>
+      {f.sn && f.name ? <ScriptCard out={out} err={err} busy={busy} />
+        : <Card className="bg-surface border-line flex items-center justify-center min-h-[320px] text-sm text-slate-500 p-6 text-center" data-testid="onu-empty">
+            Informe o serial e o nome do cliente (ou busque as ONUs não autorizadas) para gerar o script.</Card>}
+    </div>
+  );
+}
+
+export default function OltScript() {
+  const [view, setView] = useState(() => { try { return localStorage.getItem("bastion_oltgen_view") || "olt"; } catch { return "olt"; } });
+  const [meta, setMeta] = useState(null);
+  const [devices, setDevices] = useState([]);
+  useEffect(() => {
+    api.get("/oltgen/models").then(r => setMeta(r.data)).catch(() => {});
+    api.get("/devices").then(r => setDevices((r.data || []).filter(d => d.device_type === "zte"))).catch(() => {});
+  }, []);
+  const go = (v) => { setView(v); try { localStorage.setItem("bastion_oltgen_view", v); } catch { /* ok */ } };
+  return (
+    <div className="flex-1 overflow-y-auto" data-testid="oltgen-page">
+      <div className="px-4 md:px-6 pt-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="hidden md:block text-xs text-slate-400">ZTE · linha TITAN · GPON</div>
+          <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Script de OLT</h1>
+        </div>
+        <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm">
+          {[["olt", "Ativação da OLT", Cpu], ["onu", "Autorizar ONU", Router]].map(([k, l, I]) => (
+            <button key={k} onClick={() => go(k)} data-testid={`oltgen-view-${k}`}
+              className={`flex items-center gap-1.5 px-3 h-8 rounded ${view === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}>
+              <I className="w-4 h-4" />{l}
+            </button>
+          ))}
+        </div>
+      </div>
+      {view === "olt" ? <OltActivation /> : <OnuAuthorize meta={meta} devices={devices} />}
     </div>
   );
 }

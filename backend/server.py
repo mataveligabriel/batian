@@ -1410,7 +1410,7 @@ async def batch_execute(payload: BatchExecPayload, user: dict = Depends(get_curr
 # ---------- Gerador de script de OLT (ZTE TITAN) ----------
 @api.get("/oltgen/models")
 async def oltgen_models(_: dict = Depends(get_current_user)):
-    return {"models": [{"key": k, **v} for k, v in oltgen.MODELS.items()],
+    return {"modes": oltgen.ONU_MODES, "models": [{"key": k, **v} for k, v in oltgen.MODELS.items()],
             "onu_types": [{"name": k, "eth": e, "pots": p, "wifi": bool(w)} for k, (e, p, w) in oltgen.ONU_TYPES.items()]}
 
 
@@ -1451,6 +1451,53 @@ async def oltgen_read_cards(body: OltCardsIn, user: dict = Depends(get_current_u
                                   "started_at": datetime.now(timezone.utc).isoformat(),
                                   "ended_at": datetime.now(timezone.utc).isoformat(), "duration_seconds": 0})
     return {**cards, "device": dev["name"], "raw": text[-6000:]}
+
+
+@api.post("/oltgen/onu")
+async def oltgen_onu(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    try:
+        return oltgen.onu_script(body or {})
+    except (oltgen.GenError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e) or "Parâmetros inválidos")
+
+
+def _out_text(res: dict) -> str:
+    t = res.get("stdout") or ""
+    return t if isinstance(t, str) else t.decode("utf-8", "replace")
+
+
+@api.post("/oltgen/uncfg")
+async def oltgen_uncfg(body: OltCardsIn, user: dict = Depends(get_current_user)):
+    """ONUs pedindo autorização numa OLT cadastrada + o próximo ID livre de cada PON (só leitura)."""
+    _no_viewer(user)
+    dev = await _get_device_for(user, body.device_id)
+    try:
+        cli = await _connect_device(dev)
+        try:
+            text = _out_text(await cli.run_command("show gpon onu uncfg", timeout=60))
+            if not oltgen.parse_uncfg(text) and re.search(r"invalid|error|%", text, re.I):
+                text = _out_text(await cli.run_command("show pon onu uncfg", timeout=60))
+            onus = oltgen.parse_uncfg(text)
+            free: dict = {}
+            for pon in list(dict.fromkeys(o["pon"] for o in onus))[:16]:
+                cfg = _out_text(await cli.run_command(f"show running-config interface gpon_olt-{pon}", timeout=60))
+                used = set(oltgen.used_onu_ids(cfg))
+                free[pon] = [i for i in range(1, 129) if i not in used]
+        finally:
+            await cli.close()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui ler a OLT: {e}"[:300])
+    await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
+                                  "device_id": dev["id"], "device_name": dev["name"], "kind": "batch",
+                                  "started_at": datetime.now(timezone.utc).isoformat(),
+                                  "ended_at": datetime.now(timezone.utc).isoformat(), "duration_seconds": 0})
+    # cada ONU da mesma PON recebe um ID livre diferente, na ordem
+    out = []
+    for o in onus:
+        ids = free.get(o["pon"]) or []
+        out.append({**o, "free_id": ids.pop(0) if ids else None})
+    return {"device": dev["name"], "onus": out, "raw": text[-4000:]}
 
 
 # ---------- Looking Glass (interno) ----------

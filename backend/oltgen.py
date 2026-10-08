@@ -385,3 +385,117 @@ def parse_show_card(text: str) -> dict:
         else:
             ups.append({**info, "prefix": "xgei"})
     return {"pon": pon, "uplinks": ups, "others": others}
+
+
+# ---------- autorização de ONU ----------
+ONU_MODES = {
+    "tag": "VLAN tag (porta da ONU entrega sem tag; a ONU marca a VLAN)",
+    "hybrid": "Híbrida (VLAN padrão sem tag na porta + demais com tag)",
+    "transparent": "Transparente (a ONU repassa o que vier, com ou sem tag)",
+}
+_SN_RE = re.compile(r"^[A-Za-z0-9]{4}[0-9A-Fa-f]{8}$")
+_PON_RE = re.compile(r"^(?:gpon_olt-)?1/(\d{1,2})/(\d{1,2})$")
+
+
+def _pon(v: str) -> Tuple[int, int]:
+    m = _PON_RE.match(str(v or "").strip())
+    if not m:
+        raise GenError("Porta PON inválida (ex.: 1/1/3)")
+    return int(m.group(1)), int(m.group(2))
+
+
+def _label(v: str, what: str, need: bool = False) -> str:
+    v = re.sub(r"\s+", "_", str(v or "").strip())
+    if not v:
+        if need:
+            raise GenError(f"{what}: obrigatório")
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,63}", v):
+        raise GenError(f"{what}: letras, números e - _ . : / (até 64)")
+    return v
+
+
+def onu_script(p: dict) -> dict:
+    """Script de autorização de uma ONU (TITAN: gpon_onu + vport + pon-onu-mng)."""
+    slot, port = _pon(p.get("pon"))
+    onu_id = _int(p.get("onu_id"), "ID da ONU")
+    if not 1 <= onu_id <= 128:
+        raise GenError("ID da ONU: 1 a 128")
+    otype = str(p.get("type") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}", otype):
+        raise GenError("Tipo da ONU inválido (o nome do onu-type cadastrado na OLT)")
+    sn = str(p.get("sn") or "").strip().upper()
+    if not _SN_RE.match(sn):
+        raise GenError("Serial inválido: 4 letras + 8 hexadecimais (ex.: ZTEGC1A2B3C4)")
+    name = _label(p.get("name"), "Nome do cliente", need=True)
+    desc = _label(p.get("description"), "Descrição")
+    vlan = _vlan(p.get("vlan"), "VLAN do cliente")
+    uvlan = _vlan(p.get("user_vlan") or vlan, "VLAN do usuário")
+    mode = str(p.get("mode") or "tag")
+    if mode not in ONU_MODES:
+        raise GenError("Modo da porta inválido")
+    tcont = _label(p.get("tcont_profile"), "Perfil de banda (T-CONT)", need=True)
+    eth_total = ONU_TYPES.get(otype, (4, 0, 0))[0] or 1
+    ports = sorted({_int(x, "Porta ethernet") for x in (p.get("ports") or [])}) or [1]
+    if any(not 1 <= x <= 8 for x in ports):
+        raise GenError("Porta ethernet da ONU: 1 a 8")
+    warns: List[str] = []
+    if otype in ONU_TYPES and ports[-1] > eth_total:
+        warns.append(f"{otype} tem {eth_total} porta(s) ethernet; confira as portas marcadas.")
+    if mode == "hybrid":
+        warns.append("Modo híbrido: confira no firmware a sintaxe de def-vlan da porta da ONU.")
+    if mode == "transparent":
+        warns.append("Modo transparente: a VLAN do cliente segue tagueada da ONU até a OLT; o equipamento do cliente define as tags.")
+
+    comments = bool(p.get("comments", True))
+    onu_if = f"gpon_onu-1/{slot}/{port}:{onu_id}"
+    out: List[str] = []
+    if comments:
+        out.append(f"! Autorização da ONU {sn} ({otype}) em {onu_if} · VLAN {vlan} · modo {mode}")
+    out.append("configure terminal")
+    out += [f"interface gpon_olt-1/{slot}/{port}", f" onu {onu_id} type {otype} sn {sn}", "exit"]
+    out += [f"interface {onu_if}", f" name {name}"]
+    if desc:
+        out.append(f" description {desc}")
+    out += [f" tcont 1 profile {tcont}", " gemport 1 tcont 1", "exit"]
+    out += [f"interface vport-1/{slot}/{port}.{onu_id}:1", f" service-port 1 user-vlan {uvlan} vlan {vlan}", "exit"]
+    out += [f"pon-onu-mng {onu_if}", f" service 1 gemport 1 vlan {uvlan}"]
+    for e in ports:
+        if mode == "tag":
+            out.append(f" vlan port eth_0/{e} mode tag vlan {uvlan}")
+        elif mode == "hybrid":
+            out.append(f" vlan port eth_0/{e} mode hybrid def-vlan {uvlan}")
+        else:
+            out.append(f" vlan port eth_0/{e} mode transparent")
+    out += ["exit", "end"]
+    if p.get("write"):
+        out.append("write")
+    return {"script": "\n".join(out) + "\n", "lines": len(out), "warnings": warns,
+            "filename": f"onu-{name}-{slot}-{port}-{onu_id}.txt", "interface": onu_if}
+
+
+_UNCFG_SN = re.compile(r"\b([A-Z]{4}[0-9A-F]{8})\b")
+_PON_ANY = re.compile(r"gpon[_-]olt[_-]?(\d+)/(\d+)/(\d+)", re.I)
+_ONU_CFG = re.compile(r"^\s*onu\s+(\d+)\s+type\s+(\S+)\s+sn\s+(\S+)", re.M | re.I)
+
+
+def parse_uncfg(text: str) -> List[dict]:
+    """ONUs pedindo autorização: [{pon: '1/1/3', sn}]."""
+    out, seen = [], set()
+    for line in (text or "").splitlines():
+        pm, sm = _PON_ANY.search(line), _UNCFG_SN.search(line.upper())
+        if pm and sm:
+            pon = f"{pm.group(1)}/{pm.group(2)}/{pm.group(3)}"
+            if (pon, sm.group(1)) not in seen:
+                seen.add((pon, sm.group(1)))
+                out.append({"pon": pon, "sn": sm.group(1)})
+    return out
+
+
+def used_onu_ids(running_cfg: str) -> List[int]:
+    return sorted({int(m.group(1)) for m in _ONU_CFG.finditer(running_cfg or "")})
+
+
+def free_onu_id(used: List[int]) -> Optional[int]:
+    s = set(used)
+    return next((i for i in range(1, 129) if i not in s), None)

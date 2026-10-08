@@ -832,3 +832,9 @@ Menu **Script de OLT** (módulo "Scripts de OLT"): monta o script de ativação 
 O script aparece ao lado enquanto você preenche (copiar ou baixar .txt). Nada é enviado para a OLT. Linhas marcadas
 com CONFERIR (NTP, SNMP, perfis de ONU) variam conforme a versão do firmware. Senhas e comunidades não ficam salvas no
 navegador, mas entram no script: trate o arquivo como confidencial.
+
+**Autorizar ONU** (botão no alto da mesma tela): gera o script de autorização de uma ONU (onu + tcont/gemport +
+vport/service-port + pon-onu-mng) com a porta da ONU em **VLAN tag**, **híbrida** ou **transparente**. Escolha uma OLT
+ZTE cadastrada e clique em **Buscar não autorizadas**: o BastiON lê as ONUs que estão pedindo autorização e o próximo
+ID livre de cada PON (só leitura) — clique em **Usar** para preencher. O perfil de T-CONT (ex.: 1G) precisa existir
+na OLT (é criado na Ativação da OLT, em Perfis de banda).
