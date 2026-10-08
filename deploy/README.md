@@ -838,7 +838,10 @@ com CONFERIR (NTP, SNMP, perfis de ONU) variam conforme a versão do firmware. S
 navegador, mas entram no script: trate o arquivo como confidencial.
 
 **Autorizar ONU** (botão no alto da mesma tela): gera o script de autorização de uma ONU (onu + tcont/gemport +
-vport/service-port + pon-onu-mng) com a porta da ONU em **VLAN tag**, **híbrida** ou **transparente**. Escolha uma OLT
+vport/service-port + pon-onu-mng) com uma ou mais VLANs por ONU (até 8), cada uma em **Tag**, **Híbrida** ou **Transparente** e nas portas
+ethernet escolhidas — ex.: internet em Tag na eth 1 e VLANs corporativas transparentes na eth 2. Cada VLAN vira um
+gemport + service-port; uma porta aceita uma VLAN sem tag (Tag/Híbrida), e uma Tag junto com transparentes na mesma
+porta vira porta híbrida. Escolha uma OLT
 ZTE cadastrada e clique em **Buscar não autorizadas**: o BastiON lê as ONUs que estão pedindo autorização e o próximo
 ID livre de cada PON (só leitura) — clique em **Usar** para preencher. O perfil de T-CONT (ex.: 1G) precisa existir
 na OLT (é criado na Ativação da OLT, em Perfis de banda).

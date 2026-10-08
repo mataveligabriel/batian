@@ -412,18 +412,26 @@ function OltActivation() {
 
 // ---------- Autorizar ONU ----------
 const ONU_KEY = "bastion_oltgen_onu";
-const ONU_DEFAULT = { platform: "titan", pon: "1/1/1", onu_id: "1", type: "ZTE-F660", sn: "", name: "", description: "", vlan: "100", user_vlan: "",
-  tcont_profile: "1G", mode: "tag", ports: [1], write: true, comments: true };
+const NEW_SVC = (vlan = "", mode = "tag", ports = [1]) => ({ vlan, user_vlan: "", mode, ports });
+const ONU_DEFAULT = { platform: "titan", pon: "1/1/1", onu_id: "1", type: "ZTE-F660", sn: "", name: "", description: "",
+  tcont_profile: "1G", services: [NEW_SVC("100")], write: true, comments: true };
 const MODE_INFO = [
-  ["tag", "VLAN tag", "A porta da ONU entrega sem tag e a ONU marca a VLAN do cliente. O mais comum (roteador do cliente em PPPoE/DHCP)."],
-  ["hybrid", "Híbrida", "A VLAN do cliente sai sem tag na porta (VLAN padrão) e a porta ainda aceita outras VLANs com tag."],
-  ["transparent", "Transparente", "A ONU repassa tudo como vier; quem marca as VLANs é o equipamento do cliente."],
+  ["tag", "Tag", "sai sem tag na porta; a ONU marca a VLAN (roteador do cliente em PPPoE/DHCP)"],
+  ["hybrid", "Híbrida", "VLAN padrão sem tag na porta + as outras VLANs da porta com tag"],
+  ["transparent", "Transparente", "passa com tag até o equipamento do cliente (L2, corporativo, IPTV…)"],
 ];
+// formulário salvo no formato antigo (uma VLAN só) vira a lista de VLANs
+const loadOnu = () => {
+  try {
+    const v = JSON.parse(localStorage.getItem(ONU_KEY) || "{}");
+    if (!Array.isArray(v.services) && v.vlan) v.services = [{ vlan: v.vlan, user_vlan: v.user_vlan || "", mode: v.mode || "tag", ports: v.ports || [1] }];
+    ["vlan", "user_vlan", "mode", "ports"].forEach(k => delete v[k]);
+    return { ...ONU_DEFAULT, ...v, sn: "", name: "", description: "" };
+  } catch { return ONU_DEFAULT; }
+};
 
 function OnuAuthorize({ meta, devices }) {
-  const [f, setF] = useState(() => {
-    try { return { ...ONU_DEFAULT, ...JSON.parse(localStorage.getItem(ONU_KEY) || "{}"), sn: "", name: "", description: "" }; } catch { return ONU_DEFAULT; }
-  });
+  const [f, setF] = useState(loadOnu);
   const [out, setOut] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -458,6 +466,10 @@ function OnuAuthorize({ meta, devices }) {
   };
   const use = (o) => setF(cur => ({ ...cur, pon: o.pon, sn: o.sn, onu_id: o.free_id ? String(o.free_id) : cur.onu_id }));
   const set = (patch) => setF(cur => ({ ...cur, ...patch }));
+  const setSvc = (i, patch) => setF(cur => ({ ...cur, services: cur.services.map((x, j) => (j === i ? { ...x, ...patch } : x)) }));
+  const addSvc = () => setF(cur => ({ ...cur, services: [...cur.services, NEW_SVC("", "transparent", cur.services[0]?.ports || [1])] }));
+  const delSvc = (i) => setF(cur => ({ ...cur, services: cur.services.filter((_, j) => j !== i) }));
+  const portsN = Math.max(ethMax, ...f.services.flatMap(x => x.ports));
 
   return (
     <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="onu-page">
@@ -513,29 +525,45 @@ function OnuAuthorize({ meta, devices }) {
           </div>
         </div>
 
-        <div className={sec}>
-          <div className="grid sm:grid-cols-3 gap-3">
-            <Field label="VLAN do cliente"><Input value={f.vlan} onChange={e => set({ vlan: e.target.value })} className={inp} data-testid="onu-vlan" /></Field>
-            <Field label="VLAN na ONU" hint="vazio = a mesma (sem tradução)"><Input value={f.user_vlan} onChange={e => set({ user_vlan: e.target.value })} className={inp} data-testid="onu-uvlan" /></Field>
-            <Field label="Perfil de banda (T-CONT)" hint="nome criado na OLT, ex.: 1G"><Input value={f.tcont_profile} onChange={e => set({ tcont_profile: e.target.value })} className={inp} data-testid="onu-tcont" /></Field>
-          </div>
-          <div className="grid sm:grid-cols-3 gap-2" data-testid="onu-modes">
-            {MODE_INFO.map(([k, l, d]) => (
-              <button key={k} type="button" onClick={() => set({ mode: k })} data-testid={`onu-mode-${k}`}
-                className={`flex flex-col items-start justify-start text-left rounded-md border p-2.5 transition-colors ${f.mode === k ? "border-brand/70 bg-brand/15" : "border-line hover:border-slate-500"}`}>
-                <div className={`text-sm font-semibold ${f.mode === k ? "text-brand-soft" : "text-slate-200"}`}>{l}</div>
-                <div className="text-[11px] text-slate-400 mt-0.5 leading-snug">{d}</div>
-              </button>
-            ))}
-          </div>
-          <Field label="Portas ethernet da ONU">
-            <div className="flex flex-wrap gap-1">
-              {Array.from({ length: Math.max(ethMax, ...f.ports) }, (_, i) => i + 1).map(n => (
-                <Toggle key={n} on={f.ports.includes(n)} label={`eth ${n}`} testid={`onu-eth-${n}`}
-                  onClick={() => set({ ports: f.ports.includes(n) ? f.ports.filter(x => x !== n) : [...f.ports, n].sort((a, b) => a - b) })} />
-              ))}
+        <div className={sec} data-testid="onu-services">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="text-sm font-semibold text-slate-200">VLANs da ONU</div>
+            <div className="w-40">
+              <Field label="Perfil de banda (T-CONT)"><Input value={f.tcont_profile} onChange={e => set({ tcont_profile: e.target.value })} className={inp} data-testid="onu-tcont" /></Field>
             </div>
-          </Field>
+          </div>
+          {f.services.map((sv, i) => (
+            <div key={i} className="rounded-md border border-line p-3 space-y-2" data-testid={`onu-svc-${i}`}>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="w-24"><Field label="VLAN"><Input value={sv.vlan} onChange={e => setSvc(i, { vlan: e.target.value })} className={inp} data-testid={`onu-svc-${i}-vlan`} /></Field></div>
+                {sv.mode !== "transparent" && (
+                  <div className="w-28"><Field label="VLAN na ONU"><Input value={sv.user_vlan} onChange={e => setSvc(i, { user_vlan: e.target.value })} placeholder="a mesma" className={inp} data-testid={`onu-svc-${i}-uvlan`} /></Field></div>
+                )}
+                <div className="flex gap-1 pb-0.5">
+                  {MODE_INFO.map(([k, l, d]) => (
+                    <button key={k} type="button" title={d} onClick={() => setSvc(i, { mode: k, ...(k === "transparent" ? { user_vlan: "" } : {}) })} data-testid={`onu-svc-${i}-mode-${k}`}
+                      className={`h-9 px-2.5 rounded-md text-xs border ${sv.mode === k ? "border-brand/70 bg-brand/15 text-brand-soft" : "border-line text-slate-400 hover:text-slate-200"}`}>{l}</button>
+                  ))}
+                </div>
+                {f.services.length > 1 && (
+                  <button type="button" onClick={() => delSvc(i)} title="Remover VLAN" data-testid={`onu-svc-${i}-del`}
+                    className="ml-auto h-9 px-2 text-slate-500 hover:text-red-300"><Trash2 className="w-4 h-4" /></button>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-1">
+                <span className="text-[11px] text-slate-500 mr-1">portas</span>
+                {Array.from({ length: portsN }, (_, k) => k + 1).map(n => (
+                  <Toggle key={n} on={sv.ports.includes(n)} label={`eth ${n}`} testid={`onu-svc-${i}-eth-${n}`}
+                    onClick={() => setSvc(i, { ports: sv.ports.includes(n) ? sv.ports.filter(x => x !== n) : [...sv.ports, n].sort((a, b) => a - b) })} />
+                ))}
+              </div>
+              <div className="text-[11px] text-slate-500">{MODE_INFO.find(m => m[0] === sv.mode)?.[2]}</div>
+            </div>
+          ))}
+          {f.services.length < 8 && (
+            <Button size="sm" variant="outline" onClick={addSvc} className="border-line bg-transparent h-8 text-xs" data-testid="onu-svc-add"><Plus className="w-3.5 h-3.5 mr-1" />Adicionar VLAN</Button>
+          )}
+          <div className="text-[11px] text-slate-500">Cada porta aceita uma VLAN sem tag (Tag ou Híbrida). Uma VLAN Tag e outras transparentes na mesma porta viram porta híbrida.</div>
           <Check id="onu-wr" checked={f.write} onChange={v => set({ write: v })}>Gravar no final (write)</Check>
         </div>
       </div>
