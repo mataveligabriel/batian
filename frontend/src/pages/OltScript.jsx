@@ -464,7 +464,7 @@ function OnuAuthorize({ meta, devices }) {
       if (!data.onus.length) toast.info(`${data.device}: nenhuma ONU esperando autorização`);
     } catch (e) { toast.error(formatApiError(e)); } finally { setSearching(false); }
   };
-  const use = (o) => setF(cur => ({ ...cur, pon: o.pon, sn: o.sn, onu_id: o.free_id ? String(o.free_id) : cur.onu_id }));
+  const pickUncfg = (o) => setF(cur => ({ ...cur, pon: o.pon, sn: o.sn, onu_id: o.free_id ? String(o.free_id) : cur.onu_id }));
   const set = (patch) => setF(cur => ({ ...cur, ...patch }));
   const setSvc = (i, patch) => setF(cur => ({ ...cur, services: cur.services.map((x, j) => (j === i ? { ...x, ...patch } : x)) }));
   const addSvc = () => setF(cur => ({ ...cur, services: [...cur.services, NEW_SVC("", "transparent", cur.services[0]?.ports || [1])] }));
@@ -496,7 +496,7 @@ function OnuAuthorize({ meta, devices }) {
                   <span className="text-slate-400 w-20">{o.pon}</span>
                   <span className="text-slate-100 flex-1">{o.sn}</span>
                   <span className="text-slate-500">ID livre {o.free_id ?? "—"}</span>
-                  <Button size="sm" variant="ghost" onClick={() => use(o)} className="h-6 px-2 text-brand-soft hover:bg-slate-800" data-testid={`onu-use-${i}`}>Usar</Button>
+                  <Button size="sm" variant="ghost" onClick={() => pickUncfg(o)} className="h-6 px-2 text-brand-soft hover:bg-slate-800" data-testid={`onu-use-${i}`}>Usar</Button>
                 </div>
               ))}
             </div>
@@ -632,7 +632,7 @@ function OnuRemove({ meta, devices }) {
       if (!data.found) toast.info(`MAC ${data.mac} não encontrado${data.searched?.length ? ` (${data.searched.join(", ")})` : ""}`);
     } catch (e) { toast.error(formatApiError(e)); } finally { setMacBusy(false); }
   };
-  const useMac = (r) => {
+  const takeMacResult = (r) => {
     const row = { slot: String(r.slot), pon: String(r.pon), onu: String(r.onu) };
     // o script vale para uma OLT só: se a ONU achada é de outra OLT/série, a lista recomeça com ela
     const other = r.platform !== plat || (devId && devId !== r.device_id);
@@ -676,7 +676,7 @@ function OnuRemove({ meta, devices }) {
               {macRes.vlan && <span className="text-slate-400">VLAN {macRes.vlan}</span>}
               <span className="text-slate-200">{macRes.name || "sem nome"}</span>
               {macRes.sn && <span className="text-slate-400">{macRes.sn} · {macRes.type}</span>}
-              <Button size="sm" variant="outline" onClick={() => useMac(macRes)} className="ml-auto h-7 border-red-800/60 bg-transparent text-red-300 hover:bg-red-950/40" data-testid="onumac-use">
+              <Button size="sm" variant="outline" onClick={() => takeMacResult(macRes)} className="ml-auto h-7 border-red-800/60 bg-transparent text-red-300 hover:bg-red-950/40" data-testid="onumac-use">
                 <Unplug className="w-3.5 h-3.5 mr-1" />Desautorizar esta</Button>
             </div>
           )}
