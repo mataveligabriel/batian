@@ -596,3 +596,60 @@ def used_onu_ids(running_cfg: str) -> List[int]:
 def free_onu_id(used: List[int]) -> Optional[int]:
     s = set(used)
     return next((i for i in range(1, 129) if i not in s), None)
+
+
+# ---------- desautorizar ONU ----------
+def onu_remove_script(p: dict) -> dict:
+    """`no onu N` na PON de cada ONU informada (slot, pon, onu). Remove a ONU e a configuração dela."""
+    plat = str(p.get("platform") or "titan")
+    if plat not in PLATFORMS:
+        raise GenError("Série da OLT inválida")
+    items = p.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise GenError("Informe ao menos uma ONU (slot, PON e ONU)")
+    if len(items) > 64:
+        raise GenError("Até 64 ONUs por vez")
+    by_pon: Dict[Tuple[int, int], List[int]] = {}
+    for n, it in enumerate(items, 1):
+        it = it or {}
+        slot = _int(it.get("slot"), f"Linha {n}: slot")
+        pon = _int(it.get("pon"), f"Linha {n}: PON")
+        onu = _int(it.get("onu"), f"Linha {n}: ONU")
+        if not 1 <= slot <= 32 or not 1 <= pon <= 64:
+            raise GenError(f"Linha {n}: slot ou PON fora da faixa")
+        if not 1 <= onu <= 128:
+            raise GenError(f"Linha {n}: ONU de 1 a 128")
+        lst = by_pon.setdefault((slot, pon), [])
+        if onu in lst:
+            raise GenError(f"ONU {slot}/{pon}:{onu} repetida")
+        lst.append(onu)
+    out: List[str] = []
+    total = sum(len(v) for v in by_pon.values())
+    if p.get("comments", True):
+        out.append(f"! Desautorizar {total} ONU(s) — remove a ONU e toda a configuração dela (service-port, VLANs)")
+    out.append("configure terminal")
+    for (slot, pon), onus in sorted(by_pon.items()):
+        out.append(f"interface {pon_if(plat, slot, pon)}")
+        out += [f" no onu {o}" for o in sorted(onus)]
+        out.append("exit")
+    out.append("end")
+    if p.get("write"):
+        out.append("write")
+    first = sorted(by_pon.items())[0]
+    fname = f"desautorizar-{first[0][0]}-{first[0][1]}-{sorted(first[1])[0]}.txt" if total == 1 else f"desautorizar-{total}-onus.txt"
+    return {"script": "\n".join(out) + "\n", "lines": len(out), "filename": fname,
+            "warnings": ["A ONU some da OLT na hora: o cliente fica sem serviço até ser autorizada de novo."]}
+
+
+_ONU_NAME = re.compile(r"^\s*name\s+(\S+)", re.M)
+_ONU_DESC = re.compile(r"^\s*description\s+(.+)$", re.M)
+
+
+def find_onu(pon_cfg: str, onu_cfg: str, onu: int) -> Optional[dict]:
+    """Da running-config da PON e da ONU: tipo, serial, nome e descrição da ONU N (None se não existe)."""
+    for m in _ONU_CFG.finditer(pon_cfg or ""):
+        if int(m.group(1)) == onu:
+            nm, ds = _ONU_NAME.search(onu_cfg or ""), _ONU_DESC.search(onu_cfg or "")
+            return {"type": m.group(2), "sn": m.group(3), "name": nm.group(1) if nm else "",
+                    "description": ds.group(1).strip() if ds else ""}
+    return None

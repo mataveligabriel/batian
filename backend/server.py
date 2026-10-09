@@ -1502,6 +1502,60 @@ async def oltgen_uncfg(body: OltCardsIn, user: dict = Depends(get_current_user))
     return {"device": dev["name"], "platform": plat, "onus": out, "raw": text[-4000:]}
 
 
+@api.post("/oltgen/onu-remove")
+async def oltgen_onu_remove(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    try:
+        return oltgen.onu_remove_script(body or {})
+    except (oltgen.GenError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e) or "Parâmetros inválidos")
+
+
+class OnuInfoIn(BaseModel):
+    device_id: str
+    platform: str = "titan"
+    items: List[dict] = []
+
+
+@api.post("/oltgen/onu-info")
+async def oltgen_onu_info(body: OnuInfoIn, user: dict = Depends(get_current_user)):
+    """Confere na OLT quem é cada ONU antes de desautorizar (tipo, serial, nome). Só leitura."""
+    _no_viewer(user)
+    if body.platform not in oltgen.PLATFORMS:
+        raise HTTPException(status_code=400, detail="Série da OLT inválida")
+    try:
+        items = [(int(i["slot"]), int(i["pon"]), int(i["onu"])) for i in body.items[:64]]
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Informe slot, PON e ONU em números")
+    if not items:
+        raise HTTPException(status_code=400, detail="Informe ao menos uma ONU")
+    dev = await _get_device_for(user, body.device_id)
+    out = []
+    try:
+        cli = await _connect_device(dev)
+        try:
+            pon_cfg: dict = {}
+            for sl, pn, on in items:
+                if (sl, pn) not in pon_cfg:
+                    pon_cfg[(sl, pn)] = _out_text(await cli.run_command(
+                        f"show running-config interface {oltgen.pon_if(body.platform, sl, pn)}", timeout=60))
+                info = None
+                if oltgen.find_onu(pon_cfg[(sl, pn)], "", on):
+                    onu_cfg = _out_text(await cli.run_command(
+                        f"show running-config interface {oltgen.onu_if_name(body.platform, sl, pn, on)}", timeout=60))
+                    info = oltgen.find_onu(pon_cfg[(sl, pn)], onu_cfg, on)
+                out.append({"slot": sl, "pon": pn, "onu": on, "found": bool(info), **(info or {})})
+        finally:
+            await cli.close()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui ler a OLT: {e}"[:300])
+    await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
+                                  "device_id": dev["id"], "device_name": dev["name"], "kind": "batch",
+                                  "started_at": datetime.now(timezone.utc).isoformat(),
+                                  "ended_at": datetime.now(timezone.utc).isoformat(), "duration_seconds": 0})
+    return {"device": dev["name"], "items": out}
+
+
 # ---------- Looking Glass (interno) ----------
 _lg_locks: dict = {}
 _lg_hits: dict = {}

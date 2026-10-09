@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search } from "lucide-react";
+import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search, Unplug, CheckCircle2, XCircle } from "lucide-react";
 
 const KEY = "bastion_oltgen_form";                       // formulário lembrado neste navegador, sem senhas
 const TABS = [["ports", "Placas e portas"], ["mgmt", "Gerência"], ["services", "Serviços"], ["system", "Sistema"], ["access", "Acesso"]];
@@ -574,6 +574,120 @@ function OnuAuthorize({ meta, devices }) {
   );
 }
 
+// ---------- Desautorizar ONU ----------
+const RM_KEY = "bastion_oltgen_rm";
+const NEW_RM = () => ({ slot: "", pon: "", onu: "" });
+
+function OnuRemove({ meta, devices }) {
+  const [plat, setPlat] = useState(() => { try { return JSON.parse(localStorage.getItem(RM_KEY) || "{}").platform || "titan"; } catch { return "titan"; } });
+  const [rows, setRows] = useState([NEW_RM()]);
+  const [write, setWrite] = useState(true);
+  const [out, setOut] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [devId, setDevId] = useState("");
+  const [info, setInfo] = useState(null);                // conferência na OLT: chave "s/p:o" -> dados
+  const [checking, setChecking] = useState(false);
+  const seq = useRef(0);
+  const filled = rows.filter(r => r.slot !== "" && r.pon !== "" && r.onu !== "");
+  const key = (r) => `${Number(r.slot)}/${Number(r.pon)}:${Number(r.onu)}`;
+
+  useEffect(() => {
+    try { localStorage.setItem(RM_KEY, JSON.stringify({ platform: plat })); } catch { /* ok */ }
+    if (!filled.length) { setOut(null); setErr(""); setBusy(false); return undefined; }
+    const n = ++seq.current; setBusy(true);
+    const t = setTimeout(() => {
+      api.post("/oltgen/onu-remove", { platform: plat, items: filled, write })
+        .then(r => { if (n === seq.current) { setOut(r.data); setErr(""); } })
+        .catch(e => { if (n === seq.current) setErr(formatApiError(e)); })
+        .finally(() => { if (n === seq.current) setBusy(false); });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [rows, plat, write]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const setRow = (i, patch) => { setRows(rs => rs.map((r, j) => (j === i ? { ...r, ...patch } : r))); };
+  const num = (v) => v.replace(/\D/g, "").slice(0, 3);
+  const check = async () => {
+    if (!devId) return toast.error("Escolha a OLT cadastrada");
+    if (!filled.length) return toast.error("Informe slot, PON e ONU");
+    setChecking(true);
+    try {
+      const { data } = await api.post("/oltgen/onu-info", { device_id: devId, platform: plat, items: filled });
+      setInfo(Object.fromEntries(data.items.map(it => [`${it.slot}/${it.pon}:${it.onu}`, it])));
+      const miss = data.items.filter(it => !it.found).length;
+      if (miss) toast.warning(`${miss} ONU(s) não existem nessa OLT`);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setChecking(false); }
+  };
+
+  return (
+    <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="onurm-page">
+      <div className="space-y-4 min-w-0">
+        <div className={sec}>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400">Série da OLT</span>
+            {Object.entries(meta?.platforms || { titan: "TITAN (C600/C650/C620/C610)", c300: "C300 / C320" }).map(([k, l]) => (
+              <Toggle key={k} on={plat === k} label={l} testid={`onurm-plat-${k}`} onClick={() => { setPlat(k); setInfo(null); }} />
+            ))}
+          </div>
+          <div className="space-y-2" data-testid="onurm-rows">
+            {rows.map((r, i) => {
+              const it = info && filled.includes(r) ? info[key(r)] : null;
+              return (
+                <div key={i} className="flex flex-wrap items-end gap-2">
+                  {[["slot", "Slot"], ["pon", "PON"], ["onu", "ONU"]].map(([k, l]) => (
+                    <div key={k} className="w-20">
+                      <Field label={i === 0 ? l : ""}>
+                        <Input value={r[k]} inputMode="numeric" onChange={e => { setRow(i, { [k]: num(e.target.value) }); setInfo(null); }}
+                          onKeyDown={e => { if (e.key === "Enter" && k === "onu" && i === rows.length - 1) setRows(rs => [...rs, { ...NEW_RM(), slot: r.slot, pon: r.pon }]); }}
+                          className={inp} data-testid={`onurm-${i}-${k}`} />
+                      </Field>
+                    </div>
+                  ))}
+                  <div className="text-xs font-mono pb-2 min-w-0 flex-1 truncate" data-testid={`onurm-${i}-info`}>
+                    {it ? (it.found
+                      ? <span className="text-slate-200"><CheckCircle2 className="w-3.5 h-3.5 inline mr-1 text-emerald-400" />{it.name || "sem nome"} · {it.sn} · {it.type}</span>
+                      : <span className="text-amber-300"><XCircle className="w-3.5 h-3.5 inline mr-1" />não existe nessa PON</span>)
+                      : <span className="text-slate-500">{r.slot && r.pon && r.onu ? (plat === "c300" ? `gpon-onu_1/${r.slot}/${r.pon}:${r.onu}` : `gpon_onu-1/${r.slot}/${r.pon}:${r.onu}`) : ""}</span>}
+                  </div>
+                  {rows.length > 1 && (
+                    <button type="button" onClick={() => setRows(rs => rs.filter((_, j) => j !== i))} title="Tirar da lista" data-testid={`onurm-${i}-del`}
+                      className="h-9 px-2 text-slate-500 hover:text-red-300"><Trash2 className="w-4 h-4" /></button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button size="sm" variant="outline" onClick={() => setRows(rs => [...rs, { ...NEW_RM(), slot: rs[rs.length - 1]?.slot || "", pon: rs[rs.length - 1]?.pon || "" }])}
+              className="border-line bg-transparent h-8 text-xs" data-testid="onurm-add"><Plus className="w-3.5 h-3.5 mr-1" />Outra ONU</Button>
+            <span className="text-[11px] text-slate-500">Enter no campo ONU também abre outra linha.</span>
+          </div>
+          <Check id="onurm-wr" checked={write} onChange={setWrite}>Gravar no final (write)</Check>
+        </div>
+        <Card className="bg-surface border-line p-4 space-y-2">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex-1 min-w-[200px]">
+              <Field label="Conferir na OLT quem é cada ONU antes de remover (só leitura)">
+                <select value={devId} onChange={e => { setDevId(e.target.value); setInfo(null); }} data-testid="onurm-device"
+                  className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+                  <option value="">{devices.length ? "Escolha a OLT…" : "Nenhum equipamento ZTE cadastrado"}</option>
+                  {devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host}</option>)}
+                </select>
+              </Field>
+            </div>
+            <Button onClick={check} disabled={checking || !devId || !filled.length} variant="outline" className="border-line bg-transparent h-9" data-testid="onurm-check">
+              {checking ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}Conferir
+            </Button>
+          </div>
+        </Card>
+      </div>
+      {filled.length ? <ScriptCard out={out} err={err} busy={busy} />
+        : <Card className="bg-surface border-line flex items-center justify-center min-h-[320px] text-sm text-slate-500 p-6 text-center" data-testid="onurm-empty">
+            Informe slot, PON e número da ONU para gerar o script.</Card>}
+    </div>
+  );
+}
+
 export default function OltScript() {
   const [view, setView] = useState(() => { try { return localStorage.getItem("bastion_oltgen_view") || "olt"; } catch { return "olt"; } });
   const [meta, setMeta] = useState(null);
@@ -591,7 +705,7 @@ export default function OltScript() {
           <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Script de OLT</h1>
         </div>
         <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm">
-          {[["olt", "Ativação da OLT", Cpu], ["onu", "Autorizar ONU", Router]].map(([k, l, I]) => (
+          {[["olt", "Ativação da OLT", Cpu], ["onu", "Autorizar ONU", Router], ["rm", "Desautorizar ONU", Unplug]].map(([k, l, I]) => (
             <button key={k} onClick={() => go(k)} data-testid={`oltgen-view-${k}`}
               className={`flex items-center gap-1.5 px-3 h-8 rounded ${view === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}>
               <I className="w-4 h-4" />{l}
@@ -599,7 +713,7 @@ export default function OltScript() {
           ))}
         </div>
       </div>
-      {view === "olt" ? <OltActivation /> : <OnuAuthorize meta={meta} devices={devices} />}
+      {view === "olt" ? <OltActivation /> : view === "rm" ? <OnuRemove meta={meta} devices={devices} /> : <OnuAuthorize meta={meta} devices={devices} />}
     </div>
   );
 }
