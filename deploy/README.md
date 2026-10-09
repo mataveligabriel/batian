@@ -868,3 +868,17 @@ manda linha a linha numa sessão SSH/Telnet com as credenciais cadastradas do eq
 pede confirmação e termina com `write`. Se a OLT recusar alguma linha, ele para ali, sai do modo de configuração e
 **não grava** — a tela mostra a linha e a resposta da OLT. Cada envio fica no Histórico (comandos e resultado). Só vale
 para equipamentos cadastrados como ZTE; uma aplicação por vez em cada OLT.
+
+## 35. Winbox pelo BastiON (inclusive pelos jump servers)
+
+Menu **Winbox** (módulo "Winbox") ou o ícone de roteador na linha de um equipamento MikroTik em Equipamentos.
+**Abrir túnel** faz o BastiON abrir uma porta (`WINBOX_PORTS`, padrão 8300-8309) que aceita conexão **só do IP de
+quem abriu** e leva o tráfego até a porta 8291 do MikroTik — direto do servidor ou pela cadeia de agentes (jump
+servers/VPN) do equipamento. No Winbox do seu computador, conecte em `IP_DO_BASTION:8300` (o endereço é copiado
+sozinho) com o usuário e a senha do MikroTik. MikroTik sem cadastro: informe o IP e por qual agente sair.
+
+- A porta fecha sozinha depois de `WINBOX_IDLE_MINUTES` (20) sem conexão e no máximo em 8 h; dá para fechar na tela.
+- Cada túnel fica no Histórico. Conexão vinda de outro IP é recusada e contada na tela.
+- MikroTik com Winbox em outra porta: use o acesso por IP com a porta certa (ela fica lembrada no equipamento).
+- MAC-Winbox (camada 2) não passa pelo túnel; use o IP.
+- Firewall do servidor: `sudo ufw allow 8300:8309/tcp` (se o ufw estiver ativo).

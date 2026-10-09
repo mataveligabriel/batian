@@ -4,6 +4,7 @@ export const MODULES = [
   { key: "devices", label: "Equipamentos", path: "/devices", desc: "cadastrar, editar, importar e testar" },
   { key: "terminal", label: "Terminal SSH", path: "/terminal", desc: "abrir sessão SSH/Telnet" },
   { key: "web", label: "Acesso Web", path: "/web", desc: "abrir a página web dos equipamentos" },
+  { key: "winbox", label: "Winbox", path: "/winbox", desc: "túnel do Winbox até os MikroTik (jump servers)" },
   { key: "rdp", label: "Área de Trabalho Remota", path: "/rdp", desc: "sessões RDP (Windows) pelo navegador" },
   { key: "maps", label: "Mapas de rede", path: "/maps", desc: "mapas, tráfego, alarmes e análise" },
   { key: "dashboards", label: "Dashboards", path: "/dashboards", desc: "consumo e sinal óptico" },

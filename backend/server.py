@@ -56,6 +56,7 @@ import rpki
 import vendorscan
 import rdp
 import oltgen
+import tcprelay
 import vpnconf
 import botnet
 import webpush
@@ -4018,6 +4019,83 @@ async def web_close(sid: str, user: dict = Depends(get_current_user)):
     if not s or (s.user_id != user["id"] and user.get("role") != "admin"):
         raise HTTPException(status_code=404, detail="Sessão não encontrada")
     await web_proxy.close(sid, reason="fechada pelo usuário")
+    return {"ok": True}
+
+
+# ---------- Túnel Winbox (TCP 8291 do MikroTik pelo BastiON, inclusive pelos jump servers) ----------
+async def _relay_closed(s, reason: str):
+    if s.history_id:
+        ended = datetime.now(timezone.utc)
+        await db.sessions.update_one({"id": s.history_id}, {"$set": {
+            "ended_at": ended.isoformat(), "duration_seconds": int(ended.timestamp() - s.created)}})
+
+
+winbox_relay = tcprelay.RelayManager(_web_resolve, _web_connect, on_close=_relay_closed)
+
+
+class WinboxOpenIn(BaseModel):
+    device_id: Optional[str] = None
+    host: Optional[str] = None          # sem equipamento: IP/nome e agente (vazio = direto, só admin)
+    port: int = 8291
+    agent_id: Optional[str] = None
+
+
+@api.get("/winbox/info")
+async def winbox_info(request: Request, _: dict = Depends(get_current_user)):
+    return {"ports": winbox_relay.ports, "enabled": bool(winbox_relay.ports), "your_ip": security.client_ip(request),
+            "idle_minutes": tcprelay.IDLE_SECONDS // 60, "max_hours": tcprelay.MAX_SECONDS // 3600}
+
+
+@api.get("/winbox/sessions")
+async def winbox_sessions(user: dict = Depends(get_current_user)):
+    return winbox_relay.list(None if user.get("role") == "admin" else user)
+
+
+@api.post("/winbox/sessions")
+async def winbox_open(body: WinboxOpenIn, request: Request, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    label, agent_id, device_id = "", body.agent_id or None, None
+    port = int(body.port or 8291)
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=400, detail="Porta inválida")
+    if body.device_id:
+        dev = await _get_device_for(user, body.device_id)
+        device_id, label, agent_id, host = dev["id"], dev["name"], dev.get("agent_id") or None, dev["host"]
+        port = int(dev.get("winbox_port") or body.port or 8291)
+    else:
+        host = (body.host or "").strip()
+        if not host or len(host) > 253 or not re.fullmatch(r"[A-Za-z0-9.:_-]+", host):
+            raise HTTPException(status_code=400, detail="Informe o IP ou nome do equipamento")
+        if agent_id:
+            await _get_agent_for(user, agent_id)
+        elif user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Sair direto do servidor é só para administradores — escolha um agente")
+    if not agent_id and webproxy.is_loopback(host):
+        raise HTTPException(status_code=403, detail="Endereço local do próprio servidor não é permitido")
+    ip = security.client_ip(request)
+    try:
+        s = await winbox_relay.open(user, host, port, ip, agent_id=agent_id, device_id=device_id, label=label)
+    except VpnDown as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e) or type(e).__name__)
+    if not s.history_id:
+        s.history_id = os.urandom(8).hex()
+        await db.sessions.insert_one({"id": s.history_id, "user_id": user["id"], "user_email": user["email"], "device_id": device_id,
+                                      "device_name": f"Winbox {label or host} ({host}:{port}) via {s.via}",
+                                      "started_at": datetime.now(timezone.utc).isoformat(), "ended_at": None,
+                                      "duration_seconds": None, "kind": "winbox"})
+    if device_id and port != 8291:
+        await db.devices.update_one({"id": device_id}, {"$set": {"winbox_port": port}})
+    return s.public()
+
+
+@api.delete("/winbox/sessions/{sid}")
+async def winbox_close(sid: str, user: dict = Depends(get_current_user)):
+    s = winbox_relay.sessions.get(sid)
+    if not s or (s.user_id != user["id"] and user.get("role") != "admin"):
+        raise HTTPException(status_code=404, detail="Túnel não encontrado")
+    await winbox_relay.close(sid, reason="fechado pelo usuário")
     return {"ok": True}
 
 

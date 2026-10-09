@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy, Send, Globe, Radar } from "lucide-react";
+import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy, Send, Globe, Radar, Router } from "lucide-react";
 import { TransferDialog } from "@/components/TransferDialog";
 import { ImportDevicesDialog } from "@/components/ImportDevicesDialog";
 import { VendorScanDialog } from "@/components/VendorScanDialog";
@@ -357,6 +357,11 @@ export default function Devices() {
                       <Button size="sm" variant="ghost" onClick={() => nav(`/web?device=${d.id}`)} data-testid={`open-web-${d.id}`} className="text-brand-soft hover:bg-brand/15" title="Abrir página web (http/https)">
                         <Globe className="w-4 h-4" />
                       </Button>
+                      {d.device_type === "mikrotik" && (
+                        <Button size="sm" variant="ghost" onClick={() => nav(`/winbox?device=${d.id}`)} data-testid={`open-winbox-${d.id}`} className="text-brand-soft hover:bg-brand/15" title="Abrir túnel do Winbox">
+                          <Router className="w-4 h-4" />
+                        </Button>
+                      )}
                       <Button size="sm" variant="ghost" onClick={() => openEdit(d)} data-testid={`edit-device-${d.id}`} className="text-slate-300 hover:bg-slate-800" title="Editar">
                         <Pencil className="w-4 h-4" />
                       </Button>
