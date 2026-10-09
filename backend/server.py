@@ -1556,6 +1556,69 @@ async def oltgen_onu_info(body: OnuInfoIn, user: dict = Depends(get_current_user
     return {"device": dev["name"], "items": out}
 
 
+@api.post("/oltgen/onu-add")
+async def oltgen_onu_add(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    try:
+        return oltgen.onu_add_script(body or {})
+    except (oltgen.GenError, TypeError, ValueError, AttributeError) as e:
+        raise HTTPException(status_code=400, detail=str(e) or "Parâmetros inválidos")
+
+
+class OnuReadIn(BaseModel):
+    device_id: str
+    platform: str = "titan"
+    pon: str
+    onu_id: int
+
+
+@api.post("/oltgen/onu-read")
+async def oltgen_onu_read(body: OnuReadIn, user: dict = Depends(get_current_user)):
+    """Lê a configuração atual de uma ONU (VLANs, gemports, portas) para acrescentar VLAN sem conflito. Só leitura."""
+    _no_viewer(user)
+    if body.platform not in oltgen.PLATFORMS:
+        raise HTTPException(status_code=400, detail="Série da OLT inválida")
+    try:
+        sl, pt = oltgen._pon(body.pon)
+    except oltgen.GenError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not 1 <= body.onu_id <= 128:
+        raise HTTPException(status_code=400, detail="ID da ONU: 1 a 128")
+    dev = await _get_device_for(user, body.device_id)
+    onu_if = oltgen.onu_if_name(body.platform, sl, pt, body.onu_id)
+    try:
+        cli = await _connect_device(dev)
+        try:
+            pon_cfg = _out_text(await cli.run_command(f"show running-config interface {oltgen.pon_if(body.platform, sl, pt)}", timeout=60))
+            onu_cfg = _out_text(await cli.run_command(f"show running-config interface {onu_if}", timeout=60))
+            info = oltgen.find_onu(pon_cfg, onu_cfg, body.onu_id)
+            if not info:
+                raise HTTPException(status_code=404, detail=f"A ONU {onu_if} não existe nessa OLT")
+            mng = ""
+            for cmd in oltgen.MNG_COMMANDS:
+                mng = _out_text(await cli.run_command(cmd.format(onu=onu_if), timeout=60))
+                if re.search(r"^\s*(service|vlan port)\s", mng, re.M) or not re.search(r"invalid|unrecognized|error|%", mng, re.I):
+                    break
+            vport_cfg = ""
+            if body.platform == "titan":
+                gems = oltgen.parse_onu_existing(onu_cfg, "")["gemports"] or [1]
+                for k in gems[:8]:
+                    vport_cfg += _out_text(await cli.run_command(
+                        f"show running-config interface vport-1/{sl}/{pt}.{body.onu_id}:{k}", timeout=60)) + "\n"
+        finally:
+            await cli.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui ler a OLT: {e}"[:300])
+    ex = oltgen.parse_onu_existing(onu_cfg, mng, vport_cfg)
+    await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
+                                  "device_id": dev["id"], "device_name": dev["name"], "kind": "batch",
+                                  "started_at": datetime.now(timezone.utc).isoformat(),
+                                  "ended_at": datetime.now(timezone.utc).isoformat(), "duration_seconds": 0})
+    return {"device": dev["name"], "interface": onu_if, **info, "existing": ex}
+
+
 class FindOnuIn(BaseModel):
     query: str = ""              # serial (ZTEGD4F3D9EC) ou MAC
     mac: str = ""                # compatibilidade com a tela antiga

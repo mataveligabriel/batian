@@ -414,7 +414,7 @@ function OltActivation() {
 const ONU_KEY = "bastion_oltgen_onu";
 const NEW_SVC = (vlan = "", mode = "tag", ports = [1]) => ({ vlan, user_vlan: "", mode, ports });
 const ONU_DEFAULT = { platform: "titan", pon: "1/1/1", onu_id: "1", type: "ZTE-F660", sn: "", name: "", description: "",
-  tcont_profile: "1G", services: [NEW_SVC("100")], write: true, comments: true };
+  tcont_profile: "1G", services: [NEW_SVC("100")], write: true, comments: true, action: "new", start_index: "2", tcont_id: "1" };
 const MODE_INFO = [
   ["tag", "Tag", "sai sem tag na porta; a ONU marca a VLAN (roteador do cliente em PPPoE/DHCP)"],
   ["hybrid", "Híbrida", "VLAN padrão sem tag na porta + as outras VLANs da porta com tag"],
@@ -438,21 +438,37 @@ function OnuAuthorize({ meta, devices }) {
   const [devId, setDevId] = useState("");
   const [found, setFound] = useState(null);
   const [searching, setSearching] = useState(false);
+  const [existing, setExisting] = useState(null);
+  const [reading, setReading] = useState(false);
   const seq = useRef(0);
   const ethMax = meta?.onu_types.find(o => o.name === f.type)?.eth || 4;
 
   useEffect(() => {
     const { sn, name, description, ...keep } = f;
     try { localStorage.setItem(ONU_KEY, JSON.stringify(keep)); } catch { /* sem armazenamento */ }
-    if (!f.sn || !f.name) { setOut(null); setErr(""); setBusy(false); return undefined; }
+    const adding = f.action === "add";
+    if (adding ? !(f.pon && f.onu_id) : !(f.sn && f.name)) { setOut(null); setErr(""); setBusy(false); return undefined; }
     const n = ++seq.current; setBusy(true);
     const t = setTimeout(() => {
-      api.post("/oltgen/onu", f).then(r => { if (n === seq.current) { setOut(r.data); setErr(""); } })
+      (adding ? api.post("/oltgen/onu-add", { ...f, existing: existing?.existing || null }) : api.post("/oltgen/onu", f)).then(r => { if (n === seq.current) { setOut(r.data); setErr(""); } })
         .catch(e => { if (n === seq.current) setErr(formatApiError(e)); })
         .finally(() => { if (n === seq.current) setBusy(false); });
     }, 300);
     return () => clearTimeout(t);
-  }, [f]);
+  }, [f, existing]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // VLAN a mais em ONU autorizada: lê o que a ONU já tem para continuar a numeração e somar as portas
+  const readOnu = async () => {
+    if (!devId) return toast.error("Escolha a OLT cadastrada (no alto)");
+    setReading(true);
+    try {
+      const { data } = await api.post("/oltgen/onu-read", { device_id: devId, platform: f.platform, pon: f.pon, onu_id: Number(f.onu_id) });
+      setExisting({ ...data, key: `${f.platform}|${f.pon}|${f.onu_id}` });
+    } catch (e) { setExisting(null); toast.error(formatApiError(e)); } finally { setReading(false); }
+  };
+  useEffect(() => {
+    if (existing && existing.key !== `${f.platform}|${f.pon}|${f.onu_id}`) setExisting(null);
+  }, [f.platform, f.pon, f.onu_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const search = async () => {
     if (!devId) return toast.error("Escolha a OLT cadastrada");
@@ -464,7 +480,7 @@ function OnuAuthorize({ meta, devices }) {
       if (!data.onus.length) toast.info(`${data.device}: nenhuma ONU esperando autorização`);
     } catch (e) { toast.error(formatApiError(e)); } finally { setSearching(false); }
   };
-  const pickUncfg = (o) => setF(cur => ({ ...cur, pon: o.pon, sn: o.sn, onu_id: o.free_id ? String(o.free_id) : cur.onu_id }));
+  const pickUncfg = (o) => setF(cur => ({ ...cur, action: "new", pon: o.pon, sn: o.sn, onu_id: o.free_id ? String(o.free_id) : cur.onu_id }));
   const set = (patch) => setF(cur => ({ ...cur, ...patch }));
   const setSvc = (i, patch) => setF(cur => ({ ...cur, services: cur.services.map((x, j) => (j === i ? { ...x, ...patch } : x)) }));
   const addSvc = () => setF(cur => ({ ...cur, services: [...cur.services, NEW_SVC("", "transparent", cur.services[0]?.ports || [1])] }));
@@ -510,25 +526,52 @@ function OnuAuthorize({ meta, devices }) {
               <Toggle key={k} on={f.platform === k} label={l} testid={`onu-plat-${k}`} onClick={() => set({ platform: k })} />
             ))}
           </div>
+          <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-xs w-fit" data-testid="onu-action">
+            {[["new", "Nova ONU"], ["add", "VLAN a mais em ONU autorizada"]].map(([k, l]) => (
+              <button key={k} type="button" onClick={() => set({ action: k })} data-testid={`onu-action-${k}`}
+                className={`px-3 h-7 rounded ${f.action === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
+            ))}
+          </div>
           <div className="grid sm:grid-cols-3 gap-3">
             <Field label="Porta PON" hint="slot/porta, ex.: 1/1/3"><Input value={f.pon} onChange={e => set({ pon: e.target.value })} className={inp} data-testid="onu-pon" /></Field>
             <Field label="ID da ONU" hint="1 a 128, livre na PON"><Input value={f.onu_id} onChange={e => set({ onu_id: e.target.value })} className={inp} data-testid="onu-id" /></Field>
-            <Field label="Serial (SN)"><Input value={f.sn} onChange={e => set({ sn: e.target.value.toUpperCase().trim() })} placeholder="ZTEGC1A2B3C4" className={inp} data-testid="onu-sn" /></Field>
+            {f.action === "add" ? (
+              <div className="flex items-start pt-5">
+                <Button onClick={readOnu} disabled={reading || !devId} variant="outline" className="border-line bg-transparent h-9 w-full" data-testid="onu-read"
+                  title={devId ? "" : "Escolha a OLT no alto da tela"}>
+                  {reading ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}Ler ONU na OLT
+                </Button>
+              </div>
+            ) : <Field label="Serial (SN)"><Input value={f.sn} onChange={e => set({ sn: e.target.value.toUpperCase().trim() })} placeholder="ZTEGC1A2B3C4" className={inp} data-testid="onu-sn" /></Field>}
           </div>
-          <div className="grid sm:grid-cols-3 gap-3">
+          {f.action === "add" && (existing ? (
+            <div className="rounded-md border border-line bg-sunken/60 px-3 py-2 text-xs font-mono space-y-1" data-testid="onu-existing">
+              <div className="text-slate-100"><CheckCircle2 className="w-3.5 h-3.5 inline mr-1 text-emerald-400" />{existing.interface} · {existing.name || "sem nome"} · {existing.sn} · {existing.type}</div>
+              <div className="text-slate-400">VLANs atuais: {existing.existing.vlans.length ? existing.existing.vlans.join(", ") : "nenhuma"}
+                {Object.entries(existing.existing.ports || {}).map(([e, pc]) => ` · eth ${e}: ${pc.transparent && !pc.untag ? "transparente" : pc.untag ? `${pc.untag_mode === "hybrid" ? "híbrida" : "tag"} ${pc.untag}${pc.tagged.length ? ` + ${pc.tagged.join(",")}` : ""}` : pc.tagged.join(",")}`).join("")}</div>
+              <div className="text-slate-500">próximos: gemport {existing.existing.next.gemport} · service-port {existing.existing.next.service_port} · service {existing.existing.next.service}</div>
+            </div>
+          ) : (
+            <div className="grid sm:grid-cols-3 gap-3" data-testid="onu-noread">
+              <Field label="Primeiro índice livre" hint="gemport/service-port novos começam aqui"><Input value={f.start_index} onChange={e => set({ start_index: e.target.value })} className={inp} data-testid="onu-start" /></Field>
+              <Field label="T-CONT da ONU" hint="normalmente 1"><Input value={f.tcont_id} onChange={e => set({ tcont_id: e.target.value })} className={inp} /></Field>
+              <div className="text-[11px] text-amber-300/90 pt-5">Sem ler a ONU, confira os índices e o modo das portas que ela já tem.</div>
+            </div>
+          ))}
+          {f.action !== "add" && <div className="grid sm:grid-cols-3 gap-3">
             <Field label="Tipo (onu-type)">
               <Input value={f.type} onChange={e => set({ type: e.target.value })} list="onu-types" className={inp} data-testid="onu-type" />
               <datalist id="onu-types">{(meta?.onu_types || []).map(o => <option key={o.name} value={o.name} />)}</datalist>
             </Field>
             <Field label="Nome do cliente"><Input value={f.name} onChange={e => set({ name: e.target.value })} placeholder="cliente_0001" className={inp} data-testid="onu-name" /></Field>
             <Field label="Descrição"><Input value={f.description} onChange={e => set({ description: e.target.value })} placeholder="opcional" className={inp} /></Field>
-          </div>
+          </div>}
         </div>
 
         <div className={sec} data-testid="onu-services">
           <div className="flex flex-wrap items-end justify-between gap-3">
-            <div className="text-sm font-semibold text-slate-200">VLANs da ONU</div>
-            <div className="w-40">
+            <div className="text-sm font-semibold text-slate-200">{f.action === "add" ? "VLANs novas" : "VLANs da ONU"}</div>
+            <div className={`w-40 ${f.action === "add" ? "hidden" : ""}`}>
               <Field label="Perfil de banda (T-CONT)"><Input value={f.tcont_profile} onChange={e => set({ tcont_profile: e.target.value })} className={inp} data-testid="onu-tcont" /></Field>
             </div>
           </div>
@@ -567,9 +610,9 @@ function OnuAuthorize({ meta, devices }) {
           <Check id="onu-wr" checked={f.write} onChange={v => set({ write: v })}>Gravar no final (write)</Check>
         </div>
       </div>
-      {f.sn && f.name ? <ScriptCard out={out} err={err} busy={busy} />
+      {(f.action === "add" ? f.pon && f.onu_id : f.sn && f.name) ? <ScriptCard out={out} err={err} busy={busy} />
         : <Card className="bg-surface border-line flex items-center justify-center min-h-[320px] text-sm text-slate-500 p-6 text-center" data-testid="onu-empty">
-            Informe o serial e o nome do cliente (ou busque as ONUs não autorizadas) para gerar o script.</Card>}
+            {f.action === "add" ? "Informe a porta PON e o ID da ONU." : "Informe o serial e o nome do cliente (ou busque as ONUs não autorizadas) para gerar o script."}</Card>}
     </div>
   );
 }

@@ -454,6 +454,79 @@ def _label(v: str, what: str, need: bool = False) -> str:
     return v
 
 
+def _clean_services(raw, otype: str, warns: List[str], taken: Optional[set] = None) -> List[dict]:
+    if not isinstance(raw, list) or not raw or len(raw) > 8:
+        raise GenError("Informe de 1 a 8 VLANs")
+    eth_total = ONU_TYPES.get(otype, (4, 0, 0))[0] or 1
+    svcs, seen_v = [], set(taken or ())
+    for n, r in enumerate(raw, 1):
+        r = r or {}
+        what = f"VLAN {n}"
+        vlan = _vlan(r.get("vlan"), what)
+        mode = str(r.get("mode") or "tag")
+        if mode not in ONU_MODES:
+            raise GenError(f"{what}: modo inválido")
+        uvlan = _vlan(r.get("user_vlan") or vlan, f"{what} (na ONU)")
+        if mode == "transparent" and uvlan != vlan:
+            raise GenError(f"{what}: no modo transparente a VLAN passa como está — não dá para traduzir {uvlan}→{vlan}")
+        if uvlan in seen_v:
+            raise GenError(f"VLAN {uvlan} já existe nessa ONU" if taken and uvlan in taken else f"VLAN {uvlan} repetida na mesma ONU")
+        seen_v.add(uvlan)
+        ports = sorted({_int(x, "Porta ethernet") for x in (r.get("ports") or [])})
+        if not ports:
+            raise GenError(f"{what}: marque ao menos uma porta ethernet")
+        if any(not 1 <= x <= 8 for x in ports):
+            raise GenError("Porta ethernet da ONU: 1 a 8")
+        if otype in ONU_TYPES and ports[-1] > eth_total:
+            warns.append(f"{otype} tem {eth_total} porta(s) ethernet; confira as portas da VLAN {vlan}.")
+        svcs.append({"vlan": vlan, "uvlan": uvlan, "mode": mode, "ports": ports})
+    return svcs
+
+
+def _port_lines(svcs: List[dict], warns: List[str], existing: Optional[Dict[int, dict]] = None) -> List[str]:
+    """Linhas `vlan port eth_0/N …` das portas tocadas por `svcs`, somando o que a porta já tem (`existing`).
+    Por porta: no máximo uma VLAN sem tag (tag ou híbrida); transparentes passam com tag."""
+    port_cfg: Dict[int, dict] = {}
+    for e, ex in (existing or {}).items():
+        port_cfg[e] = {"untag": ({"uvlan": ex["untag"], "mode": ex.get("untag_mode", "tag")} if ex.get("untag") else None),
+                       "tagged": list(ex.get("tagged") or []), "transparent": bool(ex.get("transparent"))}
+    touched = set()
+    for sv in svcs:
+        for e in sv["ports"]:
+            touched.add(e)
+            pc = port_cfg.setdefault(e, {"untag": None, "tagged": [], "transparent": False})
+            if sv["mode"] in ("tag", "hybrid"):
+                if pc["untag"] is not None:
+                    raise GenError(f"eth {e}: só uma VLAN pode sair sem tag por porta "
+                                   f"({pc['untag']['uvlan']} e {sv['uvlan']}); deixe uma delas como transparente")
+                pc["untag"] = sv
+            else:
+                pc["transparent"] = True
+                pc["tagged"].append(sv["uvlan"])
+    lines: List[str] = []
+    hybrid_used = False
+    for e in sorted(touched):
+        pc = port_cfg[e]
+        u = pc["untag"]
+        if u and not pc["tagged"] and u["mode"] == "tag":
+            lines.append(f" vlan port eth_0/{e} mode tag vlan {u['uvlan']}")
+        elif u:
+            # uma sem tag + outras com tag na mesma porta = híbrida
+            hybrid_used = True
+            lines.append(f" vlan port eth_0/{e} mode hybrid def-vlan {u['uvlan']}")
+            for r in _ranges(pc["tagged"]):
+                lines.append(f" vlan port eth_0/{e} vlan {r}")
+            if u["mode"] == "tag" and pc["tagged"]:
+                warns.append(f"eth {e}: VLAN {u['uvlan']} sem tag junto com {', '.join(map(str, pc['tagged']))} com tag — a porta foi montada como híbrida.")
+        else:
+            lines.append(f" vlan port eth_0/{e} mode transparent")
+    if hybrid_used:
+        warns.append("Porta híbrida: confira no firmware a sintaxe de def-vlan e das VLANs com tag na porta da ONU.")
+    if any(sv["mode"] == "transparent" for sv in svcs):
+        warns.append("VLANs transparentes chegam com tag no equipamento do cliente: ele precisa estar configurado com essas VLANs.")
+    return lines
+
+
 def onu_script(p: dict) -> dict:
     """Script de autorização de uma ONU.
     TITAN: gpon_onu + vport + pon-onu-mng · C300: gpon-onu (service-port com vport) + pon-onu-mng."""
@@ -474,72 +547,14 @@ def onu_script(p: dict) -> dict:
     name = _label(p.get("name"), "Nome do cliente", need=True)
     desc = _label(p.get("description"), "Descrição")
     tcont = _label(p.get("tcont_profile"), "Perfil de banda (T-CONT)", need=True)
-    eth_total = ONU_TYPES.get(otype, (4, 0, 0))[0] or 1
     warns: List[str] = []
 
     # serviços: cada VLAN vira um gemport + service-port; as portas da ONU são montadas a partir deles
     raw = p.get("services")
     if not raw:                                            # formato antigo: uma VLAN só
         raw = [{"vlan": p.get("vlan"), "user_vlan": p.get("user_vlan"), "mode": p.get("mode"), "ports": p.get("ports") or [1]}]
-    if not isinstance(raw, list) or len(raw) > 8:
-        raise GenError("Até 8 VLANs por ONU")
-    svcs, seen_v = [], set()
-    for n, r in enumerate(raw, 1):
-        r = r or {}
-        what = f"VLAN {n}"
-        vlan = _vlan(r.get("vlan"), what)
-        mode = str(r.get("mode") or "tag")
-        if mode not in ONU_MODES:
-            raise GenError(f"{what}: modo inválido")
-        uvlan = _vlan(r.get("user_vlan") or vlan, f"{what} (na ONU)")
-        if mode == "transparent" and uvlan != vlan:
-            raise GenError(f"{what}: no modo transparente a VLAN passa como está — não dá para traduzir {uvlan}→{vlan}")
-        if uvlan in seen_v:
-            raise GenError(f"VLAN {uvlan} repetida na mesma ONU")
-        seen_v.add(uvlan)
-        ports = sorted({_int(x, "Porta ethernet") for x in (r.get("ports") or [])})
-        if not ports:
-            raise GenError(f"{what}: marque ao menos uma porta ethernet")
-        if any(not 1 <= x <= 8 for x in ports):
-            raise GenError("Porta ethernet da ONU: 1 a 8")
-        if otype in ONU_TYPES and ports[-1] > eth_total:
-            warns.append(f"{otype} tem {eth_total} porta(s) ethernet; confira as portas da VLAN {vlan}.")
-        svcs.append({"vlan": vlan, "uvlan": uvlan, "mode": mode, "ports": ports})
-
-    # por porta: no máximo uma VLAN sem tag (tag ou híbrida); transparentes passam com tag
-    port_cfg: Dict[int, dict] = {}
-    for sv in svcs:
-        for e in sv["ports"]:
-            pc = port_cfg.setdefault(e, {"untag": None, "tagged": [], "transparent": False})
-            if sv["mode"] in ("tag", "hybrid"):
-                if pc["untag"] is not None:
-                    raise GenError(f"eth {e}: só uma VLAN pode sair sem tag por porta "
-                                   f"({pc['untag']['uvlan']} e {sv['uvlan']}); deixe uma delas como transparente")
-                pc["untag"] = sv
-            else:
-                pc["transparent"] = True
-                pc["tagged"].append(sv["uvlan"])
-    lines_port: List[str] = []
-    hybrid_used = False
-    for e in sorted(port_cfg):
-        pc = port_cfg[e]
-        u = pc["untag"]
-        if u and not pc["tagged"] and u["mode"] == "tag":
-            lines_port.append(f" vlan port eth_0/{e} mode tag vlan {u['uvlan']}")
-        elif u:
-            # uma sem tag + outras com tag na mesma porta = híbrida
-            hybrid_used = True
-            lines_port.append(f" vlan port eth_0/{e} mode hybrid def-vlan {u['uvlan']}")
-            for r in _ranges(pc["tagged"]):
-                lines_port.append(f" vlan port eth_0/{e} vlan {r}")
-            if u["mode"] == "tag" and pc["tagged"]:
-                warns.append(f"eth {e}: VLAN {u['uvlan']} sem tag junto com {', '.join(map(str, pc['tagged']))} com tag — a porta foi montada como híbrida.")
-        else:
-            lines_port.append(f" vlan port eth_0/{e} mode transparent")
-    if hybrid_used:
-        warns.append("Porta híbrida: confira no firmware a sintaxe de def-vlan e das VLANs com tag na porta da ONU.")
-    if any(sv["mode"] == "transparent" for sv in svcs):
-        warns.append("VLANs transparentes chegam com tag no equipamento do cliente: ele precisa estar configurado com essas VLANs.")
+    svcs = _clean_services(raw, otype, warns)
+    lines_port = _port_lines(svcs, warns)
 
     comments = bool(p.get("comments", True))
     onu_if = onu_if_name(plat, slot, port, onu_id)
@@ -724,3 +739,106 @@ def parse_sn_lookup(text: str) -> Optional[dict]:
             plat = "c300" if re.search(r"gpon-onu_", line, re.I) else "titan"
             return {"slot": slot, "pon": pon, "onu": onu, "platform": plat, "vlan": None, "line": line.strip()}
     return None
+
+
+# ---------- VLAN a mais numa ONU já autorizada ----------
+_RX_TCONT = re.compile(r"^\s*tcont\s+(\d+)\s+(?:name\s+\S+\s+)?profile\s+(\S+)", re.M)
+_RX_GEM = re.compile(r"^\s*gemport\s+(\d+)\b", re.M)
+_RX_SP = re.compile(r"^\s*service-port\s+(\d+)\s+(?:vport\s+(\d+)\s+)?user-vlan\s+(\d+)\s+vlan\s+(\d+)", re.M)
+_RX_SVC = re.compile(r"^\s*service\s+(\d+)\s+gemport\s+(\d+)\s+vlan\s+(\d+)", re.M)
+_RX_VPORT_IF = re.compile(r"interface\s+vport-1/\d+/\d+\.\d+:(\d+)", re.I)
+_RX_PORT_TAG = re.compile(r"^\s*vlan\s+port\s+eth_0/(\d+)\s+mode\s+tag\s+vlan\s+(\d+)", re.M)
+_RX_PORT_HYB = re.compile(r"^\s*vlan\s+port\s+eth_0/(\d+)\s+mode\s+hybrid\s+def-vlan\s+(\d+)", re.M)
+_RX_PORT_TR = re.compile(r"^\s*vlan\s+port\s+eth_0/(\d+)\s+mode\s+transparent", re.M)
+_RX_PORT_VL = re.compile(r"^\s*vlan\s+port\s+eth_0/(\d+)\s+vlan\s+([\d,\- ]+)$", re.M)
+
+
+def _expand(r: str) -> List[int]:
+    out = []
+    for part in re.split(r"[,\s]+", r.strip()):
+        if "-" in part:
+            a, b = part.split("-", 1)
+            if a.isdigit() and b.isdigit() and int(b) - int(a) < 4096:
+                out += list(range(int(a), int(b) + 1))
+        elif part.isdigit():
+            out.append(int(part))
+    return out
+
+
+def parse_onu_existing(onu_cfg: str, mng_cfg: str, vport_cfg: str = "") -> dict:
+    """O que a ONU já tem: T-CONTs, gemports, service-ports, serviços e o modo de cada porta ethernet."""
+    text = f"{onu_cfg}\n{vport_cfg}"
+    tconts = [{"id": int(m.group(1)), "profile": m.group(2)} for m in _RX_TCONT.finditer(onu_cfg or "")]
+    gems = sorted({int(m.group(1)) for m in _RX_GEM.finditer(onu_cfg or "")})
+    sps = [{"id": int(m.group(1)), "vport": int(m.group(2)) if m.group(2) else None, "user_vlan": int(m.group(3)), "vlan": int(m.group(4))}
+           for m in _RX_SP.finditer(text)]
+    vports = sorted({int(x) for x in _RX_VPORT_IF.findall(vport_cfg or "")} | {s["vport"] for s in sps if s["vport"]})
+    svcs = [{"id": int(m.group(1)), "gemport": int(m.group(2)), "vlan": int(m.group(3))} for m in _RX_SVC.finditer(mng_cfg or "")]
+    ports: Dict[int, dict] = {}
+    for m in _RX_PORT_TAG.finditer(mng_cfg or ""):
+        ports[int(m.group(1))] = {"untag": int(m.group(2)), "untag_mode": "tag", "tagged": [], "transparent": False}
+    for m in _RX_PORT_HYB.finditer(mng_cfg or ""):
+        ports[int(m.group(1))] = {"untag": int(m.group(2)), "untag_mode": "hybrid", "tagged": [], "transparent": False}
+    for m in _RX_PORT_TR.finditer(mng_cfg or ""):
+        ports[int(m.group(1))] = {"untag": None, "tagged": [], "transparent": True}
+    for m in _RX_PORT_VL.finditer(mng_cfg or ""):
+        pc = ports.setdefault(int(m.group(1)), {"untag": None, "tagged": [], "transparent": False})
+        pc["tagged"] += _expand(m.group(2))
+    nxt = lambda xs: (max(xs) + 1) if xs else 1
+    return {"tconts": tconts, "gemports": gems, "service_ports": sps, "services": svcs, "ports": ports,
+            "vlans": sorted({s["user_vlan"] for s in sps} | {s["vlan"] for s in svcs}),
+            "next": {"gemport": nxt(gems), "service_port": nxt([s["id"] for s in sps]),
+                     "service": nxt([s["id"] for s in svcs]), "vport": nxt(vports or gems)}}
+
+
+def onu_add_script(p: dict) -> dict:
+    """Script que acrescenta VLANs numa ONU já autorizada, sem mexer no que ela já tem."""
+    plat = str(p.get("platform") or "titan")
+    if plat not in PLATFORMS:
+        raise GenError("Série da OLT inválida")
+    c300 = plat == "c300"
+    slot, port = _pon(p.get("pon"))
+    onu_id = _int(p.get("onu_id"), "ID da ONU")
+    if not 1 <= onu_id <= 128:
+        raise GenError("ID da ONU: 1 a 128")
+    ex = p.get("existing") or {}
+    warns: List[str] = []
+    nx = ex.get("next") or {}
+    start = _int(p.get("start_index") or 2, "Primeiro índice livre")
+    if not 1 <= start <= 32:
+        raise GenError("Primeiro índice livre: 1 a 32")
+    gem0 = _int(nx.get("gemport") or start, "gemport")
+    sp0 = _int(nx.get("service_port") or start, "service-port")
+    sv0 = _int(nx.get("service") or start, "service")
+    vp0 = _int(nx.get("vport") or start, "vport")
+    tcont = _int(p.get("tcont_id") or ((ex.get("tconts") or [{}])[0].get("id")) or 1, "T-CONT")
+    if not ex:
+        warns.append(f"Sem a leitura da ONU: os índices começam em {start} — confira com a configuração atual dela.")
+    ports_ex = {int(k): v for k, v in (ex.get("ports") or {}).items()}
+    svcs = _clean_services(p.get("services"), str(p.get("type") or ""), warns, taken=set(ex.get("vlans") or []))
+    lines_port = _port_lines(svcs, warns, ports_ex)
+
+    onu_if = onu_if_name(plat, slot, port, onu_id)
+    out: List[str] = []
+    if p.get("comments", True):
+        out.append(f"! VLAN(s) a mais na ONU {onu_if}: " + ", ".join(f"{sv['uvlan']} {sv['mode']}" for sv in svcs))
+    out += ["configure terminal", f"interface {onu_if}"]
+    out += [f" gemport {gem0 + i} tcont {tcont}" for i in range(len(svcs))]
+    if c300:
+        out += [f" service-port {sp0 + i} vport {vp0 + i} user-vlan {sv['uvlan']} vlan {sv['vlan']}" for i, sv in enumerate(svcs)]
+        out.append("exit")
+    else:
+        out.append("exit")
+        for i, sv in enumerate(svcs):
+            out += [f"interface vport-1/{slot}/{port}.{onu_id}:{vp0 + i}", f" service-port {sp0 + i} user-vlan {sv['uvlan']} vlan {sv['vlan']}", "exit"]
+    out.append(f"pon-onu-mng {onu_if}")
+    out += [f" service {sv0 + i} gemport {gem0 + i} vlan {sv['uvlan']}" for i, sv in enumerate(svcs)]
+    out += lines_port
+    out += ["exit", "end"]
+    if p.get("write"):
+        out.append("write")
+    return {"script": "\n".join(out) + "\n", "lines": len(out), "warnings": warns,
+            "filename": f"onu-{slot}-{port}-{onu_id}-vlan.txt", "interface": onu_if}
+
+
+MNG_COMMANDS = ["show onu running config {onu}", "show running-config pon-onu-mng {onu}"]

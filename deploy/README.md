@@ -855,3 +855,9 @@ leitura) e mostra nome, serial e tipo de cada ONU, ou avisa se ela não existe n
 ou **Todas as OLTs ZTE**. O BastiON roda `show gpon onu by sn` (só leitura) e mostra em qual OLT, PON e número a ONU está
 e quem é o cliente; **Desautorizar esta** já põe a ONU na lista. O mesmo campo aceita o MAC do equipamento do cliente
 (qualquer formato): aí ele usa `show mac` e mostra também a VLAN.
+
+**VLAN a mais em ONU já autorizada** (Autorizar ONU → "VLAN a mais em ONU autorizada"): informe a porta PON e o ID da
+ONU, escolha a OLT no alto e clique em **Ler ONU na OLT** — o BastiON lê o que a ONU já tem (VLANs, gemports,
+service-ports, modo de cada porta) e o script novo continua a numeração (gemport/service-port/service seguintes) e
+soma as portas: ex.: eth 1 em tag 100 + VLAN 200 transparente na eth 1 vira híbrida (def-vlan 100 + 200 com tag).
+VLAN que a ONU já tem dá erro. Sem ler a ONU, informe o primeiro índice livre e o T-CONT.
