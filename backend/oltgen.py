@@ -691,3 +691,36 @@ def parse_mac_lookup(text: str, mac: str) -> Optional[dict]:
                 break
         return {"slot": slot, "pon": pon, "onu": onu, "platform": plat, "vlan": vlan, "line": line.strip()}
     return None
+
+
+# ---------- procurar ONU pelo serial (SN) ----------
+SN_COMMANDS = ["show gpon onu by sn {sn}", "show pon onu by sn {sn}"]
+
+
+def norm_sn(v: str) -> str:
+    """ZTEGD4F3D9EC, ztegd4f3d9ec ou ZTEG-D4F3D9EC -> ZTEGD4F3D9EC."""
+    s = re.sub(r"[\s:-]", "", str(v or "")).upper()
+    # 4 letras do fabricante (ZTEG, FHTT, HWTC…) + 8 hexa; 12 dígitos só hexa é MAC, não serial
+    if not re.fullmatch(r"[A-Z]{4}[0-9A-F]{8}", s) or re.fullmatch(r"[0-9A-F]{12}", s):
+        raise GenError("Serial inválido: 4 letras + 8 hexadecimais (ex.: ZTEGD4F3D9EC)")
+    return s
+
+
+def looks_like_sn(v: str) -> bool:
+    try:
+        norm_sn(v)
+        return True
+    except GenError:
+        return False
+
+
+def parse_sn_lookup(text: str) -> Optional[dict]:
+    """Saída do `show gpon onu by sn`: a primeira interface de ONU que aparecer."""
+    for line in (text or "").splitlines():
+        m = _ONU_REF.search(line)
+        if m:
+            g = m.groups()
+            slot, pon, onu = (int(x) for x in (g[0:3] if g[0] else g[3:6]))
+            plat = "c300" if re.search(r"gpon-onu_", line, re.I) else "titan"
+            return {"slot": slot, "pon": pon, "onu": onu, "platform": plat, "vlan": None, "line": line.strip()}
+    return None

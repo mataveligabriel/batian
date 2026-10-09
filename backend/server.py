@@ -1556,19 +1556,29 @@ async def oltgen_onu_info(body: OnuInfoIn, user: dict = Depends(get_current_user
     return {"device": dev["name"], "items": out}
 
 
-class FindMacIn(BaseModel):
-    mac: str
+class FindOnuIn(BaseModel):
+    query: str = ""              # serial (ZTEGD4F3D9EC) ou MAC
+    mac: str = ""                # compatibilidade com a tela antiga
     device_id: str = ""          # vazio ou "all" = procura em todas as OLTs ZTE do usuário
 
 
+@api.post("/oltgen/find-onu")
 @api.post("/oltgen/find-mac")
-async def oltgen_find_mac(body: FindMacIn, user: dict = Depends(get_current_user)):
-    """Procura em qual ONU o MAC foi aprendido (show mac) e quem é a ONU. Só leitura."""
+async def oltgen_find_onu(body: FindOnuIn, user: dict = Depends(get_current_user)):
+    """Acha a ONU pelo serial (show gpon onu by sn) ou pelo MAC (show mac) e diz quem é. Só leitura."""
     _no_viewer(user)
+    q = (body.query or body.mac or "").strip()
     try:
-        mac = oltgen.norm_mac(body.mac)
-    except oltgen.GenError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        if oltgen.looks_like_sn(q):
+            kind, key = "sn", oltgen.norm_sn(q)
+            cmds = oltgen.SN_COMMANDS
+            parse = lambda raw: oltgen.parse_sn_lookup(raw)
+        else:
+            kind, key = "mac", oltgen.norm_mac(q)
+            cmds = oltgen.MAC_COMMANDS
+            parse = lambda raw: oltgen.parse_mac_lookup(raw, key)
+    except oltgen.GenError:
+        raise HTTPException(status_code=400, detail="Informe o serial da ONU (ex.: ZTEGD4F3D9EC) ou o MAC do equipamento do cliente")
     if body.device_id and body.device_id != "all":
         devs = [await _get_device_for(user, body.device_id)]
     else:
@@ -1584,9 +1594,9 @@ async def oltgen_find_mac(body: FindMacIn, user: dict = Depends(get_current_user
             continue
         try:
             hit, raw = None, ""
-            for cmd in oltgen.MAC_COMMANDS:
-                raw = _out_text(await cli.run_command(cmd.format(mac=mac), timeout=60))
-                hit = oltgen.parse_mac_lookup(raw, mac)
+            for cmd in cmds:
+                raw = _out_text(await cli.run_command(cmd.format(mac=key, sn=key), timeout=60))
+                hit = parse(raw)
                 if hit or not re.search(r"invalid|unrecognized|error|%", raw, re.I):
                     break
             searched.append(dev["name"])
@@ -1601,7 +1611,8 @@ async def oltgen_find_mac(body: FindMacIn, user: dict = Depends(get_current_user
                                           "device_id": dev["id"], "device_name": dev["name"], "kind": "batch",
                                           "started_at": datetime.now(timezone.utc).isoformat(),
                                           "ended_at": datetime.now(timezone.utc).isoformat(), "duration_seconds": 0})
-            return {"found": True, "mac": mac, "device": dev["name"], "device_id": dev["id"], **hit, **info, "searched": searched}
+            return {"found": True, "kind": kind, "query": key, "mac": key if kind == "mac" else "",
+                    "device": dev["name"], "device_id": dev["id"], **hit, **info, "searched": searched}
         except Exception as e:
             errors.append(f"{dev['name']}: {e}"[:160])
         finally:
@@ -1609,7 +1620,7 @@ async def oltgen_find_mac(body: FindMacIn, user: dict = Depends(get_current_user
                 await cli.close()
             except Exception:
                 pass
-    return {"found": False, "mac": mac, "searched": searched, "errors": errors}
+    return {"found": False, "kind": kind, "query": key, "mac": key if kind == "mac" else "", "searched": searched, "errors": errors}
 
 
 # ---------- Looking Glass (interno) ----------

@@ -624,12 +624,12 @@ function OnuRemove({ meta, devices }) {
   };
 
   const findMac = async () => {
-    if (!mac.trim()) return toast.error("Informe o MAC");
+    if (!mac.trim()) return toast.error("Informe o serial da ONU");
     setMacBusy(true); setMacRes(null);
     try {
-      const { data } = await api.post("/oltgen/find-mac", { mac, device_id: macDev });
+      const { data } = await api.post("/oltgen/find-onu", { query: mac, device_id: macDev });
       setMacRes(data);
-      if (!data.found) toast.info(`MAC ${data.mac} não encontrado${data.searched?.length ? ` (${data.searched.join(", ")})` : ""}`);
+      if (!data.found) toast.info(`${data.kind === "sn" ? "Serial" : "MAC"} ${data.query} não encontrado${data.searched?.length ? ` (${data.searched.join(", ")})` : ""}`);
     } catch (e) { toast.error(formatApiError(e)); } finally { setMacBusy(false); }
   };
   const takeMacResult = (r) => {
@@ -647,12 +647,12 @@ function OnuRemove({ meta, devices }) {
     <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="onurm-page">
       <div className="space-y-4 min-w-0">
         <Card className="bg-surface border-line p-4 space-y-3" data-testid="onumac">
-          <div className="text-sm font-semibold text-slate-200">Procurar ONU pelo MAC</div>
+          <div className="text-sm font-semibold text-slate-200">Procurar ONU pelo serial (SN)</div>
           <div className="flex flex-wrap items-end gap-2">
             <div className="w-56">
-              <Field label="MAC do equipamento do cliente">
+              <Field label="Serial da ONU (ou MAC do cliente)">
                 <Input value={mac} onChange={e => setMac(e.target.value)} onKeyDown={e => e.key === "Enter" && findMac()}
-                  placeholder="7c:8b:ca:11:22:33" className={inp} data-testid="onumac-mac" />
+                  placeholder="ZTEGD4F3D9EC" className={inp} data-testid="onumac-mac" />
               </Field>
             </div>
             <div className="flex-1 min-w-[180px]">
@@ -673,6 +673,7 @@ function OnuRemove({ meta, devices }) {
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
               <span className="text-slate-100">{macRes.device}</span>
               <span className="text-brand-soft">{macRes.platform === "c300" ? `gpon-onu_1/${macRes.slot}/${macRes.pon}:${macRes.onu}` : `gpon_onu-1/${macRes.slot}/${macRes.pon}:${macRes.onu}`}</span>
+              {macRes.kind === "mac" && <span className="text-slate-500">MAC {macRes.query}</span>}
               {macRes.vlan && <span className="text-slate-400">VLAN {macRes.vlan}</span>}
               <span className="text-slate-200">{macRes.name || "sem nome"}</span>
               {macRes.sn && <span className="text-slate-400">{macRes.sn} · {macRes.type}</span>}
@@ -682,7 +683,9 @@ function OnuRemove({ meta, devices }) {
           )}
           {macRes && !macRes.found && (
             <div className="text-xs text-amber-300" data-testid="onumac-none">
-              MAC {macRes.mac} não aparece {macRes.searched?.length ? `em ${macRes.searched.join(", ")}` : "nas OLTs"}: o equipamento pode estar desligado ou o MAC expirou na tabela.
+              {macRes.kind === "sn"
+                ? `Serial ${macRes.query} não está autorizado ${macRes.searched?.length ? `em ${macRes.searched.join(", ")}` : "nas OLTs"}.`
+                : `MAC ${macRes.query} não aparece ${macRes.searched?.length ? `em ${macRes.searched.join(", ")}` : "nas OLTs"}: o equipamento pode estar desligado ou o MAC expirou na tabela.`}
               {macRes.errors?.length ? <span className="block text-red-300 mt-1">Sem acesso: {macRes.errors.join(" · ")}</span> : null}
             </div>
           )}
