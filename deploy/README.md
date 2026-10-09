@@ -861,3 +861,10 @@ ONU, escolha a OLT no alto e clique em **Ler ONU na OLT** — o BastiON lê o qu
 service-ports, modo de cada porta) e o script novo continua a numeração (gemport/service-port/service seguintes) e
 soma as portas: ex.: eth 1 em tag 100 + VLAN 200 transparente na eth 1 vira híbrida (def-vlan 100 + 200 com tag).
 VLAN que a ONU já tem dá erro. Sem ler a ONU, informe o primeiro índice livre e o T-CONT.
+
+**Enviar direto para a OLT** (Autorizar ONU, VLAN a mais e Desautorizar ONU): no painel do script, escolha a OLT e
+clique em **Enviar para a OLT** → **Aplicar e gravar**. O servidor gera o script de novo com os mesmos dados da tela,
+manda linha a linha numa sessão SSH/Telnet com as credenciais cadastradas do equipamento, responde "yes" quando a OLT
+pede confirmação e termina com `write`. Se a OLT recusar alguma linha, ele para ali, sai do modo de configuração e
+**não grava** — a tela mostra a linha e a resposta da OLT. Cada envio fica no Histórico (comandos e resultado). Só vale
+para equipamentos cadastrados como ZTE; uma aplicação por vez em cada OLT.

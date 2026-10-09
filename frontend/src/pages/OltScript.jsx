@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search, Unplug, CheckCircle2, XCircle } from "lucide-react";
+import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search, Unplug, CheckCircle2, XCircle, Send } from "lucide-react";
 
 const KEY = "bastion_oltgen_form";                       // formulário lembrado neste navegador, sem senhas
 const TABS = [["ports", "Placas e portas"], ["mgmt", "Gerência"], ["services", "Serviços"], ["system", "Sistema"], ["access", "Acesso"]];
@@ -120,7 +120,62 @@ function UplinkPick({ uplinks, value, onChange, testid, plat }) {
   );
 }
 
-function ScriptCard({ out, err, busy }) {
+// Enviar direto para a OLT: o servidor gera o script de novo com os mesmos parâmetros, aplica linha a linha e grava
+function ApplyBar({ apply, ready }) {
+  const [dev, setDev] = useState(apply.deviceId || "");
+  const [confirm, setConfirm] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [res, setRes] = useState(null);
+  const [doneSig, setDoneSig] = useState("");           // já aplicado com estes parâmetros: não manda duas vezes
+  const sig = JSON.stringify([apply.kind, apply.params]);
+  useEffect(() => { if (sig !== doneSig) { setRes(null); setConfirm(false); } }, [sig]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (apply.deviceId) setDev(apply.deviceId); }, [apply.deviceId]);
+  const name = apply.devices.find(d => d.id === dev)?.name || "OLT";
+  const send = async () => {
+    setSending(true); setConfirm(false); setRes(null);
+    try {
+      const { data } = await api.post("/oltgen/apply", { device_id: dev, kind: apply.kind, params: apply.params });
+      setRes(data);
+      if (data.ok) { setDoneSig(sig); toast.success(`Aplicado${data.saved ? " e gravado" : ""} em ${data.device}`); apply.onDone && apply.onDone(data); }
+      else toast.error(`A OLT recusou: ${data.failed?.command}`);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setSending(false); }
+  };
+  return (
+    <div className="px-4 py-2.5 border-b border-line space-y-2" data-testid="oltgen-apply">
+      <div className="flex flex-wrap items-center gap-2">
+        <select value={dev} onChange={e => { setDev(e.target.value); setConfirm(false); }} data-testid="oltgen-apply-device"
+          className="h-8 min-w-0 flex-1 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100">
+          <option value="">{apply.devices.length ? "Enviar para qual OLT?" : "Nenhuma OLT ZTE cadastrada"}</option>
+          {apply.devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host}</option>)}
+        </select>
+        {!confirm ? (
+          <Button size="sm" onClick={() => setConfirm(true)} disabled={!ready || !dev || sending || sig === doneSig} className="h-8 bg-emerald-700 hover:bg-emerald-600" data-testid="oltgen-apply-btn">
+            {sending ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Send className="w-3.5 h-3.5 mr-1.5" />}{sending ? "Aplicando…" : "Enviar para a OLT"}
+          </Button>
+        ) : (
+          <>
+            <Button size="sm" onClick={send} className="h-8 bg-red-700 hover:bg-red-600" data-testid="oltgen-apply-confirm"><Send className="w-3.5 h-3.5 mr-1.5" />Aplicar e gravar em {name}</Button>
+            <Button size="sm" variant="ghost" onClick={() => setConfirm(false)} className="h-8 text-slate-300">Cancelar</Button>
+          </>
+        )}
+      </div>
+      {res && (res.ok ? (
+        <div className="text-xs text-emerald-300 flex items-center gap-1.5" data-testid="oltgen-apply-ok">
+          <CheckCircle2 className="w-4 h-4" />{res.steps.length} comandos aplicados em {res.device}{res.saved ? " e configuração gravada (write)" : ""}.
+          {apply.kind === "onu-add" && <span className="text-slate-400">Para outra VLAN nessa ONU, clique em Ler ONU na OLT de novo.</span>}
+        </div>
+      ) : (
+        <div className="rounded-md border border-red-800/60 bg-red-950/30 px-3 py-2 text-xs text-red-200 space-y-1" data-testid="oltgen-apply-fail">
+          <div><XCircle className="w-3.5 h-3.5 inline mr-1" />A OLT recusou <span className="font-mono">{res.failed?.command}</span> — parei aí e <b>não gravei</b>.
+            {res.steps.length > 1 ? ` As ${res.steps.length - 1} linhas anteriores ficaram na configuração em uso (sem write).` : ""}</div>
+          <pre className="whitespace-pre-wrap font-mono text-[11px] text-red-100/80 max-h-32 overflow-auto m-0">{res.failed?.output}</pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ScriptCard({ out, err, busy, apply }) {
   const copy = async () => {
     try { await navigator.clipboard.writeText(out?.script || ""); toast.success("Script copiado"); } catch { toast.error("Não consegui copiar"); }
   };
@@ -141,6 +196,7 @@ function ScriptCard({ out, err, busy }) {
               <Button size="sm" variant="outline" onClick={download} disabled={!out || !!err} className="border-line bg-transparent h-8" data-testid="oltgen-download"><Download className="w-3.5 h-3.5 mr-1.5" />.txt</Button>
             </div>
           </div>
+          {apply && <ApplyBar apply={apply} ready={!!out && !err && !busy} />}
           {err && <div className="mx-4 mt-3 rounded-md border border-red-800/60 bg-red-950/30 px-3 py-2 text-sm text-red-200" data-testid="oltgen-error">{err}</div>}
           {!err && out?.warnings?.length > 0 && (
             <div className="mx-4 mt-3 space-y-1" data-testid="oltgen-warnings">
@@ -610,7 +666,10 @@ function OnuAuthorize({ meta, devices }) {
           <Check id="onu-wr" checked={f.write} onChange={v => set({ write: v })}>Gravar no final (write)</Check>
         </div>
       </div>
-      {(f.action === "add" ? f.pon && f.onu_id : f.sn && f.name) ? <ScriptCard out={out} err={err} busy={busy} />
+      {(f.action === "add" ? f.pon && f.onu_id : f.sn && f.name) ? <ScriptCard out={out} err={err} busy={busy}
+          apply={{ devices, deviceId: devId, kind: f.action === "add" ? "onu-add" : "onu",
+            params: f.action === "add" ? { ...f, existing: existing?.existing || null } : f,
+            onDone: () => setFound(null) }} />
         : <Card className="bg-surface border-line flex items-center justify-center min-h-[320px] text-sm text-slate-500 p-6 text-center" data-testid="onu-empty">
             {f.action === "add" ? "Informe a porta PON e o ID da ONU." : "Informe o serial e o nome do cliente (ou busque as ONUs não autorizadas) para gerar o script."}</Card>}
     </div>
@@ -792,7 +851,8 @@ function OnuRemove({ meta, devices }) {
           </div>
         </Card>
       </div>
-      {filled.length ? <ScriptCard out={out} err={err} busy={busy} />
+      {filled.length ? <ScriptCard out={out} err={err} busy={busy}
+          apply={{ devices, deviceId: devId, kind: "onu-remove", params: { platform: plat, items: filled }, onDone: () => setInfo(null) }} />
         : <Card className="bg-surface border-line flex items-center justify-center min-h-[320px] text-sm text-slate-500 p-6 text-center" data-testid="onurm-empty">
             Informe slot, PON e número da ONU para gerar o script.</Card>}
     </div>

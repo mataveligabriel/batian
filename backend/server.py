@@ -1619,6 +1619,88 @@ async def oltgen_onu_read(body: OnuReadIn, user: dict = Depends(get_current_user
     return {"device": dev["name"], "interface": onu_if, **info, "existing": ex}
 
 
+# ---------- aplicar direto na OLT ----------
+_OLT_ERR = re.compile(r"%\s*(error|invalid|unrecognized|incomplete|ambiguous|unknown|code)|^\s*error\b|\berror\s*[:\[]|"
+                      r"not\s+exist|does\s+not\s+exist|already\s+exist|failed|is\s+in\s+use|out\s+of\s+range", re.I | re.M)
+_OLT_CONFIRM = re.compile(r"(yes/no|\[y/n\]|\(y/n\)|y/n)\s*\]?\s*:?\s*$", re.I)
+_olt_apply_locks: dict = {}
+
+
+class OltApplyIn(BaseModel):
+    device_id: str
+    kind: str                    # onu | onu-add | onu-remove
+    params: dict = {}
+
+
+async def _olt_run_script(dev: dict, script: str) -> dict:
+    """Manda o script linha a linha numa sessão só. Para no primeiro erro (sai do modo de configuração e não grava);
+    responde 'yes' quando a OLT pede confirmação (ex.: write)."""
+    steps, failed = [], None
+    cli = await _connect_device(dev)
+    try:
+        sess = await cli.shell()
+        try:
+            for line in script.splitlines():
+                cmd = line.rstrip()
+                if not cmd.strip() or cmd.lstrip().startswith("!"):
+                    continue
+                out = await sess.run(cmd, timeout=90)
+                if _OLT_CONFIRM.search(out.strip()[-60:]):
+                    out += await sess.run("yes", timeout=120)
+                # a própria linha ecoada não conta como erro
+                body = out.replace(cmd.strip(), "", 1)
+                if _OLT_ERR.search(body):
+                    failed = {"command": cmd.strip(), "output": out.strip()[-1500:]}
+                    steps.append({"command": cmd.strip(), "ok": False})
+                    try:
+                        await sess.run("end", timeout=20)
+                    except Exception:
+                        pass
+                    break
+                steps.append({"command": cmd.strip(), "ok": True})
+        finally:
+            try:
+                await sess.close()
+            except Exception:
+                pass
+    finally:
+        await cli.close()
+    return {"ok": failed is None, "steps": steps, "failed": failed}
+
+
+@api.post("/oltgen/apply")
+async def oltgen_apply(body: OltApplyIn, user: dict = Depends(get_current_user)):
+    """Gera o script no servidor (a partir dos mesmos parâmetros da tela) e aplica direto na OLT, gravando no final."""
+    _no_viewer(user)
+    gen = {"onu": oltgen.onu_script, "onu-add": oltgen.onu_add_script, "onu-remove": oltgen.onu_remove_script}.get(body.kind)
+    if not gen:
+        raise HTTPException(status_code=400, detail="Tipo de script não pode ser aplicado direto")
+    try:
+        res = gen({**(body.params or {}), "write": True, "comments": False})
+    except (oltgen.GenError, TypeError, ValueError, AttributeError) as e:
+        raise HTTPException(status_code=400, detail=str(e) or "Parâmetros inválidos")
+    dev = await _get_device_for(user, body.device_id)
+    if (dev.get("device_type") or "") != "zte":
+        raise HTTPException(status_code=400, detail="Esse equipamento não está cadastrado como ZTE")
+    lock = _olt_apply_locks.setdefault(dev["id"], asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(status_code=409, detail="Já tem um script sendo aplicado nessa OLT; espere terminar")
+    started = datetime.now(timezone.utc)
+    async with lock:
+        try:
+            r = await _olt_run_script(dev, res["script"])
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Não consegui aplicar na OLT: {e}"[:300])
+    await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
+                                  "device_id": dev["id"], "device_name": dev["name"], "kind": "batch",
+                                  "started_at": started.isoformat(), "ended_at": datetime.now(timezone.utc).isoformat(),
+                                  "duration_seconds": int((datetime.now(timezone.utc) - started).total_seconds()),
+                                  "commands": [s["command"] for s in r["steps"]], "oltgen": body.kind, "ok": r["ok"]})
+    logger.info("Script de OLT (%s) aplicado por %s em %s: %s", body.kind, user.get("email"), dev["name"], "ok" if r["ok"] else "ERRO")
+    return {**r, "device": dev["name"], "saved": r["ok"] and any(s["command"] == "write" for s in r["steps"]),
+            "total": len([l for l in res["script"].splitlines() if l.strip() and not l.lstrip().startswith("!")])}
+
+
 class FindOnuIn(BaseModel):
     query: str = ""              # serial (ZTEGD4F3D9EC) ou MAC
     mac: str = ""                # compatibilidade com a tela antiga
