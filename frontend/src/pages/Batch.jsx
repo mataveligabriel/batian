@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import Runbooks from "@/components/Runbooks";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -27,6 +28,7 @@ export default function Batch() {
 
   // modo "Lista de IPs": roda sem cadastrar — usuário/senha informados na hora
   const [mode, setMode] = useState("saved");
+  const [tab, setTab] = useState(() => (new URLSearchParams(window.location.search).get("tab") === "roteiros" ? "rb" : "run"));
   const [adhoc, setAdhoc] = useState({ targets: "", username: "", password: "", protocol: "auto", port: "", agent_id: "", device_type: "auto" });
   const [agents, setAgents] = useState([]);
   const [job, setJob] = useState(null);
@@ -154,7 +156,15 @@ export default function Batch() {
       <div className="mb-6">
         <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Execução em Lote</h1>
         <p className="text-slate-400 mt-2 text-sm">Rode scripts em múltiplos equipamentos simultaneamente e veja o resultado por host.</p>
+        <div className="flex gap-1 mt-4 border-b border-line">
+          {[["run", "Execução"], ["rb", "Roteiros automatizados"]].map(([k, l]) => (
+            <button key={k} onClick={() => setTab(k)} data-testid={`batch-tab-${k}`}
+              className={`px-3 py-2 text-sm border-b-2 -mb-px ${tab === k ? "border-brand text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`}>{l}</button>
+          ))}
+        </div>
       </div>
+
+      {tab === "rb" ? <Runbooks /> : <>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Devices selector */}
@@ -365,6 +375,7 @@ export default function Batch() {
           ))}
         </div>
       )}
+      </>}
     </div>
   );
 }

@@ -128,7 +128,7 @@ _MOD_RULES = [
     ("*", r"/api/rpki(/.*)?", ("rpki",)),
     ("*", r"/api/oltgen(/.*)?", ("oltgen",)),
     ("GET", r"/api/scripts", ("batch", "terminal")),
-    ("*", r"/api/(batch|scripts)(/.*)?", ("batch",)),
+    ("*", r"/api/(batch|scripts|runbooks)(/.*)?", ("batch",)),
     ("GET", r"/api/agents", ("agents", "devices", "web", "batch", "rdp", "winbox")),
     ("GET", r"/api/vpns", None),                                                # indicador de VPN do menu
     ("*", r"/api/(agents|vpns|bastion)(/.*)?", ("agents",)),

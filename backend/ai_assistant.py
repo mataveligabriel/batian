@@ -297,8 +297,15 @@ HELP_TEXT = (
     "• o que está consumindo o trânsito A agora?\n"
     "• desativa a interface GE0/0/5 do switch S5732-Caxixe\n\n"
     "Leitura roda direto. Qualquer alteração eu mostro os comandos e só executo depois do botão ✅.\n\n"
+    "/roteiros — roteiros automatizados (ex.: ATIVAR ROTA LIMOEIRO); também dá para mandar só o nome do roteiro\n"
     "/novo — começa uma conversa nova\n/id — mostra seu ID do Telegram\n/ajuda — esta mensagem"
 )
+
+
+def _norm_name(s: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", s).strip().upper()
 
 
 class AIError(Exception):
@@ -944,6 +951,8 @@ class TelegramAssistant(AgentCore):
         self._task: Optional[asyncio.Task] = None
         self._token = ""
         self.status = "parado"
+        self.runbook_list = None        # async (user) -> [roteiros liberados para o Telegram]
+        self.runbook_run = None         # async (user, id) -> texto com o resultado
 
     # ---------- ciclo de vida ----------
     def start(self):
@@ -1082,6 +1091,20 @@ class TelegramAssistant(AgentCore):
             return await self.send(chat_id, "Seu ID do Telegram está vinculado a um usuário do BastiON que não existe mais. Fale com o administrador.")
         if cmd in ("/start", "/ajuda", "/help"):
             return await self.send(chat_id, HELP_TEXT)
+        if self.runbook_list and (cmd in ("/roteiros", "/roteiro", "/scripts") or not cmd):
+            rbs = await self.runbook_list(user)
+            if cmd in ("/roteiros", "/scripts") or (cmd == "/roteiro" and len(text.split()) == 1):
+                if not rbs:
+                    return await self.send(chat_id, "Nenhum roteiro liberado para o Telegram. Crie em Execução em Lote → Roteiros.")
+                kb = {"inline_keyboard": [[{"text": f"▶ {r['name']}"[:60], "callback_data": f"rb:{r['id']}"}] for r in rbs[:30]]}
+                return await self.send(chat_id, "Roteiros automatizados — escolha um (vou pedir confirmação antes de executar):", reply_markup=kb)
+            wanted = text.split(None, 1)[1] if cmd == "/roteiro" else text
+            key = _norm_name(wanted)
+            hit = next((r for r in rbs if _norm_name(r["name"]) == key), None)
+            if hit:
+                return await self._runbook_confirm(chat_id, hit)
+            if cmd == "/roteiro":
+                return await self.send(chat_id, f"Não achei o roteiro “{wanted}”. Mande /roteiros para ver a lista.")
         if cmd in ("/novo", "/reset", "/new"):
             await self.db.ai_conversations.delete_one({"chat_id": str(chat_id)})
             return await self.send(chat_id, "Conversa reiniciada.")
@@ -1154,8 +1177,55 @@ class TelegramAssistant(AgentCore):
         await self.send(chat_id, f"🛡️ {m['prefix']} em blackhole nas bordas até {exp} ({'prazo estendido' if m.get('extended') else 'por ' + (user.get('email') or '')}).\n"
                                  "Remover antes: Flow → Mitigação no BastiON.")
 
+    async def _runbook_confirm(self, chat_id, rb: dict):
+        names = {d["id"]: d["name"] async for d in self.db.devices.find(
+            {"id": {"$in": [st["device_id"] for st in rb.get("steps") or []]}}, {"_id": 0, "id": 1, "name": 1})}
+        for st in rb.get("steps") or []:
+            st["device_name"] = names.get(st["device_id"], "?")
+        steps = "\n".join(f"{i}. {st.get('device_name') or 'equipamento'}: " + " | ".join(
+            [l.strip() for l in (st.get("commands") or "").splitlines() if l.strip() and l.strip() not in ("#", "!")][:6])
+            for i, st in enumerate(rb.get("steps") or [], 1))
+        kb = {"inline_keyboard": [[{"text": "✅ Executar", "callback_data": f"rbok:{rb['id']}"},
+                                   {"text": "❌ Cancelar", "callback_data": f"rbno:{rb['id']}"}]]}
+        return await self.send(chat_id, f"Roteiro {rb['name']}\n{steps}\n\nExecuto agora? (para no primeiro erro)", reply_markup=kb)
+
+    async def _on_runbook_cb(self, cq: dict, data: str):
+        from_id = str((cq.get("from") or {}).get("id"))
+        msg = cq.get("message") or {}
+        chat_id = (msg.get("chat") or {}).get("id")
+        action, _, rid = data.partition(":")
+        s = await get_ai_settings(self.db)
+        link = self._auth(s, from_id)
+        user = await self.db.users.find_one({"id": link["user_id"]}, {"_id": 0, "password_hash": 0}) if link else None
+        if not user or not self.runbook_list:
+            return await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Acesso não autorizado.", show_alert=True)
+        if action == "rbno":
+            await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Cancelado — nada foi executado.")
+            return await self._tg("editMessageReplyMarkup", chat_id=chat_id, message_id=msg.get("message_id"), reply_markup={"inline_keyboard": []})
+        rb = next((r for r in await self.runbook_list(user) if r["id"] == rid), None)
+        if not rb:
+            return await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Roteiro não encontrado.", show_alert=True)
+        if action == "rb":
+            await self._tg("answerCallbackQuery", callback_query_id=cq["id"])
+            return await self._runbook_confirm(chat_id, rb)
+        if action != "rbok":
+            return await self._tg("answerCallbackQuery", callback_query_id=cq["id"])
+        await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Executando…")
+        await self._tg("editMessageReplyMarkup", chat_id=chat_id, message_id=msg.get("message_id"), reply_markup={"inline_keyboard": []})
+        await self.send(chat_id, f"⏳ Executando {rb['name']}…")
+        stop = asyncio.Event()
+        typing = asyncio.create_task(self._typing(chat_id, stop))
+        try:
+            text = await self.runbook_run(user, rid)
+        finally:
+            stop.set()
+            typing.cancel()
+        return await self.send(chat_id, text)
+
     async def _on_callback(self, cq: dict):
         data = cq.get("data") or ""
+        if data.startswith(("rb:", "rbok:", "rbno:")):
+            return await self._on_runbook_cb(cq, data)
         if data.startswith(("mit:", "mitok:", "mitno:")):
             return await self._on_mitigation_cb(cq, data)
         from_id = str((cq.get("from") or {}).get("id"))

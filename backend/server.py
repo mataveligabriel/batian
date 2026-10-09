@@ -57,6 +57,7 @@ import vendorscan
 import rdp
 import oltgen
 import tcprelay
+import runbooks
 import vpnconf
 import botnet
 import webpush
@@ -2833,6 +2834,149 @@ async def _telegram_token() -> str:
 assistant = ai_assistant.TelegramAssistant(db, _connect_device, _telegram_token,
                                            snmp_client=lambda dev: _snmp_client(dev),
                                            flow_query=lambda *a: _flow_for_ai(*a))
+# ---------- Roteiros automatizados (vários equipamentos em sequência; tela de Lote e bot do Telegram) ----------
+_runbook_locks: dict = {}
+
+
+def _runbook_scope(user: dict) -> dict:
+    """Os do usuário e os que o dono compartilhou (o administrador vê todos)."""
+    if user.get("role") == "admin":
+        return {}
+    return {"$or": [{"owner_id": user["id"]}, {"shared": True}]}
+
+
+async def _runbook_for(user: dict, rid: str) -> dict:
+    rb = await db.runbooks.find_one({"id": rid, **_runbook_scope(user)}, {"_id": 0})
+    if not rb:
+        raise HTTPException(status_code=404, detail="Roteiro não encontrado")
+    return rb
+
+
+async def _runbook_validate(user: dict, data: dict) -> dict:
+    try:
+        rb = runbooks.clean(data or {})
+    except runbooks.RunbookError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    for i, st in enumerate(rb["steps"], 1):
+        if not await db.devices.find_one({"id": st["device_id"], **_scope(user)}, {"_id": 0, "id": 1}):
+            raise HTTPException(status_code=400, detail=f"Passo {i}: equipamento não encontrado entre os seus")
+    return rb
+
+
+async def run_runbook(rb: dict, user: dict, via: str) -> dict:
+    """Executa (um de cada vez por roteiro) e guarda no histórico. Os equipamentos são os do dono do roteiro."""
+    lock = _runbook_locks.setdefault(rb["id"], asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(status_code=409, detail=f"O roteiro {rb['name']} já está rodando — espere terminar")
+    owner = rb.get("owner_id")
+
+    async def get_dev(did):
+        return await db.devices.find_one({"id": did, "owner_id": owner}, {"_id": 0})
+    started = datetime.now(timezone.utc)
+    async with lock:
+        res = await runbooks.run(rb, get_dev, _connect_device)
+    ended = datetime.now(timezone.utc)
+    run_doc = {"id": os.urandom(8).hex(), "runbook_id": rb["id"], "name": rb["name"], "user_id": user["id"],
+               "user_email": user.get("email", ""), "via": via, "ok": res["ok"], "started_at": started.isoformat(),
+               "ended_at": ended.isoformat(), "steps": res["steps"]}
+    await db.runbook_runs.insert_one(dict(run_doc))
+    await db.runbooks.update_one({"id": rb["id"]}, {"$set": {"last_run": {"at": ended.isoformat(), "ok": res["ok"],
+                                                                         "by": user.get("email", ""), "via": via}}})
+    for st in res["steps"]:
+        if not st["skipped"] and st.get("host"):
+            await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user.get("email", ""),
+                                          "device_id": st["device_id"], "device_name": f"{st['device']} (roteiro {rb['name']})",
+                                          "started_at": started.isoformat(), "ended_at": ended.isoformat(),
+                                          "duration_seconds": int((ended - started).total_seconds()), "kind": "batch",
+                                          "commands": runbooks.command_lines(rb["steps"][st["index"] - 1]["commands"]), "ok": st["ok"]})
+    logger.info("Roteiro %s executado por %s (%s): %s", rb["name"], user.get("email"), via, "ok" if res["ok"] else "FALHOU")
+    return {**res, "run_id": run_doc["id"], "name": rb["name"], "started_at": run_doc["started_at"], "ended_at": run_doc["ended_at"]}
+
+
+async def _runbooks_for_telegram(user: dict) -> list:
+    return await db.runbooks.find({**_runbook_scope(user), "telegram": True}, {"_id": 0}).sort("name", 1).to_list(100)
+
+
+async def _runbook_telegram_run(user: dict, rid: str) -> str:
+    rb = await db.runbooks.find_one({"id": rid, **_runbook_scope(user), "telegram": True}, {"_id": 0})
+    if not rb:
+        return "Roteiro não encontrado (ou não liberado para o Telegram)."
+    if user.get("role") == "viewer" or not auth_mod.has_module(user, "batch"):
+        return "Seu usuário não tem acesso à Execução em Lote."
+    try:
+        res = await run_runbook(rb, user, "telegram")
+    except HTTPException as e:
+        return str(e.detail)
+    return runbooks.summary(rb, res)
+
+
+assistant.runbook_list = _runbooks_for_telegram
+assistant.runbook_run = _runbook_telegram_run
+
+
+@api.get("/runbooks")
+async def runbook_list(user: dict = Depends(get_current_user)):
+    rows = await db.runbooks.find(_runbook_scope(user), {"_id": 0}).sort("name", 1).to_list(500)
+    names = {d["id"]: d["name"] async for d in db.devices.find({"id": {"$in": list({s["device_id"] for r in rows for s in r["steps"]})}},
+                                                               {"_id": 0, "id": 1, "name": 1})}
+    for r in rows:
+        r["mine"] = r.get("owner_id") == user["id"]
+        for s in r["steps"]:
+            s["device_name"] = names.get(s["device_id"], "?")
+    return rows
+
+
+@api.post("/runbooks")
+async def runbook_create(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    rb = await _runbook_validate(user, body)
+    if await db.runbooks.find_one({"owner_id": user["id"], "name_key": runbooks.norm_name(rb["name"])}):
+        raise HTTPException(status_code=400, detail="Já existe um roteiro com esse nome")
+    rb.update({"id": str(uuid.uuid4()), "owner_id": user["id"], "owner_email": user.get("email", ""),
+               "name_key": runbooks.norm_name(rb["name"]), "created_at": datetime.now(timezone.utc).isoformat()})
+    await db.runbooks.insert_one(dict(rb))
+    return rb
+
+
+@api.put("/runbooks/{rid}")
+async def runbook_update(rid: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await _runbook_for(user, rid)
+    if cur.get("owner_id") != user["id"] and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Só o dono do roteiro altera")
+    owner = {"id": cur["owner_id"], "role": "operator"} if cur.get("owner_id") != user["id"] else user
+    rb = await _runbook_validate(owner, body)
+    dup = await db.runbooks.find_one({"owner_id": cur["owner_id"], "name_key": runbooks.norm_name(rb["name"]), "id": {"$ne": rid}})
+    if dup:
+        raise HTTPException(status_code=400, detail="Já existe um roteiro com esse nome")
+    rb["name_key"] = runbooks.norm_name(rb["name"])
+    await db.runbooks.update_one({"id": rid}, {"$set": rb})
+    return {**cur, **rb}
+
+
+@api.delete("/runbooks/{rid}")
+async def runbook_delete(rid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await _runbook_for(user, rid)
+    if cur.get("owner_id") != user["id"] and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Só o dono do roteiro apaga")
+    await db.runbooks.delete_one({"id": rid})
+    return {"ok": True}
+
+
+@api.post("/runbooks/{rid}/run")
+async def runbook_run(rid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    rb = await _runbook_for(user, rid)
+    return await run_runbook(rb, user, "web")
+
+
+@api.get("/runbooks/{rid}/runs")
+async def runbook_runs(rid: str, user: dict = Depends(get_current_user)):
+    await _runbook_for(user, rid)
+    return await db.runbook_runs.find({"runbook_id": rid}, {"_id": 0}).sort("started_at", -1).to_list(10)
+
+
 web_assistant = ai_assistant.WebAssistant(db, _connect_device, snmp_client=lambda dev: _snmp_client(dev),
                                           flow_query=lambda *a: _flow_for_ai(*a))
 

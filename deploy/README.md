@@ -882,3 +882,19 @@ sozinho) com o usuário e a senha do MikroTik. MikroTik sem cadastro: informe o 
 - MikroTik com Winbox em outra porta: use o acesso por IP com a porta certa (ela fica lembrada no equipamento).
 - MAC-Winbox (camada 2) não passa pelo túnel; use o IP.
 - Firewall do servidor: `sudo ufw allow 8300:8309/tcp` (se o ufw estiver ativo).
+
+## 36. Roteiros automatizados (Execução em Lote → Roteiros; bot do Telegram)
+
+Um roteiro é uma sequência de passos, cada um com um equipamento e os comandos dele — ex.: **ATIVAR ROTA LIMOEIRO**
+(1. S6730-CASTELO: `sys` / `interface XGigabitEthernet0/0/8.1110` / `undo shutdown`; 2. S6730-VENDA-NOVA: `sys` /
+`interface XGigabitEthernet0/0/27` / `shutdown`) e **VOLTAR ROTA LIMOEIRO** (o inverso).
+
+- Os passos rodam **em ordem** e **param no primeiro erro**: se o equipamento do passo 1 recusar um comando, o passo 2
+  não é executado. Linhas só com `#` são ignoradas. Confirmação `[Y/N]` é respondida sozinha.
+- Opcional: **gravar a configuração** no fim de cada equipamento (Huawei `return`+`save`, ZTE `write`, Cisco
+  `write memory`…). Sem isso a mudança vale até o próximo reboot.
+- **Telegram:** com "Pode ser executado pelo bot" marcado, mande `/roteiros` (lista com botões) ou só o nome do roteiro
+  (`ativar rota limoeiro`, sem diferença de maiúscula/acento). O bot mostra os passos e só executa no **✅ Executar**;
+  depois responde o resultado de cada passo. Vale para quem está liberado no bot (Automação → Assistente IA) e tem o
+  módulo Execução em Lote. O bot precisa estar ativo (Assistente IA configurado).
+- Cada execução fica no histórico do roteiro (ícone de relógio) e no Histórico de sessões.
