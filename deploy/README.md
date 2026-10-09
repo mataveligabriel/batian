@@ -850,3 +850,8 @@ na OLT (é criado na Ativação da OLT, em Perfis de banda).
 ONU abre outra linha) e escolha a série; sai o script com `no onu N` na PON certa, que remove a ONU e toda a
 configuração dela. Antes de aplicar, escolha a OLT e clique em **Conferir**: o BastiON lê a running-config (só
 leitura) e mostra nome, serial e tipo de cada ONU, ou avisa se ela não existe naquela PON.
+
+**Procurar ONU pelo MAC** (no alto do Desautorizar ONU): cole o MAC em qualquer formato (`7c:8b:ca:11:22:33`,
+`7c-8b-…`, `7c8b.ca11.2233`) e escolha uma OLT ou **Todas as OLTs ZTE**. O BastiON roda `show mac` (só leitura) e mostra
+em qual OLT, PON e ONU o MAC foi aprendido, a VLAN e quem é o cliente (nome, serial, modelo). **Desautorizar esta**
+já põe a ONU na lista. Se o MAC não aparecer, o equipamento pode estar desligado ou o MAC expirou da tabela.

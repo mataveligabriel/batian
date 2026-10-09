@@ -1556,6 +1556,62 @@ async def oltgen_onu_info(body: OnuInfoIn, user: dict = Depends(get_current_user
     return {"device": dev["name"], "items": out}
 
 
+class FindMacIn(BaseModel):
+    mac: str
+    device_id: str = ""          # vazio ou "all" = procura em todas as OLTs ZTE do usuário
+
+
+@api.post("/oltgen/find-mac")
+async def oltgen_find_mac(body: FindMacIn, user: dict = Depends(get_current_user)):
+    """Procura em qual ONU o MAC foi aprendido (show mac) e quem é a ONU. Só leitura."""
+    _no_viewer(user)
+    try:
+        mac = oltgen.norm_mac(body.mac)
+    except oltgen.GenError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if body.device_id and body.device_id != "all":
+        devs = [await _get_device_for(user, body.device_id)]
+    else:
+        devs = await db.devices.find({**_scope(user), "device_type": "zte"}, {"_id": 0}).to_list(30)
+        if not devs:
+            raise HTTPException(status_code=404, detail="Nenhuma OLT ZTE cadastrada")
+    searched, errors = [], []
+    for dev in devs:
+        try:
+            cli = await _connect_device(dev)
+        except Exception as e:
+            errors.append(f"{dev['name']}: {e}"[:160])
+            continue
+        try:
+            hit, raw = None, ""
+            for cmd in oltgen.MAC_COMMANDS:
+                raw = _out_text(await cli.run_command(cmd.format(mac=mac), timeout=60))
+                hit = oltgen.parse_mac_lookup(raw, mac)
+                if hit or not re.search(r"invalid|unrecognized|error|%", raw, re.I):
+                    break
+            searched.append(dev["name"])
+            if not hit:
+                continue
+            pon_cfg = _out_text(await cli.run_command(
+                f"show running-config interface {oltgen.pon_if(hit['platform'], hit['slot'], hit['pon'])}", timeout=60))
+            onu_cfg = _out_text(await cli.run_command(
+                f"show running-config interface {oltgen.onu_if_name(hit['platform'], hit['slot'], hit['pon'], hit['onu'])}", timeout=60))
+            info = oltgen.find_onu(pon_cfg, onu_cfg, hit["onu"]) or {}
+            await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
+                                          "device_id": dev["id"], "device_name": dev["name"], "kind": "batch",
+                                          "started_at": datetime.now(timezone.utc).isoformat(),
+                                          "ended_at": datetime.now(timezone.utc).isoformat(), "duration_seconds": 0})
+            return {"found": True, "mac": mac, "device": dev["name"], "device_id": dev["id"], **hit, **info, "searched": searched}
+        except Exception as e:
+            errors.append(f"{dev['name']}: {e}"[:160])
+        finally:
+            try:
+                await cli.close()
+            except Exception:
+                pass
+    return {"found": False, "mac": mac, "searched": searched, "errors": errors}
+
+
 # ---------- Looking Glass (interno) ----------
 _lg_locks: dict = {}
 _lg_hits: dict = {}

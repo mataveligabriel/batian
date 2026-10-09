@@ -653,3 +653,41 @@ def find_onu(pon_cfg: str, onu_cfg: str, onu: int) -> Optional[dict]:
             return {"type": m.group(2), "sn": m.group(3), "name": nm.group(1) if nm else "",
                     "description": ds.group(1).strip() if ds else ""}
     return None
+
+
+# ---------- procurar ONU pelo MAC ----------
+_MAC_HEX = re.compile(r"[^0-9a-fA-F]")
+_ONU_REF = re.compile(r"gpon[-_]onu[-_]1/(\d+)/(\d+):(\d+)|vport[-_]1/(\d+)/(\d+)\.(\d+):\d+", re.I)
+
+
+def norm_mac(v: str) -> str:
+    """Qualquer formato (aa:bb:cc:dd:ee:ff, aa-bb-…, aabb.ccdd.eeff) -> aabb.ccdd.eeff, como a ZTE mostra."""
+    h = _MAC_HEX.sub("", str(v or "")).lower()
+    if len(h) != 12:
+        raise GenError("MAC inválido: use 12 dígitos hexadecimais (ex.: 7c:8b:ca:11:22:33)")
+    return f"{h[0:4]}.{h[4:8]}.{h[8:12]}"
+
+
+MAC_COMMANDS = ["show mac {mac}", "show mac address {mac}", "show mac-address address {mac}"]
+
+
+def parse_mac_lookup(text: str, mac: str) -> Optional[dict]:
+    """Acha na saída do `show mac` a ONU (slot, pon, onu) e a VLAN onde o MAC foi aprendido."""
+    flat = mac.replace(".", "")
+    for line in (text or "").splitlines():
+        if flat not in _MAC_HEX.sub("", line).lower():
+            continue
+        m = _ONU_REF.search(line)
+        if not m:
+            continue
+        g = m.groups()
+        slot, pon, onu = (int(x) for x in (g[0:3] if g[0] else g[3:6]))
+        plat = "c300" if re.search(r"gpon-onu_", line, re.I) else "titan"
+        vlan = None
+        rest = line.replace(m.group(0), " ")
+        for tok in re.findall(r"\b(\d{1,4})\b", rest):
+            if 1 <= int(tok) <= 4094 and tok not in mac:
+                vlan = int(tok)
+                break
+        return {"slot": slot, "pon": pon, "onu": onu, "platform": plat, "vlan": vlan, "line": line.strip()}
+    return None

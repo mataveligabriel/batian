@@ -588,6 +588,10 @@ function OnuRemove({ meta, devices }) {
   const [devId, setDevId] = useState("");
   const [info, setInfo] = useState(null);                // conferência na OLT: chave "s/p:o" -> dados
   const [checking, setChecking] = useState(false);
+  const [mac, setMac] = useState("");
+  const [macDev, setMacDev] = useState("all");
+  const [macRes, setMacRes] = useState(null);
+  const [macBusy, setMacBusy] = useState(false);
   const seq = useRef(0);
   const filled = rows.filter(r => r.slot !== "" && r.pon !== "" && r.onu !== "");
   const key = (r) => `${Number(r.slot)}/${Number(r.pon)}:${Number(r.onu)}`;
@@ -619,9 +623,70 @@ function OnuRemove({ meta, devices }) {
     } catch (e) { toast.error(formatApiError(e)); } finally { setChecking(false); }
   };
 
+  const findMac = async () => {
+    if (!mac.trim()) return toast.error("Informe o MAC");
+    setMacBusy(true); setMacRes(null);
+    try {
+      const { data } = await api.post("/oltgen/find-mac", { mac, device_id: macDev });
+      setMacRes(data);
+      if (!data.found) toast.info(`MAC ${data.mac} não encontrado${data.searched?.length ? ` (${data.searched.join(", ")})` : ""}`);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setMacBusy(false); }
+  };
+  const useMac = (r) => {
+    const row = { slot: String(r.slot), pon: String(r.pon), onu: String(r.onu) };
+    // o script vale para uma OLT só: se a ONU achada é de outra OLT/série, a lista recomeça com ela
+    const other = r.platform !== plat || (devId && devId !== r.device_id);
+    setPlat(r.platform);
+    setRows(rs => (other ? [row] : [...rs.filter(x => (x.slot || x.pon || x.onu) && key(x) !== key(row)), row]));
+    setDevId(r.device_id || "");
+    setInfo(cur => ({ ...(other ? {} : cur || {}), [key(row)]: { ...r, found: true } }));
+    if (other && filled.length) toast.info("A lista foi trocada: essa ONU é de outra OLT");
+  };
+
   return (
     <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="onurm-page">
       <div className="space-y-4 min-w-0">
+        <Card className="bg-surface border-line p-4 space-y-3" data-testid="onumac">
+          <div className="text-sm font-semibold text-slate-200">Procurar ONU pelo MAC</div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="w-56">
+              <Field label="MAC do equipamento do cliente">
+                <Input value={mac} onChange={e => setMac(e.target.value)} onKeyDown={e => e.key === "Enter" && findMac()}
+                  placeholder="7c:8b:ca:11:22:33" className={inp} data-testid="onumac-mac" />
+              </Field>
+            </div>
+            <div className="flex-1 min-w-[180px]">
+              <Field label="Em qual OLT">
+                <select value={macDev} onChange={e => setMacDev(e.target.value)} data-testid="onumac-device"
+                  className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+                  <option value="all">Todas as OLTs ZTE ({devices.length})</option>
+                  {devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host}</option>)}
+                </select>
+              </Field>
+            </div>
+            <Button onClick={findMac} disabled={macBusy || !devices.length} variant="outline" className="border-line bg-transparent h-9" data-testid="onumac-go">
+              {macBusy ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}Procurar
+            </Button>
+          </div>
+          {macRes?.found && (
+            <div className="rounded-md border border-line bg-sunken/60 px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-mono" data-testid="onumac-result">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span className="text-slate-100">{macRes.device}</span>
+              <span className="text-brand-soft">{macRes.platform === "c300" ? `gpon-onu_1/${macRes.slot}/${macRes.pon}:${macRes.onu}` : `gpon_onu-1/${macRes.slot}/${macRes.pon}:${macRes.onu}`}</span>
+              {macRes.vlan && <span className="text-slate-400">VLAN {macRes.vlan}</span>}
+              <span className="text-slate-200">{macRes.name || "sem nome"}</span>
+              {macRes.sn && <span className="text-slate-400">{macRes.sn} · {macRes.type}</span>}
+              <Button size="sm" variant="outline" onClick={() => useMac(macRes)} className="ml-auto h-7 border-red-800/60 bg-transparent text-red-300 hover:bg-red-950/40" data-testid="onumac-use">
+                <Unplug className="w-3.5 h-3.5 mr-1" />Desautorizar esta</Button>
+            </div>
+          )}
+          {macRes && !macRes.found && (
+            <div className="text-xs text-amber-300" data-testid="onumac-none">
+              MAC {macRes.mac} não aparece {macRes.searched?.length ? `em ${macRes.searched.join(", ")}` : "nas OLTs"}: o equipamento pode estar desligado ou o MAC expirou na tabela.
+              {macRes.errors?.length ? <span className="block text-red-300 mt-1">Sem acesso: {macRes.errors.join(" · ")}</span> : null}
+            </div>
+          )}
+        </Card>
         <div className={sec}>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-slate-400">Série da OLT</span>
