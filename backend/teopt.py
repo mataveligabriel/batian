@@ -389,7 +389,8 @@ OSPF_CLI = {
     "juniper": ["show ospf interface detail"],
     "mikrotik": ["/routing ospf interface print terse"],
 }
-_RX_HUAWEI = re.compile(r"^\s*(\d+\.\d+\.\d+\.\d+)\s+(?:P2P|PTP|Broadcast|NBMA|P2MP|PTMP)\s+\S+\s+(\d+)\b", re.I | re.M)
+# Huawei (com ou sem a coluna Interface antes do IP): "Vlanif100  10.0.0.1  P2P  P-2-P  10  1"
+_RX_HUAWEI = re.compile(r"(\d+\.\d+\.\d+\.\d+)\s+(?:P2P|PTP|Broadcast|NBMA|P2MP|PTMP|Virtual)\s+\S+\s+(\d+)\b", re.I)
 _RX_CISCO = re.compile(r"\s(\d+\.\d+\.\d+\.\d+)/\d+\s+(\d+)\s", re.M)
 _RX_JUNOS = re.compile(r"Address:\s*(\d+\.\d+\.\d+\.\d+).*?Cost:\s*(\d+)", re.I)
 _RX_MTIK = re.compile(r"address=(\d+\.\d+\.\d+\.\d+)(?:/\d+)?\b.*?\bcost=(\d+)", re.I)

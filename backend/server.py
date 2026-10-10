@@ -4526,6 +4526,7 @@ class TeRunIn(BaseModel):
     map_id: Optional[str] = None        # alternativa: usa a última análise do mapa
     sample_sec: int = 10
     name: str = ""
+    default_cost: Optional[int] = None  # enlace sem custo lido (SNMP/CLI) entra com esse custo
 
 
 async def _te_for(user: dict, rid: str) -> dict:
@@ -4541,7 +4542,8 @@ def _te_public(doc: dict) -> dict:
             "links": links, "utilization": teopt.utilization(links),
             "summary": {"devices": len(doc.get("nodes") or []), "links": len(links),
                         "ospf_links": sum(1 for L in links if L.get("cost_ab") is not None and L.get("cost_ba") is not None),
-                        "over80": sum(1 for u in teopt.utilization(links) if (u["pct"] or 0) >= 80)}}
+                        "over80": sum(1 for u in teopt.utilization(links) if (u["pct"] or 0) >= 80),
+                        "assumed": sum(1 for L in links if L.get("cost_assumed"))}}
 
 
 @api.post("/te/runs")
@@ -4598,6 +4600,7 @@ async def te_run(body: TeRunIn, user: dict = Depends(get_current_user)):
         need = sorted({L[s] for L in links for s, k in (("a", "cost_ab"), ("b", "cost_ba")) if L.get(k) is None})
         cli_costs: dict = {}
         cli_err: dict = {}
+        cli_raw: dict = {}
         ssh_sem = asyncio.Semaphore(6)
 
         async def cli_one(did):
@@ -4612,6 +4615,7 @@ async def te_run(body: TeRunIn, user: dict = Depends(get_current_user)):
                     try:
                         for cmd in cmds:
                             out = _out_text(await asyncio.wait_for(cli.run_command(cmd, timeout=60), timeout=90))
+                            cli_raw[did] = f"$ {cmd}\n{out}"[-4000:]
                             got = teopt.parse_ospf_cli(out)
                             if got:
                                 cli_costs[did] = got
@@ -4625,6 +4629,12 @@ async def te_run(body: TeRunIn, user: dict = Depends(get_current_user)):
             await asyncio.gather(*[cli_one(d) for d in need])
             teopt.fill_costs(links, cli_costs)
             notes = [n for n in notes if "sem OSPF" not in n.get("note", "")]
+            if body.default_cost and 1 <= body.default_cost <= 65535:
+                for L in links:
+                    for k in ("cost_ab", "cost_ba"):
+                        if L.get(k) is None:
+                            L[k] = int(body.default_cost)
+                            L["cost_assumed"] = True
             for L in links:
                 if L.get("cost_ab") is None or L.get("cost_ba") is None:
                     miss = [L[f"{x}_name"] for x, k in (("a", "cost_ab"), ("b", "cost_ba")) if L.get(k) is None]
@@ -4634,6 +4644,7 @@ async def te_run(body: TeRunIn, user: dict = Depends(get_current_user)):
                       "router_id": (data.get(did) or {}).get("router_id"), "ok": bool((data.get(did) or {}).get("ok")),
                       "ospf_snmp": len(((data.get(did) or {}).get("ospf") or {}).get("ifaces") or {}),
                       "ospf_cli": len(cli_costs.get(did) or {}) if did in need else None, "cli_error": cli_err.get(did),
+                      "cli_raw": cli_raw.get(did),
                       "links": sum(1 for L in links if did in (L["a"], L["b"]))} for did in ids]
         name, source = body.name or f"{len(ids)} equipamentos", {"kind": "devices", "device_ids": ids}
     doc = {"id": os.urandom(8).hex(), "owner_id": user["id"], "name": name[:80], "source": source,
@@ -4736,7 +4747,15 @@ async def te_path(rid: str, body: TePathIn, user: dict = Depends(get_current_use
             if not mine:
                 why.append(f"{nodes[nid]['name']}: nenhum enlace ponto a ponto descoberto com os outros escolhidos")
             elif not ok:
-                why.append(f"{nodes[nid]['name']}: {len(mine)} enlace(s), nenhum com custo OSPF nas duas pontas")
+                nocost = sum(1 for L in mine if L.get("cost_ab") is None or L.get("cost_ba") is None)
+                down = sum(1 for L in mine if L.get("oper_a") not in (None, "up", "unknown") or L.get("oper_b") not in (None, "up", "unknown"))
+                parts = []
+                if nocost:
+                    parts.append(f"{nocost} sem custo OSPF lido numa das pontas")
+                if down:
+                    parts.append(f"{down} com interface fora (down)")
+                why.append(f"{nodes[nid]['name']}: {len(mine)} enlace(s) — " + (", ".join(parts) or "nenhum utilizável")
+                           + ". Veja “Equipamentos lidos” (saída da CLI) ou use “custo para enlace sem custo lido”.")
         if not why:
             why.append("os dois têm enlaces com OSPF, mas os grupos não se ligam — faltam equipamentos do meio do caminho na seleção")
         spf["why"] = why

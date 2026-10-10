@@ -221,6 +221,7 @@ export default function TrafficEng() {
   const [tab, setTab] = useState("opt");
   const [snmp, setSnmp] = useState({ open: false, community: "", port: "" });
   const [snmpBusy, setSnmpBusy] = useState(false);
+  const [defCost, setDefCost] = useState("");
   const applySnmp = async () => {
     if (!picked.length) return toast.error("Marque os equipamentos primeiro");
     setSnmpBusy(true);
@@ -243,7 +244,8 @@ export default function TrafficEng() {
   const build = async () => {
     setBusy(true);
     try {
-      const { data } = await api.post("/te/runs", src === "map" ? { map_id: mapId } : { device_ids: picked, sample_sec: 10 });
+      const { data } = await api.post("/te/runs", src === "map" ? { map_id: mapId }
+        : { device_ids: picked, sample_sec: 10, default_cost: defCost ? Number(defCost) : null });
       setRun(data); loadRuns();
       if (!data.links.length) toast.warning("Nenhum enlace ponto a ponto entre os equipamentos escolhidos");
     } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
@@ -280,6 +282,10 @@ export default function TrafficEng() {
                   <div className="text-[11px] text-slate-500">Fica salva no cadastro de cada um (vale também para mapas, dashboards e monitoramento).</div>
                 </>}
               </div>
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <span>Custo para enlace sem custo lido</span>
+                <Input value={defCost} onChange={e => setDefCost(e.target.value.replace(/\D/g, ""))} placeholder="não usar" className="bg-sunken border-line h-7 w-24 font-mono text-xs" data-testid="te-defcost" />
+              </div>
               <div className="text-[11px] text-slate-500">Lê por SNMP: interfaces, IPs, custo OSPF e tráfego (10 s). Os enlaces são achados pelas sub-redes ponto a ponto (/29–/31) entre os escolhidos.</div>
             </> : <>
               <select value={mapId} onChange={e => setMapId(e.target.value)} className={`${sel} w-full`} data-testid="te-map">
@@ -306,11 +312,11 @@ export default function TrafficEng() {
             <Card className="bg-surface border-line p-4 space-y-3" data-testid="te-overview">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
                 <span className="font-semibold text-slate-100">{run.name}</span>
-                <span className="text-slate-400">{run.summary.devices} equipamentos · {run.summary.links} enlaces ({run.summary.ospf_links} com OSPF)</span>
+                <span className="text-slate-400">{run.summary.devices} equipamentos · {run.summary.links} enlaces ({run.summary.ospf_links} com OSPF{run.summary.assumed ? `, ${run.summary.assumed} com custo assumido` : ""})</span>
                 <span className={run.summary.over80 ? "text-orange-300" : "text-emerald-300"}>{run.summary.over80} sentido(s) ≥ 80%</span>
               </div>
               {run.errors?.length > 0 && <div className="text-xs text-amber-300">Sem leitura: {run.errors.map(e => `${e.device} (${e.error})`).join(" · ")}</div>}
-              <details className="text-xs" data-testid="te-devs">
+              <details className="text-xs" data-testid="te-devs" open={run.summary.ospf_links < run.summary.links}>
                 <summary className="cursor-pointer text-slate-400">Equipamentos lidos ({(run.nodes || []).length})</summary>
                 <table className="w-full mt-2">
                   <thead><tr className="text-[11px] text-slate-500 text-left"><th className="py-1">Equipamento</th><th>Enlaces</th><th>OSPF por SNMP</th><th>OSPF pela CLI</th></tr></thead>
@@ -319,7 +325,9 @@ export default function TrafficEng() {
                       <td className="py-1 text-slate-200">{n.name}{n.ok === false && <span className="text-red-300"> · sem SNMP</span>}</td>
                       <td className={n.links ? "text-slate-300" : "text-amber-300"}>{n.links ?? "—"}</td>
                       <td className={n.ospf_snmp ? "text-slate-300" : "text-slate-500"}>{n.ospf_snmp ?? "—"} interface(s)</td>
-                      <td className={n.cli_error ? "text-red-300" : "text-slate-300"}>{n.ospf_cli == null ? "—" : n.cli_error ? n.cli_error : `${n.ospf_cli} interface(s)`}</td>
+                      <td className={n.cli_error ? "text-red-300" : "text-slate-300"}>{n.ospf_cli == null ? "—" : n.cli_error ? n.cli_error : `${n.ospf_cli} interface(s)`}
+                        {n.cli_raw && <details className="mt-1"><summary className="cursor-pointer text-slate-500">ver saída</summary>
+                          <pre className="font-mono text-[10px] text-slate-400 bg-sunken p-2 rounded border border-line max-h-48 overflow-auto whitespace-pre">{n.cli_raw}</pre></details>}</td>
                     </tr>))}</tbody>
                 </table>
               </details>
