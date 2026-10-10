@@ -8,7 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 
 const KEEP = "__keep__";
-const empty = { add_tags: "", remove_tags: "", agent_id: KEEP, device_type: KEEP, protocol: KEEP, port: "", username: "", change_username: false, backup_enabled: KEEP };
+const empty = { add_tags: "", remove_tags: "", agent_id: KEEP, device_type: KEEP, protocol: KEEP, port: "", username: "", change_username: false, backup_enabled: KEEP,
+  change_snmp: false, snmp_community: "", snmp_port: "" };
 const splitTags = (s) => s.split(/[,;]/).map(t => t.trim()).filter(Boolean);
 
 /** Edita vários equipamentos de uma vez. Campos em "manter" não são alterados. */
@@ -28,6 +29,8 @@ export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, d
     if (String(f.port).trim()) payload.port = Number(f.port);
     if (f.change_username) payload.username = f.username;
     if (f.backup_enabled !== KEEP) payload.backup_enabled = f.backup_enabled === "on";
+    if (f.change_snmp) payload.snmp_community = f.snmp_community.trim();
+    if (String(f.snmp_port).trim()) payload.snmp_port = Number(f.snmp_port);
     const changes = Object.keys(payload).filter(k => k !== "device_ids" && !(Array.isArray(payload[k]) && !payload[k].length));
     if (!changes.length) return toast.error("Nenhuma alteração definida");
     setBusy(true);
@@ -113,6 +116,19 @@ export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, d
             </label>
             {f.change_username && (
               <Input data-testid="bulk-username" value={f.username} onChange={e => setF({ ...f, username: e.target.value })} placeholder="vazio = usuário padrão" className={`${trigger} mt-1`} />
+            )}
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" data-testid="bulk-change-snmp" checked={f.change_snmp} onChange={e => setF({ ...f, change_snmp: e.target.checked })} />
+              Alterar community SNMP
+            </label>
+            {f.change_snmp && (
+              <div className="grid grid-cols-[1fr_7rem] gap-2 mt-1">
+                <Input data-testid="bulk-snmp-community" value={f.snmp_community} onChange={e => setF({ ...f, snmp_community: e.target.value })}
+                  placeholder="vazio = community padrão do monitoramento" className={trigger} autoComplete="off" />
+                <Input data-testid="bulk-snmp-port" type="number" value={f.snmp_port} onChange={e => setF({ ...f, snmp_port: e.target.value })} placeholder="porta 161" className={trigger} />
+              </div>
             )}
           </div>
         </div>

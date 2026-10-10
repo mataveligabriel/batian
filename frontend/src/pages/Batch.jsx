@@ -82,7 +82,7 @@ export default function Batch() {
   // organização por tag (pastas): filtro, busca e grupos que abrem/fecham e marcam todos de uma vez
   const [tag, setTag] = useState("");                    // "" = todas | tag | "__none__" = sem tag
   const [q, setQ] = useState("");
-  const [closed, setClosed] = useState(() => new Set());
+  const [closed, setClosed] = useState(() => new Set());     // aqui guarda os grupos ABERTOS (começam fechados)
   const { allTags, countByTag } = useMemo(() => {
     const c = {};
     for (const d of devices) {
@@ -231,7 +231,7 @@ export default function Batch() {
             {groups.map(([g, list]) => {
               const ids = list.map(d => d.id);
               const on = ids.filter(id => selected.includes(id)).length;
-              const isClosed = closed.has(g) && !q;
+              const isClosed = !closed.has(g) && !q && !tag;
               return (
                 <div key={g} data-testid={`batch-group-${g}`}>
                   <div className="sticky top-0 z-10 flex items-center gap-2 px-2 py-1.5 bg-panel border-y border-line text-xs">

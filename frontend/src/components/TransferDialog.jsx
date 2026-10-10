@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
+import { TagSelect } from "@/components/TagSelect";
 import { Send, Server, Network, Gauge, Loader2, Search, Eye, ArrowRight } from "lucide-react";
 
 const ROLE_LABEL = { admin: "administrador", operator: "operador", viewer: "View" };
@@ -153,14 +154,14 @@ export function TransferDialog({ open, onOpenChange, peer = null, preset = {}, o
             </button>
           ))}
         </div>
-        <div className="relative">
+        {tab !== "devices" && <div className="relative">
           <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
           <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Filtrar…" className="pl-8 h-8 bg-sunken border-line text-sm" />
-        </div>
+        </div>}
         {!assets ? <div className="py-8 text-center text-xs text-slate-500 font-mono"><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Carregando…</div> : (
           <>
-            {tab === "devices" && <CheckList items={L.devices} selected={sel.devices} onToggle={toggle("devices")} onAll={all("devices")} q={q}
-              empty="Nenhum equipamento" render={d => <><span className="truncate">{d.name}</span><span className="ml-auto text-[11px] font-mono text-slate-500 shrink-0">{d.host}:{d.port}</span></>} />}
+            {tab === "devices" && <TagSelect devices={assets.devices || []} selected={sel.devices} testid="transfer-tags" maxHeight="max-h-64"
+              onChange={(ids) => setSel(s => ({ ...s, devices: new Set(ids) }))} />}
             {tab === "maps" && <CheckList items={L.maps} selected={sel.maps} onToggle={toggle("maps")} onAll={all("maps")} q={q}
               empty="Nenhum mapa" render={m => <><span className="truncate">{m.name}</span><span className="ml-auto text-[11px] font-mono text-slate-500 shrink-0">{m.devices} equip.</span></>} />}
             {tab === "dashboards" && <CheckList items={L.dashboards} selected={sel.dashboards} onToggle={toggle("dashboards")} onAll={all("dashboards")} q={q}

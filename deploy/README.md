@@ -907,6 +907,8 @@ Menu **Eng. de tráfego** (módulo "Engenharia de tráfego").
    Com equipamentos, o BastiON lê por SNMP as interfaces, IPs, custo OSPF de cada interface (OSPF-MIB) e o tráfego de
    cada sentido (duas leituras em 10 s) e liga os equipamentos pelas sub-redes ponto a ponto (/29 a /31). Com mapa,
    usa a última Análise de rede do mapa. A tela mostra os sentidos mais cheios.
+   **Community SNMP em massa:** na própria tela ("Community SNMP dos N escolhidos") ou em Equipamentos → selecionar →
+   Editar em massa → "Alterar community SNMP" (vazio = volta para a community padrão do monitoramento).
 2. **Otimizar custos OSPF:** informe a meta de pico (ex.: 80%). O BastiON testa subir o custo do enlace mais cheio
    (empatar com o caminho alternativo = divide por ECMP; um acima = desvia tudo) e baixar o custo de enlaces folgados do
    caminho alternativo, ficando com o que mais reduz o pico sem isolar ninguém. Mostra a carga prevista antes/depois,
@@ -920,3 +922,8 @@ Menu **Eng. de tráfego** (módulo "Engenharia de tráfego").
 
 Modelo: sem matriz de tráfego, o que passa hoje em cada sentido é tratado como demanda entre as pontas e redistribuído
 pelo SPF com ECMP — estimativa para comparar alternativas. Aplique uma mudança por vez e acompanhe no mapa.
+
+**Seleção de equipamentos por tag:** nas telas em que se escolhem vários equipamentos (Eng. de tráfego, Execução em
+Lote, Looking Glass → Configurar, Enviar/Transferir) a lista vem agrupada por tag e fechada: a caixa da tag marca o
+grupo inteiro e a seta abre o grupo para escolher os equipamentos um a um (a caixa fica "parcial" quando só parte do
+grupo está marcada). Nas listas de escolha única (roteiros, Script de OLT, botnet, MPLS) as opções vêm agrupadas por tag.

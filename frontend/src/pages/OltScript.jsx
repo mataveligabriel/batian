@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
+import { TagOptions } from "@/components/TagSelect";
 import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search, Unplug, CheckCircle2, XCircle, Send } from "lucide-react";
 
 const KEY = "bastion_oltgen_form";                       // formulário lembrado neste navegador, sem senhas
@@ -146,7 +147,7 @@ function ApplyBar({ apply, ready }) {
         <select value={dev} onChange={e => { setDev(e.target.value); setConfirm(false); }} data-testid="oltgen-apply-device"
           className="h-8 min-w-0 flex-1 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100">
           <option value="">{apply.devices.length ? "Enviar para qual OLT?" : "Nenhuma OLT ZTE cadastrada"}</option>
-          {apply.devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host}</option>)}
+          <TagOptions devices={apply.devices} label={d => `${d.name} · ${d.host}`} />
         </select>
         {!confirm ? (
           <Button size="sm" onClick={() => setConfirm(true)} disabled={!ready || !dev || sending || sig === doneSig} className="h-8 bg-emerald-700 hover:bg-emerald-600" data-testid="oltgen-apply-btn">
@@ -301,7 +302,7 @@ function OltActivation() {
                   <select value={devId} onChange={e => setDevId(e.target.value)} data-testid="oltgen-device"
                     className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
                     <option value="">{devices.length ? "Escolha a OLT…" : "Nenhum equipamento ZTE cadastrado"}</option>
-                    {devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host}</option>)}
+                    <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
                   </select>
                 </Field>
               </div>
@@ -553,7 +554,7 @@ function OnuAuthorize({ meta, devices }) {
                 <select value={devId} onChange={e => setDevId(e.target.value)} data-testid="onu-device"
                   className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
                   <option value="">{devices.length ? "Escolha a OLT…" : "Nenhum equipamento ZTE cadastrado"}</option>
-                  {devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host}</option>)}
+                  <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
                 </select>
               </Field>
             </div>
@@ -762,7 +763,7 @@ function OnuRemove({ meta, devices }) {
                 <select value={macDev} onChange={e => setMacDev(e.target.value)} data-testid="onumac-device"
                   className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
                   <option value="all">Todas as OLTs ZTE ({devices.length})</option>
-                  {devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host}</option>)}
+                  <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
                 </select>
               </Field>
             </div>
@@ -841,7 +842,7 @@ function OnuRemove({ meta, devices }) {
                 <select value={devId} onChange={e => { setDevId(e.target.value); setInfo(null); }} data-testid="onurm-device"
                   className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
                   <option value="">{devices.length ? "Escolha a OLT…" : "Nenhum equipamento ZTE cadastrado"}</option>
-                  {devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host}</option>)}
+                  <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
                 </select>
               </Field>
             </div>

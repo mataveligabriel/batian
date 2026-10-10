@@ -131,6 +131,8 @@ class DeviceBulkUpdate(BaseModel):
     port: Optional[int] = None
     username: Optional[str] = None
     backup_enabled: Optional[bool] = None
+    snmp_community: Optional[str] = None   # "" = volta para a community padrão do monitoramento
+    snmp_port: Optional[int] = None
 
 
 # ---------- Scripts ----------

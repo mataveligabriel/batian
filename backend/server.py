@@ -1184,6 +1184,15 @@ async def bulk_update_devices(payload: DeviceBulkUpdate, user: dict = Depends(ge
         setf["username"] = payload.username.strip()
     if payload.backup_enabled is not None:
         setf["backup_enabled"] = payload.backup_enabled
+    if payload.snmp_community is not None:
+        com = payload.snmp_community.strip()
+        if len(com) > 64 or re.search(r"[\s\"'\\]", com):
+            raise HTTPException(status_code=400, detail="Community SNMP inválida (até 64 caracteres, sem espaço nem aspas)")
+        setf["snmp_community"] = com
+    if payload.snmp_port is not None:
+        if not 1 <= payload.snmp_port <= 65535:
+            raise HTTPException(status_code=400, detail="Porta SNMP inválida")
+        setf["snmp_port"] = payload.snmp_port
     add = [t.strip() for t in payload.add_tags if t.strip()]
     rem = [t.strip() for t in payload.remove_tags if t.strip()]
     matched = await db.devices.count_documents(q)

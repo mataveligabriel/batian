@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { Waypoints, Loader2, Search, Sparkles, Route, FlaskConical, Copy, ListPlus, AlertTriangle, ArrowRight, Trash2 } from "lucide-react";
+import { TagSelect } from "@/components/TagSelect";
+import { Waypoints, Loader2, Sparkles, Route, FlaskConical, Copy, ListPlus, AlertTriangle, ArrowRight, Trash2, KeyRound } from "lucide-react";
 
 const fmtBps = (v) => (v == null ? "—" : v >= 1e9 ? `${(v / 1e9).toFixed(2)} G` : v >= 1e6 ? `${(v / 1e6).toFixed(0)} M` : `${(v / 1e3).toFixed(0)} k`);
 const fmtCap = (m) => (!m ? "?" : m >= 1000 ? `${m / 1000}G` : `${m}M`);
@@ -214,10 +215,23 @@ export default function TrafficEng() {
   const [src, setSrc] = useState("devices");
   const [picked, setPicked] = useState([]);
   const [mapId, setMapId] = useState("");
-  const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const [run, setRun] = useState(null);
   const [tab, setTab] = useState("opt");
+  const [snmp, setSnmp] = useState({ open: false, community: "", port: "" });
+  const [snmpBusy, setSnmpBusy] = useState(false);
+  const applySnmp = async () => {
+    if (!picked.length) return toast.error("Marque os equipamentos primeiro");
+    setSnmpBusy(true);
+    try {
+      const body = { device_ids: picked, snmp_community: snmp.community.trim() };
+      if (String(snmp.port).trim()) body.snmp_port = Number(snmp.port);
+      const { data } = await api.post("/devices/bulk-update", body);
+      toast.success(`Community SNMP gravada em ${data.updated} equipamento(s)`);
+      setSnmp({ open: false, community: "", port: "" });
+      api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {});
+    } catch (e) { toast.error(formatApiError(e)); } finally { setSnmpBusy(false); }
+  };
 
   const loadRuns = () => api.get("/te/runs").then(r => setRuns(r.data)).catch(() => {});
   useEffect(() => {
@@ -225,10 +239,6 @@ export default function TrafficEng() {
     api.get("/maps").then(r => setMaps(r.data || [])).catch(() => {});
     loadRuns();
   }, []);
-  const shown = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    return devices.filter(d => !t || `${d.name} ${d.host} ${(d.tags || []).join(" ")} ${d.device_type}`.toLowerCase().includes(t));
-  }, [devices, q]);
   const build = async () => {
     setBusy(true);
     try {
@@ -239,7 +249,6 @@ export default function TrafficEng() {
   };
   const open = async (id) => { try { const { data } = await api.get(`/te/runs/${id}`); setRun(data); } catch (e) { toast.error(formatApiError(e)); } };
   const del = async (id) => { try { await api.delete(`/te/runs/${id}`); if (run?.id === id) setRun(null); loadRuns(); } catch (e) { toast.error(formatApiError(e)); } };
-  const togg = (id) => setPicked(p => (p.includes(id) ? p.filter(x => x !== id) : [...p, id]));
 
   return (
     <div className="flex-1 overflow-y-auto" data-testid="te-page">
@@ -255,17 +264,20 @@ export default function TrafficEng() {
                 <button key={k} onClick={() => setSrc(k)} data-testid={`te-src-${k}`} className={`flex-1 h-8 ${src === k ? "bg-brand text-white" : "bg-sunken text-slate-400 hover:text-slate-200"}`}>{l}</button>))}
             </div>
             {src === "devices" ? <>
-              <div className="relative"><Search className="w-4 h-4 absolute left-2.5 top-2.5 text-slate-500" />
-                <Input value={q} onChange={e => setQ(e.target.value)} placeholder="nome, IP, tag…" className="bg-sunken border-line pl-8" data-testid="te-search" /></div>
-              <div className="flex items-center gap-3 text-xs text-slate-400">
-                <button onClick={() => setPicked([...new Set([...picked, ...shown.map(d => d.id)])])} className="hover:text-slate-100">marcar os {shown.length} da lista</button>
-                <button onClick={() => setPicked([])} className="hover:text-slate-100">limpar</button><span className="ml-auto">{picked.length} escolhido(s)</span></div>
-              <div className="max-h-72 overflow-y-auto border border-line rounded-md divide-y divide-line" data-testid="te-devices">
-                {shown.map(d => (
-                  <label key={d.id} className="flex items-center gap-2 px-2 py-1.5 text-sm cursor-pointer hover:bg-slate-800/40">
-                    <Checkbox checked={picked.includes(d.id)} onCheckedChange={() => togg(d.id)} data-testid={`te-dev-${d.id}`} />
-                    <span className="text-slate-200 truncate flex-1">{d.name}</span><span className="text-[11px] font-mono text-slate-500">{d.device_type}</span>
-                  </label>))}
+              <TagSelect devices={devices} selected={picked} onChange={setPicked} testid="te-tags" />
+              <div className="rounded-md border border-line p-2 space-y-2" data-testid="te-snmp">
+                <button onClick={() => setSnmp({ ...snmp, open: !snmp.open })} className="text-xs text-slate-300 hover:text-slate-100 flex items-center gap-1.5" data-testid="te-snmp-toggle">
+                  <KeyRound className="w-3.5 h-3.5" />Community SNMP dos {picked.length} escolhido(s)</button>
+                {snmp.open && <>
+                  <div className="grid grid-cols-[1fr_5.5rem] gap-2">
+                    <Input value={snmp.community} onChange={e => setSnmp({ ...snmp, community: e.target.value })} placeholder="community (vazio = a padrão)" autoComplete="off"
+                      className="bg-sunken border-line h-8 font-mono text-sm" data-testid="te-snmp-community" />
+                    <Input value={snmp.port} onChange={e => setSnmp({ ...snmp, port: e.target.value.replace(/\D/g, "") })} placeholder="161" className="bg-sunken border-line h-8 font-mono text-sm" />
+                  </div>
+                  <Button size="sm" onClick={applySnmp} disabled={snmpBusy || !picked.length} variant="outline" className="w-full h-8 border-line bg-transparent" data-testid="te-snmp-apply">
+                    {snmpBusy && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}Gravar nos {picked.length} equipamento(s)</Button>
+                  <div className="text-[11px] text-slate-500">Fica salva no cadastro de cada um (vale também para mapas, dashboards e monitoramento).</div>
+                </>}
               </div>
               <div className="text-[11px] text-slate-500">Lê por SNMP: interfaces, IPs, custo OSPF e tráfego (10 s). Os enlaces são achados pelas sub-redes ponto a ponto (/29–/31) entre os escolhidos.</div>
             </> : <>

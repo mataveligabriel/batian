@@ -8,6 +8,7 @@ import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
+import { TagOptions } from "@/components/TagSelect";
 import { Play, Plus, Pencil, Trash2, Loader2, ArrowUp, ArrowDown, CheckCircle2, XCircle, SkipForward, Send, X, History } from "lucide-react";
 
 const EMPTY = () => ({ name: "", description: "", telegram: true, shared: false, save: false, steps: [{ device_id: "", commands: "" }] });
@@ -60,7 +61,7 @@ function Editor({ value, devices, onCancel, onSaved }) {
               <select value={s.device_id} onChange={e => setStep(i, { device_id: e.target.value })} data-testid={`rb-step-${i}-dev`}
                 className="h-9 flex-1 min-w-[200px] rounded-md bg-sunken border border-line px-2 text-sm text-slate-100">
                 <option value="">Equipamento…</option>
-                {sorted.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host}</option>)}
+                <TagOptions devices={sorted} label={d => `${d.name} · ${d.host}`} />
               </select>
               <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 text-slate-500 hover:text-slate-200 disabled:opacity-30" title="Subir"><ArrowUp className="w-4 h-4" /></button>
               <button onClick={() => move(i, 1)} disabled={i === f.steps.length - 1} className="p-1 text-slate-500 hover:text-slate-200 disabled:opacity-30" title="Descer"><ArrowDown className="w-4 h-4" /></button>

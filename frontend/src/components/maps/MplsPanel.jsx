@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { TagOptions } from "@/components/TagSelect";
 import { X, Loader2, FlaskConical, Save, FileText, ChevronDown, ChevronRight } from "lucide-react";
 import { STATUS } from "@/lib/netfmt";
 
@@ -171,7 +172,7 @@ export function MplsSettingsDialog({ devices, onClose }) {
           <div className="flex gap-2">
             <select value={testDev} onChange={e => setTestDev(e.target.value)} className="flex-1 h-8 bg-sunken border border-line rounded px-2 text-xs" data-testid="mpls-test-dev">
               <option value="">Escolha…</option>
-              {cand.map(d => <option key={d.id} value={d.id}>{d.name} ({d.device_type})</option>)}
+              <TagOptions devices={cand} label={d => `${d.name} (${d.device_type})`} />
             </select>
             <Button size="sm" onClick={test} disabled={!testDev || testing} className="h-8 bg-panel border border-line text-slate-200 hover:bg-slate-800">
               {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FlaskConical className="w-3.5 h-3.5 mr-1.5" />} Testar

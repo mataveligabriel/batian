@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { TagSelect } from "@/components/TagSelect";
 import { Telescope, Loader2, Play, Settings2, Copy, Search, RotateCcw, Trash2 } from "lucide-react";
 
 const VENDOR = { huawei: "Huawei", juniper: "Juniper", cisco: "Cisco", mikrotik: "MikroTik", datacom: "Datacom", zte: "ZTE", linux: "Linux" };
@@ -32,11 +33,6 @@ function ManageDialog({ open, onClose, onSaved }) {
       setPub({ ...data.public, password: "" }); setPubSel(new Set(data.public?.routers || []));
     }).catch(e => { toast.error(formatApiError(e)); onClose(); });
   }, [open]);
-  const shown = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    return (data?.devices || []).filter(d => !t || `${d.name} ${d.host} ${(d.tags || []).join(" ")} ${d.device_type}`.toLowerCase().includes(t));
-  }, [data, q]);
-  const toggle = (id) => { setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; }); setPubSel(s => { const n = new Set(s); n.delete(id); return n; }); };
   const togglePub = (id) => setPubSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const setQ1 = (k, on) => setPub(p => ({ ...p, queries: on ? [...new Set([...p.queries, k])] : p.queries.filter(x => x !== k) }));
   const pubUrl = data?.public_port ? `http://${window.location.hostname}:${data.public_port}` : `${window.location.origin}/looking-glass`;
@@ -60,24 +56,12 @@ function ManageDialog({ open, onClose, onSaved }) {
             <div>
               <div className="flex items-center gap-3 mb-2">
                 <Label className="text-slate-300">Roteadores liberados para consulta <span className="text-slate-500 font-mono text-xs">({sel.size})</span></Label>
-                <div className="relative ml-auto w-56">
-                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-500" />
-                  <Input value={q} onChange={e => setQ(e.target.value)} placeholder="buscar nome, IP ou tag" className="pl-8 h-8 bg-sunken border-line text-xs" data-testid="lg-manage-search" />
-                </div>
               </div>
-              <div className="border border-line rounded-md max-h-64 overflow-y-auto divide-y divide-line/60 bg-sunken">
-                {shown.map(d => (
-                  <label key={d.id} className="flex items-center gap-3 px-3 py-2 text-sm cursor-pointer hover:bg-panel" data-testid={`lg-dev-${d.id}`}>
-                    <Checkbox checked={sel.has(d.id)} onCheckedChange={() => toggle(d.id)} />
-                    <span className="text-slate-200 truncate">{d.name}</span>
-                    {sel.has(d.id) && <button type="button" onClick={(e) => { e.preventDefault(); togglePub(d.id); }} data-testid={`lg-pub-${d.id}`}
-                      className={`px-1.5 py-0.5 rounded border text-[10px] ${pubSel.has(d.id) ? "border-on text-on bg-on/10" : "border-line text-slate-500 hover:text-slate-300"}`}>{pubSel.has(d.id) ? "público ✓" : "tornar público"}</button>}
-                    <span className="font-mono text-[11px] text-slate-500">{d.host}</span>
-                    <span className="ml-auto text-[10px] font-mono text-slate-500">{VENDOR[d.device_type] || d.device_type}{(d.tags || []).length ? ` · ${d.tags.join(", ")}` : ""}</span>
-                  </label>
-                ))}
-                {!shown.length && <div className="px-3 py-6 text-center text-xs text-slate-500 font-mono">Nenhum equipamento</div>}
-              </div>
+              <TagSelect devices={data.devices} selected={sel} testid="lg-tags" maxHeight="max-h-72"
+                onChange={(ids) => { const n = new Set(ids); setSel(n); setPubSel(p => new Set([...p].filter(id => n.has(id)))); }}
+                extra={(d) => sel.has(d.id) && (
+                  <button type="button" onClick={(e) => { e.preventDefault(); togglePub(d.id); }} data-testid={`lg-pub-${d.id}`}
+                    className={`px-1.5 py-0.5 rounded border text-[10px] shrink-0 ${pubSel.has(d.id) ? "border-on text-on bg-on/10" : "border-line text-slate-500 hover:text-slate-300"}`}>{pubSel.has(d.id) ? "público ✓" : "tornar público"}</button>)} />
               <p className="text-[11px] text-slate-500 mt-1.5">Quem tem o módulo Looking Glass consulta estes roteadores mesmo sem ter acesso ao equipamento. Marque só roteadores de borda/núcleo.</p>
             </div>
             {pub && (

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { Bug, ShieldCheck, ChevronDown, ChevronRight, Loader2, Settings2, UserSearch, Check, Plus, Trash2, AlertTriangle, Copy } from "lucide-react";
 import { toast } from "sonner";
+import { TagOptions } from "@/components/TagSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -60,7 +61,7 @@ function ConfigDialog({ data, onClose, onSaved }) {
                 <div key={i} className="grid grid-cols-[1fr_170px_28px] gap-2 items-center" data-testid="botnet-bng-row">
                   <select value={b.device_id} onChange={e => pickDev(i, e.target.value)} className={`${selCls} h-9 w-full`} data-testid="botnet-bng-dev">
                     <option value="">— equipamento (para consultar o assinante) —</option>
-                    {data.devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.host} · {d.device_type}</option>)}
+                    <TagOptions devices={data.devices} label={d => `${d.name} · ${d.host} · ${d.device_type}`} />
                   </select>
                   <Input value={b.exporter} onChange={e => setBng(i, { exporter: e.target.value })} placeholder="IP que envia o flow" list="botnet-exps" className={`${inputCls} font-mono h-9`} data-testid="botnet-bng-ip" />
                   <button className="text-slate-500 hover:text-red-400" onClick={() => setF({ ...f, bngs: f.bngs.filter((_, j) => j !== i) })}><Trash2 className="w-3.5 h-3.5" /></button>
