@@ -4594,8 +4594,47 @@ async def te_run(body: TeRunIn, user: dict = Depends(get_current_user)):
             if not d.get("ok"):
                 errors.append({"device": (devs.get(did) or {}).get("name", did), "error": d.get("error", "sem leitura SNMP")})
         links, notes = teopt.discover_links(devs, data)
+        # custo OSPF que o SNMP não trouxe (OSPF-MIB fechada na view, outro processo…): lê pela CLI
+        need = sorted({L[s] for L in links for s, k in (("a", "cost_ab"), ("b", "cost_ba")) if L.get(k) is None})
+        cli_costs: dict = {}
+        cli_err: dict = {}
+        ssh_sem = asyncio.Semaphore(6)
+
+        async def cli_one(did):
+            dev = devs.get(did)
+            cmds = teopt.OSPF_CLI.get((dev or {}).get("device_type") or "")
+            if not dev or not cmds:
+                cli_err[did] = "sem comando de OSPF para esse fabricante"
+                return
+            async with ssh_sem:
+                try:
+                    cli = await _connect_device(dev)
+                    try:
+                        for cmd in cmds:
+                            out = _out_text(await asyncio.wait_for(cli.run_command(cmd, timeout=60), timeout=90))
+                            got = teopt.parse_ospf_cli(out)
+                            if got:
+                                cli_costs[did] = got
+                                return
+                        cli_err[did] = "a saída do comando não trouxe custos OSPF"
+                    finally:
+                        await cli.close()
+                except Exception as e:
+                    cli_err[did] = (str(e) or type(e).__name__)[:160]
+        if need:
+            await asyncio.gather(*[cli_one(d) for d in need])
+            teopt.fill_costs(links, cli_costs)
+            notes = [n for n in notes if "sem OSPF" not in n.get("note", "")]
+            for L in links:
+                if L.get("cost_ab") is None or L.get("cost_ba") is None:
+                    miss = [L[f"{x}_name"] for x, k in (("a", "cost_ab"), ("b", "cost_ba")) if L.get(k) is None]
+                    notes.append({"net": L.get("net"), "note": f"{L['a_name']} {L['a_if']} ↔ {L['b_name']} {L['b_if']}: "
+                                  f"sem custo OSPF em {', '.join(miss)} (nem SNMP nem CLI) — fora do SPF"})
         node_rows = [{"id": did, "name": (devs.get(did) or {}).get("name", "?"), "type": (devs.get(did) or {}).get("device_type"),
-                      "router_id": (data.get(did) or {}).get("router_id"), "ok": bool((data.get(did) or {}).get("ok"))} for did in ids]
+                      "router_id": (data.get(did) or {}).get("router_id"), "ok": bool((data.get(did) or {}).get("ok")),
+                      "ospf_snmp": len(((data.get(did) or {}).get("ospf") or {}).get("ifaces") or {}),
+                      "ospf_cli": len(cli_costs.get(did) or {}) if did in need else None, "cli_error": cli_err.get(did),
+                      "links": sum(1 for L in links if did in (L["a"], L["b"]))} for did in ids]
         name, source = body.name or f"{len(ids)} equipamentos", {"kind": "devices", "device_ids": ids}
     doc = {"id": os.urandom(8).hex(), "owner_id": user["id"], "name": name[:80], "source": source,
            "map_id": body.map_id, "at": datetime.now(timezone.utc).isoformat(), "duration_sec": round(time.monotonic() - started, 1),
@@ -4688,6 +4727,19 @@ async def te_path(rid: str, body: TePathIn, user: dict = Depends(get_current_use
     if body.bw_mbps < 0 or not 10 <= body.max_pct <= 100:
         raise HTTPException(status_code=400, detail="Banda ou limite inválido")
     spf = teopt.spf_path(links, body.src, body.dst)
+    if not spf.get("reachable"):
+        netanalysis.build_graph(links)
+        why = []
+        for nid in (body.src, body.dst):
+            mine = [L for L in links if nid in (L["a"], L["b"])]
+            ok = [L for L in mine if L.get("in_spf")]
+            if not mine:
+                why.append(f"{nodes[nid]['name']}: nenhum enlace ponto a ponto descoberto com os outros escolhidos")
+            elif not ok:
+                why.append(f"{nodes[nid]['name']}: {len(mine)} enlace(s), nenhum com custo OSPF nas duas pontas")
+        if not why:
+            why.append("os dois têm enlaces com OSPF, mas os grupos não se ligam — faltam equipamentos do meio do caminho na seleção")
+        spf["why"] = why
     byid = {L["id"]: L for L in links}
     for h in spf.get("hops", []):
         L = byid[h["link"]]
@@ -4695,6 +4747,8 @@ async def te_path(rid: str, body: TePathIn, user: dict = Depends(get_current_use
                   "pct_now": L.get(f"{h['dir']}_pct")})
     c = teopt.cspf(links, body.src, body.dst, body.bw_mbps, body.max_pct, set(body.exclude_links), set(body.exclude_nodes),
                    [n for n in body.include_nodes if n in nodes])
+    if not spf.get("reachable") and not c.get("found"):
+        c["why"] = "sem caminho OSPF entre os dois (veja ao lado)"
     if c.get("found"):
         src = nodes[body.src]
         lsp = re.sub(r"[^A-Za-z0-9-]", "-", f"BASTION-{src['name']}-{nodes[body.dst]['name']}")[:40]

@@ -149,7 +149,8 @@ function PathCalc({ run }) {
         <div className="grid lg:grid-cols-2 gap-4">
           <Card className="bg-sunken/40 border-line p-3 space-y-2" data-testid="te-path-spf">
             <div className="text-sm font-semibold text-slate-200">Caminho atual (SPF/LDP)</div>
-            {!res.spf.reachable ? <div className="text-xs text-red-300">Sem caminho OSPF entre os dois.</div> : <>
+            {!res.spf.reachable ? <div className="text-xs text-red-300 space-y-1" data-testid="te-path-why"><div>Sem caminho OSPF entre os dois.</div>
+              {(res.spf.why || []).map((w, i) => <div key={i} className="text-amber-300">• {w}</div>)}</div> : <>
               <div className="text-xs text-slate-400">custo {res.spf.cost}{res.spf.ecmp ? " · ECMP (dividido)" : ""}</div>
               {res.spf.hops.map((h, i) => <div key={i} className="flex items-center gap-2 text-xs"><span className="text-slate-200 w-56 truncate">{h.from} → {h.to}</span>{h.share < 1 && <span className="text-slate-500">{Math.round(h.share * 100)}%</span>}<Bar pct={h.pct_now} /></div>)}
             </>}
@@ -309,6 +310,19 @@ export default function TrafficEng() {
                 <span className={run.summary.over80 ? "text-orange-300" : "text-emerald-300"}>{run.summary.over80} sentido(s) ≥ 80%</span>
               </div>
               {run.errors?.length > 0 && <div className="text-xs text-amber-300">Sem leitura: {run.errors.map(e => `${e.device} (${e.error})`).join(" · ")}</div>}
+              <details className="text-xs" data-testid="te-devs">
+                <summary className="cursor-pointer text-slate-400">Equipamentos lidos ({(run.nodes || []).length})</summary>
+                <table className="w-full mt-2">
+                  <thead><tr className="text-[11px] text-slate-500 text-left"><th className="py-1">Equipamento</th><th>Enlaces</th><th>OSPF por SNMP</th><th>OSPF pela CLI</th></tr></thead>
+                  <tbody>{(run.nodes || []).map(n => (
+                    <tr key={n.id} className="border-t border-line/60">
+                      <td className="py-1 text-slate-200">{n.name}{n.ok === false && <span className="text-red-300"> · sem SNMP</span>}</td>
+                      <td className={n.links ? "text-slate-300" : "text-amber-300"}>{n.links ?? "—"}</td>
+                      <td className={n.ospf_snmp ? "text-slate-300" : "text-slate-500"}>{n.ospf_snmp ?? "—"} interface(s)</td>
+                      <td className={n.cli_error ? "text-red-300" : "text-slate-300"}>{n.ospf_cli == null ? "—" : n.cli_error ? n.cli_error : `${n.ospf_cli} interface(s)`}</td>
+                    </tr>))}</tbody>
+                </table>
+              </details>
               {run.notes?.length > 0 && <details className="text-xs text-slate-500"><summary className="cursor-pointer">{run.notes.length} observação(ões)</summary>{run.notes.map((n, i) => <div key={i}>{n.net}: {n.note}</div>)}</details>}
               <UtilTable rows={run.utilization} limit={12} testid="te-util" />
             </Card>

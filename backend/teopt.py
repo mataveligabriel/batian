@@ -11,6 +11,7 @@ as pontas e, ao mudar custos/derrubar enlaces, o desvio é estimado pelo SPF com
 É uma estimativa de 1ª ordem — boa para comparar alternativas, não para prever o número exato.
 """
 import asyncio
+import re
 import heapq
 import ipaddress
 import time
@@ -377,3 +378,44 @@ def te_config(vendor: Optional[str], name: str, hops: List[dict], dest_rid: Opti
         " quit", "# troque Tunnel0/0/1 por um número de túnel livre", "interface Tunnel0/0/1", " tunnel-protocol mpls te",
         f" destination {dest_rid or 'ROUTER-ID-DESTINO'}", f" mpls te path explicit-path {name}"] + (
         [f" mpls te bandwidth ct0 {kbps}"] if bw_mbps else []) + [" mpls te commit", " quit"]
+
+
+# ---------- custo OSPF pela CLI (quando o SNMP não traz a OSPF-MIB) ----------
+OSPF_CLI = {
+    "huawei": ["display ospf interface"],
+    "cisco": ["show ip ospf interface brief"],
+    "zte": ["show ip ospf interface brief", "show ip ospf interface"],
+    "datacom": ["show ip ospf interface brief", "show ospf interface"],
+    "juniper": ["show ospf interface detail"],
+    "mikrotik": ["/routing ospf interface print terse"],
+}
+_RX_HUAWEI = re.compile(r"^\s*(\d+\.\d+\.\d+\.\d+)\s+(?:P2P|PTP|Broadcast|NBMA|P2MP|PTMP)\s+\S+\s+(\d+)\b", re.I | re.M)
+_RX_CISCO = re.compile(r"\s(\d+\.\d+\.\d+\.\d+)/\d+\s+(\d+)\s", re.M)
+_RX_JUNOS = re.compile(r"Address:\s*(\d+\.\d+\.\d+\.\d+).*?Cost:\s*(\d+)", re.I)
+_RX_MTIK = re.compile(r"address=(\d+\.\d+\.\d+\.\d+)(?:/\d+)?\b.*?\bcost=(\d+)", re.I)
+_RX_GENERIC = re.compile(r"(\d+\.\d+\.\d+\.\d+)[^\n]*?\b[Cc]ost[:\s=]+(\d+)")
+
+
+def parse_ospf_cli(text: str) -> Dict[str, int]:
+    """{ip_da_interface: custo} de `display ospf interface` (Huawei), `show ip ospf interface brief` (Cisco/ZTE/Datacom),
+    `show ospf interface detail` (Juniper) ou do RouterOS."""
+    out: Dict[str, int] = {}
+    for rx in (_RX_HUAWEI, _RX_CISCO, _RX_JUNOS, _RX_MTIK, _RX_GENERIC):
+        for m in rx.finditer(text or ""):
+            ip, cost = m.group(1), int(m.group(2))
+            if 1 <= cost <= 65535 and ip not in out and not ip.startswith("0."):
+                out[ip] = cost
+    return out
+
+
+def fill_costs(links: List[dict], costs_by_dev: Dict[str, Dict[str, int]]) -> int:
+    """Completa custo_ab/ba que faltaram usando o custo lido pela CLI (casado pelo IP da interface)."""
+    n = 0
+    for L in links:
+        for side, key in (("a", "cost_ab"), ("b", "cost_ba")):
+            if L.get(key) is None:
+                c = (costs_by_dev.get(L[side]) or {}).get(L.get(f"{side}_ip") or "")
+                if c is not None:
+                    L[key] = c
+                    n += 1
+    return n
