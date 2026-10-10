@@ -58,6 +58,7 @@ import rdp
 import oltgen
 import tcprelay
 import runbooks
+import teopt
 import vpnconf
 import botnet
 import webpush
@@ -4470,6 +4471,189 @@ async def run_analysis(map_id: str, body: AnalysisIn, user: dict = Depends(get_c
         await db.net_reports_raw.delete_many({"rid": x["id"]})
     doc.pop("_id", None)
     return doc
+
+
+# ---------- Engenharia de tráfego: SPF/CSPF, simulação e otimização de custos OSPF ----------
+class TeRunIn(BaseModel):
+    device_ids: List[str] = []
+    map_id: Optional[str] = None        # alternativa: usa a última análise do mapa
+    sample_sec: int = 10
+    name: str = ""
+
+
+async def _te_for(user: dict, rid: str) -> dict:
+    doc = await db.te_runs.find_one({"id": rid, "owner_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Topologia não encontrada")
+    return doc
+
+
+def _te_public(doc: dict) -> dict:
+    links = doc.get("links") or []
+    return {**{k: doc.get(k) for k in ("id", "name", "source", "at", "duration_sec", "nodes", "errors", "notes", "map_id")},
+            "links": links, "utilization": teopt.utilization(links),
+            "summary": {"devices": len(doc.get("nodes") or []), "links": len(links),
+                        "ospf_links": sum(1 for L in links if L.get("cost_ab") is not None and L.get("cost_ba") is not None),
+                        "over80": sum(1 for u in teopt.utilization(links) if (u["pct"] or 0) >= 80)}}
+
+
+@api.post("/te/runs")
+async def te_run(body: TeRunIn, user: dict = Depends(get_current_user)):
+    """Monta a topologia: lê os equipamentos escolhidos por SNMP (enlaces descobertos pelas sub-redes ponto a ponto)
+    ou aproveita a última análise de um mapa."""
+    _no_viewer(user)
+    started = time.monotonic()
+    errors, notes = [], []
+    if body.map_id:
+        m = await _map_for(user, body.map_id)
+        rep = await db.net_reports.find_one({"map_id": body.map_id, "owner_id": user["id"]}, {"_id": 0}, sort=[("at", -1)])
+        if not rep:
+            raise HTTPException(status_code=400, detail="Esse mapa ainda não tem análise de rede — rode a análise no mapa primeiro")
+        node_dev = {n["id"]: n.get("device_id") for n in m.get("nodes", [])}
+        dids = [d for d in node_dev.values() if d]
+        devs = {d["id"]: d async for d in db.devices.find({"id": {"$in": dids}, "owner_id": user["id"]}, {"_id": 0})}
+        links, _ = teopt.from_analysis(rep["report"])
+        for L in links:
+            for side in ("a", "b"):
+                did = node_dev.get(L[side]) or L[side]
+                L[side] = did
+                L[f"{side}_type"] = (devs.get(did) or {}).get("device_type")
+        nodes = sorted({(L["a"], L["a_name"]) for L in links} | {(L["b"], L["b_name"]) for L in links}, key=lambda x: x[1])
+        name, source = body.name or f"Mapa {m['name']}", {"kind": "map", "map_id": body.map_id, "analysis_at": rep.get("at")}
+        node_rows = [{"id": i, "name": n, "type": (devs.get(i) or {}).get("device_type")} for i, n in nodes]
+    else:
+        ids = list(dict.fromkeys(body.device_ids))[:150]
+        if len(ids) < 2:
+            raise HTTPException(status_code=400, detail="Escolha ao menos 2 equipamentos")
+        devs = {d["id"]: d async for d in db.devices.find({"id": {"$in": ids}, **_scope(user)}, {"_id": 0})}
+        settings = await monitoring.get_settings(db)
+        sample = max(3, min(int(body.sample_sec or 10), 30))
+        sem = asyncio.Semaphore(8)
+
+        async def one(did):
+            dev = devs.get(did)
+            if not dev:
+                return did, {"ok": False, "error": "equipamento não encontrado"}
+            async with sem:
+                try:
+                    client = await _snmp_client(dev, settings)
+                    return did, await asyncio.wait_for(teopt.collect(client, sample), timeout=180)
+                except asyncio.TimeoutError:
+                    return did, {"ok": False, "error": "SNMP demorou demais"}
+                except Exception as e:
+                    return did, {"ok": False, "error": str(e)[:200]}
+        data = dict(await asyncio.gather(*[one(d) for d in ids]))
+        for did, d in data.items():
+            if not d.get("ok"):
+                errors.append({"device": (devs.get(did) or {}).get("name", did), "error": d.get("error", "sem leitura SNMP")})
+        links, notes = teopt.discover_links(devs, data)
+        node_rows = [{"id": did, "name": (devs.get(did) or {}).get("name", "?"), "type": (devs.get(did) or {}).get("device_type"),
+                      "router_id": (data.get(did) or {}).get("router_id"), "ok": bool((data.get(did) or {}).get("ok"))} for did in ids]
+        name, source = body.name or f"{len(ids)} equipamentos", {"kind": "devices", "device_ids": ids}
+    doc = {"id": os.urandom(8).hex(), "owner_id": user["id"], "name": name[:80], "source": source,
+           "map_id": body.map_id, "at": datetime.now(timezone.utc).isoformat(), "duration_sec": round(time.monotonic() - started, 1),
+           "nodes": node_rows, "links": links, "errors": errors, "notes": notes}
+    await db.te_runs.insert_one(dict(doc))
+    old = await db.te_runs.find({"owner_id": user["id"]}, {"_id": 0, "id": 1}).sort("at", -1).to_list(200)
+    for x in old[20:]:
+        await db.te_runs.delete_one({"id": x["id"]})
+    return _te_public(doc)
+
+
+@api.get("/te/runs")
+async def te_runs(user: dict = Depends(get_current_user)):
+    rows = await db.te_runs.find({"owner_id": user["id"]}, {"_id": 0, "id": 1, "name": 1, "at": 1, "source": 1, "nodes": 1, "links": 1}
+                                 ).sort("at", -1).to_list(20)
+    return [{"id": r["id"], "name": r["name"], "at": r["at"], "kind": (r.get("source") or {}).get("kind"),
+             "devices": len(r.get("nodes") or []), "links": len(r.get("links") or [])} for r in rows]
+
+
+@api.get("/te/runs/{rid}")
+async def te_get(rid: str, user: dict = Depends(get_current_user)):
+    return _te_public(await _te_for(user, rid))
+
+
+@api.delete("/te/runs/{rid}")
+async def te_delete(rid: str, user: dict = Depends(get_current_user)):
+    await _te_for(user, rid)
+    await db.te_runs.delete_one({"id": rid})
+    return {"ok": True}
+
+
+class TeOptimizeIn(BaseModel):
+    target_pct: float = 80
+    max_changes: int = 4
+    symmetric: bool = True
+    max_cost: int = 65535
+
+
+@api.post("/te/runs/{rid}/optimize")
+async def te_optimize(rid: str, body: TeOptimizeIn, user: dict = Depends(get_current_user)):
+    doc = await _te_for(user, rid)
+    if not 30 <= body.target_pct <= 100:
+        raise HTTPException(status_code=400, detail="Meta de utilização entre 30% e 100%")
+    links = doc["links"]
+    return await asyncio.get_running_loop().run_in_executor(
+        None, lambda: teopt.optimize(links, body.target_pct, max(1, min(body.max_changes, 10)), body.symmetric, 1, max(2, body.max_cost)))
+
+
+class TeSimIn(BaseModel):
+    costs: List[dict] = []              # [{link, dir, cost}]
+    down_links: List[str] = []
+    down_nodes: List[str] = []
+
+
+@api.post("/te/runs/{rid}/simulate")
+async def te_simulate(rid: str, body: TeSimIn, user: dict = Depends(get_current_user)):
+    doc = await _te_for(user, rid)
+    links = doc["links"]
+    ids = {L["id"] for L in links}
+    costs = {}
+    for c in body.costs:
+        try:
+            if c["link"] in ids and c["dir"] in ("ab", "ba") and 1 <= int(c["cost"]) <= 65535:
+                costs[(c["link"], c["dir"])] = int(c["cost"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Custo inválido")
+    r = netanalysis.simulate(links, set(body.down_links) & ids, costs, set(body.down_nodes))
+    return {"utilization": teopt.utilization(links, r["links"]), "isolated_pairs": r["isolated_pairs"],
+            "cut_nodes": r["cut_nodes"], "changed_pairs": r["changed_pairs"],
+            "peak": max([u["pct"] or 0 for u in teopt.utilization(links, r["links"])] or [0])}
+
+
+class TePathIn(BaseModel):
+    src: str
+    dst: str
+    bw_mbps: float = 0
+    max_pct: float = 90
+    exclude_links: List[str] = []
+    exclude_nodes: List[str] = []
+    include_nodes: List[str] = []
+
+
+@api.post("/te/runs/{rid}/path")
+async def te_path(rid: str, body: TePathIn, user: dict = Depends(get_current_user)):
+    doc = await _te_for(user, rid)
+    links = doc["links"]
+    nodes = {n["id"]: n for n in doc.get("nodes") or []}
+    if body.src not in nodes or body.dst not in nodes or body.src == body.dst:
+        raise HTTPException(status_code=400, detail="Escolha origem e destino diferentes")
+    if body.bw_mbps < 0 or not 10 <= body.max_pct <= 100:
+        raise HTTPException(status_code=400, detail="Banda ou limite inválido")
+    spf = teopt.spf_path(links, body.src, body.dst)
+    byid = {L["id"]: L for L in links}
+    for h in spf.get("hops", []):
+        L = byid[h["link"]]
+        h.update({"from": L["a_name"] if h["dir"] == "ab" else L["b_name"], "to": L["b_name"] if h["dir"] == "ab" else L["a_name"],
+                  "pct_now": L.get(f"{h['dir']}_pct")})
+    c = teopt.cspf(links, body.src, body.dst, body.bw_mbps, body.max_pct, set(body.exclude_links), set(body.exclude_nodes),
+                   [n for n in body.include_nodes if n in nodes])
+    if c.get("found"):
+        src = nodes[body.src]
+        lsp = re.sub(r"[^A-Za-z0-9-]", "-", f"BASTION-{src['name']}-{nodes[body.dst]['name']}")[:40]
+        c["config"] = teopt.te_config(src.get("type"), lsp, c["hops"], nodes[body.dst].get("router_id"), body.bw_mbps)
+        c["lsp_name"] = lsp
+    return {"spf": spf, "cspf": c}
 
 
 @api.get("/maps/{map_id}/analysis")

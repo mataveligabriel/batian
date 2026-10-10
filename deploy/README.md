@@ -898,3 +898,25 @@ Um roteiro é uma sequência de passos, cada um com um equipamento e os comandos
   depois responde o resultado de cada passo. Vale para quem está liberado no bot (Automação → Assistente IA) e tem o
   módulo Execução em Lote. O bot precisa estar ativo (Assistente IA configurado).
 - Cada execução fica no histórico do roteiro (ícone de relógio) e no Histórico de sessões.
+
+## 37. Engenharia de tráfego (OSPF, SPF/CSPF, LSP e otimização de custos)
+
+Menu **Eng. de tráfego** (módulo "Engenharia de tráfego").
+
+1. **Montar topologia:** escolha vários equipamentos (busca por nome/IP/tag, "marcar os da lista") ou um mapa.
+   Com equipamentos, o BastiON lê por SNMP as interfaces, IPs, custo OSPF de cada interface (OSPF-MIB) e o tráfego de
+   cada sentido (duas leituras em 10 s) e liga os equipamentos pelas sub-redes ponto a ponto (/29 a /31). Com mapa,
+   usa a última Análise de rede do mapa. A tela mostra os sentidos mais cheios.
+2. **Otimizar custos OSPF:** informe a meta de pico (ex.: 80%). O BastiON testa subir o custo do enlace mais cheio
+   (empatar com o caminho alternativo = divide por ECMP; um acima = desvia tudo) e baixar o custo de enlaces folgados do
+   caminho alternativo, ficando com o que mais reduz o pico sem isolar ninguém. Mostra a carga prevista antes/depois,
+   quantos pares de roteadores mudam de caminho, os comandos por equipamento (Huawei `ospf cost`, Juniper `metric`,
+   Cisco/ZTE `ip ospf cost`, Datacom/MikroTik — conferir) e o botão **Criar roteiro com essas mudanças**.
+   Com LDP, o LSP segue o OSPF — mudar o custo muda o caminho dos LSPs também.
+3. **Caminho / LSP:** origem, destino, banda e limite (%), com "passar por" e "evitar". Mostra o caminho atual
+   (SPF/LDP, com ECMP) e o caminho com folga (CSPF) com a utilização antes/depois, e o túnel RSVP-TE com
+   explicit-path pronto (Huawei/Juniper/Cisco) — precisa de MPLS TE habilitado.
+4. **Simular:** troque custos e/ou derrube enlaces e veja a carga prevista e quem ficaria isolado.
+
+Modelo: sem matriz de tráfego, o que passa hoje em cada sentido é tratado como demanda entre as pontas e redistribuído
+pelo SPF com ECMP — estimativa para comparar alternativas. Aplique uma mudança por vez e acompanhe no mapa.

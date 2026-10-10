@@ -7,6 +7,7 @@ export const MODULES = [
   { key: "winbox", label: "Winbox", path: "/winbox", desc: "túnel do Winbox até os MikroTik (jump servers)" },
   { key: "rdp", label: "Área de Trabalho Remota", path: "/rdp", desc: "sessões RDP (Windows) pelo navegador" },
   { key: "maps", label: "Mapas de rede", path: "/maps", desc: "mapas, tráfego, alarmes e análise" },
+  { key: "te", label: "Engenharia de tráfego", path: "/te", desc: "OSPF/SPF, LSP (CSPF), simulação e otimização de custos" },
   { key: "dashboards", label: "Dashboards", path: "/dashboards", desc: "consumo e sinal óptico" },
   { key: "flow", label: "Análise de Flow", path: "/flow", desc: "tráfego por AS/IP, ataques, mitigação" },
   { key: "batch", label: "Execução em Lote", path: "/batch", desc: "comandos em vários equipamentos" },

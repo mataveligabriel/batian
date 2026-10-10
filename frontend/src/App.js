@@ -13,6 +13,7 @@ import Batch from "@/pages/Batch";
 import LookingGlass from "@/pages/LookingGlass";
 import OltScript from "@/pages/OltScript";
 import Winbox from "@/pages/Winbox";
+import TrafficEng from "@/pages/TrafficEng";
 import PublicLookingGlass from "@/pages/PublicLookingGlass";
 import Rpki from "@/pages/Rpki";
 import Rdp from "@/pages/Rdp";
@@ -62,6 +63,7 @@ function App() {
             <Route path="/lg" element={<LookingGlass />} />
             <Route path="/olt-script" element={<OltScript />} />
             <Route path="/winbox" element={<Winbox />} />
+            <Route path="/te" element={<TrafficEng />} />
             <Route path="/rpki" element={<Rpki />} />
             <Route path="/rdp" element={<Rdp />} />
             <Route path="/agents" element={<Agents />} />
