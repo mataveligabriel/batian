@@ -927,3 +927,9 @@ pelo SPF com ECMP — estimativa para comparar alternativas. Aplique uma mudanç
 Lote, Looking Glass → Configurar, Enviar/Transferir) a lista vem agrupada por tag e fechada: a caixa da tag marca o
 grupo inteiro e a seta abre o grupo para escolher os equipamentos um a um (a caixa fica "parcial" quando só parte do
 grupo está marcada). Nas listas de escolha única (roteiros, Script de OLT, botnet, MPLS) as opções vêm agrupadas por tag.
+
+**Teste da community SNMP** (Equipamentos): o botão **SNMP** na linha de cada equipamento (ao lado do ping) testa a
+community (lê sysName/sysDescr) — **verde** respondeu, **vermelho** não respondeu (passe o mouse para ver o erro),
+contorno = ainda não testado, **cinza** = o equipamento não tem community própria configurada (não é testado). Com
+equipamentos selecionados, **Testar SNMP** testa todos os que têm community. O resultado fica salvo; trocar a
+community volta para "não testado".

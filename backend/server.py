@@ -1057,6 +1057,9 @@ async def update_device(device_id: str, payload: DeviceCreate, user: dict = Depe
     if data.get("agent_id") and data["agent_id"] != existing.get("agent_id"):
         await _get_agent_for(user, data["agent_id"])
     data["owner_id"] = existing.get("owner_id") or user["id"]
+    if (data.get("snmp_community") or "") != (existing.get("snmp_community") or "") or \
+            int(data.get("snmp_port") or 161) != int(existing.get("snmp_port") or 161):
+        data["snmp_status"] = "none" if not (data.get("snmp_community") or "").strip() else None   # testar de novo
     await db.devices.update_one({"id": device_id}, {"$set": data})
     return _public(await db.devices.find_one({"id": device_id}, {"_id": 0}))
 
@@ -1189,6 +1192,7 @@ async def bulk_update_devices(payload: DeviceBulkUpdate, user: dict = Depends(ge
         if len(com) > 64 or re.search(r"[\s\"'\\]", com):
             raise HTTPException(status_code=400, detail="Community SNMP inválida (até 64 caracteres, sem espaço nem aspas)")
         setf["snmp_community"] = com
+        setf["snmp_status"] = "none" if not com else None      # community nova: precisa testar de novo
     if payload.snmp_port is not None:
         if not 1 <= payload.snmp_port <= 65535:
             raise HTTPException(status_code=400, detail="Porta SNMP inválida")
@@ -3030,17 +3034,51 @@ async def device_interfaces(device_id: str, refresh: bool = False, user: dict = 
     return doc
 
 
+async def _snmp_check(dev: dict, save: bool = True, own_only: bool = False) -> dict:
+    """Testa a community (sysName/sysDescr) e guarda no equipamento: snmp_status ok | fail | none (sem community própria)."""
+    now = datetime.now(timezone.utc).isoformat()
+    if own_only and not (dev.get("snmp_community") or "").strip():
+        res = {"ok": None, "status": "none", "error": "sem community configurada no equipamento"}
+    else:
+        try:
+            c = await _snmp_client(dev)
+            v = await asyncio.wait_for(c.get([snmp_service.SYS_NAME, snmp_service.SYS_DESCR]), timeout=20)
+            name, descr = v.get(snmp_service.SYS_NAME), v.get(snmp_service.SYS_DESCR)
+            if not isinstance(name, str) and not isinstance(descr, str):
+                raise snmp_service.SnmpError("sem resposta (community recusada ou SNMP desligado)")
+            res = {"ok": True, "status": "ok", "sys_name": name if isinstance(name, str) else None,
+                   "sys_descr": (descr if isinstance(descr, str) else "")[:200]}
+        except asyncio.TimeoutError:
+            res = {"ok": False, "status": "fail", "error": "SNMP não respondeu (timeout)"}
+        except Exception as e:
+            res = {"ok": False, "status": "fail", "error": (str(e) or type(e).__name__)[:200]}
+    res["via_agent"] = bool(dev.get("agent_id"))
+    res["checked_at"] = now
+    if save:
+        await db.devices.update_one({"id": dev["id"]}, {"$set": {
+            "snmp_status": res["status"], "snmp_checked_at": now, "snmp_error": res.get("error") or "",
+            "snmp_sys_name": res.get("sys_name") or ""}})
+    return res
+
+
 @api.post("/devices/{device_id}/snmp-test")
-async def device_snmp_test(device_id: str, user: dict = Depends(get_current_user)):
+async def device_snmp_test(device_id: str, own_only: bool = False, user: dict = Depends(get_current_user)):
     dev = await _get_device_for(user, device_id)
-    try:
-        c = await _snmp_client(dev)
-        v = await asyncio.wait_for(c.get([snmp_service.SYS_NAME, snmp_service.SYS_DESCR]), timeout=20)
-        name, descr = v.get(snmp_service.SYS_NAME), v.get(snmp_service.SYS_DESCR)
-        return {"ok": True, "sys_name": name if isinstance(name, str) else None,
-                "sys_descr": (descr if isinstance(descr, str) else "")[:200], "via_agent": bool(dev.get("agent_id"))}
-    except Exception as e:
-        return {"ok": False, "error": str(e), "via_agent": bool(dev.get("agent_id"))}
+    return await _snmp_check(dev, own_only=own_only)
+
+
+@api.post("/devices/snmp-test-all")
+async def devices_snmp_test_all(payload: DeviceIdsPayload, user: dict = Depends(get_current_user)):
+    """Testa a community dos equipamentos escolhidos (só os que têm community própria; os outros ficam cinza)."""
+    ids = list(dict.fromkeys(payload.device_ids))[:500]
+    devs = await db.devices.find({"id": {"$in": ids}, **_scope(user)}, {"_id": 0}).to_list(500)
+    sem = asyncio.Semaphore(12)
+
+    async def one(d):
+        async with sem:
+            r = await _snmp_check(d, own_only=True)
+            return {"id": d["id"], "name": d["name"], **r}
+    return await asyncio.gather(*[one(d) for d in devs])
 
 
 # ----- mapas -----

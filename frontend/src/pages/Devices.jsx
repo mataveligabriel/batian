@@ -26,6 +26,24 @@ const typeLabel = (t) => DEVICE_TYPES.find(x => x[0] === t)?.[1] || t || "linux"
 
 const emptyDevice = { name: "", host: "", port: 22, protocol: "ssh", owner_id: "", username: "", password: "", clear_password: false, device_type: "linux", tags: "", agent_id: "", description: "", backup_enabled: true, backup_command: "", snmp_community: "", snmp_port: 161 };
 
+// SNMP: verde = community respondeu · vermelho = não respondeu · cinza = sem community no equipamento · contorno = não testado
+function SnmpButton({ d, busy, onTest, size = "h-8" }) {
+  const has = !!(d.snmp_community || "").trim();
+  const st = has ? d.snmp_status : "none";
+  const cls = st === "ok" ? "text-emerald-300 border-emerald-600/60 bg-emerald-500/10"
+    : st === "fail" ? "text-red-300 border-red-600/70 bg-red-500/10"
+      : !has ? "text-slate-600 border-slate-700/60 cursor-not-allowed" : "text-slate-300 border-slate-500/60 hover:bg-slate-800";
+  const title = !has ? "Sem community SNMP configurada neste equipamento"
+    : st === "ok" ? `SNMP ok${d.snmp_sys_name ? ` (${d.snmp_sys_name})` : ""} — clique para testar de novo`
+      : st === "fail" ? `SNMP falhou: ${d.snmp_error || "sem resposta"} — clique para testar de novo` : "Testar a community SNMP";
+  return (
+    <button type="button" onClick={() => has && onTest(d)} disabled={busy} title={title} data-testid={`snmp-test-${d.id}`} data-status={st || "untested"}
+      className={`${size} px-1.5 rounded-md border text-[10px] font-mono font-semibold tracking-wide inline-flex items-center ${cls}`}>
+      {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : "SNMP"}
+    </button>
+  );
+}
+
 export default function Devices() {
   const [devices, setDevices] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -43,6 +61,8 @@ export default function Devices() {
   const [selected, setSelected] = useState(() => new Set());
   const [statusFilter, setStatusFilter] = useState("");
   const [pinging, setPinging] = useState(false);
+  const [snmpBusy, setSnmpBusy] = useState(() => new Set());
+  const [snmpAll, setSnmpAll] = useState(false);
   const lastClicked = useRef(null);
   const nav = useNavigate();
 
@@ -117,6 +137,30 @@ export default function Devices() {
       toast.success(`${d.name}: ${data.status} ${data.latency_ms ? `(${data.latency_ms}ms)` : ""}`);
       load();
     } catch (e) { toast.error(formatApiError(e)); }
+  };
+
+  const patchDev = (id, patch) => setDevices(ds => ds.map(x => (x.id === id ? { ...x, ...patch } : x)));
+  const snmpTest = async (d) => {
+    setSnmpBusy(b => new Set(b).add(d.id));
+    try {
+      const { data } = await api.post(`/devices/${d.id}/snmp-test?own_only=true`);
+      patchDev(d.id, { snmp_status: data.status, snmp_error: data.error || "", snmp_sys_name: data.sys_name || "" });
+      if (data.status === "ok") toast.success(`${d.name}: SNMP ok${data.sys_name ? ` — ${data.sys_name}` : ""}`);
+      else if (data.status === "fail") toast.error(`${d.name}: SNMP falhou — ${data.error}`);
+    } catch (e) { toast.error(formatApiError(e)); }
+    finally { setSnmpBusy(b => { const n = new Set(b); n.delete(d.id); return n; }); }
+  };
+  const snmpSelected = async () => {
+    setSnmpAll(true);
+    const ids = selectedIds.filter(id => (devices.find(x => x.id === id)?.snmp_community || "").trim());
+    if (!ids.length) { setSnmpAll(false); return toast.info("Nenhum dos selecionados tem community SNMP configurada"); }
+    toast.info(`Testando SNMP em ${ids.length} equipamento(s)…`);
+    try {
+      const { data } = await api.post("/devices/snmp-test-all", { device_ids: ids });
+      data.forEach(r => patchDev(r.id, { snmp_status: r.status, snmp_error: r.error || "", snmp_sys_name: r.sys_name || "" }));
+      const ok = data.filter(r => r.status === "ok").length;
+      toast[ok === data.length ? "success" : "warning"](`SNMP: ${ok} ok · ${data.length - ok} com falha`);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setSnmpAll(false); }
   };
 
   const allTags = Array.from(new Set(devices.flatMap(d => d.tags || []))).sort();
@@ -252,6 +296,9 @@ export default function Devices() {
           <Button size="sm" variant="ghost" onClick={pingSelected} disabled={pinging} data-testid="bulk-ping-btn" className="text-amber-400 hover:bg-amber-950/40">
             {pinging ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Zap className="w-4 h-4 mr-1.5" />} Ping
           </Button>
+          <Button size="sm" variant="ghost" onClick={snmpSelected} disabled={snmpAll} data-testid="bulk-snmp-btn" className="text-emerald-300 hover:bg-emerald-950/40">
+            {snmpAll ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <span className="text-[10px] font-mono font-semibold mr-1.5 px-1 border border-emerald-600/60 rounded">SNMP</span>} Testar SNMP
+          </Button>
           <Button size="sm" variant="ghost" onClick={batchSelected} data-testid="bulk-batch-btn" className="text-brand-soft hover:bg-brand/15">
             <Play className="w-4 h-4 mr-1.5" /> Executar em lote
           </Button>
@@ -288,6 +335,7 @@ export default function Devices() {
               </div>
             </button>
             <Button size="sm" variant="ghost" onClick={() => ping(d)} className="h-9 w-9 p-0 text-amber-400" title="Ping"><Zap className="w-4 h-4" /></Button>
+            <SnmpButton d={d} busy={snmpBusy.has(d.id)} onTest={snmpTest} size="h-9" />
             <Button size="sm" variant="ghost" onClick={() => openEdit(d)} className="h-9 w-9 p-0 text-slate-300" title="Editar"><Pencil className="w-4 h-4" /></Button>
           </div>
         ))}
@@ -351,6 +399,7 @@ export default function Devices() {
                       <Button size="sm" variant="ghost" onClick={() => ping(d)} data-testid={`ping-device-${d.id}`} className="text-amber-400 hover:bg-amber-950/40">
                         <Zap className="w-4 h-4" />
                       </Button>
+                      <SnmpButton d={d} busy={snmpBusy.has(d.id)} onTest={snmpTest} />
                       <Button size="sm" variant="ghost" onClick={() => nav(`/terminal/${d.id}`)} data-testid={`connect-ssh-${d.id}`} className="text-brand-soft hover:bg-brand/15">
                         <TerminalSquare className="w-4 h-4" />
                       </Button>
