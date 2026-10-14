@@ -38,7 +38,7 @@ from models import (
 )
 import ai_assistant
 import llm
-from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES
+from ssh_service import SSHClientWrapper, Hop, tcp_ping, LEGACY_TYPES, JUMP_POOL
 from telnet_service import TelnetClientWrapper
 import vault
 import automation
@@ -693,7 +693,7 @@ def _agent_hop(ag: dict, priv: str) -> Hop:
         host, port = ag.get("host", ""), int(ag.get("port") or 22)
     pw = vault.decrypt(ag.get("password", ""))
     return Hop(host, port, ag.get("username") or "root", private_key=priv or None,
-               password=pw or None, legacy=False, label=f"agente {ag['name']}")
+               password=pw or None, legacy=False, label=f"agente {ag['name']}", shared=True)
 
 
 async def _next_tunnel_port() -> int:
@@ -820,7 +820,7 @@ async def test_agent(agent_id: str, user: dict = Depends(get_current_user)):
     priv, _, _ = await _get_ssh_key()
     try:
         chain = await _agent_chain(agent_id)
-        w = SSHClientWrapper([_agent_hop(x, priv) for x in chain])
+        w = SSHClientWrapper([_agent_hop(x, priv) for x in chain], pool=False)   # teste = login de verdade
         await w.connect()
         res = await w.run_command("hostname || echo ok", timeout=15)
         await w.close()
@@ -6149,5 +6149,6 @@ async def shutdown_db_client():
     if _flow_asn_task:
         _flow_asn_task.cancel()
     await agent_pool.close_all()
+    await JUMP_POOL.close_all()
     await web_proxy.stop()
     client.close()

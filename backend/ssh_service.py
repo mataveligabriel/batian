@@ -1,8 +1,10 @@
 """SSH connection manager using asyncssh - multi-hop ProxyJump chains, legacy algorithms and shell-mode exec."""
 import asyncio
+import hashlib
+import os
 import re
 import time
-from typing import Optional, List
+from typing import Dict, Optional, List
 
 import asyncssh
 
@@ -118,7 +120,7 @@ async def read_reply(read, send, idle: float, hard: float, prompt: Optional[str]
 
 class Hop:
     def __init__(self, host: str, port: int, username: str, private_key: Optional[str] = None,
-                 password: Optional[str] = None, legacy: bool = False, label: str = ""):
+                 password: Optional[str] = None, legacy: bool = False, label: str = "", shared: bool = False):
         self.host = host
         self.port = port
         self.username = username
@@ -126,6 +128,14 @@ class Hop:
         self.password = password
         self.legacy = legacy
         self.label = label or host
+        # shared=True: salto que é agente/jump server — a conexão é reaproveitada (JumpPool) em vez de um login novo
+        # no jump a cada acesso, ping ou coleta.
+        self.shared = shared
+
+    def pool_key(self) -> tuple:
+        """Identifica o login no salto; muda se trocar usuário, senha ou chave (aí abre uma conexão nova)."""
+        cred = hashlib.sha256(f"{self.password or ''}\0{self.private_key or ''}".encode()).hexdigest()[:16]
+        return (self.host, int(self.port), self.username, cred)
 
     def connect_kwargs(self) -> dict:
         key = _load_key(self.private_key)
@@ -151,26 +161,163 @@ def _load_key(pem: Optional[str]):
         return None
 
 
-class SSHClientWrapper:
-    """Interactive SSH session to the last hop of a chain (hops[:-1] are jump hosts)."""
+# Conexões aos jump servers (agentes) ficam abertas e são compartilhadas: cada acesso a um equipamento vira só um
+# canal (direct-tcpip) dentro da conexão que já existe, sem login novo no jump. Antes, ping/coleta/acesso de N
+# equipamentos atrás do mesmo agente geravam N logins "Accepted password" no auth.log do jump.
+JUMP_IDLE_SECONDS = int(os.environ.get("JUMP_IDLE_SECONDS", "600") or 600)   # fecha depois de 10 min sem uso
+JUMP_KEEPALIVE = 30                                                          # detecta túnel caído em ~90 s
 
-    def __init__(self, hops: List[Hop], device_type: str = "linux"):
+
+class _PooledJump:
+    __slots__ = ("conn", "refs", "timer", "dead")
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.refs = 0
+        self.timer: Optional[asyncio.TimerHandle] = None
+        self.dead = False
+
+
+class JumpPool:
+    def __init__(self):
+        self.items: Dict[tuple, _PooledJump] = {}
+        self.locks: Dict[tuple, asyncio.Lock] = {}
+
+    @staticmethod
+    def chain_key(hops: List[Hop]) -> tuple:
+        return tuple(h.pool_key() for h in hops)
+
+    def _alive(self, it: Optional[_PooledJump]) -> bool:
+        if not it or it.dead:
+            return False
+        tr = getattr(it.conn, "_transport", True)
+        return tr is not None
+
+    async def acquire(self, hops: List[Hop], parent=None):
+        """Conexão compartilhada até hops[-1] (hops = cadeia de jumps desde o BastiON). parent = conexão ao salto anterior."""
+        key = self.chain_key(hops)
+        lock = self.locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            it = self.items.get(key)
+            if not self._alive(it):
+                if it:
+                    self._drop(key, it)
+                hop = hops[-1]
+                kw = dict(hop.connect_kwargs(), keepalive_interval=JUMP_KEEPALIVE, keepalive_count_max=3)
+                conn = await (parent.connect_ssh(hop.host, port=hop.port, **kw) if parent is not None
+                              else asyncssh.connect(hop.host, port=hop.port, **kw))
+                it = _PooledJump(conn)
+                self.items[key] = it
+                asyncio.ensure_future(self._watch(key, it))
+            if it.timer:
+                it.timer.cancel()
+                it.timer = None
+            it.refs += 1
+            return it.conn
+
+    async def _watch(self, key, it: _PooledJump):
+        try:
+            await it.conn.wait_closed()
+        except Exception:
+            pass
+        it.dead = True
+        if self.items.get(key) is it:
+            self.items.pop(key, None)
+
+    def release(self, key: tuple, conn):
+        it = self.items.get(key)
+        if not it or it.conn is not conn:
+            return
+        it.refs = max(0, it.refs - 1)
+        if it.refs == 0 and not it.timer:
+            try:
+                it.timer = asyncio.get_running_loop().call_later(JUMP_IDLE_SECONDS, self._expire, key, it)
+            except RuntimeError:
+                self._drop(key, it)
+
+    def invalidate(self, key: tuple, conn):
+        it = self.items.get(key)
+        if it and it.conn is conn:
+            self._drop(key, it)
+
+    def _expire(self, key, it: _PooledJump):
+        if it.refs == 0 and self.items.get(key) is it:
+            self._drop(key, it)
+
+    def _drop(self, key, it: _PooledJump):
+        it.dead = True
+        if it.timer:
+            it.timer.cancel()
+            it.timer = None
+        if self.items.get(key) is it:
+            self.items.pop(key, None)
+        try:
+            it.conn.close()
+        except Exception:
+            pass
+
+    def stats(self) -> List[dict]:
+        return [{"chain": [f"{k[0]}:{k[1]}" for k in key], "in_use": it.refs} for key, it in self.items.items()]
+
+    async def close_all(self):
+        for key, it in list(self.items.items()):
+            self._drop(key, it)
+
+
+JUMP_POOL = JumpPool()
+
+
+class _StaleJump(Exception):
+    pass
+
+
+class SSHClientWrapper:
+    """Interactive SSH session to the last hop of a chain (hops[:-1] are jump hosts).
+
+    Os saltos iniciais marcados shared=True (agentes) usam JUMP_POOL; os demais (o equipamento) são conexões próprias
+    deste wrapper. pool=False força login novo em tudo (ex.: botão "Testar" do agente)."""
+
+    def __init__(self, hops: List[Hop], device_type: str = "linux", pool: bool = True):
         assert hops, "at least one hop required"
         self.hops = hops
         self.device_type = device_type
+        self.pool = pool
         self.conns: List[asyncssh.SSHClientConnection] = []
+        self.pooled: List[tuple] = []          # (chave, conexão) emprestadas do JUMP_POOL
         self.conn: Optional[asyncssh.SSHClientConnection] = None
         self.process: Optional[asyncssh.SSHClientProcess] = None
 
     async def connect(self):
+        try:
+            await self._connect()
+        except _StaleJump:
+            await self.close()            # conexão compartilhada tinha caído: refaz uma vez, já sem ela no pool
+            await self._connect()
+
+    async def _connect(self):
         tunnel = None
-        for hop in self.hops:
+        shared = self.pool
+        for i, hop in enumerate(self.hops):
+            shared = shared and hop.shared
             try:
+                if shared:
+                    tunnel = await JUMP_POOL.acquire(self.hops[:i + 1], tunnel)
+                    self.pooled.append((JUMP_POOL.chain_key(self.hops[:i + 1]), tunnel))
+                    continue
                 if tunnel is None:
                     conn = await asyncssh.connect(hop.host, port=hop.port, **hop.connect_kwargs())
                 else:
                     conn = await tunnel.connect_ssh(hop.host, port=hop.port, **hop.connect_kwargs())
             except Exception as e:
+                last = self.pooled[-1][1] if self.pooled else None
+                stale = last is not None and not getattr(self, "_retried", False) and (
+                    getattr(last, "_transport", True) is None
+                    or isinstance(e, (asyncssh.ConnectionLost, ConnectionError, BrokenPipeError, EOFError)))
+                if stale:
+                    key, c = self.pooled[-1]
+                    JUMP_POOL.invalidate(key, c)
+                    self._retried = True
+                    raise _StaleJump() from e
                 await self.close()
                 raise RuntimeError(f"Falha ao conectar em {hop.label} ({hop.host}:{hop.port}): {e}") from e
             self.conns.append(conn)
@@ -252,7 +399,10 @@ class SSHClientWrapper:
                 await c.wait_closed()
             except Exception:
                 pass
+        for key, c in reversed(self.pooled):
+            JUMP_POOL.release(key, c)
         self.conns = []
+        self.pooled = []
         self.conn = None
 
     async def tcp_check(self, host: str, port: int, timeout: float = 5.0) -> Optional[float]:

@@ -933,3 +933,18 @@ community (lê sysName/sysDescr) — **verde** respondeu, **vermelho** não resp
 contorno = ainda não testado, **cinza** = o equipamento não tem community própria configurada (não é testado). Com
 equipamentos selecionados, **Testar SNMP** testa todos os que têm community. O resultado fica salvo; trocar a
 community volta para "não testado".
+
+## 38. Conexão compartilhada com os jump servers (agentes)
+
+O BastiON mantém **uma** conexão SSH aberta por agente/jump server e passa tudo por dentro dela (acesso a
+equipamento, ping, coleta SNMP, Acesso Web, Winbox, RDP, varredura). Cada acesso vira só um canal dentro dessa
+conexão, sem login novo no jump. Antes, ping ou coleta de 20 equipamentos atrás do mesmo agente gerava 20 linhas
+`Accepted password` no `auth.log` (e no SIEM) do jump.
+
+- A conexão fecha sozinha depois de 10 min sem uso (`JUMP_IDLE_SECONDS` no `.env`, em segundos).
+- Keepalive a cada 30 s: túnel reverso caído é detectado em até ~90 s; se a conexão compartilhada tiver caído,
+  o BastiON reconecta uma vez sozinho.
+- Trocar usuário, senha ou chave do agente abre uma conexão nova com a credencial nova.
+- O botão **Testar** do agente continua fazendo um login de verdade (não usa a conexão compartilhada).
+- Se o jump limitar sessões (`MaxSessions` no `sshd_config`, padrão 10), suba para comportar os acessos
+  simultâneos por ele, ex.: `MaxSessions 100`.
