@@ -264,7 +264,7 @@ export default function TrafficEng() {
           <Card className="bg-surface border-line p-4 space-y-3">
             <div className="flex rounded-md border border-line overflow-hidden text-sm">
               {[["devices", "Equipamentos"], ["map", "Mapa"]].map(([k, l]) => (
-                <button key={k} onClick={() => setSrc(k)} data-testid={`te-src-${k}`} className={`flex-1 h-8 ${src === k ? "bg-brand text-white" : "bg-sunken text-slate-400 hover:text-slate-200"}`}>{l}</button>))}
+                <button key={k} onClick={() => setSrc(k)} data-testid={`te-src-${k}`} className={`flex-1 h-8 ${src === k ? "bg-brand text-onbrand" : "bg-sunken text-slate-400 hover:text-slate-200"}`}>{l}</button>))}
             </div>
             {src === "devices" ? <>
               <TagSelect devices={devices} selected={picked} onChange={setPicked} testid="te-tags" />

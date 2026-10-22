@@ -948,3 +948,31 @@ conexão, sem login novo no jump. Antes, ping ou coleta de 20 equipamentos atrá
 - O botão **Testar** do agente continua fazendo um login de verdade (não usa a conexão compartilhada).
 - Se o jump limitar sessões (`MaxSessions` no `sshd_config`, padrão 10), suba para comportar os acessos
   simultâneos por ele, ex.: `MaxSessions 100`.
+
+## 39. Excluir usuário: o que era dele (inclusive o jump server)
+
+Ao excluir um usuário, o BastiON mostra o que ele tem (agentes/jump servers, equipamentos, mapas…) e pergunta:
+
+- **Transferir para mim**: tudo passa a ser de quem está excluindo; os jump servers continuam funcionando.
+- **Apagar tudo**: apaga os itens dele e o túnel reverso dos jump servers dele deixa de ser aceito.
+
+Usuários excluídos antes dessa versão deixaram itens sem dono: eles aparecem no cartão **Itens de usuários
+excluídos** (Usuários), com **Trazer para mim** ou **Apagar**. A chave do túnel de agente sem dono já sai do
+`authorized_keys` na próxima sincronização.
+
+O `sshd` só confere a chave no login, então um túnel que já estava conectado continuava de pé. O script de
+sincronização das chaves agora também derruba o túnel cuja porta saiu da lista. **Rode de novo o script de
+preparação do servidor** (Agentes Remotos → Configurar BastiON → copiar o script, como root no servidor do
+BastiON) para instalar a versão nova do `bastion-sync-keys.sh`. O encerramento fica no syslog
+(`journalctl -t bastion-sync`).
+
+## 40. Aparência: tema claro, escuro ou do sistema
+
+Botão **Aparência** no rodapé do menu lateral: tema escuro, claro ou do sistema (acompanha o Windows/celular),
+cor de destaque (pronta ou qualquer cor), tom do fundo (grafite, azul-noite, cinza neutro, quente, roxo) e tamanho
+do texto. Fica salvo no usuário e vale em qualquer navegador em que ele entrar. O terminal SSH mantém o tema
+próprio (ícone de paleta no terminal).
+
+Para desenvolvedores: as cores são variáveis CSS em `src/index.css` (`--c-*`) e `src/theme-palette.css`
+(`--tw-*`, gerado a partir da paleta do Tailwind); o `tailwind.config.js` aponta todas as classes de cor para elas.
+Texto branco sobre botão colorido usa `text-onbrand` (sempre branco); `text-white`/`bg-white/5` seguem o tema.

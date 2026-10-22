@@ -99,7 +99,7 @@ export function TrafficWidget({ widget, minutes, refreshKey, height = 260 }) {
         <Hero icon={ArrowUpRight} label="Saída" color={OUT.color} value={st.out.cur} pct={pct(st.out.cur)} p95={st.out.p95} max={st.out.max} big={height >= 360} />
       </div>
       <LineChart points={data.points} series={[IN, OUT]} height={height} area yFormat={fmtBpsShort} tipFormat={fmtBps}
-                 refLines={cap && Math.max(st.in.max || 0, st.out.max || 0) > cap * 1e6 * 0.5 ? [{ y: cap * 1e6, label: `capacidade ${fmtSpeed(cap)}`, color: "#6E7B7E" }] : []} />
+                 refLines={cap && Math.max(st.in.max || 0, st.out.max || 0) > cap * 1e6 * 0.5 ? [{ y: cap * 1e6, label: `capacidade ${fmtSpeed(cap)}`, color: "rgb(var(--c-slate-500))" }] : []} />
       <div className="text-[10px] font-mono text-slate-500 mt-1">
         {cap ? `capacidade ${fmtSpeed(cap)}${widget.capacity_mbps ? " (contratada)" : widget.type === "aggregate" ? " (soma das portas)" : " (porta)"}` : "capacidade desconhecida"}
         {data.step_sec > 30 ? ` · pontos agregados a cada ${data.step_sec >= 3600 ? `${Math.round(data.step_sec / 3600)}h` : data.step_sec >= 60 ? `${Math.round(data.step_sec / 60)} min` : `${data.step_sec}s`} (média)` : ""}

@@ -172,9 +172,10 @@ export default function Users() {
     try { await api.post(`/users/${u.id}/2fa/reset`); toast.success("2FA zerado"); load(); }
     catch (e) { toast.error(formatApiError(e)); }
   };
+  const [delTarget, setDelTarget] = useState(null);   // {user, items}
+  const [orphKey, setOrphKey] = useState(0);
   const del = async (u) => {
-    if (!window.confirm(`Excluir ${u.email}?`)) return;
-    try { await api.delete(`/users/${u.id}`); load(); toast.success("Excluído"); }
+    try { const { data } = await api.get(`/users/${u.id}/items`); setDelTarget({ user: u, items: data }); }
     catch (e) { toast.error(formatApiError(e)); }
   };
 
@@ -189,6 +190,7 @@ export default function Users() {
         </Button>
       </div>
       <SecurityCard onChanged={load} />
+      <OrphansCard key={orphKey} />
       <Card className="bg-surface border-line overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-xs text-slate-500 bg-panel">
@@ -272,6 +274,7 @@ export default function Users() {
         </DialogContent>
       </Dialog>
 
+      <DeleteUserDialog target={delTarget} onClose={(done) => { setDelTarget(null); if (done) { load(); setOrphKey(k => k + 1); } }} />
       <AccessDialog target={access} onClose={() => { setAccess(null); load(); }} />
       <TransferDialog open={!!transfer} onOpenChange={(v) => !v && setTransfer(null)} peer={transfer} />
 
@@ -298,5 +301,90 @@ export default function Users() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/** Exclusão de usuário: o que era dele (agentes/jump servers, equipamentos, mapas…) é transferido para você ou apagado.
+ *  Agente de usuário excluído deixa de ter o túnel reverso aceito. */
+function DeleteUserDialog({ target, onClose }) {
+  const [mode, setMode] = useState("transfer");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setMode("transfer"); }, [target]);
+  const u = target?.user, it = target?.items, has = it && Object.values(it.counts || {}).some(n => n > 0);
+  const go = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.delete(`/users/${u.id}`, { params: { items: mode } });
+      toast.success(has ? `${u.email} excluído — ${mode === "transfer" ? "transferido para você" : "apagado"}: ${data.text}` : `${u.email} excluído`);
+      onClose(true);
+    } catch (e) { toast.error(formatApiError(e)); }
+    setBusy(false);
+  };
+  return (
+    <Dialog open={!!target} onOpenChange={(v) => !v && onClose(false)}>
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-lg" data-testid="delete-user-dialog">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><Trash2 className="w-4 h-4 text-red-400" /> Excluir {u?.name || u?.email}</DialogTitle></DialogHeader>
+        <div className="space-y-3 text-sm">
+          <p className="text-slate-300">O usuário <span className="font-mono">{u?.email}</span> deixa de entrar na hora.</p>
+          {has ? (
+            <>
+              <p className="text-slate-300">Ele tem: <span className="text-slate-100" data-testid="delete-user-items">{it.text}</span>.</p>
+              {[["transfer", "Transferir para mim", "Tudo passa a ser seu; os jump servers continuam funcionando."],
+                ["delete", "Apagar tudo", "Agentes, equipamentos, mapas e o resto dele são apagados; o túnel reverso dos jump servers dele é derrubado em até 1 minuto."]]
+                .map(([k, l, d]) => (
+                  <label key={k} className={`flex gap-2.5 p-2.5 rounded-md border cursor-pointer ${mode === k ? "border-brand bg-brand/10" : "border-line hover:border-line2"}`} data-testid={`delete-user-${k}`}>
+                    <input type="radio" name="delmode" className="accent-brand mt-0.5" checked={mode === k} onChange={() => setMode(k)} />
+                    <span><span className="block text-slate-100 font-medium">{l}</span><span className="block text-xs text-slate-400 mt-0.5">{d}</span></span>
+                  </label>
+                ))}
+            </>
+          ) : <p className="text-slate-400">Ele não tem equipamentos, agentes nem outros itens.</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onClose(false)} className="text-slate-300">Cancelar</Button>
+          <Button onClick={go} disabled={busy} data-testid="delete-user-confirm" className="bg-red-600 hover:bg-red-700 text-onbrand">
+            {busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />} Excluir
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Itens de usuários excluídos antes de a exclusão resolver o que era deles (ex.: jump server que seguia online). */
+function OrphansCard() {
+  const [list, setList] = useState(null);
+  const load = () => api.get("/users-orphans").then(r => setList(r.data)).catch(() => setList([]));
+  useEffect(() => { load(); }, []);
+  if (!list || !list.length) return null;
+  const act = async (o, action) => {
+    const who = o.email || "usuário excluído";
+    if (action === "delete" && !window.confirm(`Apagar ${o.text} de ${who}? Não dá para desfazer.`)) return;
+    try {
+      const { data } = await api.post("/users-orphans/resolve", { owner_id: o.owner_id, action });
+      toast.success(`${action === "transfer" ? "Transferido para você" : "Apagado"}: ${data.text}`); load();
+    } catch (e) { toast.error(formatApiError(e)); }
+  };
+  return (
+    <Card className="bg-surface border-amber-500/40 p-4 mb-4" data-testid="orphans-card">
+      <div className="flex items-center gap-2 text-amber-300 font-medium text-sm"><ShieldAlert className="w-4 h-4" /> Itens de usuários excluídos</div>
+      <p className="text-xs text-slate-400 mt-1 mb-3">Esses usuários foram excluídos, mas o que era deles ficou no BastiON. Os túneis reversos dos jump servers deles já não são aceitos; resolva abaixo.</p>
+      <div className="space-y-2">
+        {list.map(o => (
+          <div key={o.owner_id} className="flex items-center gap-3 flex-wrap border border-line rounded-md px-3 py-2" data-testid={`orphan-${o.owner_id}`}>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm text-slate-100 font-mono truncate">{o.email || `usuário ${o.owner_id.slice(0, 8)}`}</div>
+              <div className="text-xs text-slate-400">{o.text}{o.agents.length ? ` · jump: ${o.agents.map(a => a.name).join(", ")}` : ""}</div>
+            </div>
+            <Button size="sm" variant="ghost" onClick={() => act(o, "transfer")} className="text-brand-soft hover:bg-brand/15" data-testid={`orphan-transfer-${o.owner_id}`}>
+              <ArrowLeftRight className="w-4 h-4 mr-1.5" /> Trazer para mim
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => act(o, "delete")} className="text-red-400 hover:bg-red-950/40" data-testid={`orphan-delete-${o.owner_id}`}>
+              <Trash2 className="w-4 h-4 mr-1.5" /> Apagar
+            </Button>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }

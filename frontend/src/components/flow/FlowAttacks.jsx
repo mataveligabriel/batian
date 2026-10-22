@@ -156,7 +156,7 @@ export function FlowAttacks({ settings, onCount }) {
             </button>
             {blackholed[a.victim]
               ? <span className="mx-3 text-xs font-mono flex items-center gap-1" style={{ color: STATUS.warning }} data-testid="attack-blackholed"><ShieldBan className="w-4 h-4" /> em blackhole até {new Date(blackholed[a.victim].expires_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span>
-              : <button onClick={() => setMit(a)} data-testid="attack-mitigate" className="mx-3 my-2 px-3 py-1.5 rounded text-xs font-medium text-white flex items-center gap-1.5 hover:opacity-90" style={{ background: STATUS.critical }}>
+              : <button onClick={() => setMit(a)} data-testid="attack-mitigate" className="mx-3 my-2 px-3 py-1.5 rounded text-xs font-medium text-onbrand flex items-center gap-1.5 hover:opacity-90" style={{ background: STATUS.critical }}>
                   <ShieldBan className="w-4 h-4" /> Mitigar</button>}
             </div>
             {open === a.id && <AttackDetail a={a} />}

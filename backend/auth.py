@@ -66,7 +66,7 @@ USER_LOADER = None
 VIEWER_ALLOW = [
     ("GET", r"/api/auth/me"), ("POST", r"/api/auth/logout"), ("POST", r"/api/auth/change-password"),
     ("GET", r"/api/auth/2fa"), ("POST", r"/api/auth/2fa/(setup|enable|disable|recovery-codes)"),
-    ("POST", r"/api/auth/logout-all"), ("GET", r"/api/auth/logins"),
+    ("POST", r"/api/auth/logout-all"), ("GET", r"/api/auth/logins"), ("PUT", r"/api/auth/me/theme"),
     ("GET", r"/api/stats"),
     ("GET", r"/api/devices"),
     ("GET", r"/api/maps"), ("GET", r"/api/maps/[\w-]+"), ("GET", r"/api/maps/[\w-]+/live"),

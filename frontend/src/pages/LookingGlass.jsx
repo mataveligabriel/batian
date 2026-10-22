@@ -209,7 +209,7 @@ export default function LookingGlass() {
                   <div className="flex mt-2 rounded-md border border-line overflow-hidden">
                     {info.queries.map(x => (
                       <button type="button" key={x.key} onClick={() => setQuery(x.key)} data-testid={`lg-query-${x.key}`}
-                        className={`px-3 h-9 text-sm border-r border-line last:border-r-0 ${query === x.key ? "bg-brand text-white" : "bg-sunken text-slate-400 hover:text-slate-200"}`}>{x.label}</button>
+                        className={`px-3 h-9 text-sm border-r border-line last:border-r-0 ${query === x.key ? "bg-brand text-onbrand" : "bg-sunken text-slate-400 hover:text-slate-200"}`}>{x.label}</button>
                     ))}
                   </div>
                 </div>

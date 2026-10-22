@@ -74,7 +74,7 @@ export default function PublicLookingGlass() {
               <div className="flex rounded-md border border-line overflow-hidden">
                 {info.queries.map(q => (
                   <button type="button" key={q.key} onClick={() => setQuery(q.key)} data-testid={`plg-q-${q.key}`}
-                    className={`px-3 h-9 text-sm border-r border-line last:border-r-0 ${query === q.key ? "bg-brand text-white" : "bg-sunken text-slate-400 hover:text-slate-200"}`}>{q.label}</button>
+                    className={`px-3 h-9 text-sm border-r border-line last:border-r-0 ${query === q.key ? "bg-brand text-onbrand" : "bg-sunken text-slate-400 hover:text-slate-200"}`}>{q.label}</button>
                 ))}
               </div>
             </div>
@@ -85,7 +85,7 @@ export default function PublicLookingGlass() {
                   className="w-full h-9 rounded-md bg-sunken border border-line px-3 font-mono text-sm text-slate-100 focus:outline-none focus:border-brand" />
               </div>
             ) : <label className="flex items-center gap-2 h-9 text-sm text-slate-300 cursor-pointer"><input type="checkbox" checked={v6} onChange={e => setV6(e.target.checked)} />IPv6</label>}
-            <button type="submit" disabled={busy || !router} data-testid="plg-run" className="h-9 px-5 rounded-md bg-brand hover:bg-brand-strong text-white text-sm disabled:opacity-50">{busy ? "Consultando…" : "Consultar"}</button>
+            <button type="submit" disabled={busy || !router} data-testid="plg-run" className="h-9 px-5 rounded-md bg-brand hover:bg-brand-strong text-onbrand text-sm disabled:opacity-50">{busy ? "Consultando…" : "Consultar"}</button>
           </div>
           {err && <div className="text-sm text-red-400" role="alert" data-testid="plg-error">{err}</div>}
           <div className="text-[11px] text-slate-500">Somente endereços públicos da internet. Limite de {info.per_min} consultas por minuto por visitante; uma consulta por vez em cada roteador.</div>

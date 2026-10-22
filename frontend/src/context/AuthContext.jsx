@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { applyTheme, saveLocalTheme } from "@/lib/theme";
 
 const AuthContext = createContext(null);
 
@@ -14,6 +15,11 @@ export function AuthProvider({ children }) {
       .catch(() => { localStorage.removeItem("bastion_token"); })
       .finally(() => setLoading(false));
   }, []);
+
+  // aparência salva no usuário vale em qualquer navegador em que ele entrar
+  useEffect(() => {
+    if (user?.theme) { applyTheme(user.theme); saveLocalTheme(user.theme); }
+  }, [user?.theme]);
 
   const refreshMe = async () => {
     const { data } = await api.get("/auth/me");

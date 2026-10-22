@@ -4,6 +4,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@/index.css";
 import App from "@/App";
 import { registerServiceWorker } from "@/lib/pwa";
+import { initTheme } from "@/lib/theme";
+
+initTheme();   // antes de desenhar: abre direto no tema escolhido (sem piscar o escuro)
 
 registerServiceWorker();
 

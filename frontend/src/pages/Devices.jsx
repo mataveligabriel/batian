@@ -273,10 +273,10 @@ export default function Devices() {
         </div>
         <div className="flex gap-2 flex-wrap">
           <Badge onClick={() => setTagFilter("")} data-testid="tag-filter-all"
-            className={`cursor-pointer ${!tagFilter ? "bg-brand text-white" : "bg-surface text-slate-300 border-line"}`}>Todas</Badge>
+            className={`cursor-pointer ${!tagFilter ? "bg-brand text-onbrand" : "bg-surface text-slate-300 border-line"}`}>Todas</Badge>
           {allTags.map(t => (
             <Badge key={t} onClick={() => setTagFilter(t)} data-testid={`tag-filter-${t}`}
-              className={`cursor-pointer ${tagFilter === t ? "bg-brand text-white" : "bg-surface text-slate-300 border-line"}`}>{t}</Badge>
+              className={`cursor-pointer ${tagFilter === t ? "bg-brand text-onbrand" : "bg-surface text-slate-300 border-line"}`}>{t}</Badge>
           ))}
         </div>
         <div className="flex gap-1 md:ml-auto overflow-x-auto" data-testid="status-filter">

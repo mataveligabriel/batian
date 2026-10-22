@@ -68,8 +68,8 @@ export default function Flow() {
           {TABS.map(([k, l, I]) => (
             <button key={k} className={tabBtn(tab === k)} onClick={() => setTab(k)} data-testid={`flow-tab-${k}`}>
               <I className="w-4 h-4" /> {l}
-              {k === "ataques" && active > 0 && <span className="text-[10px] font-mono font-bold px-1.5 rounded-full text-white" style={{ background: STATUS.critical }} data-testid="attack-badge">{active}</span>}
-              {k === "botnet" && bots > 0 && <span className="text-[10px] font-mono font-bold px-1.5 rounded-full text-white" style={{ background: STATUS.warning }} data-testid="botnet-badge">{bots}</span>}
+              {k === "ataques" && active > 0 && <span className="text-[10px] font-mono font-bold px-1.5 rounded-full text-onbrand" style={{ background: STATUS.critical }} data-testid="attack-badge">{active}</span>}
+              {k === "botnet" && bots > 0 && <span className="text-[10px] font-mono font-bold px-1.5 rounded-full text-onbrand" style={{ background: STATUS.warning }} data-testid="botnet-badge">{bots}</span>}
             </button>
           ))}
         </div>

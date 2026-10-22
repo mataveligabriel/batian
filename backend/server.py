@@ -13,7 +13,7 @@ import time
 import uuid
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
@@ -299,7 +299,29 @@ async def me(user: dict = Depends(get_current_user)):
     sec = await _security_settings()
     return {"id": u["id"], "email": u["email"], "name": u.get("name", ""), "role": u.get("role", "operator"),
             "totp_enabled": bool(u.get("totp_enabled")), "require_2fa": sec["require_2fa"],
-            "modules": u.get("modules") if isinstance(u.get("modules"), list) and u.get("role") == "operator" else None}
+            "modules": u.get("modules") if isinstance(u.get("modules"), list) and u.get("role") == "operator" else None,
+            "theme": u.get("theme") or None}
+
+
+class ThemeIn(BaseModel):
+    mode: str = "dark"          # dark | light | system
+    accent: str = "#2F6FCB"     # cor de destaque
+    tone: str = "grafite"       # tom dos neutros
+    scale: float = 1.0          # tamanho do texto
+
+
+@api.put("/auth/me/theme")
+async def set_my_theme(body: ThemeIn, user: dict = Depends(get_current_user)):
+    """Aparência escolhida pelo usuário (vale em qualquer navegador em que ele entrar)."""
+    if body.mode not in ("dark", "light", "system"):
+        raise HTTPException(status_code=400, detail="Modo inválido")
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", body.accent or ""):
+        raise HTTPException(status_code=400, detail="Cor inválida")
+    if body.tone not in ("grafite", "azul", "neutro", "quente", "roxo"):
+        raise HTTPException(status_code=400, detail="Tom inválido")
+    theme = {"mode": body.mode, "accent": body.accent.upper(), "tone": body.tone, "scale": round(min(1.3, max(0.8, body.scale)), 2)}
+    await db.users.update_one({"id": user["id"]}, {"$set": {"theme": theme}})
+    return theme
 
 
 # ---------- 2FA (app autenticador) e sessões ----------
@@ -534,12 +556,115 @@ async def change_password(payload: ChangePasswordPayload, current: dict = Depend
     return {"ok": True, **_session_payload({**u, "token_version": tv})}
 
 
+# Coleções com dados pessoais do usuário (por user_id) que somem junto com ele; logs (sessions, login_events) ficam.
+_USER_PERSONAL = ("push_subs", "ai_web", "ai_pending")
+_ITEM_LABELS = {"agents": "agentes/jump servers", "devices": "equipamentos", "maps": "mapas", "dashboards": "dashboards",
+                "scripts": "scripts", "runbooks": "roteiros", "rdp_hosts": "acessos RDP", "web_saved": "páginas web salvas",
+                "te_runs": "análises de tráfego", "vpn_profiles": "VPNs", "flow_groups": "grupos de flow",
+                "flow_ifaces": "interfaces de flow", "net_reports": "relatórios", "if_monitors": "monitores de interface"}
+
+
+async def _owned_counts(owner_ids) -> Dict[str, Dict[str, int]]:
+    """{owner_id: {coleção: quantidade}} de tudo que tem owner_id, em qualquer coleção do banco."""
+    out: Dict[str, Dict[str, int]] = {}
+    for col in sorted(await db.list_collection_names()):
+        if col in ("users", "sessions", "login_events") or col.startswith("system."):
+            continue
+        q = {"owner_id": {"$in": list(owner_ids)}} if owner_ids is not None else {"owner_id": {"$exists": True, "$nin": [None, ""]}}
+        async for r in db[col].aggregate([{"$match": q}, {"$group": {"_id": "$owner_id", "n": {"$sum": 1}}}]):
+            out.setdefault(str(r["_id"]), {})[col] = r["n"]
+    return out
+
+
+async def _owner_cleanup(owner_id: str, action: str, to_user: Optional[dict]) -> Dict[str, int]:
+    """Transfere (action=transfer) ou apaga (action=delete) tudo que é de owner_id. Devolve {coleção: quantidade}."""
+    done: Dict[str, int] = {}
+    counts = (await _owned_counts([owner_id])).get(owner_id, {})
+    for col in counts:
+        if action == "transfer":
+            sets = {"owner_id": to_user["id"]}
+            if col == "runbooks":
+                sets["owner_email"] = to_user.get("email", "")
+            r = await db[col].update_many({"owner_id": owner_id}, {"$set": sets})
+            done[col] = r.modified_count
+        else:
+            r = await db[col].delete_many({"owner_id": owner_id})
+            done[col] = r.deleted_count
+    if action == "delete":
+        # equipamentos de outros usuários que passavam por um agente apagado ficam sem agente (acesso direto)
+        live = [None, ""] + [a["id"] for a in await db.agents.find({}, {"_id": 0, "id": 1}).to_list(10000)]
+        await db.devices.update_many({"agent_id": {"$exists": True, "$nin": live}}, {"$set": {"agent_id": None}})
+        await db.agents.update_many({"parent_agent_id": {"$exists": True, "$nin": live}}, {"$set": {"parent_agent_id": None}})
+    return done
+
+
+def _items_text(counts: Dict[str, int]) -> str:
+    parts = [f"{n} {_ITEM_LABELS.get(c, c)}" for c, n in counts.items() if n]
+    return ", ".join(parts) or "nada"
+
+
+@api.get("/users/{user_id}/items")
+async def user_items(user_id: str, _: dict = Depends(require_admin)):
+    """O que o usuário tem (para o diálogo de exclusão escolher entre transferir e apagar)."""
+    counts = (await _owned_counts([user_id])).get(user_id, {})
+    return {"counts": counts, "text": _items_text(counts), "labels": _ITEM_LABELS}
+
+
 @api.delete("/users/{user_id}")
-async def delete_user(user_id: str, current: dict = Depends(require_admin)):
+async def delete_user(user_id: str, items: str = Query("transfer"), current: dict = Depends(require_admin)):
+    """Exclui o usuário e resolve o que era dele: items=transfer passa tudo para quem está excluindo (agentes, equipamentos,
+    mapas…); items=delete apaga. Sem isso os agentes dele continuavam com o túnel reverso aceito e aparecendo online."""
     if user_id == current["id"]:
         raise HTTPException(status_code=400, detail="Não é possível excluir a si mesmo")
+    if items not in ("transfer", "delete"):
+        raise HTTPException(status_code=400, detail="items deve ser transfer ou delete")
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "email": 1})
     res = await db.users.delete_one({"id": user_id})
-    return {"deleted": res.deleted_count}
+    if not res.deleted_count:
+        return {"deleted": 0}
+    done = await _owner_cleanup(user_id, items, current)
+    for col in _USER_PERSONAL:
+        await db[col].delete_many({"user_id": user_id})
+    await db.config.update_one({"key": "ai"}, {"$pull": {"ai_users": {"user_id": user_id}}})
+    logger.info(f"usuário {(u or {}).get('email')} excluído por {current.get('email')}: {items} {done}")
+    return {"deleted": 1, "items": items, "done": done, "text": _items_text(done)}
+
+
+@api.get("/users-orphans")
+async def users_orphans(_: dict = Depends(require_admin)):
+    """Itens cujo dono não existe mais (usuários excluídos antes de o BastiON resolver os itens na exclusão)."""
+    alive = {u["id"] for u in await db.users.find({}, {"_id": 0, "id": 1}).to_list(10000)}
+    allc = await _owned_counts(None)
+    out = []
+    for oid, counts in allc.items():
+        if oid in alive:
+            continue
+        ags = await db.agents.find({"owner_id": oid}, {"_id": 0, "name": 1, "status": 1}).to_list(50)
+        hint = next((d.get("owner_email") for d in await db.runbooks.find({"owner_id": oid}, {"_id": 0, "owner_email": 1}).to_list(1)), "")
+        if not hint:
+            s = await db.sessions.find_one({"user_id": oid, "user_email": {"$ne": None}}, {"_id": 0, "user_email": 1}, sort=[("started_at", -1)])
+            hint = (s or {}).get("user_email") or ""
+        out.append({"owner_id": oid, "email": hint, "counts": counts, "text": _items_text(counts),
+                    "agents": [{"name": a.get("name"), "status": a.get("status")} for a in ags]})
+    return out
+
+
+class OrphanResolve(BaseModel):
+    owner_id: str
+    action: str   # transfer | delete
+
+
+@api.post("/users-orphans/resolve")
+async def users_orphans_resolve(body: OrphanResolve, current: dict = Depends(require_admin)):
+    if body.action not in ("transfer", "delete"):
+        raise HTTPException(status_code=400, detail="Ação inválida")
+    if await db.users.find_one({"id": body.owner_id}, {"_id": 1}):
+        raise HTTPException(status_code=400, detail="Esse usuário ainda existe — use a tela de usuários")
+    done = await _owner_cleanup(body.owner_id, body.action, current)
+    for col in _USER_PERSONAL:
+        await db[col].delete_many({"user_id": body.owner_id})
+    await db.config.update_one({"key": "ai"}, {"$pull": {"ai_users": {"user_id": body.owner_id}}})
+    return {"ok": True, "done": done, "text": _items_text(done)}
 
 
 # ---------- Secrets helpers ----------
@@ -604,6 +729,9 @@ async def bastion_authorized_keys(token: str = Query(...)):
     if token != s["sync_token"]:
         raise HTTPException(status_code=403, detail="Token inválido")
     agents = await db.agents.find({"mode": "reverse", "agent_public_key": {"$ne": ""}}, {"_id": 0}).to_list(1000)
+    alive = {u["id"] for u in await db.users.find({}, {"_id": 0, "id": 1}).to_list(10000)}
+    # agente de usuário excluído não tem mais túnel aceito (agentes antigos, sem dono gravado, continuam valendo)
+    agents = [a for a in agents if not a.get("owner_id") or a.get("owner_id") in alive]
     lines, seen = [], set()
     for a in sorted(agents, key=lambda x: bool(x.get("copied_from"))):   # original antes das cópias
         k = (a["agent_public_key"].strip(), a.get("tunnel_port"))
@@ -613,6 +741,32 @@ async def bastion_authorized_keys(token: str = Query(...)):
         opts = f'restrict,port-forwarding,permitlisten="{TUNNEL_BIND_HOST}:{a.get("tunnel_port")}"'
         lines.append(f'{opts} {a["agent_public_key"].strip()} bastion-agent-{a["id"]}')
     return PlainTextResponse("\n".join(lines) + "\n")
+
+
+# Sincroniza as chaves dos túneis reversos (cron, a cada minuto, como root no servidor do BastiON). Além de gravar o
+# authorized_keys, derruba o túnel que continua conectado com uma chave que saiu da lista (agente apagado ou de usuário
+# excluído): o sshd só confere a chave no login, então sem isso o túnel antigo ficava de pé até cair sozinho.
+_SYNC_KEYS_SCRIPT = r"""cat > /usr/local/bin/bastion-sync-keys.sh <<'EOS'
+#!/usr/bin/env bash
+. /etc/bastion-sync.conf
+TMP=$(mktemp)
+if curl -fsS "$API_URL/api/bastion/authorized-keys?token=$SYNC_TOKEN" -o "$TMP"; then
+  install -m 600 -o "$BASTION_USER" -g "$BASTION_USER" "$TMP" "/home/$BASTION_USER/.ssh/authorized_keys"
+  ALLOWED=" $(grep -o 'permitlisten="[^"]*"' "$TMP" | grep -o '[0-9]*"$' | tr -d '"' | tr '\n' ' ') "
+  ss -Htlnp 2>/dev/null | while read -r _ _ _ LOCAL _ PROC; do
+    PORT="${LOCAL##*:}"
+    for PID in $(echo "$PROC" | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
+      [ "$(ps -o user= -p "$PID" 2>/dev/null | tr -d ' ')" = "$BASTION_USER" ] || continue
+      case "$ALLOWED" in
+        *" $PORT "*) ;;
+        *) kill "$PID" 2>/dev/null && logger -t bastion-sync "túnel reverso da porta $PORT encerrado (agente removido)" ;;
+      esac
+    done
+  done
+fi
+rm -f "$TMP"
+EOS
+"""
 
 
 @api.get("/bastion/setup-script")
@@ -641,15 +795,13 @@ Match User $BASTION_USER
     ClientAliveCountMax 3
 EOF
 
-cat > /usr/local/bin/bastion-sync-keys.sh <<EOF
-#!/usr/bin/env bash
-TMP=\\$(mktemp)
-if curl -fsS "$API_URL/api/bastion/authorized-keys?token=$SYNC_TOKEN" -o "\\$TMP"; then
-  install -m 600 -o $BASTION_USER -g $BASTION_USER "\\$TMP" /home/$BASTION_USER/.ssh/authorized_keys
-fi
-rm -f "\\$TMP"
+cat > /etc/bastion-sync.conf <<EOF
+API_URL="$API_URL"
+SYNC_TOKEN="$SYNC_TOKEN"
+BASTION_USER="$BASTION_USER"
 EOF
-chmod +x /usr/local/bin/bastion-sync-keys.sh
+chmod 600 /etc/bastion-sync.conf
+""" + _SYNC_KEYS_SCRIPT + f"""chmod +x /usr/local/bin/bastion-sync-keys.sh
 echo "* * * * * root /usr/local/bin/bastion-sync-keys.sh" > /etc/cron.d/bastion-sync-keys
 /usr/local/bin/bastion-sync-keys.sh
 

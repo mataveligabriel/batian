@@ -101,7 +101,7 @@ export function CloudBackupCard() {
           {st.all_tags.length === 0 && <span className="text-xs text-slate-500">Nenhum equipamento tem tag ainda.</span>}
           {st.all_tags.map(t => (
             <button key={t} onClick={() => toggleTag(t)} aria-pressed={f.tags.includes(t)} data-testid={`cloud-tag-${t}`}
-                    className={`px-2 py-0.5 rounded-md text-xs border ${f.tags.includes(t) ? "bg-brand border-brand text-white" : "bg-surface border-line text-slate-300 hover:border-line2"}`}>{t}</button>
+                    className={`px-2 py-0.5 rounded-md text-xs border ${f.tags.includes(t) ? "bg-brand border-brand text-onbrand" : "bg-surface border-line text-slate-300 hover:border-line2"}`}>{t}</button>
           ))}
         </div>
         {f.remote && f.tags.length > 0 && (

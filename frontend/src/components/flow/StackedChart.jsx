@@ -105,8 +105,8 @@ export function StackedChart({ ts, series, unit = "bps", stacked = true, height 
             return (
               <button key={s.id} onClick={() => toggle(s.id)} onDoubleClick={() => solo(s.id)} aria-pressed={!off}
                       title="Clique: esconder/mostrar · duplo clique: só esta" className={`flex items-center gap-1.5 max-w-[260px] ${off ? "text-slate-600 line-through" : "text-slate-300 hover:text-slate-100"}`}>
-                {stacked ? <span className="w-3 h-2.5 rounded-[2px] shrink-0" style={{ background: off ? "#354145" : s.color }} />
-                         : <span className="w-3.5 h-0.5 rounded shrink-0" style={{ background: off ? "#354145" : s.color }} />}
+                {stacked ? <span className="w-3 h-2.5 rounded-[2px] shrink-0" style={{ background: off ? "rgb(var(--c-line2))" : s.color }} />
+                         : <span className="w-3.5 h-0.5 rounded shrink-0" style={{ background: off ? "rgb(var(--c-line2))" : s.color }} />}
                 <span className="truncate">{s.name}</span>
               </button>
             );
@@ -119,33 +119,33 @@ export function StackedChart({ ts, series, unit = "bps", stacked = true, height 
           {bands.map((b, i) => b.to >= t0 && b.from <= t1 && (
             <g key={`b${i}`}>
               <rect x={xt(Math.max(t0, b.from))} y={PT} width={Math.max(2, xt(Math.min(t1, b.to)) - xt(Math.max(t0, b.from)))} height={H - PT - PB} fill={b.color || "#d03b3b"} fillOpacity="0.10" />
-              {b.label && <text x={xt(Math.max(t0, b.from)) + 4} y={PT + 11} fontSize="10" fill="#ADB9BB" fontFamily="JetBrains Mono, monospace">{b.label}</text>}
+              {b.label && <text x={xt(Math.max(t0, b.from)) + 4} y={PT + 11} fontSize="10" fill="rgb(var(--c-slate-300))" fontFamily="JetBrains Mono, monospace">{b.label}</text>}
             </g>
           ))}
           {ticks.map((v, i) => (
             <g key={i}>
-              <line x1={PL} x2={W - PR} y1={y(v)} y2={y(v)} stroke="#262F32" strokeWidth="1" />
-              <text x={PL - 6} y={y(v) + 3.5} textAnchor="end" fontSize="11" fill="#6E7B7E" fontFamily="JetBrains Mono, monospace">{fmtAxis(v)}</text>
+              <line x1={PL} x2={W - PR} y1={y(v)} y2={y(v)} stroke="rgb(var(--c-line))" strokeWidth="1" />
+              <text x={PL - 6} y={y(v) + 3.5} textAnchor="end" fontSize="11" fill="rgb(var(--c-slate-500))" fontFamily="JetBrains Mono, monospace">{fmtAxis(v)}</text>
             </g>
           ))}
           {xticks.map((i, k) => (
-            <text key={k} x={x(i)} y={H - 6} fontSize="10.5" fill="#6E7B7E" fontFamily="JetBrains Mono, monospace"
+            <text key={k} x={x(i)} y={H - 6} fontSize="10.5" fill="rgb(var(--c-slate-500))" fontFamily="JetBrains Mono, monospace"
                   textAnchor={k === 0 ? "start" : k === 4 ? "end" : "middle"}>{tfmt(ts[i])}</text>
           ))}
           {stacked ? vis.map((s, k) => (
             <g key={s.id}>
               <path d={bandPath(k)} fill={s.color} fillOpacity={s.other ? 0.16 : 0.24} />
-              <path d={linePath(cum[k].hi)} fill="none" stroke="#181E20" strokeWidth="3" strokeLinejoin="round" />
+              <path d={linePath(cum[k].hi)} fill="none" stroke="rgb(var(--c-surface))" strokeWidth="3" strokeLinejoin="round" />
               <path d={linePath(cum[k].hi)} fill="none" stroke={s.color} strokeWidth="1.5" strokeLinejoin="round" />
             </g>
           )) : vis.map(s => (
             <path key={s.id} d={linePath(s.values)} fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
           ))}
           {labels.map(l => (
-            <text key={l.id} x={l.xx - 6} y={l.yy} textAnchor="end" fontSize="11" fill="#CED6D7" fontFamily="JetBrains Mono, monospace"
-                  stroke="#181E20" strokeWidth="3" paintOrder="stroke">{l.name.length > 38 ? l.name.slice(0, 37) + "…" : l.name}</text>
+            <text key={l.id} x={l.xx - 6} y={l.yy} textAnchor="end" fontSize="11" fill="rgb(var(--c-slate-200))" fontFamily="JetBrains Mono, monospace"
+                  stroke="rgb(var(--c-surface))" strokeWidth="3" paintOrder="stroke">{l.name.length > 38 ? l.name.slice(0, 37) + "…" : l.name}</text>
           ))}
-          {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={PT} y2={H - PB} stroke="#8D9A9D" strokeWidth="1" />}
+          {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={PT} y2={H - PB} stroke="rgb(var(--c-slate-400))" strokeWidth="1" />}
         </svg>
         {hover !== null && (
           <div className="absolute z-10 pointer-events-none bg-surface border border-line2 rounded px-2.5 py-1.5 text-[11px] font-mono text-slate-200 shadow-lg max-w-[340px]"

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { fmtBps, utilColor, STATUS, NO_DATA, fmtSpeed } from "@/lib/netfmt";
 
 const NODE = { device: { w: 200, h: 48 }, cloud: { w: 120, h: 44 }, label: { w: 120, h: 28 } };
-const SURFACE = "#14191B";
+const SURFACE = "rgb(var(--c-panel))";
 
 const SPREAD = 62; // distância entre enlaces paralelos (no meio da curva)
 
@@ -77,8 +77,8 @@ function ValueTag({ x, y, text, sub, accent }) {
   return (
     <g pointerEvents="none">
       <rect x={x - w / 2} y={y - 12} width={w} height={sub ? 27 : 18} rx="4" fill={SURFACE} stroke={accent} strokeWidth="1.5" />
-      <text x={x} y={y + 1} textAnchor="middle" fontSize="11" fontFamily="JetBrains Mono, monospace" fill="#E6EBEB">{text}</text>
-      {sub && <text x={x} y={y + 12} textAnchor="middle" fontSize="9" fontFamily="JetBrains Mono, monospace" fill="#8D9A9D">{sub}</text>}
+      <text x={x} y={y + 1} textAnchor="middle" fontSize="11" fontFamily="JetBrains Mono, monospace" fill="rgb(var(--c-slate-100))">{text}</text>
+      {sub && <text x={x} y={y + 12} textAnchor="middle" fontSize="9" fontFamily="JetBrains Mono, monospace" fill="rgb(var(--c-slate-400))">{sub}</text>}
     </g>
   );
 }
@@ -228,7 +228,7 @@ export function MapCanvas({
       <svg ref={svgRef} className={`w-full h-full ${drag?.kind === "pan" ? "cursor-grabbing" : "cursor-grab"}`} style={{ touchAction: "none" }} onPointerDown={onBgDown}>
         <defs>
           <pattern id="grid" width={40 * view.k} height={40 * view.k} patternUnits="userSpaceOnUse" x={view.tx} y={view.ty}>
-            <circle cx="1" cy="1" r="1" fill="#262F32" />
+            <circle cx="1" cy="1" r="1" fill="rgb(var(--c-line))" />
           </pattern>
         </defs>
         <rect width="100%" height="100%" fill="url(#grid)" />
@@ -250,7 +250,7 @@ export function MapCanvas({
             return (
               <g key={l.id} data-testid={`link-${l.id}`}>
                 {marks?.[l.id] && <path d={toPath(g.full)} fill="none" stroke={marks[l.id] === "crit" ? STATUS.critical : STATUS.warning} strokeOpacity="0.3" strokeWidth="19" />}
-                {isSel && <path d={toPath(g.full)} fill="none" stroke="#F4F6F6" strokeOpacity="0.35" strokeWidth="15" />}
+                {isSel && <path d={toPath(g.full)} fill="none" stroke="rgb(var(--c-slate-50))" strokeOpacity="0.35" strokeWidth="15" />}
                 <Half pts={g.halfA} ux={g.ux} uy={g.uy} color={cAB} dashed={down || noData} />
                 <Half pts={g.halfB} ux={-g.ux} uy={-g.uy} color={cBA} dashed={down || noData} />
                 {/* área de clique/hover maior que a linha */}
@@ -271,8 +271,8 @@ export function MapCanvas({
                   const hot = costs[l.id].changed?.[k];
                   return (
                     <g key={k} pointerEvents="none">
-                      <rect x={p.x - w / 2} y={p.y - 9} width={w} height="18" rx="9" fill="#14191B" stroke={hot ? "#FAB219" : "#8D9A9D"} strokeWidth={hot ? 2 : 1.2} />
-                      <text x={p.x} y={p.y + 4} textAnchor="middle" fontSize="11" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill={hot ? "#FAB219" : "#CED6D7"}>{c}</text>
+                      <rect x={p.x - w / 2} y={p.y - 9} width={w} height="18" rx="9" fill="rgb(var(--c-panel))" stroke={hot ? "#FAB219" : "rgb(var(--c-slate-400))"} strokeWidth={hot ? 2 : 1.2} />
+                      <text x={p.x} y={p.y + 4} textAnchor="middle" fontSize="11" fontWeight="700" fontFamily="JetBrains Mono, monospace" fill={hot ? "#FAB219" : "rgb(var(--c-slate-200))"}>{c}</text>
                     </g>
                   );
                 })}
@@ -284,7 +284,7 @@ export function MapCanvas({
                        setDrag({ kind: "bend", id: l.id, mid: g.mid, nx: g.nx, ny: g.ny, moved: false }); }}
                      onDoubleClick={(e) => { e.stopPropagation(); onBendLink?.(l.id, null); }}>
                     <circle cx={g.m.x} cy={g.m.y} r="18" fill="transparent" />
-                    <circle cx={g.m.x} cy={g.m.y} r={isSel ? 7 : 5.5} fill="#F4F6F6" stroke="#2F6FCB" strokeWidth="2.5" />
+                    <circle cx={g.m.x} cy={g.m.y} r={isSel ? 7 : 5.5} fill="rgb(var(--c-slate-50))" stroke="rgb(var(--c-brand))" strokeWidth="2.5" />
                     <title>Arraste para curvar/afastar este enlace · duplo clique = automático</title>
                   </g>
                 )}
@@ -297,7 +297,7 @@ export function MapCanvas({
             const dev = n.device_id ? devById[n.device_id] : null;
             const st = live?.nodes?.[n.id];
             const status = st?.status || dev?.status || "unknown";
-            const stColor = status === "online" ? STATUS.good : status === "offline" ? STATUS.critical : "#6E7B7E";
+            const stColor = status === "online" ? STATUS.good : status === "offline" ? STATUS.critical : "rgb(var(--c-slate-500))";
             const isSel = selected?.type === "node" && selected.id === n.id;
             const isPending = pending === n.id;
             const title = n.kind === "device" ? (dev?.name || n.label || "equipamento removido") : (n.label || (n.kind === "cloud" ? "Internet" : "texto"));
@@ -305,27 +305,27 @@ export function MapCanvas({
             if (n.kind === "label") {
               return (
                 <g key={n.id} transform={`translate(${n.x},${n.y})`} onPointerDown={(e) => onNodeDown(e, n)} style={{ cursor }} data-testid={`node-${n.id}`}>
-                  <rect x={-sz.w / 2} y={-sz.h / 2} width={sz.w} height={sz.h} fill="transparent" stroke={isSel ? "#7FADEB" : "transparent"} strokeDasharray="4 3" rx="4" />
-                  <text textAnchor="middle" y="5" fontSize="14" fontWeight="600" fill="#ADB9BB" fontFamily="Outfit, sans-serif">{title}</text>
+                  <rect x={-sz.w / 2} y={-sz.h / 2} width={sz.w} height={sz.h} fill="transparent" stroke={isSel ? "rgb(var(--c-brand-soft))" : "transparent"} strokeDasharray="4 3" rx="4" />
+                  <text textAnchor="middle" y="5" fontSize="14" fontWeight="600" fill="rgb(var(--c-slate-300))" fontFamily="Outfit, sans-serif">{title}</text>
                 </g>
               );
             }
             return (
               <g key={n.id} transform={`translate(${n.x},${n.y})`} onPointerDown={(e) => onNodeDown(e, n)} style={{ cursor }} data-testid={`node-${n.id}`}>
                 <rect x={-sz.w / 2} y={-sz.h / 2} width={sz.w} height={sz.h} rx={n.kind === "cloud" ? sz.h / 2 : 8}
-                      fill="#181E20" stroke={isPending ? "#FAB219" : isSel ? "#7FADEB" : "#354145"} strokeWidth={isSel || isPending ? 2.5 : 1.5}
+                      fill="rgb(var(--c-surface))" stroke={isPending ? "#FAB219" : isSel ? "rgb(var(--c-brand-soft))" : "rgb(var(--c-line2))"} strokeWidth={isSel || isPending ? 2.5 : 1.5}
                       strokeDasharray={n.kind === "cloud" ? "5 4" : undefined} />
                 {n.kind === "device" ? <>
                   <circle cx={-sz.w / 2 + 13} cy={-6} r="4.5" fill={stColor} />
-                  <text x={-sz.w / 2 + 24} y={-2} fontSize="12" fontWeight="600" fill="#E6EBEB" fontFamily="DM Sans, sans-serif">
+                  <text x={-sz.w / 2 + 24} y={-2} fontSize="12" fontWeight="600" fill="rgb(var(--c-slate-100))" fontFamily="DM Sans, sans-serif">
                     {title.length > 24 ? title.slice(0, 23) + "…" : title}
                   </text>
-                  <text x={-sz.w / 2 + 24} y={13} fontSize="10" fill="#8D9A9D" fontFamily="JetBrains Mono, monospace">
+                  <text x={-sz.w / 2 + 24} y={13} fontSize="10" fill="rgb(var(--c-slate-400))" fontFamily="JetBrains Mono, monospace">
                     {status}{st?.snmp_error ? " · ⚠ snmp" : ""}{dev ? ` · ${dev.host}` : ""}
                   </text>
                   <title>{`${title}\n${dev?.host || ""}\nstatus: ${status}${st?.snmp_error ? `\nSNMP: ${st.snmp_error}` : ""}`}</title>
                 </> : (
-                  <text textAnchor="middle" y="5" fontSize="13" fontWeight="600" fill="#ADB9BB" fontFamily="DM Sans, sans-serif">☁ {title}</text>
+                  <text textAnchor="middle" y="5" fontSize="13" fontWeight="600" fill="rgb(var(--c-slate-300))" fontFamily="DM Sans, sans-serif">☁ {title}</text>
                 )}
               </g>
             );

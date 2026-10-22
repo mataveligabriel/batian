@@ -71,7 +71,7 @@ export function MitigateDialog({ target, onClose, onDone }) {
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={onClose}>Cancelar</Button>
-              <Button onClick={go} disabled={busy || (!target?.id && !ip.trim())} data-testid="mit-confirm" style={{ background: STATUS.critical }} className="text-white hover:opacity-90">
+              <Button onClick={go} disabled={busy || (!target?.id && !ip.trim())} data-testid="mit-confirm" style={{ background: STATUS.critical }} className="text-onbrand hover:opacity-90">
                 {busy && <Loader2 className="w-4 h-4 mr-1 animate-spin" />} Confirmar blackhole
               </Button>
             </div>
@@ -223,9 +223,9 @@ export function FlowMitigation() {
   const peersUp = (st?.peers || []).filter(p => p.state === "Established").length;
   return (
     <div className="space-y-4 max-w-6xl" data-testid="flow-mitigation">
-      <div className="border rounded p-3" style={{ borderColor: active.length ? STATUS.critical : "#262F32" }} data-testid="mit-active">
+      <div className="border rounded p-3" style={{ borderColor: active.length ? STATUS.critical : "rgb(var(--c-line))" }} data-testid="mit-active">
         <div className="flex items-center gap-2 text-sm text-slate-100 mb-2">
-          <ShieldBan className="w-4 h-4" style={{ color: active.length ? STATUS.critical : "#8D9A9D" }} /> Blackholes ativos
+          <ShieldBan className="w-4 h-4" style={{ color: active.length ? STATUS.critical : "rgb(var(--c-slate-400))" }} /> Blackholes ativos
           <span className="text-xs font-mono text-slate-400">{active.length} · {peersUp} borda(s) recebendo</span>
           <Button size="sm" onClick={() => setDlg(true)} disabled={!cfg.enabled} className="ml-auto h-8 bg-brand hover:bg-brand-strong" data-testid="mit-manual"><Plus className="w-4 h-4 mr-1" /> Mitigar IP</Button>
         </div>

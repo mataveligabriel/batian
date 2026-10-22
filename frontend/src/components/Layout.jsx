@@ -8,7 +8,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints,
+  History, Users as UsersIcon, LogOut, Palette, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -17,6 +17,7 @@ import { useIsMobile } from "@/lib/pwa";
 import { useTermPrefs } from "@/lib/termPrefs";
 import { Wordmark, LogoMark } from "@/components/Brand";
 import { canUse, PATH_MODULE } from "@/lib/modules";
+import { AppearanceDialog } from "@/components/AppearanceDialog";
 
 const NAV = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Painel NOC", testid: "nav-dashboard" },
@@ -46,6 +47,7 @@ const VIEWER_PATHS = ["/dashboard", "/dashboards", "/maps"];
 
 export default function Layout() {
   const { user, logout } = useAuth();
+  const [lookOpen, setLookOpen] = useState(false);
   const { tabs } = useTerminal();
   const { pathname } = useLocation();
   const onTerminal = pathname.startsWith("/terminal");
@@ -168,6 +170,15 @@ export default function Layout() {
             <ShieldCheck className="w-3.5 h-3.5" /> {!mini && "Segurança"}
           </button>
           <AccountSecurity open={secOpen || mustEnroll} onOpenChange={setSecOpen} forced={mustEnroll} />
+          <button
+            data-testid="appearance-btn"
+            onClick={() => setLookOpen(true)}
+            title="Aparência: tema claro, escuro ou do sistema, cor de destaque e tamanho do texto"
+            className={`${mini ? "w-full" : "flex-1"} flex items-center justify-center gap-1.5 text-[12px] text-slate-400 hover:text-slate-100 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors`}
+          >
+            <Palette className="w-3.5 h-3.5" /> {!mini && "Aparência"}
+          </button>
+          <AppearanceDialog open={lookOpen} onOpenChange={setLookOpen} />
           {mini && (
             <button data-testid="logout-btn-mini" onClick={logout} title="Sair"
                     className="mt-1 w-full flex items-center justify-center px-2 py-1.5 rounded-md text-slate-400 hover:text-red-300 hover:bg-red-500/10 transition-colors">

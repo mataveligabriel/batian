@@ -18,13 +18,13 @@ export function ModulePicker({ value, onChange }) {
       <div className="flex flex-wrap gap-1.5 mt-1.5">
         {PRESETS.map(p => (
           <button key={p.label} type="button" onClick={() => onChange(p.keys ? [...p.keys] : null)} data-testid={`module-preset-${p.label}`}
-                  className={`px-2 py-0.5 rounded-md text-xs border ${same(p.keys) ? "bg-brand border-brand text-white" : "border-line text-slate-300 hover:border-line2"}`}>{p.label}</button>
+                  className={`px-2 py-0.5 rounded-md text-xs border ${same(p.keys) ? "bg-brand border-brand text-onbrand" : "border-line text-slate-300 hover:border-line2"}`}>{p.label}</button>
         ))}
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 mt-2.5">
         {MODULES.map(m => (
           <label key={m.key} className="flex items-start gap-2 py-1 cursor-pointer text-sm">
-            <input type="checkbox" checked={has(m.key)} onChange={() => toggle(m.key)} data-testid={`module-${m.key}`} className="mt-0.5 accent-[#2F6FCB] w-4 h-4" />
+            <input type="checkbox" checked={has(m.key)} onChange={() => toggle(m.key)} data-testid={`module-${m.key}`} className="mt-0.5 accent-brand w-4 h-4" />
             <span><span className="text-slate-100">{m.label}</span><span className="block text-[11px] text-slate-500 leading-tight">{m.desc}</span></span>
           </label>
         ))}

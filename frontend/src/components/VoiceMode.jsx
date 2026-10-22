@@ -359,7 +359,7 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
             <div className="flex gap-2">
               <input value={typed} onChange={e => setTyped(e.target.value)} onKeyDown={e => e.key === "Enter" && sendTyped()} placeholder="Pergunte algo…"
                      className="flex-1 bg-sunken border border-line rounded-md px-3 py-2 text-slate-100 focus:outline-none focus:border-brand" data-testid="voice-typed" />
-              <button onClick={sendTyped} disabled={!typed.trim() || conv.busy} className="w-10 rounded-md bg-brand hover:bg-brand-strong text-white flex items-center justify-center disabled:opacity-40" aria-label="Enviar"><Send className="w-4 h-4" /></button>
+              <button onClick={sendTyped} disabled={!typed.trim() || conv.busy} className="w-10 rounded-md bg-brand hover:bg-brand-strong text-onbrand flex items-center justify-center disabled:opacity-40" aria-label="Enviar"><Send className="w-4 h-4" /></button>
             </div>
           </div>
         )}
@@ -372,7 +372,7 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
           </button>
         )}
         {state === "listening" && heard && (
-          <button onClick={sendNow} className="h-12 px-4 rounded-full bg-brand hover:bg-brand-strong text-white flex items-center gap-2 text-sm" data-testid="voice-send-now">
+          <button onClick={sendNow} className="h-12 px-4 rounded-full bg-brand hover:bg-brand-strong text-onbrand flex items-center gap-2 text-sm" data-testid="voice-send-now">
             <Send className="w-4 h-4" /> Enviar
           </button>
         )}

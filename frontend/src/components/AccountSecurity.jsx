@@ -125,7 +125,7 @@ export function AccountSecurity({ open, onOpenChange, forced = false }) {
               {!codes && setup && (
                 <div className="space-y-3" data-testid="twofa-setup">
                   <div className="flex gap-4 items-start flex-wrap">
-                    <img alt="QR code do 2FA" data-testid="twofa-qr" className="rounded bg-white p-1 w-44 h-44"
+                    <img alt="QR code do 2FA" data-testid="twofa-qr" className="rounded bg-[#fff] p-1 w-44 h-44"
                          src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(setup.qr_svg)}`} />
                     <div className="flex-1 min-w-[180px] text-xs text-slate-400 space-y-2">
                       <div>1. No app autenticador, toque em <b className="text-slate-300">+</b> e leia o QR code.</div>

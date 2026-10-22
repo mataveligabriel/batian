@@ -10,10 +10,10 @@ import { Lock, LockOpen, Loader2, AlertTriangle, Plus, Pencil, Trash2, Plug, Unp
 import { STATUS } from "@/lib/netfmt";
 
 const ST = {
-  up: ["Conectada", STATUS.good, Lock], connecting: ["Conectando…", STATUS.warning, Loader2], disconnecting: ["Desconectando…", "#8D9A9D", Loader2],
+  up: ["Conectada", STATUS.good, Lock], connecting: ["Conectando…", STATUS.warning, Loader2], disconnecting: ["Desconectando…", "rgb(var(--c-slate-400))", Loader2],
   need_otp: ["Aguardando token", STATUS.warning, KeyRound],
   error: ["Erro", STATUS.critical, AlertTriangle], down: ["Caiu", STATUS.critical, AlertTriangle],
-  disconnected: ["Desconectada", "#6E7B7E", LockOpen],
+  disconnected: ["Desconectada", "rgb(var(--c-slate-500))", LockOpen],
 };
 const inputCls = "bg-sunken border-line font-mono";
 export const VPN_TYPES = { fortinet: "FortiGate SSL", openvpn: "OpenVPN", pptp: "PPTP", l2tp: "L2TP/IPsec" };

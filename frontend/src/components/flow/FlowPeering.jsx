@@ -4,14 +4,14 @@ import { Loader2, Handshake, Info, AlertTriangle } from "lucide-react";
 import { STATUS } from "@/lib/netfmt";
 import { fmtRate, SERIES } from "@/components/flow/flowlib";
 
-const LEVEL = { alta: { c: STATUS.good, t: "alta" }, "média": { c: STATUS.warning, t: "média" }, baixa: { c: "#6E7B7E", t: "baixa" } };
+const LEVEL = { alta: { c: STATUS.good, t: "alta" }, "média": { c: STATUS.warning, t: "média" }, baixa: { c: "rgb(var(--c-slate-500))", t: "baixa" } };
 const PERIODS = [[1, "24 h"], [7, "7 dias"], [30, "30 dias"]];
 
 function Stat({ label, value, sub, color }) {
   return (
     <div className="border border-line rounded p-3 min-w-[170px] flex-1">
       <div className="text-[10px] text-slate-500">{label}</div>
-      <div className="text-xl font-mono mt-0.5" style={{ color: color || "#E6EBEB" }}>{value}</div>
+      <div className="text-xl font-mono mt-0.5" style={{ color: color || "rgb(var(--c-slate-100))" }}>{value}</div>
       {sub && <div className="text-[11px] text-slate-400 mt-0.5">{sub}</div>}
     </div>
   );

@@ -12,13 +12,13 @@ import { fmtBps, fmtSpeed, STATUS } from "@/lib/netfmt";
 const SEV = {
   crit: { label: "Crítico", color: STATUS.critical, icon: XCircle },
   warn: { label: "Atenção", color: STATUS.warning, icon: AlertTriangle },
-  info: { label: "Info", color: "#7FADEB", icon: Info },
+  info: { label: "Info", color: "rgb(var(--c-brand-soft))", icon: Info },
 };
 const REFS = [["", "automática (a que a rede usa)"], ["10000", "10 Gbps"], ["100000", "100 Gbps"], ["400000", "400 Gbps"], ["1000000", "1 Tbps"]];
 const TABS = [["findings", "Achados"], ["ospf", "OSPF"], ["mpls", "MPLS"], ["scen", "Cenários"], ["bgp", "BGP"], ["ifaces", "Interfaces"]];
 const fmtWhen = (iso) => new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 const num = (v, d = 1) => (v === null || v === undefined ? "—" : v === 0 ? "0" : Number(v).toFixed(d));
-const pctColor = (p) => (p === null || p === undefined ? "#8D9A9D" : p >= 100 ? STATUS.critical : p >= 90 ? STATUS.critical : p >= 70 ? STATUS.warning : "#CED6D7");
+const pctColor = (p) => (p === null || p === undefined ? "rgb(var(--c-slate-400))" : p >= 100 ? STATUS.critical : p >= 90 ? STATUS.critical : p >= 70 ? STATUS.warning : "rgb(var(--c-slate-200))");
 
 function SevBadge({ sev }) {
   const s = SEV[sev];
@@ -138,7 +138,7 @@ export function NetAnalysis({ map, devices, onClose }) {
   const overloaded = simRes ? Object.entries(simRes.links).flatMap(([id, p]) => ["ab", "ba"].filter(d => (p[`${d}_pct`] || 0) >= 100).map(d => ({ id, d, pct: p[`${d}_pct`] }))) : [];
   const shownFindings = (rep?.findings || []).filter(f => sevOn[f.sev]);
   const s = rep?.summary;
-  const scoreColor = !s ? "#8D9A9D" : s.score >= 80 ? STATUS.good : s.score >= 50 ? STATUS.warning : STATUS.critical;
+  const scoreColor = !s ? "rgb(var(--c-slate-400))" : s.score >= 80 ? STATUS.good : s.score >= 50 ? STATUS.warning : STATUS.critical;
 
   return (
     <div className="fixed inset-0 z-[100] bg-canvas flex flex-col" data-testid="net-analysis">
@@ -360,7 +360,7 @@ export function NetAnalysis({ map, devices, onClose }) {
                       <tr key={x.link_id} onClick={() => { setSel({ type: "link", id: x.link_id }); setSim({ down: [x.link_id], downNodes: [], costs: {} }); }}
                           className="border-t border-line cursor-pointer hover:bg-slate-800/40">
                         <td className="px-2 py-1.5 text-slate-200">{x.name}</td>
-                        <td className="px-2" style={{ color: x.isolated_nodes.length ? STATUS.critical : "#6E7B7E" }}>{x.isolated_nodes.join(", ") || "—"}</td>
+                        <td className="px-2" style={{ color: x.isolated_nodes.length ? STATUS.critical : "rgb(var(--c-slate-500))" }}>{x.isolated_nodes.join(", ") || "—"}</td>
                         <td className="px-2 text-right"><div style={{ color: pctColor(x.worst_pct) }}>{num(x.worst_pct, 0)}%</div><div className="text-[10px] text-slate-500 truncate max-w-[150px]">{x.worst_link}</div></td>
                       </tr>
                     ))}
@@ -375,7 +375,7 @@ export function NetAnalysis({ map, devices, onClose }) {
                     {rep.bgp.map((p, i) => (
                       <tr key={i} className="border-t border-line">
                         <td className="px-2 py-1.5"><div className="text-slate-200">{p.ip}</div><div className="text-[10px] text-slate-500">{p.device} · {p.remote_as === 23456 ? "AS 4 bytes" : `AS${p.remote_as}`}</div></td>
-                        <td className="px-2"><span style={{ color: !p.admin_up ? "#6E7B7E" : p.state === "established" ? STATUS.good : STATUS.critical }}>{p.admin_up ? p.state : "shutdown"}</span>
+                        <td className="px-2"><span style={{ color: !p.admin_up ? "rgb(var(--c-slate-500))" : p.state === "established" ? STATUS.good : STATUS.critical }}>{p.admin_up ? p.state : "shutdown"}</span>
                           {p.last_error && <div className="text-[10px] text-slate-500">{p.last_error}</div>}</td>
                         <td className="px-2 text-right text-slate-400">{p.state === "established" && p.established_sec != null ? (p.established_sec < 3600 ? `${Math.floor(p.established_sec / 60)} min` : p.established_sec < 86400 ? `${Math.floor(p.established_sec / 3600)} h` : `${Math.floor(p.established_sec / 86400)} d`) : "—"}</td>
                       </tr>
@@ -393,7 +393,7 @@ export function NetAnalysis({ map, devices, onClose }) {
                       return (
                         <tr key={k} className="border-t border-line">
                           <td className="px-2 py-1.5"><div className="text-slate-200">{i.device} · {i.iface}</div><div className="text-[10px] text-slate-500 truncate max-w-[210px]">{i.oper}{i.alias ? ` · ${i.alias}` : ""}{i.in_map ? " · no mapa" : ""}</div></td>
-                          <td className="px-2 text-right" style={{ color: bad ? STATUS.warning : "#6E7B7E" }}>{num(i.in_err_ps)} · {num(i.out_err_ps)}</td>
+                          <td className="px-2 text-right" style={{ color: bad ? STATUS.warning : "rgb(var(--c-slate-500))" }}>{num(i.in_err_ps)} · {num(i.out_err_ps)}</td>
                           <td className="px-2 text-right text-slate-400">{num((i.in_disc_ps || 0) + (i.out_disc_ps || 0), 0)}</td>
                         </tr>
                       );

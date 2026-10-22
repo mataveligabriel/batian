@@ -172,7 +172,7 @@ export default function Batch() {
           <div className="flex rounded-md border border-line overflow-hidden mb-3 text-sm">
             {[["saved", "Cadastrados"], ["ips", "Lista de IPs"]].map(([v, l]) => (
               <button key={v} onClick={() => setMode(v)} disabled={running} data-testid={`batch-mode-${v}`}
-                      className={`flex-1 h-8 ${mode === v ? "bg-brand text-white" : "bg-sunken text-slate-400 hover:text-slate-200"}`}>{l}</button>
+                      className={`flex-1 h-8 ${mode === v ? "bg-brand text-onbrand" : "bg-sunken text-slate-400 hover:text-slate-200"}`}>{l}</button>
             ))}
           </div>
           {mode === "ips" && (
@@ -221,8 +221,8 @@ export default function Batch() {
           <div className="flex flex-wrap gap-1.5 mb-2" data-testid="batch-tags">
             {[["", "Todas", devices.length], ...allTags.map(t => [t, t, countByTag[t]]), ...(countByTag.__none__ ? [["__none__", "Sem tag", countByTag.__none__]] : [])].map(([v, l, n]) => (
               <button key={v || "all"} onClick={() => setTag(v)} data-testid={`batch-tag-${v || "all"}`}
-                      className={`px-2 py-0.5 rounded-md text-xs border ${tag === v ? "bg-brand border-brand text-white" : "bg-surface border-line text-slate-300 hover:border-line2"}`}>
-                {l} <span className={tag === v ? "text-white/70" : "text-slate-500"}>{n}</span>
+                      className={`px-2 py-0.5 rounded-md text-xs border ${tag === v ? "bg-brand border-brand text-onbrand" : "bg-surface border-line text-slate-300 hover:border-line2"}`}>
+                {l} <span className={tag === v ? "text-onbrand/70" : "text-slate-500"}>{n}</span>
               </button>
             ))}
           </div>

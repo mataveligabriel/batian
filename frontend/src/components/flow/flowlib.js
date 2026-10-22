@@ -4,7 +4,7 @@ import { useRef } from "react";
 // Paleta categórica (passos do modo escuro, validada contra o fundo #181E20: CVD ΔE ≥ 8,4 entre vizinhas, contraste ≥ 3:1).
 // A ordem é o mecanismo de segurança para daltonismo: nunca reordenar nem gerar uma 9ª cor.
 export const SERIES = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
-export const OTHER = "#6E7B7E";
+export const OTHER = "rgb(var(--c-slate-500))";
 export const MAX_SERIES = SERIES.length;
 
 export const ROLE_LABEL = { transito: "Trânsito", pni: "PNI", ix: "IX / PTT", cdn: "CDN / cache", cliente: "Cliente", outro: "Outro" };

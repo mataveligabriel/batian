@@ -384,7 +384,7 @@ export default function WebAccess() {
               </Button>
             </Card>
           ) : (
-            <div className="relative flex-1 min-h-[320px] rounded-md border border-line overflow-hidden bg-white">
+            <div className="relative flex-1 min-h-[320px] rounded-md border border-line overflow-hidden bg-[#fff]">
               {sessions.map(s => {
                 // zoom: a página do equipamento é de outra origem, então o quadro inteiro é escalado
                 // (maior/menor por dentro e transform scale por fora), e os cliques continuam no lugar certo

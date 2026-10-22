@@ -13,9 +13,9 @@ const SUGGESTIONS = [
 ];
 const RISK = { baixo: ["Risco baixo", STATUS.good], medio: ["Risco médio", STATUS.warning], alto: ["Risco alto", STATUS.critical] };
 const PSTATUS = {
-  pending: ["Aguardando sua confirmação", Clock, "#8D9A9D"], running: ["Executando…", Loader2, "#8D9A9D"],
+  pending: ["Aguardando sua confirmação", Clock, "rgb(var(--c-slate-400))"], running: ["Executando…", Loader2, "rgb(var(--c-slate-400))"],
   done: ["Executada", CheckCircle2, STATUS.good], failed: ["Executada com falhas", AlertTriangle, STATUS.serious],
-  cancelled: ["Cancelada — nada foi executado", XCircle, "#8D9A9D"], expired: ["Expirou — peça de novo", Clock, "#8D9A9D"],
+  cancelled: ["Cancelada — nada foi executado", XCircle, "rgb(var(--c-slate-400))"], expired: ["Expirou — peça de novo", Clock, "rgb(var(--c-slate-400))"],
 };
 
 /** Texto do assistente: blocos ``` viram <pre>, **negrito**, `código` e quebras de linha. Sem HTML cru. */
@@ -45,7 +45,7 @@ function Proposal({ it, onDecide, busy }) {
   const [sending, setSending] = useState(false);
   const act = async (a) => { setSending(true); try { await onDecide(it.pid, a); } finally { setSending(false); } };
   return (
-    <div className="border rounded-md bg-panel p-3 text-sm" style={{ borderColor: it.status === "pending" ? rc : "#262F32" }} data-testid={`proposal-${it.pid}`}>
+    <div className="border rounded-md bg-panel p-3 text-sm" style={{ borderColor: it.status === "pending" ? rc : "rgb(var(--c-line))" }} data-testid={`proposal-${it.pid}`}>
       <div className="flex items-center gap-2 mb-1.5">
         <ShieldAlert className="w-4 h-4 shrink-0" style={{ color: rc }} />
         <span className="text-[11px] font-bold" style={{ color: rc }}>{risk}</span>
@@ -61,7 +61,7 @@ function Proposal({ it, onDecide, busy }) {
       {it.rollback && <details className="text-[11px] text-slate-400 mb-2"><summary className="cursor-pointer">Como desfazer</summary><pre className="font-mono whitespace-pre-wrap mt-1">{it.rollback}</pre></details>}
       {it.status === "pending" ? (
         <div className="flex gap-2">
-          <button onClick={() => act("confirm")} disabled={sending || busy} className="flex-1 h-9 rounded-md bg-brand hover:bg-brand-strong text-white text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-1.5" data-testid={`confirm-${it.pid}`}>
+          <button onClick={() => act("confirm")} disabled={sending || busy} className="flex-1 h-9 rounded-md bg-brand hover:bg-brand-strong text-onbrand text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-1.5" data-testid={`confirm-${it.pid}`}>
             {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />} Confirmar e executar
           </button>
           <button onClick={() => act("cancel")} disabled={sending} className="h-9 px-3 rounded-md border border-line2 text-slate-300 hover:bg-slate-800 text-sm" data-testid={`cancel-${it.pid}`}>Cancelar</button>
@@ -133,7 +133,7 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
   return (
     <>
       {!open && !hideButton && (
-        <button onClick={() => setOpen(true)} className="fixed z-40 right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] w-12 h-12 rounded-full bg-brand hover:bg-brand-strong text-white shadow-lg shadow-black/40 flex items-center justify-center"
+        <button onClick={() => setOpen(true)} className="fixed z-40 right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] w-12 h-12 rounded-full bg-brand hover:bg-brand-strong text-onbrand shadow-lg shadow-black/40 flex items-center justify-center"
                 title="Assistente" aria-label="Abrir assistente" data-testid="assistant-fab">
           <Bot className="w-6 h-6" />
           {conv.busy && <span className="absolute top-0.5 right-0.5 w-3 h-3 rounded-full bg-amber-400 animate-pulse" />}
@@ -194,7 +194,7 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
                             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
                             placeholder={conv.busy ? "Aguarde a resposta…" : "Pergunte ou peça algo… (Enter envia)"}
                             className="flex-1 resize-none max-h-32 min-h-[38px] bg-sunken border border-line rounded-md px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-brand" data-testid="assistant-input" />
-                  <button onClick={() => send()} disabled={!text.trim() || conv.busy || sending} className="h-[38px] w-10 rounded-md bg-brand hover:bg-brand-strong text-white flex items-center justify-center disabled:opacity-40" aria-label="Enviar" data-testid="assistant-send">
+                  <button onClick={() => send()} disabled={!text.trim() || conv.busy || sending} className="h-[38px] w-10 rounded-md bg-brand hover:bg-brand-strong text-onbrand flex items-center justify-center disabled:opacity-40" aria-label="Enviar" data-testid="assistant-send">
                     {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                   </button>
                 </div>

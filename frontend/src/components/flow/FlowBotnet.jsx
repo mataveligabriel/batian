@@ -12,7 +12,7 @@ import { copyText } from "@/lib/clipboard";
 import { STATUS } from "@/lib/netfmt";
 import { ago, fmtRate, inputCls, selCls, chip } from "@/components/flow/flowlib";
 
-const SEV = { 3: STATUS.critical, 2: STATUS.warning, 1: "#8D9A9D" };
+const SEV = { 3: STATUS.critical, 2: STATUS.warning, 1: "rgb(var(--c-slate-400))" };
 const KIND_HELP = {
   ddos: "O equipamento do cliente está inundando um destino na internet. Costuma ser roteador/câmera/TV box infectado obedecendo a uma botnet.",
   scan: "O cliente está varrendo a internet atrás de outros aparelhos vulneráveis — é assim que a botnet se espalha.",

@@ -9,7 +9,7 @@ import { STATUS } from "@/lib/netfmt";
 const SEC_ORDER = ["ldp_session", "ldp_iface", "vpws", "vpls", "vrf", "bgp_vpn"];
 const SEC_LABEL = { ldp_session: "Sessões LDP", ldp_iface: "Interfaces LDP", vpws: "VPWS (l2vc)", vpls: "VPLS (vsi)", vrf: "L3VPN (VRF)", bgp_vpn: "MP-BGP VPN" };
 const VENDORS = [["huawei", "Huawei"], ["juniper", "Juniper"], ["cisco", "Cisco"], ["datacom", "Datacom DMOS"], ["zte", "ZTE"]];
-const stColor = (s) => (s === "up" ? STATUS.good : s === "down" ? STATUS.critical : s === "degraded" ? STATUS.warning : "#8D9A9D");
+const stColor = (s) => (s === "up" ? STATUS.good : s === "down" ? STATUS.critical : s === "degraded" ? STATUS.warning : "rgb(var(--c-slate-400))");
 const Yes = ({ v }) => (v === true ? <span style={{ color: STATUS.good }}>✓</span> : v === false ? <span style={{ color: STATUS.critical }}>✕</span> : <span className="text-slate-600">—</span>);
 
 function RawModal({ title, text, onClose }) {
@@ -54,7 +54,7 @@ export function MplsTab({ rep, rid, onSelectLink, selId, onOpenSettings }) {
       setRaw({ title: `${d.name} · saída da CLI`, text: SEC_ORDER.map(k => data.sections?.[k] ? `======== ${SEC_LABEL[k]} ${data.sections[k].ok ? "(entendido)" : "(NÃO entendido)"}\n${data.sections[k].raw || ""}` : "").filter(Boolean).join("\n\n") || data.error || "vazio" });
     } catch (e) { toast.error(formatApiError(e)); }
   };
-  const Stat = ({ l, v, bad }) => <div className="rounded border border-line bg-panel px-2 py-1"><div className="text-[9px] text-slate-500">{l}</div><div className="text-sm font-semibold" style={{ color: bad ? STATUS.critical : "#CED6D7" }}>{v}</div></div>;
+  const Stat = ({ l, v, bad }) => <div className="rounded border border-line bg-panel px-2 py-1"><div className="text-[9px] text-slate-500">{l}</div><div className="text-sm font-semibold" style={{ color: bad ? STATUS.critical : "rgb(var(--c-slate-200))" }}>{v}</div></div>;
   return (
     <div className="space-y-3" data-testid="mpls-tab">
       <div className="grid grid-cols-3 gap-1.5">
