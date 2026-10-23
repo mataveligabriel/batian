@@ -36,34 +36,37 @@ function Preview({ mode, tone, accent }) {
   );
 }
 
-export function AppearanceDialog({ open, onOpenChange }) {
+/** Estado do editor de aparência: aplica ao vivo; revert() volta ao que estava salvo. */
+export function useAppearanceEditor() {
   const { user, setUser } = useAuth();
   const [t, setT] = useState(getTheme());
   const [busy, setBusy] = useState(false);
-  const before = useRef(getTheme());
-  useEffect(() => { if (open) { before.current = getTheme(); setT(getTheme()); } }, [open]);
-  // pré-visualização ao vivo: aplica enquanto escolhe; cancelar volta ao anterior
+  const saved = useRef(getTheme());
   const set = (patch) => setT(prev => { const n = normalize({ ...prev, ...patch }); applyTheme(n); return n; });
-  const close = (saved) => { if (!saved) applyTheme(before.current); onOpenChange(false); };
+  const begin = () => { saved.current = getTheme(); setT(getTheme()); };
+  const revert = () => { applyTheme(saved.current); setT(saved.current); };
+  const dirty = JSON.stringify(normalize(t)) !== JSON.stringify(normalize(saved.current));
   const save = async () => {
     setBusy(true);
     saveLocalTheme(t);
     try {
       if (user) {
         const { data } = await api.put("/auth/me/theme", t);
-        setUser({ ...user, theme: data });
+        setUser && setUser({ ...user, theme: data });
       }
+      saved.current = t;
       toast.success("Aparência salva");
-      close(true);
-    } catch (e) { toast.error(formatApiError(e)); }
-    setBusy(false);
+      setBusy(false);
+      return true;
+    } catch (e) { toast.error(formatApiError(e)); setBusy(false); return false; }
   };
-  const custom = !ACCENTS.some(a => a.id.toLowerCase() === t.accent.toLowerCase());
+  return { t, set, save, revert, begin, busy, dirty };
+}
 
+/** Campos da aparência (tema, cor de destaque, tom e tamanho do texto). */
+export function AppearanceFields({ t, set }) {
+  const custom = !ACCENTS.some(a => a.id.toLowerCase() === t.accent.toLowerCase());
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && close(false)}>
-      <DialogContent className="bg-surface border-line text-slate-100 max-w-xl max-h-[92vh] overflow-y-auto" data-testid="appearance-dialog">
-        <DialogHeader><DialogTitle className="flex items-center gap-2"><Palette className="w-4 h-4 text-brand-soft" /> Aparência</DialogTitle></DialogHeader>
         <div className="space-y-5 text-sm">
           <section>
             <div className="text-xs font-medium text-slate-400 mb-2">Tema</div>
@@ -129,11 +132,23 @@ export function AppearanceDialog({ open, onOpenChange }) {
           </section>
           <p className="text-[11px] text-slate-500">Fica salvo no seu usuário: vale em qualquer computador ou celular em que você entrar. O terminal SSH mantém o tema próprio dele (ícone de paleta no terminal).</p>
         </div>
+  );
+}
+
+export function AppearanceDialog({ open, onOpenChange }) {
+  const ed = useAppearanceEditor();
+  useEffect(() => { if (open) ed.begin(); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  const close = (saved) => { if (!saved) ed.revert(); onOpenChange(false); };
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && close(false)}>
+      <DialogContent className="bg-surface border-line text-slate-100 max-w-xl max-h-[92vh] overflow-y-auto" data-testid="appearance-dialog">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><Palette className="w-4 h-4 text-brand-soft" /> Aparência</DialogTitle></DialogHeader>
+        <AppearanceFields t={ed.t} set={ed.set} />
         <DialogFooter className="gap-2 sm:justify-between">
-          <Button variant="ghost" onClick={() => set(DEFAULT_THEME)} className="text-slate-400" data-testid="theme-reset"><RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Padrão</Button>
+          <Button variant="ghost" onClick={() => ed.set(DEFAULT_THEME)} className="text-slate-400" data-testid="theme-reset"><RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Padrão</Button>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={() => close(false)} className="text-slate-300">Cancelar</Button>
-            <Button onClick={save} disabled={busy} className="bg-brand hover:bg-brand-strong text-onbrand" data-testid="theme-save">Salvar</Button>
+            <Button onClick={async () => { if (await ed.save()) close(true); }} disabled={ed.busy} className="bg-brand hover:bg-brand-strong text-onbrand" data-testid="theme-save">Salvar</Button>
           </div>
         </DialogFooter>
       </DialogContent>

@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import { KeyRound, Save, Wand2, Copy, Loader2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
-export default function SshKey() {
+export default function SshKey({ embedded = false }) {
   const [config, setConfig] = useState({ private_key: "", public_key: "", default_username: "root", has_key: false });
   const [busy, setBusy] = useState(false);
   const [newPassword, setNewPassword] = useState("");
@@ -50,8 +50,8 @@ export default function SshKey() {
   const copy = (t) => { navigator.clipboard.writeText(t); toast.success("Copiado"); };
 
   return (
-    <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="ssh-key-page">
-      <div className="mb-6">
+    <div className={embedded ? "" : "p-4 md:p-6 flex-1 overflow-y-auto"} data-testid="ssh-key-page">
+      <div className={embedded ? "hidden" : "mb-6"}>
         <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Chave SSH Global</h1>
         <p className="text-slate-400 mt-2 text-sm max-w-2xl">
           Chave privada única usada pelo BastiON Central para conectar em todos os equipamentos e agentes.

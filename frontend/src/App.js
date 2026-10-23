@@ -25,7 +25,7 @@ import Backups from "@/pages/Backups";
 import Maps from "@/pages/Maps";
 import Dashboards from "@/pages/Dashboards";
 import Flow from "@/pages/Flow";
-import Automation from "@/pages/Automation";
+import Settings from "@/pages/Settings";
 import WebAccess from "@/pages/WebAccess";
 
 function RootRedirect() {
@@ -73,7 +73,9 @@ function App() {
             <Route path="/maps" element={<Maps />} />
             <Route path="/dashboards" element={<Dashboards />} />
             <Route path="/flow" element={<Flow />} />
-            <Route path="/automation" element={<ProtectedRoute adminOnly><Automation /></ProtectedRoute>} />
+            <Route path="/settings" element={<ProtectedRoute adminOnly><Settings /></ProtectedRoute>} />
+            {/* Automação foi para Configurações (links antigos e alertas continuam funcionando) */}
+            <Route path="/automation" element={<Navigate to="/settings?tab=automacao" replace />} />
             <Route path="/users" element={<ProtectedRoute adminOnly><Users /></ProtectedRoute>} />
           </Route>
         </Routes>

@@ -172,3 +172,14 @@ async def run(db, alert: Optional[Callable[..., Awaitable]] = None, trigger: str
         elif sent:
             log.info(f"backup na nuvem: {sent} arquivo(s) para {remote}:{folder} {per_tag}")
         return {k: v for k, v in state.items() if k != "key"}
+
+
+async def upload_file(db, path: str, subfolder: str = "banco") -> Tuple[bool, str]:
+    """Copia um arquivo para <drive>:<pasta>/<subfolder>/ (usa o drive escolhido em Backup na nuvem)."""
+    s = await get_settings(db)
+    remote, folder = (s.get("remote") or "").strip().rstrip(":"), (s.get("folder") or "").strip().strip("/")
+    if not remote:
+        return False, "Escolha o drive em Backup na nuvem (Configurações → Automação)"
+    dest = f"{remote}:{folder + '/' if folder else ''}{subfolder}/{os.path.basename(path)}"
+    code, out = await _rclone("copyto", path, dest, "--retries", "2", timeout=3600)
+    return (code == 0), ("" if code == 0 else _short(out))

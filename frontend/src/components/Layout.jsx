@@ -8,7 +8,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, Palette, ShieldCheck, Archive, BellRing, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints,
+  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -35,11 +35,11 @@ const NAV = [
   { to: "/rpki", icon: FileBadge, label: "RPKI", testid: "nav-rpki" },
   { to: "/olt-script", icon: Cpu, label: "Script de OLT", testid: "nav-oltgen" },
   { to: "/agents", icon: Radio, label: "Agentes Remotos", testid: "nav-agents" },
-  { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key" },
+  { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key", notAdmin: true },   // admin: Configurações
   { to: "/sessions", icon: History, label: "Histórico", testid: "nav-sessions" },
   { to: "/backups", icon: Archive, label: "Backups", testid: "nav-backups" },
-  { to: "/automation", icon: BellRing, label: "Automação", testid: "nav-automation", adminOnly: true },
   { to: "/users", icon: UsersIcon, label: "Usuários", adminOnly: true, testid: "nav-users" },
+  { to: "/settings", icon: SettingsIcon, label: "Configurações", adminOnly: true, testid: "nav-settings" },
 ];
 
 // perfil View: só estas telas (o servidor também bloqueia o resto)
@@ -77,7 +77,7 @@ export default function Layout() {
   const isViewer = user?.role === "viewer";
   const current = NAV.find(n => pathname === n.to || pathname.startsWith(n.to + "/"));
   const allowed = (to) => !PATH_MODULE[to] || canUse(user, PATH_MODULE[to]);     // módulos liberados para este usuário
-  const nav = NAV.filter(n => (!n.adminOnly || user?.role === "admin") && (!isViewer || VIEWER_PATHS.includes(n.to)) && (isViewer || allowed(n.to)));
+  const nav = NAV.filter(n => (!n.adminOnly || user?.role === "admin") && !(n.notAdmin && user?.role === "admin") && (!isViewer || VIEWER_PATHS.includes(n.to)) && (isViewer || allowed(n.to)));
   const onDash = pathname.startsWith("/dashboards");
   const hidden = (onTerminal && prefs.focusMode) || (onDash && prefs.dashFocus);   // modo foco esconde o menu lateral
 

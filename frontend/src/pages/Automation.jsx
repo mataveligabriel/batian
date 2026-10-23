@@ -13,7 +13,7 @@ import { CloudBackupCard } from "@/components/CloudBackupCard";
 
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR") : "nunca";
 
-export default function Automation() {
+export default function Automation({ embedded = false }) {
   const [s, setS] = useState(null);
   const [token, setToken] = useState("");
   const [clearToken, setClearToken] = useState(false);
@@ -77,8 +77,8 @@ export default function Automation() {
   const inputCls = "bg-sunken border-line font-mono";
 
   return (
-    <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="automation-page">
-      <div className="mb-6">
+    <div className={embedded ? "" : "p-4 md:p-6 flex-1 overflow-y-auto"} data-testid="automation-page">
+      <div className={embedded ? "hidden" : "mb-6"}>
         <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Automação & Alertas</h1>
         <p className="text-slate-400 mt-2 text-sm max-w-2xl">Monitoramento automático pela cadeia de saltos, backup diário de configurações e notificações quando um agente ou equipamento cai.</p>
       </div>

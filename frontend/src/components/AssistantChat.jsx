@@ -160,7 +160,7 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
             <div className="p-4 text-sm text-slate-300 space-y-2" data-testid="assistant-setup">
               <div className="flex items-center gap-2 text-amber-300"><AlertTriangle className="w-4 h-4" /> Assistente ainda não configurado</div>
               <div className="text-slate-400">{status.reason ? `Motivo: ${status.reason}.` : ""}</div>
-              {isAdmin ? <div>Vá em <a href="/automation" className="text-brand-soft underline">Automação → Assistente IA</a>, escolha um provedor grátis (Groq ou Gemini) ou o Ollama no servidor, cole a chave e salve.</div>
+              {isAdmin ? <div>Vá em <a href="/settings?tab=automacao" className="text-brand-soft underline">Configurações → Automação e alertas → Assistente IA</a>, escolha um provedor grátis (Groq ou Gemini) ou o Ollama no servidor, cole a chave e salve.</div>
                        : <div>Peça ao administrador para ligar o assistente.</div>}
             </div>
           ) : (

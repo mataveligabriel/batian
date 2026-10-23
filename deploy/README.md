@@ -985,3 +985,41 @@ Texto branco sobre botão colorido usa `text-onbrand` (sempre branco); `text-whi
 - As abas ficam abaixo do relógio/notch do iPhone (antes, no modo foco, ficavam embaixo da barra de status e não
   davam para tocar), são compactas e roláveis, e a lista de **+** (nova aba) tem busca por nome, IP ou tag.
 - O botão de modo foco aparece também no celular (antes não havia como sair dele por lá).
+
+## 42. Configurações (só administrador) e backup/importação do banco
+
+Menu **Configurações** (último item do menu lateral, só para administradores), com as seções:
+
+- **Aparência** (a do seu usuário; cada usuário continua com o botão Aparência no rodapé do menu).
+- **Banco de dados**: backup, importação e backup automático (abaixo).
+- **Automação e alertas** (a antiga tela Automação; o endereço `/automation` leva para cá).
+- **Chave SSH global** (para administradores saiu do menu lateral; operadores com o módulo continuam vendo lá).
+
+### Backup do banco
+
+**Fazer backup agora** gera um arquivo `.bastionbk` criptografado (AES-256-GCM, chave derivada da senha com
+scrypt). Sempre vão os cadastros e as configurações; dá para incluir os backups de configuração dos equipamentos,
+o histórico (sessões, alertas, logs) e as métricas/flow (que podem ficar grandes). Os arquivos ficam em
+`/data/db-backups` (volume `bastion_data`, sobrevive ao `update.sh`) e são baixados por um link de uso único.
+
+A senha é obrigatória: o arquivo leva a chave que abre as senhas dos equipamentos e agentes (derivada do
+`JWT_SECRET`). Sem a senha o arquivo não abre.
+
+**Backup automático**: todo dia na hora escolhida, guardando os últimos N, e opcionalmente enviando para o drive
+configurado em Backup na nuvem (pasta `banco`). Falha gera alerta (Telegram/push).
+
+### Levar o BastiON para outro servidor
+
+1. No servidor antigo: Configurações → Banco de dados → Fazer backup agora → baixar o arquivo.
+2. No servidor novo: instale com o `install.sh` e entre com o administrador do `.env`.
+3. Configurações → Banco de dados → Importar backup → escolha o arquivo, informe a senha → **Conferir** (mostra de
+   onde é o backup e quantos equipamentos, agentes, usuários e mapas tem; nada muda ainda) → **Importar agora**.
+
+Na importação o BastiON guarda antes uma cópia do banco atual (`bastion-db-antes-importacao-*`, mesma senha),
+substitui as coleções que estão no backup (as que não estão, como métricas não incluídas, ficam como estão),
+converte as senhas guardadas para o `JWT_SECRET` do servidor novo e reinicia o backend sozinho. Depois, entre com
+os usuários e senhas do sistema antigo. Agentes de túnel reverso precisam apontar para o servidor novo (rode de
+novo o instalador do agente) e o script de preparação do servidor (Agentes Remotos → Configurar BastiON).
+
+Os scripts `deploy/backup.sh` e `deploy/restore.sh` (pela linha de comando, com `.env` e certificados) continuam
+valendo.

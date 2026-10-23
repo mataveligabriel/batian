@@ -15,8 +15,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -51,6 +51,7 @@ import qrgen
 import security
 import webproxy
 import cloudsync
+import dbbackup
 import lookingglass
 import rpki
 import vendorscan
@@ -133,6 +134,7 @@ async def startup():
     await db.net_reports.create_index([("map_id", 1), ("at", -1)])
     await db.net_reports_raw.create_index("rid")
     scheduler.start()
+    _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
     optics_collector.start()
@@ -3998,6 +4000,258 @@ class CloudSettingsIn(BaseModel):
     only_changed: bool = True
 
 
+# ---------- Configurações → Banco de dados (backup / importação) ----------
+_bg_tasks: list = []
+DB_JOB: dict = {"state": "idle"}           # um backup ou importação por vez
+_DL_TICKETS: Dict[str, tuple] = {}         # link de download de uso único: ticket -> (arquivo, validade)
+_DB_UPLOADS: Dict[str, dict] = {}          # arquivo enviado aguardando confirmação
+
+
+async def _db_cloud_upload(path: str):
+    return await cloudsync.upload_file(db, path)
+
+
+async def _db_alert(title: str, text: str):
+    try:
+        await automation.send_alert(db, title, text, push_url="/settings?tab=banco", push_tag="db-backup")
+    except Exception:
+        pass
+
+
+def _job_public() -> dict:
+    return {k: v for k, v in DB_JOB.items() if not k.startswith("_")}
+
+
+def _db_busy():
+    if DB_JOB.get("state") == "running":
+        raise HTTPException(status_code=409, detail=f"Já existe {DB_JOB.get('what', 'uma operação')} em andamento")
+
+
+async def _db_settings() -> dict:
+    s = await db.config.find_one({"key": "dbbackup"}, {"_id": 0}) or {}
+    return {"auto": bool(s.get("auto")), "hour": int(s.get("hour", 3)), "keep": int(s.get("keep", 7) or 7),
+            "history": bool(s.get("history")), "config_backups": bool(s.get("config_backups", True)),
+            "cloud": bool(s.get("cloud")), "has_password": bool(s.get("password")),
+            "last_auto_at": s.get("last_auto_at"), "last_auto_ok": s.get("last_auto_ok"),
+            "last_auto_error": s.get("last_auto_error") or "", "last_cloud_ok": s.get("last_cloud_ok"),
+            "last_cloud_error": s.get("last_cloud_error") or ""}
+
+
+@api.get("/system/db")
+async def system_db(_: dict = Depends(require_admin)):
+    """Coleções do banco (com o grupo de cada uma), backups guardados no servidor, agenda e operação em andamento."""
+    cols = []
+    for c in sorted(await db.list_collection_names()):
+        g = dbbackup.classify(c)
+        if g == "never":
+            continue
+        try:
+            st = await db.command("collStats", c)
+            size, n = int(st.get("size", 0)), int(st.get("count", 0))
+        except Exception:
+            size, n = 0, await db[c].estimated_document_count()
+        cols.append({"name": c, "group": g, "docs": n, "size": size})
+    try:
+        dbstats = await db.command("dbStats")
+    except Exception:
+        dbstats = {}
+    return {"collections": cols, "files": dbbackup.list_files(), "settings": await _db_settings(), "job": _job_public(),
+            "dir": dbbackup.BACKUP_DIR, "data_size": int(dbstats.get("dataSize", 0)),
+            "storage_size": int(dbstats.get("storageSize", 0)), "cloud": await cloudsync.status(db)}
+
+
+class DbBackupIn(BaseModel):
+    password: str
+    history: bool = False
+    metrics: bool = False
+    config_backups: bool = True
+
+
+async def _run_job(what: str, coro_factory):
+    DB_JOB.clear()
+    DB_JOB.update({"state": "running", "what": what, "started_at": datetime.now(timezone.utc).isoformat(), "step": "", "docs": 0})
+
+    def progress(col, n):
+        DB_JOB.update({"step": col, "docs": n})
+    try:
+        res = await coro_factory(progress)
+        DB_JOB.update({"state": "done", "result": res, "ended_at": datetime.now(timezone.utc).isoformat()})
+    except dbbackup.BackupError as e:
+        DB_JOB.update({"state": "error", "error": str(e)})
+    except Exception as e:
+        logger.exception(f"{what} falhou")
+        DB_JOB.update({"state": "error", "error": f"{type(e).__name__}: {e}"[:400]})
+
+
+@api.post("/system/db-backups")
+async def system_db_backup(body: DbBackupIn, user: dict = Depends(require_admin)):
+    _db_busy()
+    if len(body.password or "") < 8:
+        raise HTTPException(status_code=400, detail="A senha do backup precisa ter pelo menos 8 caracteres")
+    asyncio.create_task(_run_job("um backup", lambda pr: dbbackup.export(
+        db, body.password, history=body.history, metrics=body.metrics, config_backups=body.config_backups,
+        kind="manual", by=user.get("email", ""), progress=pr)))
+    await asyncio.sleep(0.05)
+    return _job_public()
+
+
+@api.get("/system/db-job")
+async def system_db_job(_: dict = Depends(require_admin)):
+    return _job_public()
+
+
+@api.post("/system/db-backups/{name}/link")
+async def system_db_link(name: str, _: dict = Depends(require_admin)):
+    """Link de download de uso único (60 s): o navegador baixa direto, sem passar o arquivo pela memória da página."""
+    try:
+        path = dbbackup.path_of(name)
+    except dbbackup.BackupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    now = time.time()
+    for k, (_, exp) in list(_DL_TICKETS.items()):
+        if exp < now:
+            _DL_TICKETS.pop(k, None)
+    t = os.urandom(24).hex()
+    _DL_TICKETS[t] = (path, now + 60)
+    return {"url": f"/api/system/db-download/{t}"}
+
+
+@api.get("/system/db-download/{ticket}")
+async def system_db_download(ticket: str):
+    path, exp = _DL_TICKETS.pop(ticket, (None, 0))
+    if not path or exp < time.time() or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Link expirado — clique em baixar de novo")
+    return FileResponse(path, media_type="application/octet-stream", filename=os.path.basename(path))
+
+
+@api.delete("/system/db-backups/{name}")
+async def system_db_delete(name: str, _: dict = Depends(require_admin)):
+    try:
+        dbbackup.remove(name)
+    except dbbackup.BackupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True}
+
+
+def _restore_preview(m: dict) -> dict:
+    c = m.get("collections") or {}
+    return {"from_host": m.get("host"), "created_at": m.get("created_at"), "groups": m.get("groups"),
+            "docs": sum(c.values()), "devices": c.get("devices", 0), "agents": c.get("agents", 0),
+            "users": c.get("users", 0), "maps": c.get("maps", 0), "collections": c,
+            "same_server": m.get("vault_key", "").encode() == dbbackup.vault_key()}
+
+
+@api.post("/system/db-restore/upload")
+async def system_db_restore_upload(file: UploadFile = File(...), password: str = Form(...), _: dict = Depends(require_admin)):
+    """1º passo da importação: recebe o arquivo, confere a senha e mostra o que tem nele (nada é alterado ainda)."""
+    _db_busy()
+    dbbackup.ensure_dir()
+    uid = os.urandom(8).hex()
+    path = os.path.join(dbbackup.BACKUP_DIR, f".upload-{uid}.bastionbk")
+    with open(path, "wb") as out:
+        os.chmod(path, 0o600)
+        while True:
+            chunk = await file.read(1 << 20)
+            if not chunk:
+                break
+            out.write(chunk)
+    try:
+        m = await asyncio.get_running_loop().run_in_executor(None, dbbackup.read_manifest, path, password)
+    except dbbackup.BackupError as e:
+        os.remove(path)
+        raise HTTPException(status_code=400, detail=str(e))
+    for k, u in list(_DB_UPLOADS.items()):                 # descarta envios antigos não confirmados
+        if time.time() - u["at"] > 3600:
+            _DB_UPLOADS.pop(k, None)
+            try:
+                os.remove(u["path"])
+            except FileNotFoundError:
+                pass
+    _DB_UPLOADS[uid] = {"path": path, "at": time.time(), "name": file.filename}
+    return {"upload_id": uid, "file": file.filename, **_restore_preview(m)}
+
+
+class DbRestoreIn(BaseModel):
+    password: str
+    upload_id: Optional[str] = None     # arquivo enviado no 1º passo
+    name: Optional[str] = None          # ou um backup que já está no servidor
+
+
+@api.post("/system/db-restore/preview")
+async def system_db_restore_preview(body: DbRestoreIn, _: dict = Depends(require_admin)):
+    try:
+        m = await asyncio.get_running_loop().run_in_executor(None, dbbackup.read_manifest, dbbackup.path_of(body.name or ""), body.password)
+    except dbbackup.BackupError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"name": body.name, **_restore_preview(m)}
+
+
+@api.post("/system/db-restore")
+async def system_db_restore(body: DbRestoreIn, user: dict = Depends(require_admin)):
+    """2º passo: guarda uma cópia do banco atual (mesma senha), importa e reinicia o backend."""
+    _db_busy()
+    if body.upload_id:
+        up = _DB_UPLOADS.get(body.upload_id)
+        if not up:
+            raise HTTPException(status_code=404, detail="Envio expirado — mande o arquivo de novo")
+        path = up["path"]
+    else:
+        try:
+            path = dbbackup.path_of(body.name or "")
+        except dbbackup.BackupError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, dbbackup.read_manifest, path, body.password)
+    except dbbackup.BackupError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    async def work(progress):
+        DB_JOB["step"] = "cópia do banco atual"
+        safety = await dbbackup.export(db, body.password, history=True, metrics=False, config_backups=True,
+                                       kind="pre-import", by=user.get("email", ""))
+        res = await dbbackup.restore(db, path, body.password, progress=progress)
+        res["safety_backup"] = safety["name"]
+        if body.upload_id:
+            _DB_UPLOADS.pop(body.upload_id, None)
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+        logger.warning(f"banco importado por {user.get('email')}: {res['docs']} documentos de {res.get('from_host')}; reiniciando")
+        res["restarting"] = True
+        # reinicia para recarregar agenda, bot, monitores e caches com o banco novo (o Docker sobe de novo sozinho)
+        asyncio.get_running_loop().call_later(4, os._exit, 0)
+        return res
+    asyncio.create_task(_run_job("uma importação", work))
+    await asyncio.sleep(0.05)
+    return _job_public()
+
+
+class DbSettingsIn(BaseModel):
+    auto: bool = False
+    hour: int = 3
+    keep: int = 7
+    history: bool = False
+    config_backups: bool = True
+    cloud: bool = False
+    password: Optional[str] = None      # vazio = mantém a guardada
+
+
+@api.put("/system/db-settings")
+async def system_db_settings(body: DbSettingsIn, _: dict = Depends(require_admin)):
+    cur = await db.config.find_one({"key": "dbbackup"}, {"_id": 0}) or {}
+    data = {"auto": body.auto, "hour": min(23, max(0, body.hour)), "keep": min(90, max(1, body.keep)),
+            "history": body.history, "config_backups": body.config_backups, "cloud": body.cloud}
+    if body.password:
+        if len(body.password) < 8:
+            raise HTTPException(status_code=400, detail="A senha do backup precisa ter pelo menos 8 caracteres")
+        data["password"] = vault.encrypt(body.password)
+    if body.auto and not (data.get("password") or cur.get("password")):
+        raise HTTPException(status_code=400, detail="Defina a senha dos backups automáticos")
+    await db.config.update_one({"key": "dbbackup"}, {"$set": data}, upsert=True)
+    return await _db_settings()
+
+
 @api.get("/cloud/status")
 async def cloud_status(_: dict = Depends(require_admin)):
     return await cloudsync.status(db)
@@ -6295,6 +6549,8 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     scheduler.stop()
+    for t in _bg_tasks:
+        t.cancel()
     assistant.stop()
     net_monitor.stop()
     optics_collector.stop()
