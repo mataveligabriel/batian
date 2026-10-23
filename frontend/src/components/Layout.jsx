@@ -48,6 +48,12 @@ const VIEWER_PATHS = ["/dashboard", "/dashboards", "/maps"];
 export default function Layout() {
   const { user, logout } = useAuth();
   const [lookOpen, setLookOpen] = useState(false);
+  const [uiTheme, setUiTheme] = useState(() => document.documentElement.getAttribute("data-theme") || "dark");
+  useEffect(() => {
+    const on = (e) => setUiTheme(e.detail?.resolved || "dark");
+    window.addEventListener("bastion-theme", on);
+    return () => window.removeEventListener("bastion-theme", on);
+  }, []);
   const { tabs } = useTerminal();
   const { pathname } = useLocation();
   const onTerminal = pathname.startsWith("/terminal");
@@ -197,7 +203,7 @@ export default function Layout() {
         {!isViewer && canUse(user, "terminal") && <TerminalWorkspace visible={onTerminal} />}
       </main>
       {!isViewer && canUse(user, "assistant") && <AssistantChat hideButton={onTerminal || hidden} isAdmin={user?.role === "admin"} />}
-      <Toaster theme="dark" richColors position={isMobile ? "top-center" : "top-right"} />
+      <Toaster theme={uiTheme} richColors position={isMobile ? "top-center" : "top-right"} />
     </div>
   );
 }

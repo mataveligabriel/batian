@@ -50,7 +50,11 @@ export const DEFAULT_PREFS = {
   focusMode: false,            // terminal sem menu lateral nem cabeçalho
   sidebarCollapsed: false,     // menu lateral só com ícones
   dashFocus: false,            // dashboards sem menu lateral, cabeçalho nem lista
+  mobileFont: 0,               // celular: 0 = automático (cabe MOBILE_COLS colunas na largura); senão o tamanho escolhido
 };
+
+// colunas mínimas no celular em pé: com menos, o equipamento quebra as tabelas (display interface brief…)
+export const MOBILE_COLS = 80;
 
 export function getTermPrefs() {
   try {
@@ -65,6 +69,7 @@ export function setTermPrefs(patch) {
   const next = { ...getTermPrefs(), ...patch };
   if (!TERM_THEMES[next.theme]) next.theme = DEFAULT_PREFS.theme;
   next.fontSize = Math.min(24, Math.max(10, Number(next.fontSize) || DEFAULT_PREFS.fontSize));
+  next.mobileFont = Number(next.mobileFont) ? Math.min(20, Math.max(6, Math.round(Number(next.mobileFont)))) : 0;
   try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* modo privado: vale só nesta aba */ }
   window.dispatchEvent(new CustomEvent(EVT, { detail: next }));
   return next;

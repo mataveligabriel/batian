@@ -8,11 +8,11 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import {
   Plus, X, Wifi, WifiOff, Server, TerminalSquare, RotateCw, Zap, Highlighter, Minus, Palette, Copy,
-  ClipboardPaste, Eraser, Maximize, Minimize, PanelLeftClose, PanelLeftOpen, Check, CopyCheck, ZoomIn, ZoomOut,
+  ClipboardPaste, Eraser, Maximize, Minimize, PanelLeftClose, PanelLeftOpen, Check, CopyCheck, ZoomIn, ZoomOut, Search, Minimize2,
 } from "lucide-react";
 import { useTerminal } from "@/context/TerminalContext";
 import { createHighlighter, HL_COLORS } from "@/lib/termHighlight";
-import { TERM_THEMES, useTermPrefs, setTermPrefs, getTermPrefs } from "@/lib/termPrefs";
+import { TERM_THEMES, useTermPrefs, setTermPrefs, getTermPrefs, MOBILE_COLS } from "@/lib/termPrefs";
 import { copyText, readText } from "@/lib/clipboard";
 
 // Celular: teclas que o teclado do iPhone/Android não tem (enviadas direto para a sessão ativa)
@@ -29,6 +29,20 @@ const LEGEND = [
 ];
 const themeOf = (p) => (TERM_THEMES[p.theme] || TERM_THEMES.mobaxterm).theme;
 const bumpFont = (d) => setTermPrefs({ fontSize: getTermPrefs().fontSize + d });
+
+// Celular em pé: a fonte se ajusta para caberem MOBILE_COLS colunas (o VRP/Junos quebram as tabelas em telas
+// estreitas). O usuário pode aumentar/diminuir (botões ou pinça com dois dedos) e voltar ao automático.
+const MOBILE_Q = "(max-width: 767px)";
+const isPhone = () => { try { return window.matchMedia(MOBILE_Q).matches; } catch { return false; } };
+const CELL = 0.6;   // largura do caractere / tamanho da fonte (JetBrains Mono, Menlo, Consolas ≈ 0,6)
+function autoMobileFont(el) {
+  const w = (el?.clientWidth || window.innerWidth) - 8;
+  return Math.max(6, Math.min(14, Math.floor(w / (MOBILE_COLS * CELL))));
+}
+function effectiveFont(prefs, el) {
+  if (!isPhone()) return prefs.fontSize;
+  return prefs.mobileFont || autoMobileFont(el);
+}
 
 // ---------- tela cheia (API do navegador / app desktop) ----------
 function useFullscreen() {
@@ -226,7 +240,7 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
     const term = new XTerm({
       cursorBlink: true,
       fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, Menlo, monospace',
-      fontSize: p0.fontSize,
+      fontSize: effectiveFont(p0, containerRef.current),
       lineHeight: 1.15,
       scrollback: 10000,
       drawBoldTextInBrightColors: true,
@@ -291,6 +305,7 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
       paste: (text) => { term.paste(text); term.focus(); },
       clear: () => { term.clear(); term.focus(); },
       focus: () => term.focus(),
+      fontSize: () => term.options.fontSize,
     });
 
     // Ctrl+Shift+C copia a seleção (Ctrl+C continua indo para o equipamento)
@@ -321,6 +336,30 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
     el.addEventListener("paste", onPaste, true);
     el.addEventListener("wheel", onWheel, { passive: false });
 
+    // celular: pinça com dois dedos muda a fonte (fica salvo; o botão "ajustar" volta ao automático)
+    let pinch = null;
+    const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const onTouchStart = (e) => { if (e.touches.length === 2) pinch = { d: dist(e.touches), fs: term.options.fontSize }; };
+    const onTouchMove = (e) => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      const fs = Math.max(6, Math.min(20, Math.round(pinch.fs * dist(e.touches) / pinch.d)));
+      if (fs !== term.options.fontSize) { term.options.fontSize = fs; try { fit.fit(); } catch { /* noop */ } }
+    };
+    const onTouchEnd = (e) => {
+      if (!pinch || e.touches.length >= 2) return;
+      const fs = term.options.fontSize;
+      pinch = null;
+      setTermPrefs({ mobileFont: fs });
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    };
+    const noGesture = (e) => e.preventDefault();   // Safari: não deixa a pinça dar zoom na página inteira
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd);
+    el.addEventListener("touchcancel", onTouchEnd);
+    el.addEventListener("gesturestart", noGesture);
+
     // reajusta quando o espaço muda (janela, menu lateral encolhido, modo foco, tela cheia)
     let raf = 0;
     const refit = () => {
@@ -329,6 +368,10 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
         try {
           if (!el.offsetWidth || !el.offsetHeight) return;
           const before = `${term.cols}x${term.rows}`;
+          if (!pinch) {
+            const fs = effectiveFont(prefsRef.current, el);   // celular girou / teclado abriu: recalcula a fonte
+            if (term.options.fontSize !== fs) term.options.fontSize = fs;
+          }
           fit.fit();
           if (`${term.cols}x${term.rows}` !== before && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
         } catch { /* noop */ }
@@ -343,6 +386,11 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
       el.removeEventListener("contextmenu", onContext);
       el.removeEventListener("paste", onPaste, true);
       el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchEnd);
+      el.removeEventListener("gesturestart", noGesture);
       registerPane?.(device.id, null);
       try { ws.close(); } catch { /* noop */ }
       try { term.dispose(); } catch { /* noop */ }
@@ -354,15 +402,16 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
     const term = termRef.current;
     if (!term) return;
     term.options.theme = themeOf(prefs);
-    if (term.options.fontSize !== prefs.fontSize) {
-      term.options.fontSize = prefs.fontSize;
+    const fs = effectiveFont(prefs, containerRef.current);
+    if (term.options.fontSize !== fs) {
+      term.options.fontSize = fs;
       try {
         fitRef.current?.fit();
         const ws = wsRef.current;
         if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       } catch { /* noop */ }
     }
-  }, [prefs.theme, prefs.fontSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [prefs.theme, prefs.fontSize, prefs.mobileFont]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (active && visible && fitRef.current) {
@@ -381,9 +430,9 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
   const label = status === "connected" ? "conectado" : status === "connecting" ? "conectando" : status === "closed" ? "encerrada" : "erro";
   return (
     <div className={`absolute inset-0 flex flex-col ${active && visible ? "visible z-10" : "invisible z-0"}`} data-testid={`terminal-pane-${device.id}`}>
-      <div className={`flex items-center justify-between border-b border-line bg-panel ${prefs.focusMode ? "px-3 py-1" : "px-4 py-2"}`}>
+      <div className={`flex items-center justify-between gap-2 border-b border-line bg-panel ${prefs.focusMode ? "px-3 py-1" : "px-3 md:px-4 py-1.5 md:py-2"}`}>
         <div className="flex items-center gap-3 min-w-0">
-          <Server className="w-4 h-4 text-brand-soft shrink-0" />
+          <Server className="w-4 h-4 text-brand-soft shrink-0 hidden md:block" />
           <div className={prefs.focusMode ? "flex items-baseline gap-3 min-w-0" : "min-w-0"}>
             <div className="text-sm font-medium text-slate-100 truncate">{device.name}</div>
             <div className="text-[11px] font-mono text-slate-500 truncate">{(device.protocol || "ssh").toUpperCase()} · {device.host}:{device.port} · {device.username || "padrão"}</div>
@@ -411,6 +460,7 @@ export function TerminalWorkspace({ visible }) {
   const [termPrefs] = useTermPrefs();
   const [devices, setDevices] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pq, setPq] = useState("");
   const [quick, setQuick] = useState([]);
   const [menu, setMenu] = useState(null);
   const [pasteDlg, setPasteDlg] = useState(null);
@@ -420,6 +470,13 @@ export function TerminalWorkspace({ visible }) {
   const registerWs = useCallback((id, ws) => { wsMap.current[id] = ws; }, []);
   const registerPane = useCallback((id, api_) => { if (api_) panes.current[id] = api_; else delete panes.current[id]; }, []);
   const focus = termPrefs.focusMode;
+  const pqt = pq.trim().toLowerCase();
+  const pickList = pqt ? devices.filter(d => `${d.name} ${d.host} ${(d.tags || []).join(" ")}`.toLowerCase().includes(pqt)) : devices;
+  // celular: zoom pelos botões parte do tamanho atual (automático ou não)
+  const zoomMobile = (d) => {
+    const cur = (active && panes.current[active]?.fontSize?.()) || getTermPrefs().mobileFont || 9;
+    setTermPrefs({ mobileFont: cur + d });
+  };
 
   useEffect(() => {
     if (pickerOpen) api.get("/devices").then(r => setDevices(r.data)).catch(() => toast.error("Falha ao carregar equipamentos"));
@@ -461,7 +518,7 @@ export function TerminalWorkspace({ visible }) {
   const iconBtn = "h-7 px-2 rounded border border-line bg-surface text-slate-300 hover:text-slate-100 text-xs font-mono flex items-center gap-1.5 shrink-0";
 
   return (
-    <div className={`absolute inset-0 flex flex-col ${visible ? "visible z-20" : "invisible z-0 pointer-events-none"}`} data-testid="terminal-page">
+    <div className={`absolute inset-0 flex flex-col ${focus ? "pt-[env(safe-area-inset-top)] md:pt-0 bg-panel" : ""} ${visible ? "visible z-20" : "invisible z-0 pointer-events-none"}`} data-testid="terminal-page">
       {!focus && (
         <div className="hidden md:flex px-6 py-4 border-b border-line bg-panel items-center justify-between">
           <div>
@@ -479,13 +536,17 @@ export function TerminalWorkspace({ visible }) {
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-line bg-panel">
         <div className="flex items-center gap-1 overflow-x-auto flex-1 min-w-0">
           {tabs.map(t => (
-            <div key={t.id} data-testid={`tab-${t.id}`} onClick={() => setActive(t.id)} title={`${t.host}:${t.port}`}
-                 className={`group flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer text-sm border shrink-0 ${
+            <div key={t.id} data-testid={`tab-${t.id}`} onClick={() => setActive(t.id)} title={`${t.name} · ${t.host}:${t.port}`}
+                 ref={el => { if (el && active === t.id) el.scrollIntoView({ block: "nearest", inline: "nearest" }); }}
+                 className={`group flex items-center gap-1.5 md:gap-2 pl-2.5 pr-1 md:px-3 py-1.5 rounded-md cursor-pointer text-[13px] md:text-sm border shrink-0 ${
                    active === t.id ? "bg-surface border-line2 text-slate-100" : "border-transparent text-slate-400 hover:bg-slate-800/50"}`}>
-              <TerminalSquare className="w-3.5 h-3.5" />
-              <span className="font-mono">{t.name}</span>
-              <X className="w-3.5 h-3.5 opacity-60 hover:opacity-100 hover:text-red-400" data-testid={`close-tab-${t.id}`}
-                 onClick={(e) => { e.stopPropagation(); closeTab(t.id); }} />
+              <TerminalSquare className="w-3.5 h-3.5 hidden md:block" />
+              <span className="font-mono truncate max-w-[8.5rem] md:max-w-none">{t.name}</span>
+              <button type="button" aria-label={`Fechar ${t.name}`} data-testid={`close-tab-${t.id}`}
+                      className="w-7 h-7 md:w-auto md:h-auto -my-1 flex items-center justify-center opacity-60 hover:opacity-100 hover:text-red-400"
+                      onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}>
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
           ))}
         </div>
@@ -494,11 +555,18 @@ export function TerminalWorkspace({ visible }) {
             <Plus className="w-4 h-4 md:mr-1" /><span className="hidden md:inline">Nova aba</span>
           </Button>
           {pickerOpen && (
-            <div className="absolute top-full mt-1 right-0 z-40 w-72 max-w-[calc(100vw-16px)] bg-surface border border-line rounded-md shadow-xl max-h-80 overflow-y-auto">
-              {devices.length === 0 && <div className="p-4 text-sm text-slate-500 font-mono">Sem equipamentos</div>}
-              {devices.map(d => (
-                <div key={d.id} onClick={() => { openTab(d); setPickerOpen(false); }} data-testid={`picker-device-${d.id}`}
-                     className="px-3 py-2 hover:bg-slate-800 cursor-pointer border-b border-line last:border-b-0">
+            <div className="absolute top-full mt-1 right-0 z-40 w-72 max-w-[calc(100vw-16px)] bg-surface border border-line rounded-md shadow-xl max-h-[min(20rem,60dvh)] overflow-y-auto" data-testid="tab-picker">
+              <div className="sticky top-0 bg-surface p-2 border-b border-line">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input value={pq} onChange={e => setPq(e.target.value)} placeholder="buscar nome, IP ou tag…" data-testid="tab-picker-search"
+                         className="w-full h-9 pl-8 pr-2 rounded-md bg-sunken border border-line text-sm text-slate-100 focus:outline-none focus:border-brand" />
+                </div>
+              </div>
+              {pickList.length === 0 && <div className="p-4 text-sm text-slate-500 font-mono">{devices.length ? "Nada com essa busca" : "Sem equipamentos"}</div>}
+              {pickList.map(d => (
+                <div key={d.id} onClick={() => { openTab(d); setPickerOpen(false); setPq(""); }} data-testid={`picker-device-${d.id}`}
+                     className="px-3 py-2.5 md:py-2 hover:bg-slate-800 cursor-pointer border-b border-line last:border-b-0">
                   <div className="text-sm text-slate-100 flex items-center gap-2">
                     {d.status === "online" ? <Wifi className="w-3 h-3 text-emerald-400" /> : <WifiOff className="w-3 h-3 text-slate-600" />}
                     {d.name}
@@ -513,10 +581,11 @@ export function TerminalWorkspace({ visible }) {
         <button className={`${iconBtn} hidden md:flex`} onClick={toggleFs} data-testid="fullscreen-btn" title={isFs ? "Sair da tela cheia" : "Tela cheia"}>
           {isFs ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
         </button>
-        <button className={`${iconBtn} hidden md:flex ${focus ? "border-brand/60 text-brand-soft" : ""}`} data-testid="focus-mode-btn"
+        <button className={`${iconBtn} h-8 md:h-7 ${focus ? "border-brand/60 text-brand-soft" : ""}`} data-testid="focus-mode-btn"
                 onClick={() => setTermPrefs({ focusMode: !focus })}
-                title={focus ? "Mostrar menus" : "Modo foco: esconder o menu lateral e o cabeçalho"}>
-          {focus ? <><PanelLeftOpen className="w-3.5 h-3.5" /> Menus</> : <><PanelLeftClose className="w-3.5 h-3.5" /> Foco</>}
+                title={focus ? "Mostrar menus" : "Modo foco: esconder o menu lateral e o cabeçalho"} aria-label={focus ? "Mostrar menus" : "Modo foco"}>
+          {focus ? <><PanelLeftOpen className="w-3.5 h-3.5" /><span className="hidden md:inline"> Menus</span></>
+                 : <><PanelLeftClose className="w-3.5 h-3.5" /><span className="hidden md:inline"> Foco</span></>}
         </button>
       </div>
 
@@ -543,8 +612,11 @@ export function TerminalWorkspace({ visible }) {
                     className={`shrink-0 h-9 min-w-[2.4rem] px-2 rounded border text-[13px] font-mono active:bg-brand/30 ${l.startsWith("^") ? "border-amber-600/40 text-amber-200 bg-amber-500/5" : "border-line text-slate-200 bg-surface"}`}>{l}</button>
           ))}
           <button onPointerDown={(e) => { e.preventDefault(); active && requestPaste(active); }} className="shrink-0 h-9 px-2 rounded border border-line bg-surface text-slate-200" title="Colar"><ClipboardPaste className="w-4 h-4" /></button>
-          <button onPointerDown={(e) => { e.preventDefault(); bumpFont(-1); }} className="shrink-0 h-9 px-2 rounded border border-line bg-surface text-slate-200" title="Fonte menor"><ZoomOut className="w-4 h-4" /></button>
-          <button onPointerDown={(e) => { e.preventDefault(); bumpFont(1); }} className="shrink-0 h-9 px-2 rounded border border-line bg-surface text-slate-200" title="Fonte maior"><ZoomIn className="w-4 h-4" /></button>
+          <button onPointerDown={(e) => { e.preventDefault(); zoomMobile(-1); }} className="shrink-0 h-9 px-2 rounded border border-line bg-surface text-slate-200" title="Fonte menor" data-testid="mobile-font-dec"><ZoomOut className="w-4 h-4" /></button>
+          <button onPointerDown={(e) => { e.preventDefault(); zoomMobile(1); }} className="shrink-0 h-9 px-2 rounded border border-line bg-surface text-slate-200" title="Fonte maior" data-testid="mobile-font-inc"><ZoomIn className="w-4 h-4" /></button>
+          <button onPointerDown={(e) => { e.preventDefault(); setTermPrefs({ mobileFont: 0 }); }} data-testid="mobile-font-auto"
+                  className={`shrink-0 h-9 px-2 rounded border text-[12px] font-mono flex items-center gap-1 ${termPrefs.mobileFont ? "border-line bg-surface text-slate-200" : "border-brand/60 bg-brand/10 text-brand-soft"}`}
+                  title={`Ajustar a fonte para caberem ${MOBILE_COLS} colunas na tela`}><Minimize2 className="w-4 h-4" /> {MOBILE_COLS}</button>
         </div>
       )}
       {tabs.length > 0 && !focus && (

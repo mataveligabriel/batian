@@ -976,3 +976,12 @@ próprio (ícone de paleta no terminal).
 Para desenvolvedores: as cores são variáveis CSS em `src/index.css` (`--c-*`) e `src/theme-palette.css`
 (`--tw-*`, gerado a partir da paleta do Tailwind); o `tailwind.config.js` aponta todas as classes de cor para elas.
 Texto branco sobre botão colorido usa `text-onbrand` (sempre branco); `text-white`/`bg-white/5` seguem o tema.
+
+## 41. Terminal no celular
+
+- Com o celular em pé, a fonte se ajusta sozinha para caberem 80 colunas (com menos, o VRP/Junos quebram as
+  tabelas, como a descrição do `display interface brief` em pedaços de 3 letras). Pinça com dois dedos ou as lupas
+  da barra de teclas mudam a fonte; o botão **80** volta ao ajuste automático. Deitado, vale a fonte normal.
+- As abas ficam abaixo do relógio/notch do iPhone (antes, no modo foco, ficavam embaixo da barra de status e não
+  davam para tocar), são compactas e roláveis, e a lista de **+** (nova aba) tem busca por nome, IP ou tag.
+- O botão de modo foco aparece também no celular (antes não havia como sair dele por lá).
