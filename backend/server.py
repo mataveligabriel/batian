@@ -52,6 +52,7 @@ import security
 import webproxy
 import cloudsync
 import dbbackup
+import webdomain
 import lookingglass
 import rpki
 import vendorscan
@@ -4250,6 +4251,52 @@ async def system_db_settings(body: DbSettingsIn, _: dict = Depends(require_admin
         raise HTTPException(status_code=400, detail="Defina a senha dos backups automáticos")
     await db.config.update_one({"key": "dbbackup"}, {"$set": data}, upsert=True)
     return await _db_settings()
+
+
+# ---------- Configurações → Domínio ----------
+class DomainsIn(BaseModel):
+    domains: List[str] = []
+
+
+def _domain_state() -> dict:
+    return {"domains": webdomain.read_domains(), "caddy": webdomain.caddy_status(),
+            "env_domain": os.environ.get("BASTION_DOMAIN", ""), "public_url": os.environ.get("PUBLIC_URL", ""),
+            "https_host": os.environ.get("BASTION_HTTPS_HOST", "")}
+
+
+@api.get("/system/domain")
+async def system_domain(_: dict = Depends(require_admin)):
+    return {**_domain_state(), "server_ip": await webdomain.public_ip()}
+
+
+@api.put("/system/domain")
+async def system_domain_put(body: DomainsIn, user: dict = Depends(require_admin)):
+    try:
+        doms = webdomain.write_domains(body.domains)
+    except webdomain.DomainError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    logger.info(f"domínios do painel: {doms} (por {user.get('email')})")
+    return {**_domain_state(), "server_ip": await webdomain.public_ip()}
+
+
+class DomainCheckIn(BaseModel):
+    domain: str
+
+
+@api.post("/system/domain/check")
+async def system_domain_check(body: DomainCheckIn, _: dict = Depends(require_admin)):
+    try:
+        return await webdomain.check(body.domain)
+    except webdomain.DomainError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.get("/system/domain-probe/{nonce}")
+async def system_domain_probe(nonce: str):
+    """Sem login: o teste do domínio pede esta URL pelo próprio domínio para saber se chega neste BastiON."""
+    if not webdomain.probe_ok(nonce):
+        raise HTTPException(status_code=404, detail="not found")
+    return PlainTextResponse(nonce)
 
 
 @api.get("/cloud/status")

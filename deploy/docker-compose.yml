@@ -122,6 +122,8 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+      # domínios cadastrados em Configurações → Domínio (o backend grava em /data/web; o Caddy recarrega sozinho)
+      - bastion_data:/bastion
     depends_on:
       - backend
 

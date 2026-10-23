@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
   Palette, Database, BellRing, KeyRound, Download, Upload, Trash2, Loader2, RotateCcw, ShieldAlert, CheckCircle2,
-  XCircle, HardDrive, Clock, CloudUpload, ArchiveRestore, Info,
+  XCircle, HardDrive, Clock, CloudUpload, ArchiveRestore, Info, Globe, Plus, RefreshCw, Copy, CircleDashed,
 } from "lucide-react";
 import { AppearanceFields, useAppearanceEditor } from "@/components/AppearanceDialog";
 import { DEFAULT_THEME } from "@/lib/theme";
@@ -17,6 +17,7 @@ import SshKey from "@/pages/SshKey";
 
 const TABS = [
   { id: "aparencia", label: "Aparência", icon: Palette },
+  { id: "dominio", label: "Domínio", icon: Globe },
   { id: "banco", label: "Banco de dados", icon: Database },
   { id: "automacao", label: "Automação e alertas", icon: BellRing },
   { id: "chave", label: "Chave SSH global", icon: KeyRound },
@@ -334,6 +335,121 @@ function DatabaseTab() {
   );
 }
 
+function Step({ ok, label, detail }) {
+  const Icon = ok === true ? CheckCircle2 : ok === false ? XCircle : CircleDashed;
+  const cls = ok === true ? "text-emerald-400" : ok === false ? "text-red-400" : "text-slate-500";
+  return (
+    <div className="flex items-start gap-2 text-sm">
+      <Icon className={`w-4 h-4 mt-0.5 shrink-0 ${cls}`} />
+      <div><div className="text-slate-200">{label}</div>{detail && <div className="text-xs text-slate-500">{detail}</div>}</div>
+    </div>
+  );
+}
+
+function DomainCheck({ domain, onRemove }) {
+  const [r, setR] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const run = useCallback(async () => {
+    setBusy(true);
+    try { setR((await api.post("/system/domain/check", { domain })).data); } catch (e) { toast.error(formatApiError(e)); }
+    setBusy(false);
+  }, [domain]);
+  useEffect(() => { run(); }, [run]);
+  const all = r?.dns_ok && r?.https_ok;
+  return (
+    <div className="rounded-md border border-line p-3" data-testid={`dom-check-${domain}`}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <a href={`https://${domain}`} target="_blank" rel="noreferrer" className="font-mono text-slate-100 hover:text-brand-soft">{domain}</a>
+        {r && <span className={`text-[11px] px-1.5 py-0.5 rounded border ${all ? "text-emerald-300 border-emerald-500/40" : "text-amber-300 border-amber-500/40"}`}>{all ? "funcionando" : "pendente"}</span>}
+        <Button size="sm" variant="ghost" onClick={run} disabled={busy} className="ml-auto h-7 text-xs text-slate-300" data-testid={`dom-recheck-${domain}`}>
+          <RefreshCw className={`w-3.5 h-3.5 mr-1 ${busy ? "animate-spin" : ""}`} /> Verificar
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onRemove} className="h-7 text-red-400 hover:bg-red-500/10" title="Remover" data-testid={`dom-del-${domain}`}><Trash2 className="w-4 h-4" /></Button>
+      </div>
+      {r && (
+        <div className="grid gap-1.5 mt-2">
+          <Step ok={r.dns_ok} label="DNS aponta para este servidor"
+                detail={r.a.length ? `registro A: ${r.a.join(", ")}${r.server_ip ? ` · este servidor: ${r.server_ip}` : ""}` : "sem registro A ainda"} />
+          <Step ok={r.dns_ok ? r.http_ok : null} label="Porta 80 aberta" detail="usada pelo Let's Encrypt para emitir o certificado" />
+          <Step ok={r.dns_ok ? r.cert_ok : null} label="Certificado HTTPS válido" />
+          <Step ok={r.dns_ok ? r.https_ok : null} label={`https://${domain} abre este BastiON`} />
+          {r.error && <div className="text-xs text-amber-300 mt-1">{r.error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DomainTab() {
+  const [st, setSt] = useState(null);
+  const [list, setList] = useState([]);
+  const [add, setAdd] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => api.get("/system/domain").then(r => { setSt(r.data); setList(r.data.domains); }).catch(e => toast.error(formatApiError(e))), []);
+  useEffect(() => { load(); }, [load]);
+  const save = async (next) => {
+    setBusy(true);
+    try { const { data } = await api.put("/system/domain", { domains: next }); setSt(data); setList(data.domains); toast.success("Domínios salvos — o HTTPS é configurado em instantes"); }
+    catch (e) { toast.error(formatApiError(e)); }
+    setBusy(false);
+  };
+  const addOne = () => {
+    const d = add.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (!d) return;
+    if (list.includes(d)) return toast.error("Esse domínio já está na lista");
+    setAdd(""); save([...list, d]);
+  };
+  const copy = (t) => { navigator.clipboard?.writeText(t); toast.success("Copiado"); };
+  if (!st) return <div className="text-sm text-slate-500 font-mono">Carregando…</div>;
+  const ip = st.server_ip || "IP_DO_SERVIDOR";
+  const root = list[0] || "seudominio.com.br";
+  return (
+    <div className="space-y-4" data-testid="settings-domain">
+      <Section icon={Globe} title="Domínios do BastiON" testid="dom-card"
+               desc="O BastiON passa a abrir também nestes endereços, com HTTPS automático (Let's Encrypt). O endereço atual continua funcionando.">
+        <div className="flex gap-2 max-w-xl">
+          <Input value={add} onChange={e => setAdd(e.target.value)} onKeyDown={e => e.key === "Enter" && addOne()} placeholder="ex.: bastion.net.br"
+                 className="bg-sunken border-line font-mono h-9" data-testid="dom-add-input" />
+          <Button onClick={addOne} disabled={busy || !add.trim()} className="bg-brand hover:bg-brand-strong text-onbrand shrink-0" data-testid="dom-add">
+            <Plus className="w-4 h-4 mr-1" /> Adicionar
+          </Button>
+        </div>
+        <div className="text-[11px] text-slate-500 mt-1.5">Endereço configurado na instalação: <span className="font-mono text-slate-400">{st.env_domain || "—"}</span>
+          {st.caddy?.state === "erro" && <span className="text-red-400"> · Caddy não aplicou: {st.caddy.message}</span>}
+          {st.caddy?.state === "ok" && st.caddy?.at && <span> · servidor web atualizado em {fmtDate(st.caddy.at)}</span>}
+        </div>
+        <div className="space-y-2 mt-4">
+          {list.length === 0 && <div className="text-sm text-slate-500">Nenhum domínio próprio ainda.</div>}
+          {list.map(d => (
+            <DomainCheck key={d} domain={d} onRemove={() => window.confirm(`Tirar ${d} do BastiON?`) && save(list.filter(x => x !== d))} />
+          ))}
+        </div>
+      </Section>
+
+      <Section icon={Info} title="Como apontar o domínio (HostGator e outros)" testid="dom-help">
+        <ol className="list-decimal pl-5 space-y-2 text-sm text-slate-300">
+          <li>No painel do registro do domínio (HostGator: <span className="text-slate-100">Portal do Cliente → Domínios → Gerenciar → Zona DNS</span>), mantenha os nameservers padrão dele.</li>
+          <li>Crie (ou edite) estes registros:
+            <div className="overflow-x-auto mt-2">
+              <table className="text-xs font-mono border border-line rounded" data-testid="dom-records">
+                <thead className="text-slate-500"><tr><th className="text-left px-3 py-1.5">Tipo</th><th className="text-left px-3">Nome</th><th className="text-left px-3">Valor</th><th className="text-left px-3">TTL</th><th /></tr></thead>
+                <tbody className="divide-y divide-line text-slate-200">
+                  <tr><td className="px-3 py-1.5">A</td><td className="px-3">@ <span className="text-slate-500">({root})</span></td><td className="px-3">{ip}</td><td className="px-3">3600</td>
+                    <td className="px-2"><button onClick={() => copy(ip)} className="text-slate-500 hover:text-slate-200" title="Copiar IP"><Copy className="w-3.5 h-3.5" /></button></td></tr>
+                  <tr><td className="px-3 py-1.5">CNAME</td><td className="px-3">www</td><td className="px-3">{root}</td><td className="px-3">3600</td><td /></tr>
+                </tbody>
+              </table>
+            </div>
+            <span className="block text-xs text-slate-500 mt-1">Se já existir registro A em @ ou www apontando para a hospedagem da HostGator, troque o valor (não crie outro). Para usar um subdomínio, ex. noc.{root}, crie só um registro A com nome <span className="font-mono">noc</span>.</span>
+          </li>
+          <li>Libere as portas <span className="font-mono">80</span> e <span className="font-mono">443</span> (TCP) no firewall do servidor.</li>
+          <li>Adicione o domínio acima (e o <span className="font-mono">www.</span>, se criou o CNAME). Quando o DNS propagar (de minutos a algumas horas), o certificado sai sozinho e os itens ficam verdes.</li>
+        </ol>
+      </Section>
+    </div>
+  );
+}
+
 export default function Settings() {
   const [sp, setSp] = useSearchParams();
   const tab = TABS.some(t => t.id === sp.get("tab")) ? sp.get("tab") : "aparencia";
@@ -352,6 +468,7 @@ export default function Settings() {
         </nav>
         <div className="flex-1 min-w-0">
           {tab === "aparencia" && <AppearanceTab />}
+          {tab === "dominio" && <DomainTab />}
           {tab === "banco" && <DatabaseTab />}
           {tab === "automacao" && <Automation embedded />}
           {tab === "chave" && <SshKey embedded />}

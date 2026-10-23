@@ -1023,3 +1023,25 @@ novo o instalador do agente) e o script de preparação do servidor (Agentes Rem
 
 Os scripts `deploy/backup.sh` e `deploy/restore.sh` (pela linha de comando, com `.env` e certificados) continuam
 valendo.
+
+## 43. Domínio próprio pelo painel (Configurações → Domínio)
+
+Cadastre o domínio (ex.: `bastion.net.br` e `www.bastion.net.br`) em **Configurações → Domínio**. O backend grava a
+lista em `/data/web/domains.txt` (volume `bastion_data`, montado também no container do Caddy em `/bastion`); o
+Caddy percebe a mudança em até 5 s, gera a configuração com o site do BastiON nesses domínios, valida e recarrega
+sem derrubar conexões. O certificado do Let's Encrypt sai sozinho. O endereço da instalação (`BASTION_DOMAIN`)
+continua funcionando.
+
+Antes, no registro do domínio (HostGator: Portal do Cliente → Domínios → Gerenciar → Zona DNS), mantendo os
+nameservers padrão:
+
+| Tipo  | Nome | Valor               |
+|-------|------|---------------------|
+| A     | @    | IP público do servidor |
+| CNAME | www  | o domínio (ex.: bastion.net.br) |
+
+e libere as portas TCP 80 e 443 no firewall. A tela mostra, para cada domínio: DNS apontando para o servidor,
+porta 80, certificado e se o `https://domínio` abre este BastiON. Se a configuração gerada não validar, o Caddy
+mantém a anterior e a tela mostra o motivo.
+
+A primeira vez exige `update.sh` (o compose ganhou o volume no container do Caddy).
