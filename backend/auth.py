@@ -108,7 +108,7 @@ MODULES = [
     ("batch", "Execução em Lote", "rodar comandos e scripts em vários equipamentos"),
     ("lg", "Looking Glass", "ping, traceroute e rota BGP a partir dos roteadores liberados"),
     ("rpki", "RPKI", "ROAs e certificação dos ASNs gerenciados (Krill)"),
-    ("oltgen", "Scripts de OLT", "gerar o script de ativação de OLT ZTE (TITAN)"),
+    ("oltgen", "Scripts de OLT", "gerar e aplicar scripts de OLT ZTE e Huawei (ativação, ONUs, limpeza)"),
     ("agents", "Agentes Remotos", "jump hosts, túneis e VPNs"),
     ("sshkey", "Chave SSH Global", "chave e credencial padrão"),
     ("sessions", "Histórico", "sessões e comandos executados"),

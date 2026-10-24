@@ -9,9 +9,9 @@ from typing import Dict, Optional, List
 import asyncssh
 
 # device types that usually only speak old kex/ciphers
-LEGACY_TYPES = {"mikrotik", "cisco", "huawei", "juniper", "ubiquiti", "datacom", "zte", "other"}
+LEGACY_TYPES = {"mikrotik", "cisco", "huawei", "juniper", "ubiquiti", "datacom", "zte", "fiberhome", "other"}
 # device types without a proper "exec" channel -> run commands inside an interactive shell
-SHELL_EXEC_TYPES = {"cisco", "huawei", "juniper", "datacom", "zte", "mikrotik"}
+SHELL_EXEC_TYPES = {"cisco", "huawei", "juniper", "datacom", "zte", "mikrotik", "fiberhome"}
 # commands sent before batch commands in shell mode to disable pagination
 PAGINATION_OFF = {
     "cisco": "terminal length 0",
@@ -30,14 +30,22 @@ LEGACY_ALGS = dict(
 
 # Paginação que sobrou ligada ("--More--", "---- More ----", "---(more 42%)---", "Press any key…"):
 # o leitor manda espaço sozinho até a saída acabar, em qualquer fabricante.
-PAGER_RE = re.compile(rb"(?:-+\s*\(?more(?:\s+\d+%)?\)?\s*-+|<-+\s*more\s*-+>|\(more\)|press any key to continue|"
+PAGER_RE = re.compile(rb"(?:-+\s*\(?more(?:\s+\d+%)?\)?\s*-+|-+\s*more\s*\([^)\r\n]{0,40}\)\s*-+|<-+\s*more\s*-+>|\(more\)|press any key to continue|"
                       rb"--more--\s*or\s*\(q\)uit)[^\r\n]{0,40}$", re.I)
 _E = r"\x1b\[[0-9;]*[A-Za-z]"
 # marca de paginação + o "apaga" que vem depois dela (backspaces/espaços/backspaces, \r espaços \r ou ESC[nD espaços ESC[nD).
 # Não come os espaços seguintes: são a indentação da próxima linha da configuração.
-_PAGER_TXT = re.compile(r"[ \t]*(?:-+\s*\(?more(?:\s+\d+%)?\)?\s*-+|<-+\s*more\s*-+>|\(more\)|press any key to continue)"
+_PAGER_TXT = re.compile(r"[ \t]*(?:-+\s*\(?more(?:\s+\d+%)?\)?\s*-+|-+\s*more\s*\([^)\r\n]{0,40}\)\s*-+|<-+\s*more\s*-+>|\(more\)|press any key to continue)"
                         r"[^\n\x08\r\x1b]{0,40}(?:\x08+ *\x08+|\x08+|\r[ \t]*\r|\r(?!\n)|(?:" + _E + r" *)+" + _E + r"|" + _E + r")?", re.I)
 MAX_PAGES = 20000
+
+
+# OLT Huawei (SmartAX) pergunta os parâmetros opcionais: "{ <cr>|ontid<U><0,127> }:" — Enter aceita o padrão.
+HW_OPT_RE = re.compile(rb"\{\s*<cr>[^{}\r\n]{0,200}\}\s*:\s*$", re.I)
+
+
+def at_hw_opt(buf: bytes) -> bool:
+    return bool(HW_OPT_RE.search(re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", buf[-260:]).rstrip(b" \t\x00")))
 
 
 def at_pager(buf: bytes) -> bool:
@@ -110,6 +118,12 @@ async def read_reply(read, send, idle: float, hard: float, prompt: Optional[str]
                 paging = True
                 mark = len(buf)
                 send(b" ")
+                deadline = max(deadline, time.monotonic() + PAGE_WAIT)
+            elif pages < MAX_PAGES and at_hw_opt(buf[mark:]):
+                pages += 1
+                paging = True
+                mark = len(buf)
+                send(b"\r")
                 deadline = max(deadline, time.monotonic() + PAGE_WAIT)
         except asyncio.TimeoutError:
             if buf:

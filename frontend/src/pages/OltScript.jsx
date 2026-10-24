@@ -146,7 +146,7 @@ function ApplyBar({ apply, ready }) {
       <div className="flex flex-wrap items-center gap-2">
         <select value={dev} onChange={e => { setDev(e.target.value); setConfirm(false); }} data-testid="oltgen-apply-device"
           className="h-8 min-w-0 flex-1 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100">
-          <option value="">{apply.devices.length ? "Enviar para qual OLT?" : "Nenhuma OLT ZTE cadastrada"}</option>
+          <option value="">{apply.devices.length ? "Enviar para qual OLT?" : `Nenhuma OLT ${{ huawei: "Huawei", fiberhome: "FiberHome" }[apply.vendor] || "ZTE"} cadastrada`}</option>
           <TagOptions devices={apply.devices} label={d => `${d.name} · ${d.host}`} />
         </select>
         {!confirm ? (
@@ -162,13 +162,13 @@ function ApplyBar({ apply, ready }) {
       </div>
       {res && (res.ok ? (
         <div className="text-xs text-emerald-300 flex items-center gap-1.5" data-testid="oltgen-apply-ok">
-          <CheckCircle2 className="w-4 h-4" />{res.steps.length} comandos aplicados em {res.device}{res.saved ? " e configuração gravada (write)" : ""}.
+          <CheckCircle2 className="w-4 h-4" />{res.steps.length} comandos aplicados em {res.device}{res.saved ? ` e configuração gravada (${apply.vendor === "huawei" || apply.vendor === "fiberhome" ? "save" : "write"})` : ""}.
           {apply.kind === "onu-add" && <span className="text-slate-400">Para outra VLAN nessa ONU, clique em Ler ONU na OLT de novo.</span>}
         </div>
       ) : (
         <div className="rounded-md border border-red-800/60 bg-red-950/30 px-3 py-2 text-xs text-red-200 space-y-1" data-testid="oltgen-apply-fail">
           <div><XCircle className="w-3.5 h-3.5 inline mr-1" />A OLT recusou <span className="font-mono">{res.failed?.command}</span> — parei aí e <b>não gravei</b>.
-            {res.steps.length > 1 ? ` As ${res.steps.length - 1} linhas anteriores ficaram na configuração em uso (sem write).` : ""}</div>
+            {res.steps.length > 1 ? ` As ${res.steps.length - 1} linhas anteriores ficaram na configuração em uso (sem gravar).` : ""}</div>
           <pre className="whitespace-pre-wrap font-mono text-[11px] text-red-100/80 max-h-32 overflow-auto m-0">{res.failed?.output}</pre>
         </div>
       ))}
@@ -205,7 +205,7 @@ function ScriptCard({ out, err, busy, apply }) {
             </div>
           )}
           <pre className={`flex-1 overflow-auto m-0 px-4 py-3 text-[12.5px] leading-relaxed font-mono text-slate-200 whitespace-pre ${err ? "opacity-40" : ""}`} data-testid="oltgen-script">
-            {(out?.script || "").split("\n").map((l, i) => <div key={i} className={l.startsWith("!") ? "text-slate-500" : ""}>{l || " "}</div>)}
+            {(out?.script || "").split("\n").map((l, i) => <div key={i} className={l.startsWith("!") || l.startsWith("# ") ? "text-slate-500" : ""}>{l || " "}</div>)}
           </pre>
           <div className="px-4 py-2 border-t border-line text-[11px] text-slate-500">Revise os comandos e a versão do firmware antes de aplicar na OLT.</div>
         </Card>
@@ -730,7 +730,7 @@ function OnuRemove({ meta, devices }) {
     if (!mac.trim()) return toast.error("Informe o serial da ONU");
     setMacBusy(true); setMacRes(null);
     try {
-      const { data } = await api.post("/oltgen/find-onu", { query: mac, device_id: macDev });
+      const { data } = await api.post("/oltgen/find-onu", { query: mac, device_id: macDev, vendor: "zte" });
       setMacRes(data);
       if (!data.found) toast.info(`${data.kind === "sn" ? "Serial" : "MAC"} ${data.query} não encontrado${data.searched?.length ? ` (${data.searched.join(", ")})` : ""}`);
     } catch (e) { toast.error(formatApiError(e)); } finally { setMacBusy(false); }
@@ -889,12 +889,14 @@ function JobBar({ job, what }) {
 
 const fmtDay = (d) => (d === null || d === undefined ? "—" : d >= 1 ? `${Math.floor(d)} dia(s)` : `${Math.round(d * 24)} h`);
 
+const ponLabel = (o) => (o.frame !== undefined && o.frame !== null ? `${o.frame}/${o.slot}/${o.pon} ONT ${o.onu}` : `1/${o.slot}/${o.pon}:${o.onu}`);
+
 function RemovedList({ deviceId, refresh }) {
   const [rows, setRows] = useState(null);
   useEffect(() => { api.get("/oltgen/removed", { params: { device_id: deviceId || "" } }).then(r => setRows(r.data)).catch(() => setRows([])); }, [deviceId, refresh]);
   if (!rows || !rows.length) return null;
   const dl = () => {
-    const txt = rows.map(r => `! ${r.at} · ${r.device_name} · ${r.slot}/${r.pon}:${r.onu} · ${r.sn || ""} · ${r.name || ""} · off ${fmtDay(r.days)} · removida por ${r.by}\n${r.config || ""}\n`).join("\n");
+    const txt = rows.map(r => `! ${r.at} · ${r.device_name} · ${ponLabel(r)} · ${r.sn || ""} · ${r.name || ""} · off ${fmtDay(r.days)} · removida por ${r.by}\n${r.config || ""}\n`).join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([txt], { type: "text/plain" }));
     a.download = `onus-removidas-${new Date().toISOString().slice(0, 10)}.txt`; a.click();
@@ -908,15 +910,17 @@ function RemovedList({ deviceId, refresh }) {
       <div className="max-h-48 overflow-y-auto text-xs font-mono divide-y divide-line">
         {rows.slice(0, 200).map(r => (
           <div key={r.id} className="py-1 flex gap-3 text-slate-300"><span className="text-slate-500 w-32 shrink-0">{new Date(r.at).toLocaleString("pt-BR")}</span>
-            <span className="w-24 shrink-0">{r.slot}/{r.pon}:{r.onu}</span><span className="w-32 shrink-0">{r.sn}</span><span className="truncate">{r.name}</span></div>
+            <span className="w-28 shrink-0">{ponLabel(r)}</span><span className="w-32 shrink-0">{r.sn}</span><span className="truncate">{r.name}</span></div>
         ))}
       </div>
     </div>
   );
 }
 
-function OnuClean({ devices }) {
-  const saved = (() => { try { return JSON.parse(localStorage.getItem(CLEAN_KEY) || "{}"); } catch { return {}; } })();
+function OnuClean({ devices, vendor = "zte" }) {
+  const hw = vendor === "huawei";
+  const ckey = CLEAN_KEY + (hw ? "_hw" : "");
+  const saved = (() => { try { return JSON.parse(localStorage.getItem(ckey) || "{}"); } catch { return {}; } })();
   const [devId, setDevId] = useState(saved.devId || "");
   const [days, setDays] = useState(saved.days || 15);
   const [pons, setPons] = useState("");
@@ -926,7 +930,7 @@ function OnuClean({ devices }) {
   const [onlyEl, setOnlyEl] = useState(true);
   const [confirmTxt, setConfirmTxt] = useState("");
   const [refresh, setRefresh] = useState(0);
-  useEffect(() => { try { localStorage.setItem(CLEAN_KEY, JSON.stringify({ devId, days })); } catch { /* ok */ } }, [devId, days]);
+  useEffect(() => { try { localStorage.setItem(ckey, JSON.stringify({ devId, days })); } catch { /* ok */ } }, [devId, days]); // eslint-disable-line react-hooks/exhaustive-deps
   const k = (o) => `${o.slot}/${o.pon}:${o.onu}`;
   const result = scan?.state === "done" ? scan : null;
   useEffect(() => { if (result) setSel(new Set(result.onus.filter(o => o.eligible).map(k))); }, [result?.id, result?.state]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -939,18 +943,19 @@ function OnuClean({ devices }) {
   const start = async () => {
     if (!devId) return toast.error("Escolha a OLT");
     const list = pons.split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
-    if (list.some(x => !/^\d{1,2}\/\d{1,2}$/.test(x))) return toast.error("PONs no formato slot/porta, ex.: 2/1, 2/2");
+    if (hw ? list.some(x => !/^\d{1,2}\/\d{1,2}\/\d{1,3}$/.test(x)) : list.some(x => !/^\d{1,2}\/\d{1,2}$/.test(x)))
+      return toast.error(hw ? "PONs no formato F/S/P, ex.: 0/1/0, 0/1/1" : "PONs no formato slot/porta, ex.: 2/1, 2/2");
     try { followRm(null); followScan((await api.post("/oltgen/offline-scan", { device_id: devId, days: Number(days) || 15, pons: list })).data); }
     catch (e) { toast.error(formatApiError(e)); }
   };
   const remove = async () => {
-    const items = result.onus.filter(o => sel.has(k(o))).map(o => ({ slot: o.slot, pon: o.pon, onu: o.onu }));
+    const items = result.onus.filter(o => sel.has(k(o))).map(o => ({ slot: o.slot, pon: o.pon, onu: o.onu, ...(o.frame !== undefined ? { frame: o.frame } : {}) }));
     try { followRm((await api.post("/oltgen/offline-remove", { scan_id: result.id, items })).data); }
     catch (e) { toast.error(formatApiError(e)); }
   };
   const csv = () => {
     const head = "pon;onu;serial;nome;tipo;estado;caiu_em;dias_off;causa\n";
-    const body = result.onus.map(o => [`1/${o.slot}/${o.pon}`, o.onu, o.sn, o.name, o.type, o.phase, o.last_down || "", o.days ?? "", o.cause].join(";")).join("\n");
+    const body = result.onus.map(o => [o.frame !== undefined ? `${o.frame}/${o.slot}/${o.pon}` : `1/${o.slot}/${o.pon}`, o.onu, o.sn, o.name, o.type, o.phase, o.last_down || "", o.days ?? "", o.cause].join(";")).join("\n");
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([head + body], { type: "text/csv" }));
     a.download = `onus-off-${result.device}.csv`; a.click();
   };
@@ -972,7 +977,7 @@ function OnuClean({ devices }) {
             </select>
           </Field>
           <Field label="Off há mais de (dias)"><Input type="number" min={1} value={days} onChange={e => setDays(e.target.value)} className={inp} data-testid="clean-days" /></Field>
-          <Field label="Só estas PONs (opcional)"><Input value={pons} onChange={e => setPons(e.target.value)} placeholder="2/1, 2/2" className={inp} data-testid="clean-pons" /></Field>
+          <Field label="Só estas PONs (opcional)"><Input value={pons} onChange={e => setPons(e.target.value)} placeholder={hw ? "0/1/0, 0/1/1" : "2/1, 2/2"} className={inp} data-testid="clean-pons" /></Field>
           <Button onClick={start} disabled={running} className="bg-brand hover:bg-brand-strong text-onbrand h-9" data-testid="clean-scan">
             {scan?.state === "running" ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <ScanSearch className="w-4 h-4 mr-1.5" />} Procurar ONUs off
           </Button>
@@ -1012,7 +1017,7 @@ function OnuClean({ devices }) {
                   {shown.map(o => (
                     <tr key={k(o)} className={sel.has(k(o)) ? "bg-red-500/5" : ""} data-testid={`clean-row-${k(o)}`}>
                       <td className="px-2 py-1.5"><input type="checkbox" className="accent-brand" disabled={!o.off} checked={sel.has(k(o))} onChange={() => flip(o)} /></td>
-                      <td className="px-2 font-mono text-slate-200 whitespace-nowrap">1/{o.slot}/{o.pon}:{o.onu}</td>
+                      <td className="px-2 font-mono text-slate-200 whitespace-nowrap">{ponLabel(o)}</td>
                       <td className="px-2 font-mono text-xs text-slate-300">{o.sn || "—"}</td>
                       <td className="px-2 text-slate-300 truncate max-w-[14rem]" title={o.description}>{o.name || "—"}</td>
                       <td className="px-2 text-xs"><span className={o.off ? "text-red-300" : "text-amber-300"}>{o.phase}</span>{o.cause && <span className="text-slate-500"> · {o.cause}</span>}</td>
@@ -1032,7 +1037,7 @@ function OnuClean({ devices }) {
 
           <div className="rounded-md border border-red-500/40 bg-red-500/5 p-3 space-y-2">
             <div className="flex items-start gap-2 text-xs text-red-200"><AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>Remove <b>{nSel}</b> ONU(s) da OLT (<span className="font-mono">no onu</span> e <span className="font-mono">write</span>). Antes, o BastiON confere cada uma de novo: se voltou a ficar online ou o serial mudou, ela é pulada. A configuração de cada ONU removida fica guardada.</span></div>
+              <span>Remove <b>{nSel}</b> ONU(s) da OLT ({hw ? <><span className="font-mono">undo service-port</span>, <span className="font-mono">ont delete</span> e <span className="font-mono">save</span></> : <><span className="font-mono">no onu</span> e <span className="font-mono">write</span></>}). Antes, o BastiON confere cada uma de novo: se voltou a ficar online ou o serial mudou, ela é pulada. A configuração de cada ONU removida fica guardada.</span></div>
             <div className="flex flex-wrap gap-2 items-center">
               <Input value={confirmTxt} onChange={e => setConfirmTxt(e.target.value)} placeholder="digite REMOVER" className={`${inp} w-44`} data-testid="clean-confirm-txt" />
               <Button onClick={remove} disabled={!nSel || confirmTxt.trim().toUpperCase() !== "REMOVER" || running}
@@ -1044,8 +1049,8 @@ function OnuClean({ devices }) {
             {rm?.state === "done" && (
               <div className="text-sm space-y-1" data-testid="clean-done">
                 <div className={rm.ok ? "text-emerald-300" : "text-red-300"}>{rm.ok ? <CheckCircle2 className="w-4 h-4 inline mr-1" /> : <XCircle className="w-4 h-4 inline mr-1" />}
-                  {rm.removed.length} removida(s){rm.saved ? " e configuração gravada (write)" : ""}{rm.failed ? ` — parou em "${rm.failed.command}"` : ""}</div>
-                {rm.skipped?.length > 0 && <div className="text-xs text-amber-300">Puladas: {rm.skipped.map(x => `1/${x.slot}/${x.pon}:${x.onu} (${x.why})`).join(", ")}</div>}
+                  {rm.removed.length} removida(s){rm.saved ? ` e configuração gravada (${hw ? "save" : "write"})` : ""}{rm.failed ? ` — parou em "${rm.failed.command}"` : ""}</div>
+                {rm.skipped?.length > 0 && <div className="text-xs text-amber-300">Puladas: {rm.skipped.map(x => `${ponLabel(x)} (${x.why})`).join(", ")}</div>}
                 {rm.failed?.output && <pre className="text-[11px] text-slate-400 bg-sunken p-2 rounded max-h-40 overflow-auto whitespace-pre-wrap">{rm.failed.output}</pre>}
               </div>
             )}
@@ -1057,21 +1062,684 @@ function OnuClean({ devices }) {
   );
 }
 
+// ================= OLT Huawei (MA5800 / MA5608T / MA5683T) =================
+const HW_KEY = "bastion_oltgen_hw_form";
+const HW_DEFAULT = {
+  model: "MA5800-X7", hostname: "OLT-HW-01", uplinks: "0/8/0",
+  vlans: { enabled: true, start: "100", count: "16", description: "CLIENTES" },
+  mgmt: { in_enabled: false, in_vlan: "", in_ip: "", in_mask: "30", in_gw: "", out_enabled: false, out_ip: "", out_mask: "24" },
+  speeds: ["100M", "300M", "500M", "1G"], srv_profile: true, ntp: ["", ""],
+  snmp: { enabled: false, community: "", trap_host: "" }, autosave: { enabled: true, time: "03:00" }, comments: true, write: true,
+};
+const hwLoad = (key, def) => { try { const v = JSON.parse(localStorage.getItem(key) || "null"); return v ? { ...def, ...v } : def; } catch { return def; } };
+const hwUps = (txt) => String(txt || "").split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
+
+function useLiveScript(url, body, ready, deps) {
+  const [out, setOut] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const seq = useRef(0);
+  useEffect(() => {
+    if (!ready) { setOut(null); setErr(""); setBusy(false); return undefined; }
+    const n = ++seq.current; setBusy(true);
+    const t = setTimeout(() => {
+      api.post(url, body).then(r => { if (n === seq.current) { setOut(r.data); setErr(""); } })
+        .catch(e => { if (n === seq.current) setErr(formatApiError(e)); })
+        .finally(() => { if (n === seq.current) setBusy(false); });
+    }, 320);
+    return () => clearTimeout(t);
+  }, deps); // eslint-disable-line react-hooks/exhaustive-deps
+  return [out, err, busy];
+}
+
+function DevSelect({ devices, value, onChange, testid, empty = "Nenhuma OLT Huawei cadastrada" }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} data-testid={testid}
+      className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+      <option value="">{devices.length ? "Escolha a OLT…" : empty}</option>
+      <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
+    </select>
+  );
+}
+
+function HwActivation({ devices, models }) {
+  const [f, setF] = useState(() => hwLoad(HW_KEY, HW_DEFAULT));
+  const [devId, setDevId] = useState("");
+  const [boards, setBoards] = useState(null);
+  const [reading, setReading] = useState(false);
+  const body = { ...f, uplinks: hwUps(f.uplinks) };
+  const [out, err, busy] = useLiveScript("/oltgen/hw/generate", body, true, [f]);
+  useEffect(() => { try { localStorage.setItem(HW_KEY, JSON.stringify({ ...f, snmp: { ...f.snmp, community: "" } })); } catch { /* ok */ } }, [f]);
+  const up = (k, patch) => setF(cur => ({ ...cur, [k]: { ...cur[k], ...patch } }));
+  const read = async () => {
+    if (!devId) return toast.error("Escolha a OLT cadastrada");
+    setReading(true);
+    try {
+      const { data } = await api.post("/oltgen/hw/read-board", { device_id: devId });
+      setBoards(data);
+      toast.success(`${data.device}: ${data.pon.length} placa(s) PON`);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setReading(false); }
+  };
+  const speedsText = f.speeds.join(", ");
+  return (
+    <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="hw-activation">
+      <div className="space-y-4 min-w-0">
+        <Card className="bg-surface border-line p-4 space-y-3">
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Field label="Modelo">
+              <select value={f.model} onChange={e => setF({ ...f, model: e.target.value })} data-testid="hw-model"
+                className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+                {(models.length ? models : [{ key: "MA5800-X7" }]).map(m => <option key={m.key} value={m.key}>{m.key}</option>)}
+              </select>
+            </Field>
+            <Field label="Hostname (sysname)"><Input value={f.hostname} onChange={e => setF({ ...f, hostname: e.target.value })} className={inp} data-testid="hw-hostname" /></Field>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex-1 min-w-[200px]"><Field label="Ver as placas de uma OLT cadastrada (display board 0)">
+              <DevSelect devices={devices} value={devId} onChange={setDevId} testid="hw-device" /></Field></div>
+            <Button onClick={read} disabled={reading || !devId} variant="outline" className="border-line bg-transparent h-9" data-testid="hw-read">
+              {reading ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <ScanSearch className="w-4 h-4 mr-1.5" />}Ler placas
+            </Button>
+          </div>
+          {boards && (
+            <div className="text-xs font-mono text-slate-300 flex flex-wrap gap-2" data-testid="hw-boards">
+              {boards.pon.map(b => <span key={b.slot} className="px-2 py-0.5 rounded border border-line">slot {b.slot} · {b.name} · {b.ports} PON</span>)}
+            </div>
+          )}
+          <div className="text-[11px] text-slate-500">No Huawei as placas e portas PON já vêm ativas; o script cuida de VLANs, uplink, gerência, perfis e sistema.</div>
+        </Card>
+
+        <div className={sec}>
+          <Field label="Porta(s) de uplink" hint="F/S/P separadas por vírgula, ex.: 0/8/0, 0/9/0 (placa de controle ou de uplink)">
+            <Input value={f.uplinks} onChange={e => setF({ ...f, uplinks: e.target.value })} className={inp} data-testid="hw-uplinks" />
+          </Field>
+          <Check id="hw-vl" checked={f.vlans.enabled} onChange={v => up("vlans", { enabled: v })} testid="hw-vlans">VLANs de clientes no uplink (vlan … smart / port vlan)</Check>
+          {f.vlans.enabled && (
+            <div className="grid sm:grid-cols-3 gap-3">
+              <Field label="VLAN inicial"><Input value={f.vlans.start} onChange={e => up("vlans", { start: e.target.value })} className={inp} data-testid="hw-vlan-start" /></Field>
+              <Field label="Quantidade"><Input value={f.vlans.count} onChange={e => up("vlans", { count: e.target.value })} className={inp} data-testid="hw-vlan-count" /></Field>
+              <Field label="Descrição"><Input value={f.vlans.description} onChange={e => up("vlans", { description: e.target.value })} className={inp} /></Field>
+            </div>
+          )}
+        </div>
+
+        <div className={sec}>
+          <Check id="hw-in" checked={f.mgmt.in_enabled} onChange={v => up("mgmt", { in_enabled: v })} testid="hw-in">Gerência inband (vlanif pela uplink)</Check>
+          {f.mgmt.in_enabled && (
+            <div className="grid sm:grid-cols-4 gap-3">
+              <Field label="VLAN"><Input value={f.mgmt.in_vlan} onChange={e => up("mgmt", { in_vlan: e.target.value })} placeholder="999" className={inp} data-testid="hw-in-vlan" /></Field>
+              <Field label="IP"><Input value={f.mgmt.in_ip} onChange={e => up("mgmt", { in_ip: e.target.value })} placeholder="198.51.100.2" className={inp} data-testid="hw-in-ip" /></Field>
+              <Field label="Máscara"><Input value={f.mgmt.in_mask} onChange={e => up("mgmt", { in_mask: e.target.value })} className={inp} /></Field>
+              <Field label="Gateway"><Input value={f.mgmt.in_gw} onChange={e => up("mgmt", { in_gw: e.target.value })} placeholder="198.51.100.1" className={inp} /></Field>
+            </div>
+          )}
+          <Check id="hw-out" checked={f.mgmt.out_enabled} onChange={v => up("mgmt", { out_enabled: v })} testid="hw-out">Gerência outband (meth0 da controladora)</Check>
+          {f.mgmt.out_enabled && (
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Field label="IP"><Input value={f.mgmt.out_ip} onChange={e => up("mgmt", { out_ip: e.target.value })} placeholder="192.0.2.10" className={inp} /></Field>
+              <Field label="Máscara"><Input value={f.mgmt.out_mask} onChange={e => up("mgmt", { out_mask: e.target.value })} className={inp} /></Field>
+            </div>
+          )}
+        </div>
+
+        <div className={sec}>
+          <Field label="Planos (dba-profile + ont-lineprofile com ID 10, 11…)" hint="separe por vírgula — ex.: 100M, 300M, 1G; a gem 1 mapeia a VLAN inicial">
+            <Input defaultValue={speedsText} key={speedsText} data-testid="hw-speeds" className={inp}
+              onBlur={e => setF({ ...f, speeds: e.target.value.split(/[,;\s]+/).map(x => x.trim().toUpperCase()).filter(Boolean) })} />
+          </Field>
+          <Check id="hw-srv" checked={f.srv_profile} onChange={v => setF({ ...f, srv_profile: v })}>Service profile genérico (ID 1, portas adaptive)</Check>
+        </div>
+
+        <div className={sec}>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Field label="NTP principal"><Input value={f.ntp[0]} onChange={e => setF({ ...f, ntp: [e.target.value, f.ntp[1]] })} placeholder="192.0.2.123" className={inp} /></Field>
+            <Field label="NTP secundário"><Input value={f.ntp[1]} onChange={e => setF({ ...f, ntp: [f.ntp[0], e.target.value] })} placeholder="opcional" className={inp} /></Field>
+          </div>
+          <Check id="hw-snmp" checked={f.snmp.enabled} onChange={v => up("snmp", { enabled: v })}>SNMP v2c (leitura)</Check>
+          {f.snmp.enabled && (
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Field label="Comunidade"><Input value={f.snmp.community} onChange={e => up("snmp", { community: e.target.value })} className={inp} autoComplete="off" /></Field>
+              <Field label="Destino dos traps"><Input value={f.snmp.trap_host} onChange={e => up("snmp", { trap_host: e.target.value })} placeholder="opcional" className={inp} /></Field>
+            </div>
+          )}
+          <Check id="hw-as" checked={f.autosave.enabled} onChange={v => up("autosave", { enabled: v })}>Autosave diário</Check>
+          {f.autosave.enabled && <Field label="Horário"><Input value={f.autosave.time} onChange={e => up("autosave", { time: e.target.value })} className={`${inp} w-28`} /></Field>}
+          <Check id="hw-cm" checked={f.comments} onChange={v => setF({ ...f, comments: v })}>Comentários no script</Check>
+          <Check id="hw-wr" checked={f.write} onChange={v => setF({ ...f, write: v })}>Gravar no final (save)</Check>
+          <Button size="sm" variant="ghost" onClick={() => setF(HW_DEFAULT)} className="h-7 text-xs text-slate-400"><RotateCcw className="w-3.5 h-3.5 mr-1" />Limpar</Button>
+        </div>
+      </div>
+      <ScriptCard out={out} err={err} busy={busy} />
+    </div>
+  );
+}
+
+const HW_ONU_KEY = "bastion_oltgen_hw_onu";
+const HW_SVC = (vlan = "") => ({ vlan, user_vlan: "", gemport: "1", mode: "bridge", ports: [1], pppoe_user: "", pppoe_password: "" });
+const HW_ONU_DEFAULT = { pon: "0/1/0", onu_id: "0", sn: "", name: "", line_profile: "10", srv_profile: "1", services: [HW_SVC("100")], write: true, comments: true };
+const HW_MODES = [["bridge", "Bridge", "ont port native-vlan: a porta eth entrega a VLAN sem tag (roteador do cliente faz o PPPoE)"],
+  ["pppoe", "PPPoE na ONU", "ont ipconfig … pppoe: a própria ONU disca (perfil de ONU roteada)"],
+  ["none", "Só service-port", "só cria o service-port; a porta/WAN vem do service profile ou do ACS"]];
+
+function HwAuthorize({ devices }) {
+  const [f, setF] = useState(() => {
+    const v = hwLoad(HW_ONU_KEY, HW_ONU_DEFAULT);
+    return { ...v, sn: "", name: "", services: (v.services || []).map(x => ({ ...x, pppoe_user: "", pppoe_password: "" })) };
+  });
+  const [devId, setDevId] = useState("");
+  const [found, setFound] = useState(null);
+  const [searching, setSearching] = useState(false);
+  useEffect(() => {
+    const { sn, name, ...keep } = f;
+    try { localStorage.setItem(HW_ONU_KEY, JSON.stringify({ ...keep, services: f.services.map(x => ({ ...x, pppoe_user: "", pppoe_password: "" })) })); } catch { /* ok */ }
+  }, [f]);
+  const ready = !!(f.sn && f.name);
+  const [out, err, busy] = useLiveScript("/oltgen/hw/onu", f, ready, [f]);
+  const set = (patch) => setF(cur => ({ ...cur, ...patch }));
+  const setSvc = (i, patch) => setF(cur => ({ ...cur, services: cur.services.map((x, j) => (j === i ? { ...x, ...patch } : x)) }));
+  const search = async () => {
+    if (!devId) return toast.error("Escolha a OLT cadastrada");
+    setSearching(true); setFound(null);
+    try {
+      const { data } = await api.post("/oltgen/hw/autofind", { device_id: devId });
+      setFound(data);
+      if (!data.onus.length) toast.info(`${data.device}: nenhuma ONT no autofind`);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setSearching(false); }
+  };
+  return (
+    <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="hw-onu-page">
+      <div className="space-y-4 min-w-0">
+        <Card className="bg-surface border-line p-4 space-y-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex-1 min-w-[200px]"><Field label="ONTs pedindo autorização (display ont autofind all)">
+              <DevSelect devices={devices} value={devId} onChange={setDevId} testid="hw-onu-device" /></Field></div>
+            <Button onClick={search} disabled={searching || !devId} variant="outline" className="border-line bg-transparent h-9" data-testid="hw-onu-search">
+              {searching ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}Buscar autofind
+            </Button>
+          </div>
+          {found && found.onus.length > 0 && (
+            <div className="border border-line rounded-md divide-y divide-line" data-testid="hw-onu-found">
+              {found.onus.map((o, i) => (
+                <div key={i} className="flex flex-wrap items-center gap-3 px-3 py-1.5 text-xs font-mono">
+                  <span className="text-slate-400 w-16">{o.pon}</span>
+                  <span className="text-slate-100">{o.sn_vendor}</span>
+                  <span className="text-slate-500 flex-1 truncate">{o.model} {o.version}</span>
+                  <span className="text-slate-500">ID livre {o.free_id ?? "—"}</span>
+                  <Button size="sm" variant="ghost" onClick={() => set({ pon: o.pon, sn: o.sn_vendor, onu_id: o.free_id !== null && o.free_id !== undefined ? String(o.free_id) : f.onu_id })}
+                    className="h-6 px-2 text-brand-soft hover:bg-slate-800" data-testid={`hw-onu-use-${i}`}>Usar</Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+        <div className={sec}>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <Field label="PON" hint="F/S/P, ex.: 0/1/3"><Input value={f.pon} onChange={e => set({ pon: e.target.value })} className={inp} data-testid="hw-onu-pon" /></Field>
+            <Field label="ONT ID" hint="0 a 127, livre na PON"><Input value={f.onu_id} onChange={e => set({ onu_id: e.target.value })} className={inp} data-testid="hw-onu-id" /></Field>
+            <Field label="Serial (SN)"><Input value={f.sn} onChange={e => set({ sn: e.target.value.toUpperCase().trim() })} placeholder="HWTC-A1B2C3D4" className={inp} data-testid="hw-onu-sn" /></Field>
+          </div>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <Field label="Cliente (desc)"><Input value={f.name} onChange={e => set({ name: e.target.value })} placeholder="cliente_0001" className={inp} data-testid="hw-onu-name" /></Field>
+            <Field label="Line profile (ID)" hint="plano / T-CONT / gem mapping"><Input value={f.line_profile} onChange={e => set({ line_profile: e.target.value })} className={inp} data-testid="hw-onu-lp" /></Field>
+            <Field label="Service profile (ID)"><Input value={f.srv_profile} onChange={e => set({ srv_profile: e.target.value })} className={inp} data-testid="hw-onu-sp" /></Field>
+          </div>
+        </div>
+        <div className={sec} data-testid="hw-onu-services">
+          <div className="text-sm font-semibold text-slate-200">Serviços (service-port por VLAN)</div>
+          {f.services.map((sv, i) => (
+            <div key={i} className="rounded-md border border-line p-3 space-y-2" data-testid={`hw-svc-${i}`}>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="w-24"><Field label="VLAN"><Input value={sv.vlan} onChange={e => setSvc(i, { vlan: e.target.value })} className={inp} data-testid={`hw-svc-${i}-vlan`} /></Field></div>
+                <div className="w-28"><Field label="VLAN na ONU"><Input value={sv.user_vlan} onChange={e => setSvc(i, { user_vlan: e.target.value })} placeholder="a mesma" className={inp} /></Field></div>
+                <div className="w-20"><Field label="Gem port"><Input value={sv.gemport} onChange={e => setSvc(i, { gemport: e.target.value })} className={inp} data-testid={`hw-svc-${i}-gem`} /></Field></div>
+                <div className="flex gap-1 pb-0.5">
+                  {HW_MODES.map(([k, l, d]) => (
+                    <button key={k} type="button" title={d} onClick={() => setSvc(i, { mode: k })} data-testid={`hw-svc-${i}-mode-${k}`}
+                      className={`h-9 px-2.5 rounded-md text-xs border ${sv.mode === k ? "border-brand/70 bg-brand/15 text-brand-soft" : "border-line text-slate-400 hover:text-slate-200"}`}>{l}</button>
+                  ))}
+                </div>
+                {f.services.length > 1 && <button type="button" onClick={() => setF(cur => ({ ...cur, services: cur.services.filter((_, j) => j !== i) }))}
+                  className="ml-auto h-9 px-2 text-slate-500 hover:text-red-300"><Trash2 className="w-4 h-4" /></button>}
+              </div>
+              {sv.mode === "bridge" && (
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-[11px] text-slate-500 mr-1">portas</span>
+                  {[1, 2, 3, 4].map(n => <Toggle key={n} on={sv.ports.includes(n)} label={`eth ${n}`} testid={`hw-svc-${i}-eth-${n}`}
+                    onClick={() => setSvc(i, { ports: sv.ports.includes(n) ? sv.ports.filter(x => x !== n) : [...sv.ports, n].sort((a, b) => a - b) })} />)}
+                </div>
+              )}
+              {sv.mode === "pppoe" && (
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <Field label="Usuário PPPoE"><Input value={sv.pppoe_user} onChange={e => setSvc(i, { pppoe_user: e.target.value })} className={inp} autoComplete="off" data-testid={`hw-svc-${i}-user`} /></Field>
+                  <Field label="Senha PPPoE" hint="não fica salva no navegador"><Input type="password" value={sv.pppoe_password} onChange={e => setSvc(i, { pppoe_password: e.target.value })} className={inp} autoComplete="new-password" /></Field>
+                </div>
+              )}
+              <div className="text-[11px] text-slate-500">{HW_MODES.find(m => m[0] === sv.mode)?.[2]}</div>
+            </div>
+          ))}
+          {f.services.length < 8 && <Button size="sm" variant="outline" onClick={() => setF(cur => ({ ...cur, services: [...cur.services, { ...HW_SVC(""), gemport: String(cur.services.length + 1), mode: "none" }] }))}
+            className="border-line bg-transparent h-8 text-xs" data-testid="hw-svc-add"><Plus className="w-3.5 h-3.5 mr-1" />Adicionar VLAN</Button>}
+          <Check id="hw-onu-wr" checked={f.write} onChange={v => set({ write: v })}>Gravar no final (save)</Check>
+        </div>
+      </div>
+      {ready ? <ScriptCard out={out} err={err} busy={busy} apply={{ devices, vendor: "huawei", deviceId: devId, kind: "hw-onu", params: f, onDone: () => setFound(null) }} />
+        : <Card className="bg-surface border-line flex items-center justify-center min-h-[320px] text-sm text-slate-500 p-6 text-center" data-testid="hw-onu-empty">
+            Informe o serial e o cliente (ou busque o autofind) para gerar o script.</Card>}
+    </div>
+  );
+}
+
+const HW_NEW_RM = (pon = "") => ({ pon, onu: "" });
+
+function HwRemove({ devices }) {
+  const [rows, setRows] = useState([HW_NEW_RM("0/1/0")]);
+  const [write, setWrite] = useState(true);
+  const [devId, setDevId] = useState("");
+  const [info, setInfo] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [q, setQ] = useState("");
+  const [qDev, setQDev] = useState("all");
+  const [qRes, setQRes] = useState(null);
+  const [qBusy, setQBusy] = useState(false);
+  const filled = rows.filter(r => /^\d+\/\d+\/\d+$/.test(r.pon.trim()) && r.onu !== "");
+  const key = (r) => `${r.pon.trim()}:${Number(r.onu)}`;
+  const [out, err, busy] = useLiveScript("/oltgen/hw/onu-remove", { items: filled, write }, filled.length > 0, [rows, write]);
+  const setRow = (i, patch) => { setRows(rs => rs.map((r, j) => (j === i ? { ...r, ...patch } : r))); setInfo(null); };
+  const check = async () => {
+    if (!devId) return toast.error("Escolha a OLT cadastrada");
+    setChecking(true);
+    try {
+      const { data } = await api.post("/oltgen/hw/onu-info", { device_id: devId, items: filled });
+      setInfo(Object.fromEntries(data.items.map(it => [`${it.pon}:${it.onu}`, it])));
+      const miss = data.items.filter(it => !it.found).length;
+      if (miss) toast.warning(`${miss} ONT(s) não existem nessa OLT`);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setChecking(false); }
+  };
+  const find = async () => {
+    if (!q.trim()) return toast.error("Informe o serial ou o MAC");
+    setQBusy(true); setQRes(null);
+    try {
+      const { data } = await api.post("/oltgen/find-onu", { query: q, device_id: qDev, vendor: "huawei" });
+      setQRes(data);
+      if (!data.found) toast.info(`${data.kind === "sn" ? "Serial" : "MAC"} ${data.query} não encontrado`);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setQBusy(false); }
+  };
+  const take = (r) => {
+    const row = { pon: r.pon, onu: String(r.onu) };
+    const other = devId && devId !== r.device_id;
+    setRows(rs => (other ? [row] : [...rs.filter(x => x.onu !== "" && key(x) !== key(row)), row]));
+    setDevId(r.device_id || "");
+    setInfo(cur => ({ ...(other ? {} : cur || {}), [key(row)]: { ...r, found: true } }));
+  };
+  return (
+    <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="hw-rm-page">
+      <div className="space-y-4 min-w-0">
+        <Card className="bg-surface border-line p-4 space-y-3" data-testid="hw-find">
+          <div className="text-sm font-semibold text-slate-200">Procurar ONT pelo serial ou MAC</div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="w-56"><Field label="Serial (ou MAC do cliente)">
+              <Input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && find()} placeholder="HWTC-A1B2C3D4" className={inp} data-testid="hw-find-q" /></Field></div>
+            <div className="flex-1 min-w-[180px]"><Field label="Em qual OLT">
+              <select value={qDev} onChange={e => setQDev(e.target.value)} className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100" data-testid="hw-find-dev">
+                <option value="all">Todas as OLTs Huawei ({devices.length})</option>
+                <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
+              </select></Field></div>
+            <Button onClick={find} disabled={qBusy || !devices.length} variant="outline" className="border-line bg-transparent h-9" data-testid="hw-find-go">
+              {qBusy ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}Procurar
+            </Button>
+          </div>
+          {qRes?.found && (
+            <div className="rounded-md border border-line bg-sunken/60 px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-mono" data-testid="hw-find-result">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" /><span className="text-slate-100">{qRes.device}</span>
+              <span className="text-brand-soft">{qRes.pon} ONT {qRes.onu}</span>
+              {qRes.vlan && <span className="text-slate-400">VLAN {qRes.vlan}</span>}
+              <span className="text-slate-200">{qRes.name || "sem descrição"}</span>
+              <span className="text-slate-400">{qRes.sn_vendor} · {qRes.run}{qRes.cause ? ` · ${qRes.cause}` : ""}</span>
+              <Button size="sm" variant="outline" onClick={() => take(qRes)} className="ml-auto h-7 border-red-800/60 bg-transparent text-red-300 hover:bg-red-950/40" data-testid="hw-find-use">
+                <Unplug className="w-3.5 h-3.5 mr-1" />Desautorizar esta</Button>
+            </div>
+          )}
+          {qRes && !qRes.found && <div className="text-xs text-amber-300" data-testid="hw-find-none">Não encontrado{qRes.searched?.length ? ` em ${qRes.searched.join(", ")}` : ""}.
+            {qRes.errors?.length ? <span className="block text-red-300 mt-1">Sem acesso: {qRes.errors.join(" · ")}</span> : null}</div>}
+        </Card>
+        <div className={sec}>
+          <div className="space-y-2" data-testid="hw-rm-rows">
+            {rows.map((r, i) => {
+              const it = info ? info[key(r)] : null;
+              return (
+                <div key={i} className="flex flex-wrap items-end gap-2">
+                  <div className="w-28"><Field label={i === 0 ? "PON (F/S/P)" : ""}><Input value={r.pon} onChange={e => setRow(i, { pon: e.target.value.replace(/[^\d/]/g, "") })} className={inp} data-testid={`hw-rm-${i}-pon`} /></Field></div>
+                  <div className="w-20"><Field label={i === 0 ? "ONT ID" : ""}><Input value={r.onu} inputMode="numeric" onChange={e => setRow(i, { onu: e.target.value.replace(/\D/g, "").slice(0, 3) })}
+                    onKeyDown={e => { if (e.key === "Enter" && i === rows.length - 1) setRows(rs => [...rs, HW_NEW_RM(r.pon)]); }} className={inp} data-testid={`hw-rm-${i}-onu`} /></Field></div>
+                  <div className="text-xs font-mono pb-2 min-w-0 flex-1 truncate" data-testid={`hw-rm-${i}-info`}>
+                    {it ? (it.found ? <span className="text-slate-200"><CheckCircle2 className="w-3.5 h-3.5 inline mr-1 text-emerald-400" />{it.name || "sem descrição"} · {it.sn_vendor} · {it.run}</span>
+                      : <span className="text-amber-300"><XCircle className="w-3.5 h-3.5 inline mr-1" />não existe nessa PON</span>) : null}
+                  </div>
+                  {rows.length > 1 && <button type="button" onClick={() => setRows(rs => rs.filter((_, j) => j !== i))} className="h-9 px-2 text-slate-500 hover:text-red-300"><Trash2 className="w-4 h-4" /></button>}
+                </div>
+              );
+            })}
+          </div>
+          <Button size="sm" variant="outline" onClick={() => setRows(rs => [...rs, HW_NEW_RM(rs[rs.length - 1]?.pon || "")])} className="border-line bg-transparent h-8 text-xs" data-testid="hw-rm-add"><Plus className="w-3.5 h-3.5 mr-1" />Outra ONT</Button>
+          <Check id="hw-rm-wr" checked={write} onChange={setWrite}>Gravar no final (save)</Check>
+        </div>
+        <Card className="bg-surface border-line p-4">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex-1 min-w-[200px]"><Field label="Conferir na OLT quem é cada ONT antes de remover (só leitura)">
+              <DevSelect devices={devices} value={devId} onChange={v => { setDevId(v); setInfo(null); }} testid="hw-rm-device" /></Field></div>
+            <Button onClick={check} disabled={checking || !devId || !filled.length} variant="outline" className="border-line bg-transparent h-9" data-testid="hw-rm-check">
+              {checking ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}Conferir
+            </Button>
+          </div>
+        </Card>
+      </div>
+      {filled.length ? <ScriptCard out={out} err={err} busy={busy} apply={{ devices, vendor: "huawei", deviceId: devId, kind: "hw-onu-remove", params: { items: filled }, onDone: () => setInfo(null) }} />
+        : <Card className="bg-surface border-line flex items-center justify-center min-h-[320px] text-sm text-slate-500 p-6 text-center" data-testid="hw-rm-empty">Informe a PON (F/S/P) e o ONT ID para gerar o script.</Card>}
+    </div>
+  );
+}
+
+const HW_OLT_RE = /olt|ma5[68]\d\d|ea5[68]\d\d|smartax|gpon/i;
+// Huawei também é roteador/switch (VRP): mostra primeiro os que parecem OLT; se nenhum parecer, todos
+const huaweiOlts = (devs) => {
+  const hw = devs.filter(d => d.device_type === "huawei");
+  const olt = hw.filter(d => HW_OLT_RE.test([d.name, d.model, d.description, ...(d.tags || [])].filter(Boolean).join(" ")));
+  return olt.length ? olt : hw;
+};
+
+// ================= OLT FiberHome (AN5516, CLI clássica) =================
+const FH_KEY = "bastion_oltgen_fh_form";
+const FH_DEFAULT = { uplinks: "19:1", cards_auth: true, vlans: { enabled: true, start: "100", count: "32", name: "CLIENTES" },
+  mgmt: { enabled: false, vlan: "", ip: "", gw: "", port: "", route: true }, snmp: { enabled: false, community: "" },
+  autosave: { enabled: true, time: "03:00" }, comments: true, write: true };
+const FH_DIRS = [["onu", "cd onu (RPs novos)"], ["gpononu", "cd gpononu (RPs antigos)"]];
+
+function FhDir({ value, onChange }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" data-testid="fh-dir">
+      <span className="text-xs text-slate-400 mr-1">Diretório das ONUs</span>
+      {FH_DIRS.map(([k, l]) => <Toggle key={k} on={value === k} label={l} testid={`fh-dir-${k}`} onClick={() => onChange(k)} />)}
+    </div>
+  );
+}
+
+function FhActivation({ devices }) {
+  const [f, setF] = useState(() => hwLoad(FH_KEY, FH_DEFAULT));
+  const [devId, setDevId] = useState("");
+  const [cards, setCards] = useState(null);
+  const [reading, setReading] = useState(false);
+  const [out, err, busy] = useLiveScript("/oltgen/fh/generate", { ...f, uplinks: hwUps(f.uplinks) }, true, [f]);
+  useEffect(() => { try { localStorage.setItem(FH_KEY, JSON.stringify({ ...f, snmp: { ...f.snmp, community: "" } })); } catch { /* ok */ } }, [f]);
+  const up = (k, patch) => setF(cur => ({ ...cur, [k]: { ...cur[k], ...patch } }));
+  const read = async () => {
+    if (!devId) return toast.error("Escolha a OLT cadastrada");
+    setReading(true);
+    try { const { data } = await api.post("/oltgen/fh/read-cards", { device_id: devId }); setCards(data); toast.success(`${data.device}: ${data.pon.length} placa(s) GPON`); }
+    catch (e) { toast.error(formatApiError(e)); } finally { setReading(false); }
+  };
+  return (
+    <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="fh-activation">
+      <div className="space-y-4 min-w-0">
+        <Card className="bg-surface border-line p-4 space-y-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex-1 min-w-[200px]"><Field label="Ver as placas de uma OLT cadastrada (showcard)">
+              <DevSelect devices={devices} value={devId} onChange={setDevId} testid="fh-device" empty="Nenhuma OLT FiberHome cadastrada" /></Field></div>
+            <Button onClick={read} disabled={reading || !devId} variant="outline" className="border-line bg-transparent h-9" data-testid="fh-read">
+              {reading ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <ScanSearch className="w-4 h-4 mr-1.5" />}Ler placas
+            </Button>
+          </div>
+          {cards && <div className="text-xs font-mono text-slate-300 flex flex-wrap gap-2" data-testid="fh-cards">
+            {cards.pon.map(c => <span key={c.slot} className="px-2 py-0.5 rounded border border-line">slot {c.slot} · {c.name} · {c.ports} PON</span>)}</div>}
+          <div className="text-[11px] text-amber-300/90">AN5516-01/02/04/06 com a CLI clássica. A AN6000 usa outra CLI e ainda não é suportada.</div>
+        </Card>
+        <div className={sec}>
+          <Field label="Porta(s) de uplink" hint="slot:porta separadas por vírgula, ex.: 19:1, 19:2">
+            <Input value={f.uplinks} onChange={e => setF({ ...f, uplinks: e.target.value })} className={inp} data-testid="fh-uplinks" /></Field>
+          <Check id="fh-cards-auth" checked={f.cards_auth} onChange={v => setF({ ...f, cards_auth: v })}>Autorizar as placas instaladas (set cards_all_auth)</Check>
+          <Check id="fh-vl" checked={f.vlans.enabled} onChange={v => up("vlans", { enabled: v })} testid="fh-vlans">VLANs de clientes no uplink (set service)</Check>
+          {f.vlans.enabled && <div className="grid sm:grid-cols-3 gap-3">
+            <Field label="VLAN inicial"><Input value={f.vlans.start} onChange={e => up("vlans", { start: e.target.value })} className={inp} data-testid="fh-vlan-start" /></Field>
+            <Field label="Quantidade"><Input value={f.vlans.count} onChange={e => up("vlans", { count: e.target.value })} className={inp} /></Field>
+            <Field label="Nome do serviço"><Input value={f.vlans.name} onChange={e => up("vlans", { name: e.target.value })} className={inp} /></Field>
+          </div>}
+        </div>
+        <div className={sec}>
+          <Check id="fh-mg" checked={f.mgmt.enabled} onChange={v => up("mgmt", { enabled: v })} testid="fh-mgmt">VLAN e IP de gerência (set manage vlan)</Check>
+          {f.mgmt.enabled && <div className="grid sm:grid-cols-4 gap-3">
+            <Field label="VLAN"><Input value={f.mgmt.vlan} onChange={e => up("mgmt", { vlan: e.target.value })} placeholder="4000" className={inp} data-testid="fh-mgmt-vlan" /></Field>
+            <Field label="IP/máscara"><Input value={f.mgmt.ip} onChange={e => up("mgmt", { ip: e.target.value })} placeholder="192.0.2.10/30" className={inp} data-testid="fh-mgmt-ip" /></Field>
+            <Field label="Gateway"><Input value={f.mgmt.gw} onChange={e => up("mgmt", { gw: e.target.value })} placeholder="192.0.2.9" className={inp} data-testid="fh-mgmt-gw" /></Field>
+            <Field label="Porta" hint="vazio = 1º uplink"><Input value={f.mgmt.port} onChange={e => up("mgmt", { port: e.target.value })} placeholder="19:1" className={inp} /></Field>
+          </div>}
+          <Check id="fh-snmp" checked={f.snmp.enabled} onChange={v => up("snmp", { enabled: v })}>SNMP (community de leitura)</Check>
+          {f.snmp.enabled && <Field label="Community"><Input value={f.snmp.community} onChange={e => up("snmp", { community: e.target.value })} className={`${inp} w-56`} autoComplete="off" /></Field>}
+          <Check id="fh-as" checked={f.autosave.enabled} onChange={v => up("autosave", { enabled: v })}>Autosave diário</Check>
+          {f.autosave.enabled && <Field label="Horário"><Input value={f.autosave.time} onChange={e => up("autosave", { time: e.target.value })} className={`${inp} w-28`} /></Field>}
+          <Check id="fh-cm" checked={f.comments} onChange={v => setF({ ...f, comments: v })}>Comentários no script</Check>
+          <Check id="fh-wr" checked={f.write} onChange={v => setF({ ...f, write: v })}>Gravar no final (save)</Check>
+        </div>
+      </div>
+      <ScriptCard out={out} err={err} busy={busy} />
+    </div>
+  );
+}
+
+const FH_ONU_KEY = "bastion_oltgen_fh_onu";
+const FH_SVC = (vlan = "") => ({ vlan, mode: "bridge", ports: [1], pppoe_user: "", pppoe_password: "" });
+const FH_ONU_DEFAULT = { slot: "1", pon: "1", onu_id: "1", sn: "", type: "HG6143D", name: "", dir: "onu", services: [FH_SVC("100")], write: true, comments: true };
+const FH_MODES = [["bridge", "Bridge (LAN)", "a porta LAN da ONU entrega a VLAN (ONU bridge / SFU)"],
+  ["pppoe", "PPPoE na ONU", "set wancfg: a ONU roteada disca o PPPoE (HGU)"],
+  ["veip", "Só VEIP", "só a VLAN no veip; a WAN vem do ACS/TR-069 ou do perfil"]];
+
+function FhAuthorize({ devices }) {
+  const [f, setF] = useState(() => {
+    const v = hwLoad(FH_ONU_KEY, FH_ONU_DEFAULT);
+    return { ...v, sn: "", name: "", services: (v.services || []).map(x => ({ ...x, pppoe_user: "", pppoe_password: "" })) };
+  });
+  const [devId, setDevId] = useState("");
+  const [pons, setPons] = useState("");
+  const [found, setFound] = useState(null);
+  const [searching, setSearching] = useState(false);
+  useEffect(() => {
+    const { sn, name, ...keep } = f;
+    try { localStorage.setItem(FH_ONU_KEY, JSON.stringify({ ...keep, services: f.services.map(x => ({ ...x, pppoe_user: "", pppoe_password: "" })) })); } catch { /* ok */ }
+  }, [f]);
+  const ready = !!(f.sn && f.type);
+  const [out, err, busy] = useLiveScript("/oltgen/fh/onu", f, ready, [f]);
+  const set = (patch) => setF(cur => ({ ...cur, ...patch }));
+  const setSvc = (i, patch) => setF(cur => ({ ...cur, services: cur.services.map((x, j) => (j === i ? { ...x, ...patch } : x)) }));
+  const search = async () => {
+    if (!devId) return toast.error("Escolha a OLT cadastrada");
+    const list = pons.split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
+    if (list.some(x => !/^\d{1,2}\/\d{1,2}$/.test(x))) return toast.error("PONs no formato slot/pon, ex.: 1/2");
+    setSearching(true); setFound(null);
+    try {
+      const { data } = await api.post("/oltgen/fh/discovery", { device_id: devId, pons: list, dir: f.dir });
+      setFound(data); if (data.dir) set({ dir: data.dir });
+      if (!data.onus.length) toast.info(`${data.device}: nenhuma ONU esperando autorização em ${data.pons} PON(s)`);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setSearching(false); }
+  };
+  return (
+    <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="fh-onu-page">
+      <div className="space-y-4 min-w-0">
+        <Card className="bg-surface border-line p-4 space-y-3">
+          <div className="grid gap-2 md:grid-cols-[1fr_9rem_auto] items-end">
+            <Field label="ONUs pedindo autorização (show discovery)"><DevSelect devices={devices} value={devId} onChange={setDevId} testid="fh-onu-device" empty="Nenhuma OLT FiberHome cadastrada" /></Field>
+            <Field label="Só estas PONs"><Input value={pons} onChange={e => setPons(e.target.value)} placeholder="1/2, 1/3" className={inp} data-testid="fh-onu-pons" /></Field>
+            <Button onClick={search} disabled={searching || !devId} variant="outline" className="border-line bg-transparent h-9" data-testid="fh-onu-search">
+              {searching ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}Buscar
+            </Button>
+          </div>
+          <div className="text-[11px] text-slate-500">Sem PON informada, lê todas as PONs das placas GPON (pode levar alguns minutos por Telnet).</div>
+          {found && found.onus.length > 0 && (
+            <div className="border border-line rounded-md divide-y divide-line" data-testid="fh-onu-found">
+              {found.onus.map((o, i) => (
+                <div key={i} className="flex flex-wrap items-center gap-3 px-3 py-1.5 text-xs font-mono">
+                  <span className="text-slate-400 w-14">{o.slot}/{o.pon}</span><span className="text-slate-100">{o.sn}</span>
+                  <span className="text-slate-500 flex-1 truncate">{o.type}</span><span className="text-slate-500">ID livre {o.free_id ?? "—"}</span>
+                  <Button size="sm" variant="ghost" onClick={() => set({ slot: String(o.slot), pon: String(o.pon), sn: o.sn, type: o.type || f.type, onu_id: o.free_id ? String(o.free_id) : f.onu_id })}
+                    className="h-6 px-2 text-brand-soft hover:bg-slate-800" data-testid={`fh-onu-use-${i}`}>Usar</Button>
+                </div>
+              ))}
+            </div>
+          )}
+          {found && !found.onus.length && found.raw && <details className="text-xs text-amber-300"><summary className="cursor-pointer">Ver a resposta da OLT</summary>
+            <pre className="text-[11px] text-slate-300 bg-sunken p-2 rounded mt-1 max-h-48 overflow-auto whitespace-pre-wrap">{found.raw}</pre></details>}
+        </Card>
+        <div className={sec}>
+          <FhDir value={f.dir} onChange={v => set({ dir: v })} />
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+            <Field label="Slot"><Input value={f.slot} onChange={e => set({ slot: e.target.value })} className={inp} data-testid="fh-onu-slot" /></Field>
+            <Field label="PON"><Input value={f.pon} onChange={e => set({ pon: e.target.value })} className={inp} data-testid="fh-onu-pon" /></Field>
+            <Field label="ONU"><Input value={f.onu_id} onChange={e => set({ onu_id: e.target.value })} className={inp} data-testid="fh-onu-id" /></Field>
+            <div className="col-span-3"><Field label="Serial"><Input value={f.sn} onChange={e => set({ sn: e.target.value.toUpperCase().trim() })} placeholder="FHTT1A2B3C4D" className={inp} data-testid="fh-onu-sn" /></Field></div>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Field label="Tipo da ONU (type)" hint="o nome que a OLT conhece, ex.: HG6143D, AN5506-04-F1"><Input value={f.type} onChange={e => set({ type: e.target.value.trim() })} className={inp} data-testid="fh-onu-type" /></Field>
+            <Field label="Cliente" hint="só no comentário do script"><Input value={f.name} onChange={e => set({ name: e.target.value })} placeholder="cliente_0001" className={inp} /></Field>
+          </div>
+        </div>
+        <div className={sec} data-testid="fh-onu-services">
+          <div className="text-sm font-semibold text-slate-200">Serviços</div>
+          {f.services.map((sv, i) => (
+            <div key={i} className="rounded-md border border-line p-3 space-y-2" data-testid={`fh-svc-${i}`}>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="w-24"><Field label="VLAN"><Input value={sv.vlan} onChange={e => setSvc(i, { vlan: e.target.value })} className={inp} data-testid={`fh-svc-${i}-vlan`} /></Field></div>
+                <div className="flex gap-1 pb-0.5">
+                  {FH_MODES.map(([k, l, d]) => <button key={k} type="button" title={d} onClick={() => setSvc(i, { mode: k })} data-testid={`fh-svc-${i}-mode-${k}`}
+                    className={`h-9 px-2.5 rounded-md text-xs border ${sv.mode === k ? "border-brand/70 bg-brand/15 text-brand-soft" : "border-line text-slate-400 hover:text-slate-200"}`}>{l}</button>)}
+                </div>
+                {f.services.length > 1 && <button type="button" onClick={() => setF(cur => ({ ...cur, services: cur.services.filter((_, j) => j !== i) }))} className="ml-auto h-9 px-2 text-slate-500 hover:text-red-300"><Trash2 className="w-4 h-4" /></button>}
+              </div>
+              {sv.mode === "bridge" && <div className="flex flex-wrap items-center gap-1"><span className="text-[11px] text-slate-500 mr-1">portas</span>
+                {[1, 2, 3, 4].map(n => <Toggle key={n} on={sv.ports.includes(n)} label={`lan ${n}`} testid={`fh-svc-${i}-lan-${n}`}
+                  onClick={() => setSvc(i, { ports: sv.ports.includes(n) ? sv.ports.filter(x => x !== n) : [...sv.ports, n].sort((a, b) => a - b) })} />)}</div>}
+              {sv.mode === "pppoe" && <div className="grid sm:grid-cols-2 gap-3">
+                <Field label="Usuário PPPoE"><Input value={sv.pppoe_user} onChange={e => setSvc(i, { pppoe_user: e.target.value })} className={inp} autoComplete="off" data-testid={`fh-svc-${i}-user`} /></Field>
+                <Field label="Senha PPPoE" hint="não fica salva no navegador"><Input type="password" value={sv.pppoe_password} onChange={e => setSvc(i, { pppoe_password: e.target.value })} className={inp} autoComplete="new-password" /></Field>
+              </div>}
+              <div className="text-[11px] text-slate-500">{FH_MODES.find(m => m[0] === sv.mode)?.[2]}</div>
+            </div>
+          ))}
+          {f.services.length < 8 && <Button size="sm" variant="outline" onClick={() => setF(cur => ({ ...cur, services: [...cur.services, FH_SVC("")] }))} className="border-line bg-transparent h-8 text-xs" data-testid="fh-svc-add"><Plus className="w-3.5 h-3.5 mr-1" />Adicionar VLAN</Button>}
+          <Check id="fh-onu-wr" checked={f.write} onChange={v => set({ write: v })}>Gravar no final (save)</Check>
+        </div>
+      </div>
+      {ready ? <ScriptCard out={out} err={err} busy={busy} apply={{ devices, vendor: "fiberhome", deviceId: devId, kind: "fh-onu", params: f, onDone: () => setFound(null) }} />
+        : <Card className="bg-surface border-line flex items-center justify-center min-h-[320px] text-sm text-slate-500 p-6 text-center" data-testid="fh-onu-empty">Informe o serial e o tipo da ONU (ou busque as não autorizadas) para gerar o script.</Card>}
+    </div>
+  );
+}
+
+function FhRemove({ devices }) {
+  const [rows, setRows] = useState([{ slot: "1", pon: "1", onu: "", sn: "", type: "" }]);
+  const [dir, setDir] = useState("onu");
+  const [write, setWrite] = useState(true);
+  const [devId, setDevId] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [raw, setRaw] = useState("");
+  const filled = rows.filter(r => r.slot && r.pon && r.onu);
+  const withSn = filled.filter(r => r.sn);
+  const [out, err, busy] = useLiveScript("/oltgen/fh/onu-remove", { items: withSn, write, dir }, withSn.length > 0, [rows, write, dir]);
+  const setRow = (i, patch) => setRows(rs => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const num = (v) => v.replace(/\D/g, "").slice(0, 3);
+  const check = async () => {
+    if (!devId) return toast.error("Escolha a OLT cadastrada");
+    setChecking(true); setRaw("");
+    try {
+      const { data } = await api.post("/oltgen/fh/onu-info", { device_id: devId, items: filled, dir });
+      if (data.dir) setDir(data.dir);
+      const by = Object.fromEntries(data.items.map(it => [`${it.slot}/${it.pon}/${it.onu}`, it]));
+      setRows(rs => rs.map(r => { const it = by[`${Number(r.slot)}/${Number(r.pon)}/${Number(r.onu)}`]; return it ? { ...r, sn: it.found ? it.sn : "", type: it.found ? it.type : "", state: it.found ? it.state : "missing" } : r; }));
+      const miss = data.items.filter(it => !it.found).length;
+      if (miss) { toast.warning(`${miss} ONU(s) não aparecem no show authorization`); setRaw(data.raw || ""); }
+    } catch (e) { toast.error(formatApiError(e)); } finally { setChecking(false); }
+  };
+  return (
+    <div className="px-4 md:px-6 pb-6 pt-2 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-testid="fh-rm-page">
+      <div className="space-y-4 min-w-0">
+        <div className={sec}>
+          <FhDir value={dir} onChange={setDir} />
+          <div className="text-[11px] text-slate-400">A FiberHome remove a ONU pelo serial: informe slot, PON e ONU e clique em <b>Conferir</b> para ler o serial e o tipo da OLT.</div>
+          <div className="space-y-2" data-testid="fh-rm-rows">
+            {rows.map((r, i) => (
+              <div key={i} className="flex flex-wrap items-end gap-2">
+                {[["slot", "Slot"], ["pon", "PON"], ["onu", "ONU"]].map(([k, l]) => (
+                  <div key={k} className="w-16"><Field label={i === 0 ? l : ""}><Input value={r[k]} inputMode="numeric" onChange={e => setRow(i, { [k]: num(e.target.value), sn: "", type: "", state: "" })}
+                    onKeyDown={e => { if (e.key === "Enter" && k === "onu" && i === rows.length - 1) setRows(rs => [...rs, { slot: r.slot, pon: r.pon, onu: "", sn: "", type: "" }]); }}
+                    className={inp} data-testid={`fh-rm-${i}-${k}`} /></Field></div>
+                ))}
+                <div className="w-40"><Field label={i === 0 ? "Serial" : ""}><Input value={r.sn} onChange={e => setRow(i, { sn: e.target.value.toUpperCase().trim() })} placeholder="FHTT…" className={inp} data-testid={`fh-rm-${i}-sn`} /></Field></div>
+                <div className="text-xs font-mono pb-2 flex-1 truncate" data-testid={`fh-rm-${i}-info`}>
+                  {r.state === "missing" ? <span className="text-amber-300"><XCircle className="w-3.5 h-3.5 inline mr-1" />não está autorizada</span>
+                    : r.sn && r.type ? <span className="text-slate-300"><CheckCircle2 className="w-3.5 h-3.5 inline mr-1 text-emerald-400" />{r.type}{r.state ? ` · ${r.state}` : ""}</span> : null}
+                </div>
+                {rows.length > 1 && <button type="button" onClick={() => setRows(rs => rs.filter((_, j) => j !== i))} className="h-9 px-2 text-slate-500 hover:text-red-300"><Trash2 className="w-4 h-4" /></button>}
+              </div>
+            ))}
+          </div>
+          <Button size="sm" variant="outline" onClick={() => setRows(rs => [...rs, { slot: rs[rs.length - 1]?.slot || "", pon: rs[rs.length - 1]?.pon || "", onu: "", sn: "", type: "" }])} className="border-line bg-transparent h-8 text-xs" data-testid="fh-rm-add"><Plus className="w-3.5 h-3.5 mr-1" />Outra ONU</Button>
+          <Check id="fh-rm-wr" checked={write} onChange={setWrite}>Gravar no final (save)</Check>
+        </div>
+        <Card className="bg-surface border-line p-4 space-y-2">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex-1 min-w-[200px]"><Field label="Conferir na OLT (show authorization — só leitura)"><DevSelect devices={devices} value={devId} onChange={setDevId} testid="fh-rm-device" empty="Nenhuma OLT FiberHome cadastrada" /></Field></div>
+            <Button onClick={check} disabled={checking || !devId || !filled.length} variant="outline" className="border-line bg-transparent h-9" data-testid="fh-rm-check">
+              {checking ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}Conferir
+            </Button>
+          </div>
+          {raw && <details className="text-xs text-amber-300"><summary className="cursor-pointer">Ver a resposta da OLT</summary>
+            <pre className="text-[11px] text-slate-300 bg-sunken p-2 rounded mt-1 max-h-48 overflow-auto whitespace-pre-wrap">{raw}</pre></details>}
+        </Card>
+      </div>
+      {withSn.length ? <ScriptCard out={out} err={err} busy={busy} apply={{ devices, vendor: "fiberhome", deviceId: devId, kind: "fh-onu-remove", params: { items: withSn, dir } }} />
+        : <Card className="bg-surface border-line flex items-center justify-center min-h-[320px] text-sm text-slate-500 p-6 text-center" data-testid="fh-rm-empty">Informe slot, PON e ONU e confira na OLT (ou digite o serial) para gerar o script.</Card>}
+    </div>
+  );
+}
+
+function FhNoClean() {
+  return (
+    <div className="p-4 md:p-6 max-w-3xl" data-testid="fh-noclean">
+      <Card className="bg-surface border-line p-5 text-sm text-slate-300 space-y-2">
+        <div className="flex items-center gap-2 text-slate-100 font-medium"><AlertTriangle className="w-4 h-4 text-amber-300" />Limpeza de ONUs off ainda não disponível para FiberHome</div>
+        <p>Para remover em massa com segurança o BastiON precisa saber há quantos dias cada ONU caiu, e isso muda entre firmwares da AN5516. Quando tiver uma OLT FiberHome cadastrada, me mande a saída do comando de última queda da sua versão que eu completo.</p>
+        <p className="text-slate-400">Enquanto isso: o estado das ONUs (online/offline) e as quedas em massa já aparecem no <b>GPON</b>, e dá para desautorizar na aba ao lado.</p>
+      </Card>
+    </div>
+  );
+}
+
 export default function OltScript() {
   const [view, setView] = useState(() => { try { return localStorage.getItem("bastion_oltgen_view") || "olt"; } catch { return "olt"; } });
+  const [vendor, setVendor] = useState(() => { try { return localStorage.getItem("bastion_oltgen_vendor") || "zte"; } catch { return "zte"; } });
   const [meta, setMeta] = useState(null);
-  const [devices, setDevices] = useState([]);
+  const [hwModels, setHwModels] = useState([]);
+  const [all, setAll] = useState([]);
   useEffect(() => {
     api.get("/oltgen/models").then(r => setMeta(r.data)).catch(() => {});
-    api.get("/devices").then(r => setDevices((r.data || []).filter(d => d.device_type === "zte"))).catch(() => {});
+    api.get("/oltgen/hw/models").then(r => setHwModels(r.data.models || [])).catch(() => {});
+    api.get("/devices").then(r => setAll(r.data || [])).catch(() => {});
   }, []);
+  const devices = useMemo(() => (vendor === "huawei" ? huaweiOlts(all) : all.filter(d => d.device_type === (vendor === "fiberhome" ? "fiberhome" : "zte"))), [all, vendor]);
   const go = (v) => { setView(v); try { localStorage.setItem("bastion_oltgen_view", v); } catch { /* ok */ } };
+  const pickVendor = (v) => { setVendor(v); try { localStorage.setItem("bastion_oltgen_vendor", v); } catch { /* ok */ } };
+  const hw = vendor === "huawei";
+  const fh = vendor === "fiberhome";
   return (
     <div className="flex-1 overflow-y-auto" data-testid="oltgen-page">
       <div className="px-4 md:px-6 pt-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="hidden md:block text-xs text-slate-400">ZTE · TITAN e C300/C320 · GPON</div>
-          <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Script de OLT</h1>
+          <div className="hidden md:block text-xs text-slate-400">{hw ? "Huawei · MA5800 / MA5608T / MA5683T · GPON" : fh ? "FiberHome · AN5516 (CLI clássica) · GPON" : "ZTE · TITAN e C300/C320 · GPON"}</div>
+          <div className="flex items-center gap-3 mt-1">
+            <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100">Script de OLT</h1>
+            <div className="flex gap-1 p-0.5 bg-sunken border border-line rounded-md text-xs" data-testid="oltgen-vendor">
+              {[["zte", "ZTE"], ["huawei", "Huawei"], ["fiberhome", "FiberHome"]].map(([k, l]) => (
+                <button key={k} onClick={() => pickVendor(k)} data-testid={`oltgen-vendor-${k}`}
+                  className={`px-2.5 h-7 rounded ${vendor === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
+              ))}
+            </div>
+          </div>
         </div>
         <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm overflow-x-auto max-w-full">
           {[["olt", "Ativação da OLT", Cpu], ["onu", "Autorizar ONU", Router], ["rm", "Desautorizar ONU", Unplug], ["off", "ONUs off", PowerOff]].map(([k, l, I]) => (
@@ -1082,7 +1750,10 @@ export default function OltScript() {
           ))}
         </div>
       </div>
-      {view === "olt" ? <OltActivation /> : view === "rm" ? <OnuRemove meta={meta} devices={devices} /> : view === "off" ? <OnuClean devices={devices} /> : <OnuAuthorize meta={meta} devices={devices} />}
+      {fh ? (view === "olt" ? <FhActivation devices={devices} /> : view === "rm" ? <FhRemove devices={devices} /> : view === "off" ? <FhNoClean /> : <FhAuthorize devices={devices} />)
+        : hw ? (view === "olt" ? <HwActivation devices={devices} models={hwModels} /> : view === "rm" ? <HwRemove devices={devices} />
+        : view === "off" ? <OnuClean key="hw" devices={devices} vendor="huawei" /> : <HwAuthorize devices={devices} />)
+        : (view === "olt" ? <OltActivation /> : view === "rm" ? <OnuRemove meta={meta} devices={devices} /> : view === "off" ? <OnuClean key="zte" devices={devices} /> : <OnuAuthorize meta={meta} devices={devices} />)}
     </div>
   );
 }

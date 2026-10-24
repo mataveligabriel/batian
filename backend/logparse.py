@@ -301,7 +301,9 @@ PRESETS = [
     {"preset": "los", "name": "LOS em massa na PON", "severity": "critical", "threshold": 8, "window_s": 120,
      "auto_resolve_min": 30,
      "pattern": r"(?i)(?:\bLOS\b|LOSi|dying[ _-]?gasp|ONU.{0,40}(?:offline|down)).*?"
-                r"(?:gpon[-_](?:olt|onu)_|xgpon[-_](?:olt|onu)_|epon[-_](?:olt|onu)_|F/S/P[ :=]+|FrameID: ?)(\d+/\d+/\d+)",
+                r"(?:gpon[-_](?:olt|onu)_|xgpon[-_](?:olt|onu)_|epon[-_](?:olt|onu)_|F/S/P[ :=]+|FrameID: ?)(\d+/\d+/\d+)"
+                r"|(?i:\bLOS\b|LOSi|LOFi|dying[ _-]?gasp|ONT.{0,40}(?:offline|down)).*?"
+                r"FrameID:\s*(?P<f>\d+),\s*SlotID:\s*(?P<s>\d+),\s*PortID:\s*(?P<p>\d+)",
      "clear_pattern": "",
      "title": "LOS em massa na PON {group} — {device} ({count} alarmes) — possível fibra rompida"},
     {"preset": "config", "name": "Configuração alterada", "severity": "info", "threshold": 1, "window_s": 60,
@@ -336,9 +338,16 @@ def compile_rx(p: str):
     return re.compile(p, re.I)
 
 
+LOS_LEGACY = (r"(?i)(?:\bLOS\b|LOSi|dying[ _-]?gasp|ONU.{0,40}(?:offline|down)).*?"
+              r"(?:gpon[-_](?:olt|onu)_|xgpon[-_](?:olt|onu)_|epon[-_](?:olt|onu)_|F/S/P[ :=]+|FrameID: ?)(\d+/\d+/\d+)")
+
+
 def group_of(m) -> str:
     if not m:
         return ""
+    gd = m.groupdict()
+    if gd.get("f") is not None and gd.get("s") is not None and gd.get("p") is not None:
+        return f"{gd['f']}/{gd['s']}/{gd['p']}"          # Huawei: FrameID: 0, SlotID: 1, PortID: 3
     for g in m.groups():
         if g:
             return g.strip()[:80]

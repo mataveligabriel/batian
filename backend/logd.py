@@ -299,6 +299,10 @@ class LogCollector:
             log.warning(f"índices: {e}")
 
     async def seed_rules(self):
+        # regra de LOS antiga (só ZTE) -> nova, que também lê o alarme do Huawei (FrameID/SlotID/PortID); só se ninguém mexeu
+        los = next((p for p in lp.PRESETS if p["preset"] == "los"), None)
+        if los:
+            await self.db.log_rules.update_many({"preset": "los", "pattern": lp.LOS_LEGACY}, {"$set": {"pattern": los["pattern"]}})
         if await self.db.config.find_one({"key": "logs_seeded"}):
             return
         if await self.db.log_rules.count_documents({}) == 0:

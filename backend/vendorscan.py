@@ -16,7 +16,7 @@ from telnet_service import TelnetClientWrapper
 
 MAX_TARGETS = 1024
 CONNECT_TIMEOUT = 8
-VENDOR_LABEL = {"huawei": "Huawei", "cisco": "Cisco", "datacom": "Datacom", "juniper": "Juniper", "zte": "ZTE",
+VENDOR_LABEL = {"huawei": "Huawei", "cisco": "Cisco", "datacom": "Datacom", "juniper": "Juniper", "zte": "ZTE", "fiberhome": "FiberHome",
                 "mikrotik": "MikroTik", "ubiquiti": "Ubiquiti", "linux": "Linux", "other": "Outro"}
 
 # (fabricante, padrão, peso) aplicados a tudo que o equipamento mostrou. Soma de pesos decide.
@@ -30,6 +30,7 @@ _RULES = [
     ("datacom", r"syntax error: (unknown command|expecting)", 4),
     ("zte", r"ZXR10|ZXA10|ZXROS|ZTE Corporation|ZTE ZX|\bC3[02]0\b.*ZTE|ZXAN", 10),
     ("zte", r"%Error \d+: |%Code \d+: ", 4),
+    ("fiberhome", r"FiberHome|FIBERHOME|\bAN5516\b|\bAN6000\b|Admin\\gpononu|Admin\\onu", 10),
     ("mikrotik", r"MikroTik|RouterOS|bad command name", 10),
     ("ubiquiti", r"EdgeOS|EdgeSwitch|Ubiquiti|UniFi|\bairOS\b|Vyatta", 10),
     ("linux", r"\bLinux \S+ \d+\.\d+|GNU/Linux|Ubuntu|Debian|CentOS|BusyBox", 5),

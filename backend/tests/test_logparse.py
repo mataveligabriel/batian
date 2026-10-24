@@ -56,6 +56,7 @@ def test_presets():
     assert _m("flap", "%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to down") == ("fire", "GigabitEthernet0/1")
     assert _m("flap", "interface,info ether1 link down") == ("fire", "ether1")
     assert _m("los", "GPON ONU LOS alarm gpon-onu_1/2/3:12") == ("fire", "1/2/3")
+    assert _m("los", "ALARM 8231 MAJOR 0x2e112006 GPON The ONT losi alarm occurs FrameID: 0, SlotID: 1, PortID: 3, ONT ID: 12") == ("fire", "0/1/3")
     assert _m("config", "mgd[1]: UI_COMMIT: User 'admin' requested 'commit'")[0] == "fire"
 
 

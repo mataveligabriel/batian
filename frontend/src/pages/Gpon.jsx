@@ -15,6 +15,8 @@ const rxCls = (v, bad) => (v == null ? "text-slate-500" : v < bad ? "text-red-30
 const fmtRx = (v) => (v == null ? "—" : `${Number(v).toFixed(1)} dBm`);
 const PHASE_CLS = (o) => (o.off ? ((o.phase || "").toLowerCase().includes("dying") ? "text-amber-300" : "text-red-300") : "text-emerald-300");
 const sel = "h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200";
+// ZTE: gpon-onu_1/S/P:ID · Huawei: F/S/P ONT ID
+const onuName = (o, short) => (o.platform === "fiberhome" ? `slot ${o.slot} pon ${o.pon} onu ${o.onu}` : o.platform === "huawei" ? `${o.frame ?? 0}/${o.slot}/${o.pon} ONT ${o.onu}` : short ? `1/${o.slot}/${o.pon}:${o.onu}` : `gpon-onu_1/${o.slot}/${o.pon}:${o.onu}`);
 
 function Occ({ pct }) {
   return <div className="h-1.5 w-20 rounded bg-white/5 overflow-hidden" title={`${pct}% ocupada`}><div className={`h-full ${pct >= 90 ? "bg-red-500" : pct >= 75 ? "bg-amber-400" : "bg-brand"}`} style={{ width: `${Math.min(100, pct || 0)}%` }} /></div>;
@@ -32,7 +34,7 @@ function OnuCard({ o, bad, onClose }) {
       <div className="flex items-start gap-2">
         <div className="flex-1">
           <div className="text-slate-100 font-medium">{o.name || o.description || o.sn || `ONU ${o.onu}`}</div>
-          <div className="text-xs text-slate-400 font-mono">{o.olt_name} · gpon-onu_1/{o.slot}/{o.pon}:{o.onu}</div>
+          <div className="text-xs text-slate-400 font-mono">{o.olt_name} · {onuName(o)}</div>
         </div>
         <button onClick={onClose} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
       </div>
@@ -79,7 +81,7 @@ function PonView({ olt, p, bad, onBack, onPick }) {
       <button onClick={onBack} className="text-sm text-slate-400 hover:text-slate-200 flex items-center gap-1 mb-3"><ArrowLeft className="w-4 h-4" /> {olt.name}</button>
       <Card className="bg-surface border-line p-4 mb-3">
         <div className="flex flex-wrap items-center gap-4">
-          <div className="text-slate-100 font-medium font-mono">PON 1/{p.slot}/{p.pon}</div>
+          <div className="text-slate-100 font-medium font-mono">PON {p.pon_name || `1/${p.slot}/${p.pon}`}</div>
           <span className="text-sm text-slate-300">{p.total} ONUs · <span className="text-emerald-300">{p.online} online</span> · <span className="text-red-300">{p.offline} off</span>{p.los ? ` (${p.los} LOS)` : ""}</span>
           <span className={`text-sm ${rxCls(p.rx_median, bad)}`}>mediana {fmtRx(p.rx_median)}{p.rx_base != null && <span className="text-slate-500"> · normal {fmtRx(p.rx_base)}</span>}</span>
           {p.mass_open && <span className="text-xs px-2 rounded border border-red-500/50 text-red-300">queda em massa</span>}
@@ -125,12 +127,13 @@ function Configure({ settings, devices, onSaved }) {
     } catch (e) { toast.error(formatApiError(e)); }
   };
   const lbl = "text-xs text-slate-400 mb-1 block";
-  const zte = devices.filter(d => d.device_type === "zte");
+  const zte = devices.filter(d => d.device_type === "zte" || (d.device_type === "huawei" && /olt|ma5[68]\d\d|ea5[68]\d\d|smartax|gpon/i.test([d.name, d.model, d.description, ...(d.tags || [])].filter(Boolean).join(" "))));
+  const others = devices.filter(d => !zte.includes(d) && (d.device_type === "huawei" || d.device_type === "fiberhome"));
   return (
     <Card className="bg-surface border-line p-4" data-testid="gpon-config">
-      <label className={lbl}>OLTs acompanhadas (ZTE C300/C320/C600/C650 — Ctrl/⌘ para várias)</label>
+      <label className={lbl}>OLTs acompanhadas (ZTE, Huawei e FiberHome — Ctrl/⌘ para várias)</label>
       <select multiple value={c.olts} onChange={e => set("olts", [...e.target.selectedOptions].map(o => o.value))} className="w-full h-32 rounded-md bg-sunken border border-line p-1 text-sm text-slate-200" data-testid="gpon-olts">
-        <TagOptions devices={zte.length ? zte : devices} />
+        <TagOptions devices={zte.length ? [...zte, ...others] : devices} />
       </select>
       <p className="text-[11px] text-slate-500 mt-1">Nome, serial, descrição e usuário PPPoE vêm do último backup de configuração da OLT (deixe o backup ligado). A senha do PPPoE não é guardada.</p>
       <div className="grid sm:grid-cols-4 gap-3 mt-3">
@@ -192,7 +195,7 @@ export default function Gpon() {
         {res.map(o => (
           <button key={o.key} onClick={() => { setOnu(o); setQ(""); }} className="w-full text-left px-4 py-2 hover:bg-white/[0.03] flex flex-wrap items-center gap-3 text-sm">
             <span className="text-slate-100 min-w-[10rem]">{o.name || o.description || o.sn}</span>
-            <span className="font-mono text-xs text-slate-400">{o.olt_name} · 1/{o.slot}/{o.pon}:{o.onu}</span>
+            <span className="font-mono text-xs text-slate-400">{o.olt_name} · {onuName(o, true)}</span>
             <span className="font-mono text-xs text-slate-500">{o.sn}</span>
             {(o.pppoe || []).length > 0 && <span className="font-mono text-xs text-slate-500">{o.pppoe.join(", ")}</span>}
             <span className={`ml-auto text-xs ${PHASE_CLS(o)}`}>{o.phase}</span><span className={`text-xs font-mono ${rxCls(o.rx, bad)}`}>{fmtRx(o.rx)}</span>
@@ -215,7 +218,7 @@ export default function Gpon() {
                   <tbody className="divide-y divide-line">
                     {o.pons.map(p => (
                       <tr key={p.key} onClick={() => setSp({ olt: o.id, pon: `${p.slot}/${p.pon}` })} className={`hover:bg-white/[0.03] cursor-pointer ${p.mass_open || p.degraded ? "bg-red-500/5" : ""}`} data-testid={`gpon-pon-${p.slot}-${p.pon}`}>
-                        <td className="px-4 py-1.5 font-mono text-slate-200">1/{p.slot}/{p.pon}</td>
+                        <td className="px-4 py-1.5 font-mono text-slate-200">{p.pon_name || `1/${p.slot}/${p.pon}`}</td>
                         <td className="px-2"><div className="flex items-center gap-2"><Occ pct={p.occupancy_pct} /><span className="text-xs text-slate-400">{p.total}/{data.pon_max}</span></div></td>
                         <td className="px-2 text-right text-emerald-300">{p.online}</td>
                         <td className={`px-2 text-right ${p.offline ? "text-red-300" : "text-slate-500"}`}>{p.offline}{p.los ? <span className="text-[10px] text-slate-500"> ({p.los} LOS)</span> : null}</td>

@@ -80,7 +80,7 @@ class Agent(AgentCreate):
 
 
 # ---------- Devices ----------
-DEVICE_TYPES = ["linux", "mikrotik", "cisco", "huawei", "juniper", "ubiquiti", "datacom", "zte", "other"]
+DEVICE_TYPES = ["linux", "mikrotik", "cisco", "huawei", "juniper", "ubiquiti", "datacom", "zte", "fiberhome", "other"]
 
 
 class DeviceCreate(BaseModel):

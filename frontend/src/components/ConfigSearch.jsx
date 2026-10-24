@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Search, Loader2, Eye, ChevronDown, ChevronRight, AlertTriangle, CornerDownRight } from "lucide-react";
 
-const TYPES = ["", "huawei", "juniper", "datacom", "zte", "cisco", "mikrotik", "ubiquiti", "linux", "other"];
+const TYPES = ["", "huawei", "juniper", "datacom", "zte", "fiberhome", "cisco", "mikrotik", "ubiquiti", "linux", "other"];
 const MODES = [["word", "Palavra inteira"], ["text", "Trecho"], ["regex", "Regex"]];
 const EXAMPLES = ["1302", "187.16.216.95", "vpn-instance", "mpls l2vc"];
 const sel = "h-9 bg-sunken border border-line rounded-md px-2 text-sm text-slate-200";

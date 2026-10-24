@@ -44,7 +44,7 @@ TG_LIMIT = 3900
 
 DEVICE_TYPE_NAMES = {
     "linux": "Linux", "mikrotik": "Mikrotik RouterOS", "cisco": "Cisco IOS/NX-OS", "huawei": "Huawei VRP",
-    "juniper": "Juniper Junos", "ubiquiti": "Ubiquiti", "datacom": "Datacom DmOS", "zte": "ZTE (OLT/Switch)",
+    "juniper": "Juniper Junos", "ubiquiti": "Ubiquiti", "datacom": "Datacom DmOS", "zte": "ZTE (OLT/Switch)", "fiberhome": "FiberHome (OLT)",
     "other": "Outro",
 }
 
@@ -136,6 +136,8 @@ Dicas por fabricante (confirme a sintaxe da versão do equipamento):
 - Cisco IOS/XE: show ip interface brief | show ip bgp summary | show interfaces transceiver | show running-config | section router bgp.
 - Datacom DmOS: show interface link | show running-config router bgp | show bgp summary (varia por versão).
 - ZTE OLT (C300/C320/C600/C650): show gpon onu state gpon-olt_R/S/P | show gpon onu detail-info gpon-onu_R/S/P:ID | show pon power attenuation gpon-onu_R/S/P:ID | show pon power onu-rx gpon-olt_R/S/P | show mac ... (MAC no formato xxxx.xxxx.xxxx; nos C6xx a interface pode ser gpon_olt-R/S/P e gpon_onu-R/S/P:ID). Remover ONU: configure terminal / interface gpon-olt_R/S/P / no onu ID / exit.
+- Huawei OLT (MA5800/MA5608T/MA5683T, cadastrada como huawei; prompt "MA5800>"/"#"/"(config)#"): leituras em "enable" + "config": display ont info 0 all (estado de todas) | display ont info summary F/S/P (última queda, causa e Rx/Tx de cada ONT da PON) | display ont info F S P ID | display ont info by-sn 48575443XXXXXXXX | display ont autofind all (pedindo autorização) | interface gpon F/S + display ont optical-info P ID (sinal) + quit | display mac-address all | include xxxx-xxxx-xxxx | display board 0. PON no formato F/S/P (0/1/3), ONT ID 0–127, serial em 16 hexa. Se a saída perguntar "{ <cr>|... }:" a resposta é Enter. Remover ONT: enable / undo smart / config / undo service-port port F/S/P ont ID / interface gpon F/S / ont delete P ID / quit / quit. Não confunda com o Huawei VRP (system-view): a OLT não tem system-view.
+- FiberHome OLT AN5516 (cadastrada como fiberhome; "User>" -> enable -> "Admin#", navega por diretórios com cd e cd ..): showcard (placas) | cd onu (ou cd gpononu nos firmwares antigos) + show discovery slot S pon P (não autorizadas) | show authorization slot S pon P (autorizadas e estado up/dn) | show optic_module slot S pon P onu O (sinal) | show onu service-info slot S pon P onu O. Remover ONU: enable / cd onu / set whitelist phy_addr address SERIAL password null action delete slot S pon P onu O / cd .. / save. A sintaxe muda entre firmwares (RP); a AN6000 tem outra CLI.
 - Mikrotik: /interface print | /routing bgp session print (v7) ou /routing bgp peer print (v6) | /interface ethernet monitor X once. Desativar: /interface disable X.
 """
 CHANNEL_PROMPT = {

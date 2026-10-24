@@ -1306,3 +1306,34 @@ Menu **Inventário / IPAM** (módulo "Inventário e IPAM").
   **Sincronizar** cria no NetBox os prefixos e os IPs das interfaces (descrição "equipamento · interface"; VRF pelo
   nome quando existe lá) e, se marcado, traz para o BastiON os prefixos que só existem no NetBox. Nada é apagado
   em nenhum dos lados.
+
+## 56. OLT Huawei (MA5800 / EA5800 / MA5608T / MA5683T)
+
+Tudo o que existia para OLT ZTE agora vale também para Huawei SmartAX. Cadastre a OLT em **Equipamentos** com o tipo **Huawei** e um nome, modelo ou tag com "OLT" (ex.: `OLT-CENTRO`): é assim que o BastiON separa a OLT dos roteadores/switches Huawei VRP.
+
+- **Script de OLT** → botão **Huawei** ao lado do título:
+  - **Ativação da OLT**: sysname, VLANs de clientes no uplink (`vlan … smart` / `port vlan … F/S P`), gerência inband (`interface vlanif`) ou outband (`meth0`), `dba-profile` + `ont-lineprofile gpon` por plano (IDs 10, 11…), service profile genérico, NTP, SNMP e autosave. **Ler placas** mostra o `display board 0`.
+  - **Autorizar ONU**: **Buscar autofind** (`display ont autofind all`) traz o serial e o próximo ONT ID livre da PON; o script faz `ont add … sn-auth … omci ont-lineprofile-id … ont-srvprofile-id … desc`, a porta (`ont port native-vlan`) ou o PPPoE na ONU (`ont ipconfig … pppoe`) e um `service-port` por VLAN. A senha do PPPoE só vai no script; não fica no navegador nem no banco.
+  - **Desautorizar ONU**: procura pelo serial (`display ont info by-sn`, aceita `HWTC-A1B2C3D4` ou os 16 hexa) ou pelo MAC (`display mac-address all | include`), confere (`display ont info F S P ID`) e gera `undo service-port port F/S/P ont ID` + `ont delete`.
+  - **ONUs off**: `display ont info 0 all` + `display ont info summary F/S/P` (última queda e causa, pela hora da OLT — `display time`). Antes de remover, guarda `display current-configuration ont …` e os service-ports de cada ONT.
+  - **Enviar para a OLT**: roda `enable` / `undo smart` / `config`, para no primeiro `Failure`/`% …` (volta com `return`, sem `save`), responde Enter às perguntas `{ <cr>|… }:` e `y` às confirmações.
+- **GPON**: em **GPON → Configurar** escolha também as OLTs Huawei. Estado de todas as ONTs a cada ciclo; o sinal (Rx) e a causa da queda vêm do `display ont info summary` de cada PON. As PONs aparecem como `0/1/0`.
+- **Syslog**: a regra pronta "LOS em massa na PON" passa a reconhecer o alarme Huawei (`FrameID: 0, SlotID: 1, PortID: 3`). Quem já tinha a regra sem alteração é atualizado sozinho.
+- **Assistente de IA**: conhece os comandos da OLT Huawei (não confunde com o `system-view` do VRP).
+- **Backup**: na OLT Huawei o `display current-configuration` só funciona no modo privilegiado; quando a OLT recusa no modo usuário, o BastiON entra com `enable` e repete sozinho. Sem o backup, o GPON ainda mostra estado e sinal, mas sem o PPPoE de cada ONT.
+
+Confira na versão do seu firmware antes de aplicar: `ont ipconfig … pppoe`, `snmp-agent target-host …`, `autosave time` e `display current-configuration ont` mudam de sintaxe entre versões.
+
+## 57. OLT FiberHome (AN5516, CLI clássica)
+
+Cadastre a OLT em **Equipamentos** com o tipo **FiberHome (OLT)** (Telnet ou SSH). O BastiON entra com `enable`; se a OLT pedir senha, usa a mesma senha do login (padrão comum: GEPON).
+
+- **Script de OLT** → botão **FiberHome**:
+  - **Ativação**: uplinks (`set uplink port 19:1 enable`), `set cards_all_auth`, VLANs de clientes (`set service … vid_begin … uplink … tagged`), VLAN/IP de gerência (`set manage vlan …`), rota padrão, SNMP e `set auto_save`. **Ler placas** usa o `showcard`.
+  - **Autorizar ONU**: **Buscar** lê o `show discovery` (todas as PONs das placas GPON ou só as informadas, ex.: `1/2`) e o próximo ID livre pelo `show authorization`. O script faz `set whitelist phy_addr address … action add slot S pon P onu O type T`, a VLAN na porta LAN (`set epon … service … vlan_mode tag`) ou o PPPoE na ONU roteada (`set wancfg …` + `onuveip`), `apply onu … vlan` e `save`.
+  - **Desautorizar ONU**: a FiberHome remove pelo serial: informe slot/PON/ONU e **Conferir** lê o serial e o tipo; o script usa `set whitelist … action delete`.
+  - **Diretório**: firmwares novos usam `cd onu`, antigos `cd gpononu`; o BastiON descobre sozinho na leitura e o botão deixa trocar.
+  - **ONUs off**: ainda não (falta confirmar como a AN5516 mostra a hora da última queda).
+- **GPON**: escolha a OLT FiberHome em **GPON → Configurar**: estado online/offline de cada ONU pelo `show authorization` e alerta de queda em massa por PON. O sinal aparece ao abrir a ONU (`show optic_module`).
+
+Ainda sem testar em equipamento real: a leitura de `showcard`, `show discovery` e `show authorization` é tolerante (procura o serial FHTT… e o estado up/dn em cada linha). Se algo vier vazio, a tela mostra a resposta da OLT — mande essa saída para ajustar. A AN6000 (CLI nova) não é suportada.

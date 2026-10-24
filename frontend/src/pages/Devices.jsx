@@ -20,7 +20,7 @@ import { BulkEditDevicesDialog } from "@/components/BulkEditDevicesDialog";
 
 export const DEVICE_TYPES = [
   ["linux", "Linux / Unix"], ["mikrotik", "Mikrotik RouterOS"], ["cisco", "Cisco IOS/NX-OS"], ["huawei", "Huawei VRP"], ["juniper", "Juniper Junos"],
-  ["ubiquiti", "Ubiquiti"], ["datacom", "Datacom DmOS"], ["zte", "ZTE (OLT / Switch)"], ["other", "Outro (legado)"],
+  ["ubiquiti", "Ubiquiti"], ["datacom", "Datacom DmOS"], ["zte", "ZTE (OLT / Switch)"], ["fiberhome", "FiberHome (OLT)"], ["other", "Outro (legado)"],
 ];
 const typeLabel = (t) => DEVICE_TYPES.find(x => x[0] === t)?.[1] || t || "linux";
 

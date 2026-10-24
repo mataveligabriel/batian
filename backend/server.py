@@ -73,6 +73,8 @@ import rpki
 import vendorscan
 import rdp
 import oltgen
+import olthw
+import oltfh
 import tcprelay
 import runbooks
 import teopt
@@ -1922,9 +1924,19 @@ async def oltgen_onu_read(body: OnuReadIn, user: dict = Depends(get_current_user
 
 
 # ---------- aplicar direto na OLT ----------
-_OLT_ERR = re.compile(r"%\s*(error|invalid|unrecognized|incomplete|ambiguous|unknown|code)|^\s*error\b|\berror\s*[:\[]|"
+_VENDOR_NAME = {"zte": "ZTE", "huawei": "Huawei", "fiberhome": "FiberHome"}
+_ENABLE_PW = re.compile(r"pass(word)?\s*:\s*$", re.I)
+
+
+def _enable_password(dev: dict) -> str:
+    """FiberHome pede senha no enable: usa a de enable cadastrada (se houver) ou a mesma do login."""
+    return vault.decrypt(dev.get("enable_password", "")) or vault.decrypt(dev.get("password", "")) or ""
+
+
+_OLT_ERR = re.compile(r"%\s*(error|invalid|unrecognized|incomplete|ambiguous|unknown|code|parameter|too\s+many)|^\s*error\b|\berror\s*[:\[]|"
+                      r"^\s*failure\b|\bfailure\s*:|\bunknown\s+command\b|\bcommand\s+not\s+found\b|\binvalid\s+(?:input|parameter|command)\b|"
                       r"not\s+exist|does\s+not\s+exist|already\s+exist|failed|is\s+in\s+use|out\s+of\s+range", re.I | re.M)
-_OLT_CONFIRM = re.compile(r"(yes/no|\[y/n\]|\(y/n\)|y/n)\s*\]?\s*:?\s*$", re.I)
+_OLT_CONFIRM = re.compile(r"(yes/no|\[y/n\]|\(y/n\)|y/n)\s*\]?\s*(\[[yn]\])?\s*:?\s*$", re.I)
 _olt_apply_locks: dict = {}
 
 
@@ -1934,28 +1946,31 @@ class OltApplyIn(BaseModel):
     params: dict = {}
 
 
-async def _olt_run_script(dev: dict, script: str) -> dict:
+async def _olt_run_script(dev: dict, script: str, timeout_for=None) -> dict:
     """Manda o script linha a linha numa sessão só. Para no primeiro erro (sai do modo de configuração e não grava);
     responde 'yes' quando a OLT pede confirmação (ex.: write)."""
     steps, failed = [], None
+    hw = (dev.get("device_type") or "") == "huawei"
     cli = await _connect_device(dev)
     try:
         sess = await cli.shell()
         try:
             for line in script.splitlines():
                 cmd = line.rstrip()
-                if not cmd.strip() or cmd.lstrip().startswith("!"):
+                if not cmd.strip() or cmd.lstrip().startswith(("!", "#")):
                     continue
-                out = await sess.run(cmd, timeout=90)
+                out = await sess.run(cmd, timeout=240 if cmd.strip() in ("save", "write") else 90)
+                if cmd.strip() == "enable" and _ENABLE_PW.search(out.strip()[-40:]):
+                    out += await sess.run(_enable_password(dev), timeout=30)     # senha não vai para o histórico
                 if _OLT_CONFIRM.search(out.strip()[-60:]):
-                    out += await sess.run("yes", timeout=120)
+                    out += await sess.run("y" if hw else "yes", timeout=120)
                 # a própria linha ecoada não conta como erro
                 body = out.replace(cmd.strip(), "", 1)
                 if _OLT_ERR.search(body):
                     failed = {"command": cmd.strip(), "output": out.strip()[-1500:]}
                     steps.append({"command": cmd.strip(), "ok": False})
                     try:
-                        await sess.run("end", timeout=20)
+                        await sess.run("return" if hw else "end", timeout=20)
                     except Exception:
                         pass
                     break
@@ -1974,7 +1989,9 @@ async def _olt_run_script(dev: dict, script: str) -> dict:
 async def oltgen_apply(body: OltApplyIn, user: dict = Depends(get_current_user)):
     """Gera o script no servidor (a partir dos mesmos parâmetros da tela) e aplica direto na OLT, gravando no final."""
     _no_viewer(user)
-    gen = {"onu": oltgen.onu_script, "onu-add": oltgen.onu_add_script, "onu-remove": oltgen.onu_remove_script}.get(body.kind)
+    gen = {"onu": oltgen.onu_script, "onu-add": oltgen.onu_add_script, "onu-remove": oltgen.onu_remove_script,
+           "hw-onu": olthw.onu_script, "hw-onu-remove": olthw.onu_remove_script,
+           "fh-onu": oltfh.onu_script, "fh-onu-remove": oltfh.onu_remove_script}.get(body.kind)
     if not gen:
         raise HTTPException(status_code=400, detail="Tipo de script não pode ser aplicado direto")
     try:
@@ -1982,8 +1999,9 @@ async def oltgen_apply(body: OltApplyIn, user: dict = Depends(get_current_user))
     except (oltgen.GenError, TypeError, ValueError, AttributeError) as e:
         raise HTTPException(status_code=400, detail=str(e) or "Parâmetros inválidos")
     dev = await _get_device_for(user, body.device_id)
-    if (dev.get("device_type") or "") != "zte":
-        raise HTTPException(status_code=400, detail="Esse equipamento não está cadastrado como ZTE")
+    want = "huawei" if body.kind.startswith("hw-") else "fiberhome" if body.kind.startswith("fh-") else "zte"
+    if (dev.get("device_type") or "") != want:
+        raise HTTPException(status_code=400, detail=f"Esse equipamento não está cadastrado como {_VENDOR_NAME[want]}")
     lock = _olt_apply_locks.setdefault(dev["id"], asyncio.Lock())
     if lock.locked():
         raise HTTPException(status_code=409, detail="Já tem um script sendo aplicado nessa OLT; espere terminar")
@@ -1999,8 +2017,8 @@ async def oltgen_apply(body: OltApplyIn, user: dict = Depends(get_current_user))
                                   "duration_seconds": int((datetime.now(timezone.utc) - started).total_seconds()),
                                   "commands": [s["command"] for s in r["steps"]], "oltgen": body.kind, "ok": r["ok"]})
     logger.info("Script de OLT (%s) aplicado por %s em %s: %s", body.kind, user.get("email"), dev["name"], "ok" if r["ok"] else "ERRO")
-    return {**r, "device": dev["name"], "saved": r["ok"] and any(s["command"] == "write" for s in r["steps"]),
-            "total": len([l for l in res["script"].splitlines() if l.strip() and not l.lstrip().startswith("!")])}
+    return {**r, "device": dev["name"], "saved": r["ok"] and any(s["command"] in ("write", "save") for s in r["steps"]),
+            "total": len([l for l in res["script"].splitlines() if l.strip() and not l.lstrip().startswith(("!", "#"))])}
 
 
 # ---------- Limpeza de ONUs off há mais de N dias ----------
@@ -2122,12 +2140,19 @@ async def oltgen_offline_scan(body: OltCleanScanIn, user: dict = Depends(get_cur
     """Procura as ONUs off (LOS, DyingGasp, OffLine) e há quantos dias cada uma caiu. Só leitura."""
     _no_viewer(user)
     dev = await _get_device_for(user, body.device_id)
-    if (dev.get("device_type") or "") != "zte":
-        raise HTTPException(status_code=400, detail="Esse equipamento não está cadastrado como ZTE")
+    vt = dev.get("device_type") or ""
+    if vt == "fiberhome":
+        raise HTTPException(status_code=400, detail="A limpeza de ONUs off ainda não está disponível para FiberHome (falta confirmar como a OLT mostra a hora da queda)")
+    if vt not in ("zte", "huawei"):
+        raise HTTPException(status_code=400, detail="Esse equipamento não está cadastrado como OLT ZTE ou Huawei")
     if any(j["device_id"] == dev["id"] and j["state"] == "running" for j in OLT_CLEAN_JOBS.values()):
         raise HTTPException(status_code=409, detail="Já tem uma varredura ou limpeza rodando nessa OLT")
     j = _clean_job(user, "scan", dev)
-    asyncio.create_task(_olt_offline_scan(j, dev, max(1, min(3650, body.days)), [p for p in body.pons if re.fullmatch(r"\d{1,2}/\d{1,2}", p)]))
+    days = max(1, min(3650, body.days))
+    if vt == "huawei":
+        asyncio.create_task(_hw_offline_scan(j, dev, days, [p for p in body.pons if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{1,3}", p)]))
+    else:
+        asyncio.create_task(_olt_offline_scan(j, dev, days, [p for p in body.pons if re.fullmatch(r"\d{1,2}/\d{1,2}", p)]))
     return _job_out(j)
 
 
@@ -2224,6 +2249,7 @@ async def oltgen_offline_remove(body: OltCleanRemoveIn, user: dict = Depends(get
     if time.time() - scan["_t"] > 3600:
         raise HTTPException(status_code=409, detail="Essa varredura tem mais de 1 hora — rode a busca de novo antes de remover")
     by_key = {(o["slot"], o["pon"], o["onu"]): o for o in scan.get("onus") or []}
+    hw = scan.get("platform") == "huawei"
     picked = []
     for it in body.items:
         try:
@@ -2247,7 +2273,7 @@ async def oltgen_offline_remove(body: OltCleanRemoveIn, user: dict = Depends(get
 
     async def run():
         async with lock:
-            await _olt_offline_remove(j, dev, user, scan, picked)
+            await (_hw_offline_remove if hw else _olt_offline_remove)(j, dev, user, scan, picked)
     asyncio.create_task(run())
     return _job_out(j)
 
@@ -2262,7 +2288,8 @@ async def oltgen_removed(device_id: str = "", limit: int = 500, user: dict = Dep
 class FindOnuIn(BaseModel):
     query: str = ""              # serial (ZTEGD4F3D9EC) ou MAC
     mac: str = ""                # compatibilidade com a tela antiga
-    device_id: str = ""          # vazio ou "all" = procura em todas as OLTs ZTE do usuário
+    device_id: str = ""          # vazio ou "all" = procura em todas as OLTs ZTE/Huawei do usuário
+    vendor: str = ""             # zte | huawei: só as OLTs desse fabricante (vazio = as duas)
 
 
 @api.post("/oltgen/find-onu")
@@ -2272,24 +2299,43 @@ async def oltgen_find_onu(body: FindOnuIn, user: dict = Depends(get_current_user
     _no_viewer(user)
     q = (body.query or body.mac or "").strip()
     try:
-        if oltgen.looks_like_sn(q):
-            kind, key = "sn", oltgen.norm_sn(q)
-            cmds = oltgen.SN_COMMANDS
-            parse = lambda raw: oltgen.parse_sn_lookup(raw)
+        if oltgen.looks_like_sn(q) or olthw.looks_like_sn(q):
+            hx = olthw.sn_hex(q)
+            kind, key = "sn", olthw.sn_vendor(hx).replace("-", "")
         else:
             kind, key = "mac", oltgen.norm_mac(q)
-            cmds = oltgen.MAC_COMMANDS
-            parse = lambda raw: oltgen.parse_mac_lookup(raw, key)
     except oltgen.GenError:
-        raise HTTPException(status_code=400, detail="Informe o serial da ONU (ex.: ZTEGD4F3D9EC) ou o MAC do equipamento do cliente")
+        raise HTTPException(status_code=400, detail="Informe o serial da ONU (ex.: ZTEGD4F3D9EC, HWTC-A1B2C3D4) ou o MAC do equipamento do cliente")
     if body.device_id and body.device_id != "all":
         devs = [await _get_device_for(user, body.device_id)]
     else:
-        devs = await db.devices.find({**_scope(user), "device_type": "zte"}, {"_id": 0}).to_list(30)
+        types = [body.vendor] if body.vendor in ("zte", "huawei") else ["zte", "huawei"]
+        devs = await db.devices.find({**_scope(user), "device_type": {"$in": types}}, {"_id": 0}).to_list(200)
+        hws = [d for d in devs if d.get("device_type") == "huawei"]
+        olt_like = [d for d in hws if _HW_OLT_RE.search(" ".join([d.get("name") or "", d.get("model") or "", d.get("description") or "",
+                                                                  " ".join(d.get("tags") or [])]))]
+        if olt_like:                       # Huawei também é roteador/switch (VRP): procura só nos que parecem OLT
+            devs = [d for d in devs if d.get("device_type") != "huawei" or d in olt_like]
+        devs = devs[:40]
         if not devs:
-            raise HTTPException(status_code=404, detail="Nenhuma OLT ZTE cadastrada")
+            raise HTTPException(status_code=404, detail="Nenhuma OLT " + (" ou ".join(t.upper() if t == "zte" else "Huawei" for t in types)) + " cadastrada")
     searched, errors = [], []
     for dev in devs:
+        if (dev.get("device_type") or "") == "huawei":
+            try:
+                hit = await _hw_find(dev, kind, hx if kind == "sn" else olthw.hw_mac(key))
+                searched.append(dev["name"])
+                if hit:
+                    await _olt_log(user, dev)
+                    return {"found": True, "kind": kind, "query": key, "mac": key if kind == "mac" else "", "vendor": "huawei",
+                            "device": dev["name"], "device_id": dev["id"], **hit, "searched": searched}
+            except Exception as e:
+                errors.append(f"{dev['name']}: {e}"[:160])
+            continue
+        if kind == "sn" and not oltgen.looks_like_sn(key):
+            continue
+        cmds = oltgen.SN_COMMANDS if kind == "sn" else oltgen.MAC_COMMANDS
+        parse = (lambda raw: oltgen.parse_sn_lookup(raw)) if kind == "sn" else (lambda raw: oltgen.parse_mac_lookup(raw, key))
         try:
             cli = await _connect_device(dev)
         except Exception as e:
@@ -2310,11 +2356,8 @@ async def oltgen_find_onu(body: FindOnuIn, user: dict = Depends(get_current_user
             onu_cfg = _out_text(await cli.run_command(
                 f"show running-config interface {oltgen.onu_if_name(hit['platform'], hit['slot'], hit['pon'], hit['onu'])}", timeout=60))
             info = oltgen.find_onu(pon_cfg, onu_cfg, hit["onu"]) or {}
-            await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
-                                          "device_id": dev["id"], "device_name": dev["name"], "kind": "batch",
-                                          "started_at": datetime.now(timezone.utc).isoformat(),
-                                          "ended_at": datetime.now(timezone.utc).isoformat(), "duration_seconds": 0})
-            return {"found": True, "kind": kind, "query": key, "mac": key if kind == "mac" else "",
+            await _olt_log(user, dev)
+            return {"found": True, "kind": kind, "query": key, "mac": key if kind == "mac" else "", "vendor": "zte",
                     "device": dev["name"], "device_id": dev["id"], **hit, **info, "searched": searched}
         except Exception as e:
             errors.append(f"{dev['name']}: {e}"[:160])
@@ -2324,6 +2367,470 @@ async def oltgen_find_onu(body: FindOnuIn, user: dict = Depends(get_current_user
             except Exception:
                 pass
     return {"found": False, "kind": kind, "query": key, "mac": key if kind == "mac" else "", "searched": searched, "errors": errors}
+
+
+async def _olt_log(user: dict, dev: dict, started: Optional[datetime] = None, **extra):
+    now = datetime.now(timezone.utc)
+    st = started or now
+    await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
+                                  "device_id": dev["id"], "device_name": dev["name"], "kind": "batch",
+                                  "started_at": st.isoformat(), "ended_at": now.isoformat(),
+                                  "duration_seconds": int((now - st).total_seconds()), **extra})
+
+
+# ---------- OLT Huawei (MA5800 / MA5608T / MA5683T) ----------
+_HW_OLT_RE = re.compile(r"olt|ma5[68]\d\d|ea5[68]\d\d|smartax|gpon", re.I)
+def _hw_dev_check(dev: dict):
+    if (dev.get("device_type") or "") != "huawei":
+        raise HTTPException(status_code=400, detail="Esse equipamento não está cadastrado como Huawei")
+
+
+class _HwSess:
+    """Sessão numa OLT Huawei já no modo config (enable + config). Guarda o último comando para o diagnóstico."""
+    def __init__(self, dev: dict, j: Optional[dict] = None):
+        self.dev, self.j, self.cli, self.sess = dev, j, None, None
+
+    async def __aenter__(self):
+        self.cli = await _connect_device(self.dev)
+        try:
+            self.sess = await self.cli.shell()
+            await self.sess.run("enable", timeout=20)
+            await self.sess.run("config", timeout=20)
+        except Exception:
+            await self.cli.close()
+            raise
+        return self
+
+    async def run(self, cmd: str, timeout: int = 90) -> str:
+        out = await self.sess.run(cmd, timeout=timeout)
+        if self.j is not None:
+            self.j["_last"] = {"command": cmd, "output": (out or "")[-1500:]}
+        return out or ""
+
+    async def __aexit__(self, *a):
+        try:
+            await self.sess.close()
+        except Exception:
+            pass
+        await self.cli.close()
+
+
+def _hw_err(out: str, cmd: str) -> bool:
+    return bool(_OLT_ERR.search((out or "").replace(cmd, "", 1)))
+
+
+async def _hw_find(dev: dict, kind: str, key: str) -> Optional[dict]:
+    async with _HwSess(dev) as s:
+        if kind == "sn":
+            hit = olthw.parse_by_sn(await s.run(f"display ont info by-sn {key}", timeout=60))
+        else:
+            hit = None
+            for c in olthw.MAC_COMMANDS:
+                out = await s.run(c.format(mac=key), timeout=120)
+                hit = olthw.parse_mac_lookup(out, key)
+                if hit:
+                    break
+            if hit:
+                hit.update(olthw.parse_detail(await s.run(f"display ont info {hit['frame']} {hit['slot']} {hit['port']} {hit['ont']}", timeout=60)))
+    if not hit:
+        return None
+    return {**hit, "platform": "huawei", "onu": hit["ont"], "name": hit.get("description") or "",
+            "interface": f"{hit['pon']} ONT {hit['ont']}", "sn_vendor": olthw.sn_vendor(hit.get("sn") or "") if hit.get("sn") else ""}
+
+
+@api.get("/oltgen/hw/models")
+async def oltgen_hw_models(_: dict = Depends(get_current_user)):
+    return {"models": [{"key": k, "slots": v} for k, v in olthw.MODELS.items()]}
+
+
+def _hw_gen(fn, body):
+    try:
+        return fn(body or {})
+    except (oltgen.GenError, TypeError, ValueError, AttributeError) as e:
+        raise HTTPException(status_code=400, detail=str(e) or "Parâmetros inválidos")
+
+
+@api.post("/oltgen/hw/generate")
+async def oltgen_hw_generate(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return _hw_gen(olthw.generate, body)
+
+
+@api.post("/oltgen/hw/onu")
+async def oltgen_hw_onu(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return _hw_gen(olthw.onu_script, body)
+
+
+@api.post("/oltgen/hw/onu-remove")
+async def oltgen_hw_onu_remove(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return _hw_gen(olthw.onu_remove_script, body)
+
+
+@api.post("/oltgen/hw/read-board")
+async def oltgen_hw_read_board(body: OltCardsIn, user: dict = Depends(get_current_user)):
+    """`display board 0`: placas PON (slot e quantidade de portas) para o formulário. Só leitura."""
+    _no_viewer(user)
+    dev = await _get_device_for(user, body.device_id)
+    _hw_dev_check(dev)
+    try:
+        async with _HwSess(dev) as s:
+            text = await s.run("display board 0", timeout=60)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui ler a OLT: {e}"[:300])
+    boards = olthw.parse_board(text)
+    if not boards:
+        raise HTTPException(status_code=422, detail="O display board 0 não trouxe placas PON reconhecíveis")
+    await _olt_log(user, dev)
+    return {"pon": boards, "device": dev["name"], "raw": text[-6000:]}
+
+
+@api.post("/oltgen/hw/autofind")
+async def oltgen_hw_autofind(body: OltCardsIn, user: dict = Depends(get_current_user)):
+    """ONTs pedindo autorização (`display ont autofind all`) + o próximo ONT ID livre de cada PON. Só leitura."""
+    _no_viewer(user)
+    dev = await _get_device_for(user, body.device_id)
+    _hw_dev_check(dev)
+    try:
+        async with _HwSess(dev) as s:
+            text = await s.run("display ont autofind all", timeout=120)
+            onus = olthw.parse_autofind(text)
+            info = olthw.parse_ont_info(await s.run("display ont info 0 all", timeout=180)) if onus else []
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui ler a OLT: {e}"[:300])
+    await _olt_log(user, dev)
+    taken: dict = {}
+    out = []
+    for o in onus:
+        used = taken.setdefault(o["pon"], set(olthw.used_ont_ids(info, o["frame"], o["slot"], o["port"])))
+        fid = olthw.free_ont_id(sorted(used))
+        if fid is not None:
+            used.add(fid)
+        out.append({**o, "free_id": fid})
+    return {"device": dev["name"], "platform": "huawei", "onus": out, "raw": text[-4000:]}
+
+
+class HwOnuInfoIn(BaseModel):
+    device_id: str
+    items: List[dict] = []       # [{pon: "0/1/0", onu: 3}]
+
+
+@api.post("/oltgen/hw/onu-info")
+async def oltgen_hw_onu_info(body: HwOnuInfoIn, user: dict = Depends(get_current_user)):
+    """Confere na OLT quem é cada ONT antes de desautorizar (serial, descrição, estado). Só leitura."""
+    _no_viewer(user)
+    try:
+        items = [(*olthw.fsp(i.get("pon")), int(i["onu"])) for i in body.items[:64]]
+    except (KeyError, TypeError, ValueError, oltgen.GenError):
+        raise HTTPException(status_code=400, detail="Informe a PON (F/S/P) e o ONT ID")
+    if not items:
+        raise HTTPException(status_code=400, detail="Informe ao menos uma ONU")
+    dev = await _get_device_for(user, body.device_id)
+    _hw_dev_check(dev)
+    out = []
+    try:
+        async with _HwSess(dev) as s:
+            for f, sl, pt, o in items:
+                d = olthw.parse_detail(await s.run(f"display ont info {f} {sl} {pt} {o}", timeout=60))
+                out.append({"pon": f"{f}/{sl}/{pt}", "onu": o, "found": bool(d["sn"]), **d,
+                            "sn_vendor": olthw.sn_vendor(d["sn"]) if d["sn"] else "", "name": d["description"]})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui ler a OLT: {e}"[:300])
+    await _olt_log(user, dev)
+    return {"device": dev["name"], "items": out}
+
+
+async def _hw_offline_scan(j: dict, dev: dict, days: int, only_pons: List[str]):
+    try:
+        async with _HwSess(dev, j) as s:
+            j.update(platform="huawei", step="lendo relógio e ONTs da OLT")
+            clock = olthw._dt(await s.run("display time", timeout=30))
+            rows = olthw.parse_ont_info(await s.run("display ont info 0 all", timeout=300))
+            if only_pons:
+                want = {tuple(int(x) for x in p.split("/")) for p in only_pons}
+                rows = [r for r in rows if (r["frame"], r["slot"], r["port"]) in want]
+            if not rows:
+                raise RuntimeError("Não achei ONTs no 'display ont info 0 all'")
+            offs = [r for r in rows if r["off"]][:OLT_CLEAN_MAX]
+            pons = sorted({(r["frame"], r["slot"], r["port"]) for r in offs})
+            j.update(olt_clock=clock.strftime("%Y-%m-%d %H:%M:%S") if clock else None, onus_total=len(rows),
+                     pons=len({(r["frame"], r["slot"], r["port"]) for r in rows}), total=len(pons), done=0)
+            summ = {}
+            for i, (f, sl, pt) in enumerate(pons, 1):
+                j.update(step=f"última queda das ONTs da PON {f}/{sl}/{pt}", done=i)
+                for r in olthw.parse_summary(await s.run(f"display ont info summary {f}/{sl}/{pt}", timeout=120)):
+                    summ[(f, sl, pt, r["ont"])] = r
+        now = clock or datetime.now()
+        res = []
+        for o in offs:
+            d = summ.get((o["frame"], o["slot"], o["port"], o["ont"])) or {}
+            last = d.get("last_down")
+            off_days = round((now - last).total_seconds() / 86400, 1) if last else None
+            res.append({"frame": o["frame"], "slot": o["slot"], "pon": o["port"], "onu": o["ont"], "off": True,
+                        "sn": o["sn"], "name": o.get("description") or d.get("description") or "", "description": o.get("description") or "",
+                        "type": d.get("type") or "", "phase": o["run"], "cause": d.get("cause") or "",
+                        "last_down": last.strftime("%Y-%m-%d %H:%M:%S") if last else None, "days": off_days,
+                        "eligible": off_days is not None and off_days >= days})
+        res.sort(key=lambda r: (-(r["days"] if r["days"] is not None else -1), r["slot"], r["pon"], r["onu"]))
+        j.update(state="done", step="", onus=res, days=days, eligible=sum(1 for r in res if r["eligible"]),
+                 ended_at=datetime.now(timezone.utc).isoformat(),
+                 sample=(j.get("_last") or {}) if res and all(r["days"] is None for r in res) else None)
+    except Exception as e:
+        j.update(state="error", error=f"{e}"[:300] or type(e).__name__, diag=j.get("_last"))
+
+
+async def _hw_offline_remove(j: dict, dev: dict, user: dict, scan: dict, picked: List[dict]):
+    keep, skipped = [], []
+    try:
+        async with _HwSess(dev, j) as s:
+            for i, o in enumerate(picked, 1):
+                f = o.get("frame", 0)
+                j.update(step=f"conferindo {f}/{o['slot']}/{o['pon']} ONT {o['onu']}", done=i)
+                d = olthw.parse_detail(await s.run(f"display ont info {f} {o['slot']} {o['pon']} {o['onu']}", timeout=60))
+                if d["run"] != "offline":
+                    skipped.append({**o, "why": f"agora está {d['run'] or 'sem resposta'}"})
+                    continue
+                if o.get("sn") and d["sn"] and d["sn"] != o["sn"]:
+                    skipped.append({**o, "why": f"serial mudou ({d['sn']})"})
+                    continue
+                cfg = await s.run(f"display current-configuration ont {f}/{o['slot']}/{o['pon']} {o['onu']}", timeout=90)
+                sp = await s.run(f"display service-port port {f}/{o['slot']}/{o['pon']} ont {o['onu']}", timeout=60)
+                keep.append({**o, "frame": f, "sn": d["sn"] or o.get("sn"), "name": d["description"] or o.get("name"),
+                             "config": (cfg.strip() + "\n#\n" + sp.strip())[-20000:]})
+        if not keep:
+            j.update(state="done", step="", removed=[], skipped=skipped, ok=True)
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        await db.olt_removed_onus.insert_many([{"id": os.urandom(8).hex(), "owner_id": user["id"], "device_id": dev["id"],
+                                                "device_name": dev["name"], "at": now, "by": user.get("email", ""), "vendor": "huawei",
+                                                "batch": j["id"], **{k: o.get(k) for k in ("frame", "slot", "pon", "onu", "sn", "name",
+                                                "description", "type", "days", "last_down", "config")}} for o in keep])
+        j.update(step=f"removendo {len(keep)} ONT(s) e gravando")
+        r = await _olt_run_script(dev, olthw.bulk_remove_script([(o["frame"], o["slot"], o["pon"], o["onu"]) for o in keep]))
+        await _olt_log(user, dev, datetime.fromisoformat(j["started_at"]), commands=[x["command"] for x in r["steps"]],
+                       oltgen="offline-clean", ok=r["ok"])
+        done, cur = set(), None
+        for st in r["steps"]:
+            m = re.match(r"interface\s+gpon\s+(\d+)/(\d+)$", st["command"])
+            if m:
+                cur = (int(m.group(1)), int(m.group(2)))
+            m = re.match(r"ont\s+delete\s+(\d+)\s+(\d+)$", st["command"])
+            if m and st["ok"] and cur:
+                done.add((cur[1], int(m.group(1)), int(m.group(2))))
+        removed = [o for o in keep if (o["slot"], o["pon"], o["onu"]) in done]
+        if not r["ok"]:
+            await db.olt_removed_onus.delete_many({"batch": j["id"], "$or": [
+                {"slot": o["slot"], "pon": o["pon"], "onu": o["onu"]} for o in keep if o not in removed] or [{"_never": 1}]})
+        logger.info("Limpeza de ONTs off (Huawei) por %s em %s: %d removidas, %d puladas, %s", user.get("email"), dev["name"],
+                    len(removed), len(skipped), "ok" if r["ok"] else "ERRO")
+        j.update(state="done", step="", ok=r["ok"], failed=r["failed"], saved=r["ok"],
+                 removed=[{k: o.get(k) for k in ("frame", "slot", "pon", "onu", "sn", "name")} for o in removed], skipped=skipped)
+    except Exception as e:
+        j.update(state="error", error=f"{e}"[:300] or type(e).__name__, skipped=skipped, diag=j.get("_last"))
+
+
+# ---------- OLT FiberHome (AN5516, CLI clássica) ----------
+def _fh_dev_check(dev: dict):
+    if (dev.get("device_type") or "") != "fiberhome":
+        raise HTTPException(status_code=400, detail="Esse equipamento não está cadastrado como FiberHome")
+
+
+class _FhSess:
+    """Sessão numa OLT FiberHome: enable (com a senha de enable, se pedir) e o diretório de ONU (cd onu ou cd gpononu)."""
+    def __init__(self, dev: dict, j: Optional[dict] = None):
+        self.dev, self.j, self.cli, self.sess, self.dir = dev, j, None, None, None
+
+    async def __aenter__(self):
+        self.cli = await _connect_device(self.dev)
+        try:
+            self.sess = await self.cli.shell()
+            out = await self.sess.run("enable", timeout=20)
+            if _ENABLE_PW.search(out.strip()[-40:]):
+                out = await self.sess.run(_enable_password(self.dev), timeout=20)
+            # o prompt muda de "User>" para "Admin#" (ou "<nome>#"): ensina o leitor, senão cada comando espera o silêncio
+            last = [l.strip() for l in (out or "").replace("\r", "\n").split("\n") if l.strip()]
+            if last and last[-1][-1:] in "#>":
+                base = re.split(r"[\\\\#>(]", last[-1])[0].strip()
+                if len(base) >= 2:
+                    if hasattr(self.sess, "prompt"):
+                        self.sess.prompt = base
+                    if hasattr(self.cli, "_prompt"):
+                        self.cli._prompt = base
+        except Exception:
+            await self.cli.close()
+            raise
+        return self
+
+    async def run(self, cmd: str, timeout: int = 90) -> str:
+        out = await self.sess.run(cmd, timeout=timeout)
+        if self.j is not None:
+            self.j["_last"] = {"command": cmd, "output": (out or "")[-1500:]}
+        return out or ""
+
+    async def cd_onu(self, prefer: str = "") -> str:
+        """Entra no diretório de ONU: 'cd onu' nos firmwares novos, 'cd gpononu' nos antigos."""
+        if self.dir:
+            return self.dir
+        for d in ([prefer] if prefer in oltfh.DIRS else []) + [x for x in oltfh.DIRS if x != prefer]:
+            out = await self.run(f"cd {d}", timeout=20)
+            if not _olt_err(out, f"cd {d}") and not re.search(r"(?i)not\s+(exist|found)|no\s+such|error", out.replace(f"cd {d}", "", 1)):
+                self.dir = d
+                return d
+        raise RuntimeError("A OLT não aceitou 'cd onu' nem 'cd gpononu' — confira a versão do firmware (a AN6000 tem outra CLI)")
+
+    async def pons(self, only: Optional[List[tuple]] = None) -> List[tuple]:
+        cards = oltfh.parse_cards(await self.run("showcard", timeout=60))
+        if not cards:
+            raise RuntimeError("Não achei placas GPON no 'showcard'")
+        ps = [(c["slot"], p) for c in cards for p in range(1, c["ports"] + 1)]
+        return [x for x in ps if x in set(only)] if only else ps
+
+    async def __aexit__(self, *a):
+        try:
+            await self.sess.close()
+        except Exception:
+            pass
+        await self.cli.close()
+
+
+@api.post("/oltgen/fh/generate")
+async def oltgen_fh_generate(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return _hw_gen(oltfh.generate, body)
+
+
+@api.post("/oltgen/fh/onu")
+async def oltgen_fh_onu(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return _hw_gen(oltfh.onu_script, body)
+
+
+@api.post("/oltgen/fh/onu-remove")
+async def oltgen_fh_onu_remove(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return _hw_gen(oltfh.onu_remove_script, body)
+
+
+@api.post("/oltgen/fh/read-cards")
+async def oltgen_fh_read_cards(body: OltCardsIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    dev = await _get_device_for(user, body.device_id)
+    _fh_dev_check(dev)
+    j: dict = {}
+    try:
+        async with _FhSess(dev, j) as s:
+            text = await s.run("showcard", timeout=60)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui ler a OLT: {e}"[:300])
+    cards = oltfh.parse_cards(text)
+    if not cards:
+        raise HTTPException(status_code=422, detail="O showcard não trouxe placas GPON reconhecíveis. Resposta: " + text.strip()[-400:])
+    await _olt_log(user, dev)
+    return {"pon": cards, "device": dev["name"], "raw": text[-6000:]}
+
+
+class FhDiscIn(BaseModel):
+    device_id: str
+    pons: List[str] = []         # "1/2" (slot/pon); vazio = todas as PONs das placas GPON
+    dir: str = ""
+
+
+def _fh_pons(lst: List[str]) -> List[tuple]:
+    out = []
+    for p in lst[:64]:
+        m = re.fullmatch(r"\s*(\d{1,2})/(\d{1,2})\s*", p or "")
+        if not m:
+            raise HTTPException(status_code=400, detail="PONs no formato slot/pon, ex.: 1/2")
+        out.append((int(m.group(1)), int(m.group(2))))
+    return out
+
+
+@api.post("/oltgen/fh/discovery")
+async def oltgen_fh_discovery(body: FhDiscIn, user: dict = Depends(get_current_user)):
+    """ONUs pedindo autorização (show discovery) + o próximo ID livre (show authorization) de cada PON. Só leitura."""
+    _no_viewer(user)
+    dev = await _get_device_for(user, body.device_id)
+    _fh_dev_check(dev)
+    only = _fh_pons(body.pons)
+    j: dict = {}
+    onus, raw = [], ""
+    try:
+        async with _FhSess(dev, j) as s:
+            pons = await s.pons(only or None)
+            d = await s.cd_onu(body.dir)
+            for sl, pn in pons[:64]:
+                out = await s.run(f"show discovery slot {sl} pon {pn}", timeout=60)
+                if _olt_err(out, "show discovery") and not oltfh.SN_RE.search(out):
+                    out = await s.run(f"show discovery slot {sl} link {pn}", timeout=60)
+                found = oltfh.parse_discovery(out, sl, pn)
+                if found:
+                    raw = raw or out
+                    used = [a["onu"] for a in oltfh.parse_auth(await s.run(f"show authorization slot {sl} pon {pn}", timeout=60), sl, pn)]
+                    for o in found:
+                        fid = oltfh.free_onu_id(used)
+                        if fid:
+                            used.append(fid)
+                        onus.append({**o, "free_id": fid})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui ler a OLT: {e}"[:300])
+    await _olt_log(user, dev)
+    return {"device": dev["name"], "platform": "fiberhome", "dir": d, "onus": onus, "pons": len(pons),
+            "raw": (raw or (j.get("_last") or {}).get("output") or "")[-3000:]}
+
+
+class FhInfoIn(BaseModel):
+    device_id: str
+    items: List[dict] = []       # [{slot, pon, onu}]
+    dir: str = ""
+
+
+@api.post("/oltgen/fh/onu-info")
+async def oltgen_fh_onu_info(body: FhInfoIn, user: dict = Depends(get_current_user)):
+    """Confere na OLT cada ONU (serial, tipo, estado) pelo show authorization da PON. Só leitura."""
+    _no_viewer(user)
+    try:
+        items = [(int(i["slot"]), int(i["pon"]), int(i["onu"])) for i in body.items[:64]]
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Informe slot, PON e ONU em números")
+    if not items:
+        raise HTTPException(status_code=400, detail="Informe ao menos uma ONU")
+    dev = await _get_device_for(user, body.device_id)
+    _fh_dev_check(dev)
+    out, raw = [], ""
+    try:
+        async with _FhSess(dev) as s:
+            d = await s.cd_onu(body.dir)
+            cache: dict = {}
+            for sl, pn, o in items:
+                if (sl, pn) not in cache:
+                    txt = await s.run(f"show authorization slot {sl} pon {pn}", timeout=60)
+                    raw = raw or txt
+                    cache[(sl, pn)] = {a["onu"]: a for a in oltfh.parse_auth(txt, sl, pn)}
+                a = cache[(sl, pn)].get(o)
+                out.append({"slot": sl, "pon": pn, "onu": o, "found": bool(a), **(a or {})})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não consegui ler a OLT: {e}"[:300])
+    await _olt_log(user, dev)
+    return {"device": dev["name"], "dir": d, "items": out, "raw": raw[-3000:] if not any(x["found"] for x in out) else ""}
+
+
+async def _gpon_read_fh(dev: dict, j: dict, power: bool):
+    """FiberHome: estado de cada ONU pelo show authorization de cada PON (o sinal só na consulta da ONU)."""
+    async with _FhSess(dev, j) as s:
+        pons = await s.pons()
+        await s.cd_onu(_gpon_rt["fhdir"].get(dev["id"], ""))
+        _gpon_rt["fhdir"][dev["id"]] = s.dir
+        rows = []
+        for sl, pn in pons:
+            for a in oltfh.parse_auth(await s.run(f"show authorization slot {sl} pon {pn}", timeout=90), sl, pn):
+                rows.append({"slot": sl, "pon": pn, "onu": a["onu"], "admin": "", "phase": a["state"] or "?", "off": a["off"],
+                             "sn": a["sn"], "type": a["type"]})
+    if not rows and pons:
+        raise RuntimeError("Não reconheci nenhuma ONU no 'show authorization' — veja a resposta da OLT no diagnóstico")
+    return rows, sorted(set(pons)), {}, "fiberhome"
 
 
 # ---------- Looking Glass (interno) ----------
@@ -3339,6 +3846,11 @@ async def _backup_device(dev: dict) -> dict:
         c = await _connect_device(dev)
         try:
             res = await c.run_command(cmd, timeout=180)
+            out = res["stdout"] if isinstance(res["stdout"], str) else res["stdout"].decode("utf-8", "replace")
+            # OLT Huawei (SmartAX): no modo usuário ('>') o display current-configuration não existe — entra no enable e repete
+            if (dev.get("device_type") == "huawei" and not dev.get("backup_command") and len(out) < 2000
+                    and re.search(r"unknown command|error locates|incomplete command|% ?parameter error", out, re.I)):
+                res = await c.run_command("enable\ndisplay current-configuration", timeout=240)
         finally:
             await c.close()
         out = res["stdout"] if isinstance(res["stdout"], str) else res["stdout"].decode("utf-8", "replace")
@@ -8859,7 +9371,7 @@ async def bgpmon_events(key: str, user: dict = Depends(get_current_user)):
 
 
 # ---------- GPON: sinal, estado e ocupação de todas as ONUs ----------
-_gpon_rt = {"state_at": {}, "power_at": {}, "plat": {}, "running": set(), "inv": {}}
+_gpon_rt = {"state_at": {}, "power_at": {}, "plat": {}, "running": set(), "inv": {}, "fhdir": {}}
 
 
 async def _gpon_cfg() -> dict:
@@ -8867,16 +9379,54 @@ async def _gpon_cfg() -> dict:
     return {**gponmod.DEFAULTS, **{k: v for k, v in doc.items() if k in gponmod.DEFAULTS}}
 
 
-async def _gpon_inventory(olt_id: str) -> dict:
+def _gpon_hw_inventory(content: str) -> dict:
+    out = {}
+    for (f, sl, pt, o), d in olthw.parse_inventory(content).items():
+        sn = d.get("sn") or ""
+        out[(sl, pt, o)] = {"sn": olthw.sn_vendor(sn) if re.fullmatch(r"[0-9A-F]{16}", sn) else sn, "name": d.get("description") or "",
+                            "description": d.get("description") or "", "pppoe": d.get("pppoe") or [], "frame": f}
+    return out
+
+
+async def _gpon_inventory(olt_id: str, hw: bool = False) -> dict:
     b = await db.backups.find_one({"device_id": olt_id, "ok": {"$ne": False}}, {"_id": 0, "id": 1, "content": 1, "created_at": 1}, sort=[("created_at", -1)])
     if not b:
         return {}
     c = _gpon_rt["inv"].get(olt_id)
     if c and c[0] == b["id"]:
         return c[1]
-    inv = gponmod.parse_inventory(b.get("content") or "")
+    inv = _gpon_hw_inventory(b.get("content") or "") if hw else gponmod.parse_inventory(b.get("content") or "")
     _gpon_rt["inv"][olt_id] = (b["id"], inv, b.get("created_at"))
     return inv
+
+
+async def _gpon_read_hw(dev: dict, j: dict, power: bool, frame_of: dict):
+    """Huawei: `display ont info 0 all` (estado de todas as ONTs); `display ont info summary F/S/P` nas PONs com ONT off
+    (causa da queda) e, no ciclo de sinal, em todas (Rx de cada ONT)."""
+    async with _HwSess(dev, j) as s:
+        info = olthw.parse_ont_info(await s.run("display ont info 0 all", timeout=300))
+        if not info:
+            brd = olthw.parse_board(await s.run("display board 0", timeout=60))
+            if not brd:
+                raise RuntimeError("não achei ONTs nem placas PON (display ont info 0 all / display board 0)")
+        allp = sorted({(r["frame"], r["slot"], r["port"]) for r in info})
+        want = allp if power else sorted({(r["frame"], r["slot"], r["port"]) for r in info if r["off"]})
+        summ = {}
+        for f, sl, pt in want:
+            for r in olthw.parse_summary(await s.run(f"display ont info summary {f}/{sl}/{pt}", timeout=120)):
+                summ[(sl, pt, r["ont"])] = r
+    rows, rx = [], {}
+    for r in info:
+        k = (r["slot"], r["port"], r["ont"])
+        frame_of[(r["slot"], r["port"])] = r["frame"]
+        d = summ.get(k) or {}
+        phase = "working" if not r["off"] else (d.get("cause") or "offline")
+        rows.append({"slot": k[0], "pon": k[1], "onu": k[2], "frame": r["frame"], "admin": r["control"], "phase": phase, "off": r["off"],
+                     "sn": olthw.sn_vendor(r["sn"]), "description": r.get("description") or d.get("description") or "",
+                     "name": r.get("description") or "", "type": d.get("type") if d.get("type") not in (None, "-") else ""})
+        if d.get("rx") is not None and not r["off"]:
+            rx[k] = d["rx"]
+    return rows, sorted({(sl, pt) for _, sl, pt in allp}), rx, "huawei"
 
 
 async def _gpon_cycle(olt_id: str, cfg: dict, power: bool):
@@ -8890,37 +9440,45 @@ async def _gpon_cycle(olt_id: str, cfg: dict, power: bool):
         dev = await db.devices.find_one({"id": olt_id}, {"_id": 0})
         if not dev:
             return
-        inv = await _gpon_inventory(olt_id)
+        hw = (dev.get("device_type") or "") == "huawei"
+        inv = await _gpon_inventory(olt_id, hw)
         j: dict = {}
-        cli = await asyncio.wait_for(_connect_device(dev), 45)
-        try:
-            raw = await cli.shell()
-            sess = _OltSess(raw, j)
+        frame_of: Dict[tuple, int] = {}
+        fh = (dev.get("device_type") or "") == "fiberhome"
+        if hw:
+            rows, pons, rx, plat = await _gpon_read_hw(dev, j, power, frame_of)
+        elif fh:
+            rows, pons, rx, plat = await _gpon_read_fh(dev, j, power)
+        else:
+            cli = await asyncio.wait_for(_connect_device(dev), 45)
             try:
-                out = await sess.run("show gpon onu state", timeout=180)
-                rows = [] if _olt_err(out, "show gpon onu state") else oltgen.parse_onu_state(out)
-                pons = sorted({(r["slot"], r["pon"]) for r in rows})
-                if not rows:
-                    cards = oltgen.parse_show_card(await sess.run("show card", timeout=60))
-                    pons = [(c["slot"], p) for c in cards["pon"] for p in range(1, c["ports"] + 1)]
-                if not pons:
-                    raise RuntimeError("não achei PONs (show gpon onu state / show card)")
-                plat = _gpon_rt["plat"].get(olt_id) or await _olt_detect_plat(sess, *pons[0])
-                _gpon_rt["plat"][olt_id] = plat
-                if not rows:
-                    for sl, pt in pons:
-                        rows += oltgen.parse_onu_state(await sess.run(f"show gpon onu state {oltgen.pon_if(plat, sl, pt)}", timeout=90))
-                rx: Dict[tuple, float] = {}
-                if power:
-                    for sl, pt in pons:
-                        rx.update(gponmod.parse_power(await sess.run(f"show pon power onu-rx {oltgen.pon_if(plat, sl, pt)}", timeout=90)))
-            finally:
+                raw = await cli.shell()
+                sess = _OltSess(raw, j)
                 try:
-                    await raw.close()
-                except Exception:
-                    pass
-        finally:
-            await cli.close()
+                    out = await sess.run("show gpon onu state", timeout=180)
+                    rows = [] if _olt_err(out, "show gpon onu state") else oltgen.parse_onu_state(out)
+                    pons = sorted({(r["slot"], r["pon"]) for r in rows})
+                    if not rows:
+                        cards = oltgen.parse_show_card(await sess.run("show card", timeout=60))
+                        pons = [(c["slot"], p) for c in cards["pon"] for p in range(1, c["ports"] + 1)]
+                    if not pons:
+                        raise RuntimeError("não achei PONs (show gpon onu state / show card)")
+                    plat = _gpon_rt["plat"].get(olt_id) or await _olt_detect_plat(sess, *pons[0])
+                    _gpon_rt["plat"][olt_id] = plat
+                    if not rows:
+                        for sl, pt in pons:
+                            rows += oltgen.parse_onu_state(await sess.run(f"show gpon onu state {oltgen.pon_if(plat, sl, pt)}", timeout=90))
+                    rx: Dict[tuple, float] = {}
+                    if power:
+                        for sl, pt in pons:
+                            rx.update(gponmod.parse_power(await sess.run(f"show pon power onu-rx {oltgen.pon_if(plat, sl, pt)}", timeout=90)))
+                finally:
+                    try:
+                        await raw.close()
+                    except Exception:
+                        pass
+            finally:
+                await cli.close()
         prev = {(o["slot"], o["pon"], o["onu"]): o async for o in db.gpon_onus.find({"olt_id": olt_id}, {"_id": 0})}
         from pymongo import UpdateOne
         ops, by_pon, newly = [], {}, {}
@@ -8935,6 +9493,12 @@ async def _gpon_cycle(olt_id: str, cfg: dict, power: bool):
                    "sn": info.get("sn") or old.get("sn"), "type": info.get("type") or old.get("type"),
                    "name": info.get("name") or old.get("name"), "description": info.get("description") or old.get("description"),
                    "pppoe": info.get("pppoe") or old.get("pppoe") or [], "platform": plat}
+            if hw or fh:
+                if hw:
+                    doc["frame"] = r.get("frame", 0)
+                for fk in ("sn", "type", "name", "description"):
+                    if r.get(fk) and not doc.get(fk):
+                        doc[fk] = r[fk]
             if k in rx:
                 doc["rx"], doc["rx_at"] = rx[k], nowi
             elif power and r["off"]:
@@ -8962,8 +9526,9 @@ async def _gpon_cycle(olt_id: str, cfg: dict, power: bool):
             sm = gponmod.pon_summary(onus, float(cfg["rx_bad"]), int(cfg["pon_max"]))
             pkey = f"{olt_id}|{sl}/{pt}"
             oldp = await db.gpon_pons.find_one({"key": pkey}, {"_id": 0}) or {}
-            upd = {"key": pkey, "olt_id": olt_id, "olt_name": dev["name"], "slot": sl, "pon": pt, "at": nowi, **sm,
-                   "if_name": oltgen.pon_if(plat, sl, pt)}
+            pname = f"{frame_of.get((sl, pt), 0)}/{sl}/{pt}" if hw else f"{sl}/{pt}" if fh else f"1/{sl}/{pt}"
+            upd = {"key": pkey, "olt_id": olt_id, "olt_name": dev["name"], "slot": sl, "pon": pt, "at": nowi, **sm, "pon_name": pname,
+                   "if_name": f"gpon {pname}" if hw else f"slot {sl} pon {pt}" if fh else oltgen.pon_if(plat, sl, pt)}
             if sm["rx_median"] is None and not power:
                 upd["rx_median"], upd["rx_min"], upd["rx_bad"], upd["rx_n"] = oldp.get("rx_median"), oldp.get("rx_min"), oldp.get("rx_bad", 0), oldp.get("rx_n", 0)
             base = oldp.get("rx_base")
@@ -8983,7 +9548,7 @@ async def _gpon_cycle(olt_id: str, cfg: dict, power: bool):
                                               "rx_median": upd.get("rx_median")})
             if not cfg.get("alert", True):
                 continue
-            where = f"PON 1/{sl}/{pt} — {dev['name']}"
+            where = f"PON {pname} — {dev['name']}"
             if mass and not ev_open:
                 dup = await db.incidents.find_one({"status": {"$in": ["open", "ack"]}, "device_id": olt_id, "key": {"$regex": "^log:"},
                                                    "title": {"$regex": re.escape(f"{sl}/{pt}")}}, {"_id": 0, "id": 1})
@@ -9106,6 +9671,33 @@ async def gpon_onu_live(body: GponLiveIn, user: dict = Depends(get_current_user)
     if body.olt_id not in await _gpon_olt_ids(user):
         raise HTTPException(404, "OLT não encontrada")
     dev = await db.devices.find_one({"id": body.olt_id}, {"_id": 0})
+    if (dev.get("device_type") or "") == "fiberhome":
+        cmds = [f"show optic_module slot {body.slot} pon {body.pon} onu {body.onu}", f"show authorization slot {body.slot} pon {body.pon}"]
+        async with _FhSess(dev) as fs:
+            await fs.cd_onu(_gpon_rt["fhdir"].get(dev["id"], ""))
+            att = await fs.run(cmds[0], timeout=60)
+            det = await fs.run(cmds[1], timeout=60)
+        a = next((x for x in oltfh.parse_auth(det, body.slot, body.pon) if x["onu"] == body.onu), {})
+        await _olt_log(user, dev, commands=cmds, commands_count=len(cmds))
+        return {"interface": f"slot {body.slot} pon {body.pon} onu {body.onu}",
+                "detail": {"phase": a.get("state") or "?", "sn": a.get("sn") or "", "type": a.get("type") or "", "name": "",
+                           "rx": oltfh.parse_optic(att)},
+                "attenuation": att.strip()[-3000:], "detail_raw": det.strip()[-4000:]}
+    if (dev.get("device_type") or "") == "huawei":
+        o = await db.gpon_onus.find_one({"olt_id": body.olt_id, "slot": body.slot, "pon": body.pon, "onu": body.onu}, {"_id": 0, "frame": 1}) or {}
+        f = o.get("frame", 0)
+        cmds = [f"display ont info {f} {body.slot} {body.pon} {body.onu}", f"interface gpon {f}/{body.slot}",
+                f"display ont optical-info {body.pon} {body.onu}", "quit"]
+        async with _HwSess(dev) as hs:
+            det = await hs.run(cmds[0], timeout=60)
+            await hs.run(cmds[1], timeout=20)
+            att = await hs.run(cmds[2], timeout=60)
+            await hs.run(cmds[3], timeout=20)
+        d = olthw.parse_detail(det)
+        await _olt_log(user, dev, commands=cmds, commands_count=len(cmds))
+        return {"interface": f"{f}/{body.slot}/{body.pon} ONT {body.onu}",
+                "detail": {**d, "phase": d["run"], "name": d["description"], "sn": olthw.sn_vendor(d["sn"]) if d["sn"] else ""},
+                "attenuation": att.strip()[-3000:], "detail_raw": det.strip()[-4000:]}
     plat = _gpon_rt["plat"].get(body.olt_id) or (await db.gpon_onus.find_one({"olt_id": body.olt_id}, {"_id": 0, "platform": 1}) or {}).get("platform") or "c300"
     ifn = oltgen.onu_if_name(plat, body.slot, body.pon, body.onu)
     cli = await _connect_device(dev)
