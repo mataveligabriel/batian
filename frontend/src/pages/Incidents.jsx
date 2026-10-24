@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { TagOptions } from "@/components/TagSelect";
 import { useTerminal } from "@/context/TerminalContext";
+import { useAuth } from "@/context/AuthContext";
 
 export const SEV = {
   critical: { label: "Crítica", bar: "bg-red-500", chip: "text-red-300 border-red-500/50 bg-red-500/10" },
@@ -152,6 +153,7 @@ function Detail({ id, onClose, onChanged }) {
 }
 
 export default function Incidents() {
+  const { user } = useAuth();
   const [sp, setSp] = useSearchParams();
   const [view, setView] = useState("active");
   const [q, setQ] = useState("");
@@ -183,7 +185,8 @@ export default function Incidents() {
         <div className="flex items-start justify-between flex-wrap gap-3 mb-4">
           <div>
             <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 flex items-center gap-2"><Siren className="w-6 h-6 text-red-400" /> Incidentes</h1>
-            <p className="text-sm text-slate-400 mt-1">Alarmes do Zabbix, LibreNMS e BastiON num lugar só. Reconheça, assuma e resolva — também pelo Telegram.</p>
+            <p className="text-sm text-slate-400 mt-1">Alarmes do Zabbix, LibreNMS e BastiON num lugar só. Reconheça, assuma e resolva — também pelo Telegram.
+              {user?.role !== "admin" && user?.incidents_scope !== "all" && <span className="block text-xs text-slate-500">Você vê os incidentes dos seus equipamentos e da sua rede.</span>}</p>
           </div>
           <Button onClick={() => setNewOpen(true)} className="bg-brand hover:bg-brand-strong text-onbrand" data-testid="inc-new"><Plus className="w-4 h-4 mr-1.5" /> Novo incidente</Button>
         </div>

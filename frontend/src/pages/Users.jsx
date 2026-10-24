@@ -145,11 +145,13 @@ export default function Users() {
 
   const load = async () => setUsers((await api.get("/users")).data);
   const [editing, setEditing] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", role: "operator", password: "", modules: null });
-  const openEdit = (u) => { setEditing(u); setEditForm({ name: u.name, role: u.role, password: "", modules: Array.isArray(u.modules) ? u.modules : null }); };
+  const [editForm, setEditForm] = useState({ name: "", role: "operator", password: "", modules: null, incidents_scope: "own", nets: "" });
+  const openEdit = (u) => { setEditing(u); setEditForm({ name: u.name, role: u.role, password: "", modules: Array.isArray(u.modules) ? u.modules : null,
+    incidents_scope: u.incidents_scope || "own", nets: (u.incident_nets || []).join("\n") }); };
   const saveEdit = async () => {
     try {
       const { data } = await api.put(`/users/${editing.id}`, { name: editForm.name, role: editForm.role, password: editForm.password || null,
+        incidents_scope: editForm.incidents_scope, incident_nets: editForm.nets.split(/[\s,;]+/).map(x => x.trim()).filter(Boolean),
         ...(editForm.role === "operator" ? (editForm.modules ? { modules: editForm.modules } : { modules_all: true }) : {}) });
       toast.success(editForm.password ? "Usuário atualizado e senha redefinida" : "Usuário atualizado");
       const becameViewer = editing.role !== "viewer" && data.role === "viewer";
@@ -262,6 +264,25 @@ export default function Users() {
               </Select>
             </div>
             {editForm.role === "operator" && <ModulePicker value={editForm.modules} onChange={(m) => setEditForm({ ...editForm, modules: m })} />}
+            {editForm.role === "operator" && (
+              <div className="rounded-md border border-line p-3 space-y-2" data-testid="edit-user-incidents">
+                <Label>Incidentes que ele vê</Label>
+                {[["own", "Só os da rede dele", "alarmes dos equipamentos e agentes que são dele, e das redes abaixo"],
+                  ["all", "Todos", "todos os incidentes do BastiON"]].map(([k, l, d]) => (
+                  <label key={k} className="flex items-start gap-2 text-sm cursor-pointer" data-testid={`edit-user-inc-${k}`}>
+                    <input type="radio" name="incscope" className="accent-brand mt-1" checked={editForm.incidents_scope === k} onChange={() => setEditForm({ ...editForm, incidents_scope: k })} />
+                    <span><span className="text-slate-100">{l}</span><span className="block text-xs text-slate-500">{d}</span></span>
+                  </label>
+                ))}
+                {editForm.incidents_scope === "own" && (
+                  <div>
+                    <div className="text-xs text-slate-400 mb-1">Redes dele (opcional): alarme do Zabbix/LibreNMS com IP dentro destas faixas também aparece para ele, mesmo sem o equipamento cadastrado.</div>
+                    <textarea value={editForm.nets} onChange={e => setEditForm({ ...editForm, nets: e.target.value })} rows={3} data-testid="edit-user-nets"
+                              placeholder={"203.0.113.0/24\n198.51.100.0/26"} className="w-full rounded-md bg-sunken border border-line p-2 text-sm font-mono text-slate-100" />
+                  </div>
+                )}
+              </div>
+            )}
             <div>
               <Label>Nova senha (opcional — redefine sem excluir o usuário)</Label>
               <Input data-testid="edit-user-password" type="password" value={editForm.password} onChange={e => setEditForm({ ...editForm, password: e.target.value })} placeholder="deixe vazio para manter" className="bg-sunken border-line font-mono" />

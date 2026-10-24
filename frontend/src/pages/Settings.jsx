@@ -514,6 +514,8 @@ function IntegrationsTab() {
           <Check checked={st.notify_resolved} onChange={v => save({ notify_resolved: v })} label="Avisar quando a origem normalizar (resolvido sozinho)" />
           <Check checked={st.internal} onChange={v => save({ internal: v })} label="Abrir incidentes dos alarmes do BastiON" hint="equipamento ou agente sem resposta, interface DOWN nos mapas" testid="inc-internal" />
           <Check checked={st.notify_internal} onChange={v => save({ notify_internal: v })} label="Avisar também esses pelo incidente (com botões)" hint="desligado: o BastiON continua avisando como sempre, sem duplicar" />
+          <Check checked={st.notify_owners_private} onChange={v => save({ notify_owners_private: v })} testid="inc-dm"
+                 label="Avisar também no privado do Telegram de cada dono" hint="quem é dono do equipamento/rede recebe só os incidentes dele (precisa ter o Telegram ID vinculado e ter dado /start no bot)" />
         </div>
         <p className="text-[11px] text-slate-500 mt-2">Os botões do Telegram respondem para quem está liberado em Automação e alertas → Assistente IA (Telegram ID vinculado ao usuário).</p>
       </Section>

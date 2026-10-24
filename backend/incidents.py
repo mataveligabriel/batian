@@ -9,6 +9,7 @@ Junta num lugar só os alarmes do Zabbix, do LibreNMS, de qualquer sistema que m
 
 Incidentes são da equipe (não por usuário): todo mundo com o módulo "Incidentes" vê os mesmos.
 """
+import ipaddress
 import os
 import re
 from datetime import datetime, timezone
@@ -27,8 +28,30 @@ DEFAULTS = {
     "notify_resolved": True,           # avisa quando resolve sozinho
     "internal": True,                  # cria incidentes dos alarmes do próprio BastiON
     "notify_internal": False,          # o BastiON já avisa esses alarmes do jeito de sempre
+    "notify_owners_private": False,    # também no privado do Telegram de cada dono do incidente
     "token": "",
 }
+
+
+def scope_filter(u: dict) -> dict:
+    """Quem vê o quê: administrador e usuário liberado para "todos" veem tudo; os demais, só os incidentes dos
+    equipamentos/agentes deles e das redes (faixas de IP) cadastradas no usuário."""
+    if not u or u.get("role") == "admin" or u.get("incidents_scope") == "all":
+        return {}
+    return {"owner_ids": u["id"]}
+
+
+def clean_nets(nets) -> list:
+    out = []
+    for n in nets or []:
+        n = str(n).strip()
+        if not n:
+            continue
+        try:
+            out.append(str(ipaddress.ip_network(n, strict=False)))
+        except ValueError:
+            raise ValueError(f"Rede inválida: {n} (use o formato 177.223.232.0/21)")
+    return sorted(set(out))[:200]
 
 # Zabbix: Not classified, Information, Warning, Average, High, Disaster
 _ZBX_SEV = {"not classified": "info", "information": "info", "warning": "low", "average": "medium",
@@ -109,6 +132,7 @@ class Incidents:
     def __init__(self, db, alert: Optional[Callable[..., Awaitable]] = None):
         self.db = db
         self.alert = alert                  # automation.send_alert(db, title, text, push_url, push_tag, buttons)
+        self.dm = None                      # async (user_ids, title, text, buttons): privado no Telegram de cada dono
 
     async def settings(self) -> dict:
         doc = await self.db.config.find_one({"key": "incidents"}, {"_id": 0}) or {}
@@ -119,12 +143,41 @@ class Incidents:
                                                        return_document=ReturnDocument.AFTER)
         return int(r["n"])
 
-    async def _device(self, host: str, name: str = "") -> Optional[dict]:
+    async def owners(self, host: str, name: str = "", device_id: str = "") -> dict:
+        """Donos do incidente: quem tem o equipamento/agente (pelo IP ou nome) e quem tem a rede do IP."""
         cands = [x for x in {host, name} if x]
-        if not cands:
-            return None
-        return await self.db.devices.find_one({"$or": [{"host": {"$in": cands}}, {"name": {"$in": cands}}]},
-                                              {"_id": 0, "id": 1, "name": 1, "host": 1})
+        devs, ags = [], []
+        if cands:
+            q = {"$or": [{"host": {"$in": cands}}, {"name": {"$in": cands}}]}
+            devs = await self.db.devices.find(q, {"_id": 0, "id": 1, "name": 1, "host": 1, "owner_id": 1}).to_list(50)
+            ags = await self.db.agents.find(q, {"_id": 0, "id": 1, "name": 1, "owner_id": 1}).to_list(50)
+        if device_id and not any(d["id"] == device_id for d in devs):
+            d = await self.db.devices.find_one({"id": device_id}, {"_id": 0, "id": 1, "name": 1, "host": 1, "owner_id": 1})
+            if d:
+                devs.insert(0, d)
+        ids = {x["owner_id"] for x in devs + ags if x.get("owner_id")}
+        try:
+            ip = ipaddress.ip_address(host) if host else None
+        except ValueError:
+            ip = None
+        if ip:
+            async for u in self.db.users.find({"incident_nets.0": {"$exists": True}}, {"_id": 0, "id": 1, "incident_nets": 1}):
+                for n in u.get("incident_nets") or []:
+                    try:
+                        if ip in ipaddress.ip_network(n, strict=False):
+                            ids.add(u["id"])
+                            break
+                    except ValueError:
+                        continue
+        first = devs[0] if devs else None
+        return {"owner_ids": sorted(ids), "device": first}
+
+    async def backfill(self):
+        """Incidentes de antes da separação por usuário ganham os donos."""
+        async for i in self.db.incidents.find({"owner_ids": {"$exists": False}}, {"_id": 0, "id": 1, "host": 1, "host_name": 1,
+                                                                                   "device_id": 1, "device_name": 1}):
+            o = await self.owners(i.get("host", ""), i.get("host_name") or i.get("device_name", ""), i.get("device_id") or "")
+            await self.db.incidents.update_one({"id": i["id"]}, {"$set": {"owner_ids": o["owner_ids"]}})
 
     async def _notify(self, inc: dict, kind: str, s: dict):
         if not self.alert:
@@ -146,6 +199,11 @@ class Incidents:
             title = f"✅ #{inc['number']} resolvido — {inc['title']}"
             text = "\n".join(x for x in [where and f"📍 {where}", f"Durou {fmt_dur(duration(inc))}"] if x)
             buttons = None
+        if s.get("notify_owners_private") and self.dm and inc.get("owner_ids"):
+            try:
+                await self.dm(inc["owner_ids"], title, text, buttons)
+            except Exception:
+                pass
         try:
             await self.alert(self.db, title, text, push_url=f"/incidents?id={inc['id']}", push_tag=f"inc-{inc['id']}",
                              buttons=buttons)
@@ -178,12 +236,15 @@ class Incidents:
             cur.update(upd)
             cur["count"] = cur.get("count", 1) + 1
             return {"action": "repeated", "incident": cur}
-        dev = await self._device(ev.get("host", ""), ev.get("host_name", ""))
+        own = await self.owners(ev.get("host", ""), ev.get("host_name", ""), ev.get("device_id", ""))
+        dev = own["device"]
+        owner_ids = sorted(set(own["owner_ids"]) | set(ev.get("owner_ids") or []))
         inc = {"id": os.urandom(8).hex(), "number": await self._number(), "key": key, "source": source,
                "status": "open", "severity": ev["severity"] if ev["severity"] in SEVERITIES else "medium",
                "title": ev["title"], "description": ev.get("description", ""), "url": ev.get("url", ""),
                "host": ev.get("host", ""), "host_name": ev.get("host_name", ""),
                "device_id": (dev or {}).get("id"), "device_name": (dev or {}).get("name") or ev.get("host_name") or "",
+               "owner_ids": owner_ids,
                "created_at": now, "updated_at": now, "last_seen": now, "count": 1,
                "ack_by": None, "ack_at": None, "assignee": None, "resolved_at": None, "resolved_by": None,
                "timeline": [{"at": now, "by": SOURCES.get(source, source), "type": "open", "text": "Aberto"}]}
@@ -191,8 +252,9 @@ class Incidents:
         await self._notify(inc, "open", s)
         return {"action": "opened", "incident": inc}
 
-    async def act(self, inc_id: str, action: str, who: str, note: str = "", assignee: Optional[dict] = None) -> Optional[dict]:
-        inc = await self.db.incidents.find_one({"id": inc_id}, {"_id": 0})
+    async def act(self, inc_id: str, action: str, who: str, note: str = "", assignee: Optional[dict] = None,
+                  scope: Optional[dict] = None) -> Optional[dict]:
+        inc = await self.db.incidents.find_one({"id": inc_id, **(scope or {})}, {"_id": 0})
         if not inc:
             return None
         now = now_iso()

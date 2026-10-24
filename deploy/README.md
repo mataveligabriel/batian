@@ -1086,3 +1086,16 @@ Avisos: novos incidentes a partir da severidade escolhida vão pelo canal da Aut
 próprio BastiON continuam avisando como antes (sem duplicar), a não ser que você ligue "avisar pelo incidente".
 
 O menu mostra o número de incidentes ativos (pisca em vermelho com crítico/alto aberto).
+
+### Incidentes por usuário
+
+Cada incidente guarda os **donos**: quem tem o equipamento ou o agente do alarme (pelo IP ou nome cadastrado) e
+quem tem a **rede** do IP (faixas CIDR no usuário). Em Usuários → editar operador → **Incidentes que ele vê**:
+
+- **Só os da rede dele** (padrão do operador): vê, conta no menu, reconhece e resolve só os incidentes de que é dono;
+  as "redes dele" pegam também alarmes do Zabbix/LibreNMS de IPs que não estão cadastrados como equipamento.
+- **Todos**: vê a central inteira, como o administrador.
+
+Alarme sem dono (IP que ninguém tem) aparece só para administradores e para quem vê todos. Os botões do Telegram
+respeitam a mesma regra. Em Configurações → Integrações, "Avisar também no privado do Telegram de cada dono" manda
+cada incidente direto para os donos (Telegram ID vinculado em Assistente IA; a pessoa precisa ter dado /start no bot).

@@ -9,6 +9,7 @@ import io
 import os
 import re
 import hmac
+import httpx
 import asyncio
 import time
 import uuid
@@ -137,6 +138,7 @@ async def startup():
     await db.net_reports.create_index([("map_id", 1), ("at", -1)])
     await db.net_reports_raw.create_index("rid")
     scheduler.start()
+    _bg_tasks.append(asyncio.create_task(inc_center.backfill()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
@@ -305,7 +307,7 @@ async def me(user: dict = Depends(get_current_user)):
     return {"id": u["id"], "email": u["email"], "name": u.get("name", ""), "role": u.get("role", "operator"),
             "totp_enabled": bool(u.get("totp_enabled")), "require_2fa": sec["require_2fa"],
             "modules": u.get("modules") if isinstance(u.get("modules"), list) and u.get("role") == "operator" else None,
-            "theme": u.get("theme") or None}
+            "theme": u.get("theme") or None, "incidents_scope": u.get("incidents_scope") or "own"}
 
 
 class ThemeIn(BaseModel):
@@ -536,8 +538,19 @@ async def update_user(user_id: str, payload: UserUpdate, current: dict = Depends
             unset["modules"] = ""                       # todos os módulos (ou papel que não usa a lista)
     elif payload.modules is not None:
         update["modules"] = auth_mod.clean_modules(payload.modules)
+    if payload.incidents_scope is not None:
+        if payload.incidents_scope not in ("own", "all"):
+            raise HTTPException(status_code=400, detail="Escopo de incidentes inválido")
+        update["incidents_scope"] = payload.incidents_scope
+    if payload.incident_nets is not None:
+        try:
+            update["incident_nets"] = incmod.clean_nets(payload.incident_nets)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     if update or unset:
         await db.users.update_one({"id": user_id}, {**({"$set": update} if update else {}), **({"$unset": unset} if unset else {})})
+    if payload.incident_nets is not None:
+        asyncio.create_task(_inc_reown())          # redes mudaram: refaz os donos dos incidentes ativos
     return await db.users.find_one({"id": user_id}, USER_PUBLIC)
 
 
@@ -4273,17 +4286,61 @@ async def _inc_internal(kind: str, data: dict):
         what = "Agente" if data["kind"] == "agent" else "Equipamento"
         ev = {"key": f"bastion:{data['kind']}:{data.get('id') or data['name']}", "status": "ok" if data["status"] == "online" else "problem",
               "severity": "critical" if data["kind"] == "agent" else "high", "title": f"{what} {data['name']} sem resposta",
-              "host": data.get("host", ""), "host_name": data["name"], "description": data.get("detail", "")}
+              "host": data.get("host", ""), "host_name": data["name"], "description": data.get("detail", ""),
+              "device_id": data.get("id") if data["kind"] == "device" else ""}
+        if data["kind"] == "agent":
+            ag = await db.agents.find_one({"id": data.get("id")}, {"_id": 0, "owner_id": 1}) if data.get("id") else None
+            ev["owner_ids"] = [ag["owner_id"]] if ag and ag.get("owner_id") else []
     else:
         dev = data["device"]
         nm = f"{data['if_name']}" + (f" ({data['alias']})" if data.get("alias") else "")
         ev = {"key": f"bastion:if:{dev['id']}:{data['if_index']}", "status": "ok" if data["status"] == "up" else "problem",
               "severity": "high", "title": f"Interface {nm} DOWN", "host": dev.get("host", ""), "host_name": dev["name"],
-              "description": f"status: {data.get('oper') or 'down'}"}
+              "description": f"status: {data.get('oper') or 'down'}", "device_id": dev["id"],
+              "owner_ids": [dev["owner_id"]] if dev.get("owner_id") else []}
     await inc_center.ingest("bastion", ev)
 
 
 automation.INCIDENT_HOOK = _inc_internal
+
+
+async def _inc_scope(user: dict) -> dict:
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "id": 1, "role": 1, "incidents_scope": 1})
+    return incmod.scope_filter(u or user)
+
+
+async def _inc_reown():
+    """Recalcula os donos dos incidentes ativos (depois de mudar as redes de algum usuário)."""
+    try:
+        async for i in db.incidents.find({"status": {"$in": ["open", "ack"]}}, {"_id": 0}):
+            o = await inc_center.owners(i.get("host", ""), i.get("host_name") or i.get("device_name", ""), i.get("device_id") or "")
+            await db.incidents.update_one({"id": i["id"]}, {"$set": {"owner_ids": sorted(set(o["owner_ids"]) | set(i.get("owner_ids") or []))}})
+    except Exception as e:
+        logger.warning(f"donos dos incidentes: {e}")
+
+
+async def _inc_dm(user_ids: list, title: str, text: str, buttons):
+    """Privado no Telegram de cada dono (Telegram ID vinculado em Assistente IA; a pessoa precisa ter dado /start no bot)."""
+    st = await automation.get_settings(db)
+    token = vault.decrypt(st.get("telegram_bot_token", ""))
+    group = str(st.get("telegram_chat_id") or "").strip()
+    ai = await db.config.find_one({"key": "ai"}, {"_id": 0, "ai_users": 1}) or {}
+    tids = {str(l["telegram_id"]) for l in ai.get("ai_users") or [] if l.get("user_id") in set(user_ids) and l.get("telegram_id")}
+    tids.discard(group)
+    if not token or not tids:
+        return
+    async with httpx.AsyncClient(timeout=15) as c:
+        for tid in tids:
+            body = {"chat_id": tid, "text": f"{title}\n{text}"}
+            if buttons:
+                body["reply_markup"] = {"inline_keyboard": buttons}
+            try:
+                await c.post(f"https://api.telegram.org/bot{token}/sendMessage", json=body)
+            except Exception:
+                pass
+
+
+inc_center.dm = _inc_dm
 net_monitor.incident_hook = _inc_internal
 secrets_compare = hmac.compare_digest
 
@@ -4294,8 +4351,8 @@ def _inc_public(i: dict, full: bool = False) -> dict:
     return out
 
 
-async def _inc_get(inc_id: str) -> dict:
-    i = await db.incidents.find_one({"id": inc_id}, {"_id": 0})
+async def _inc_get(inc_id: str, scope: Optional[dict] = None) -> dict:
+    i = await db.incidents.find_one({"id": inc_id, **(scope or {})}, {"_id": 0})
     if not i:
         raise HTTPException(status_code=404, detail="Incidente não encontrado")
     return i
@@ -4305,7 +4362,7 @@ async def _inc_get(inc_id: str) -> dict:
 async def incidents_list(status: str = "active", severity: str = "", source: str = "", q: str = "", limit: int = 200,
                          user: dict = Depends(get_current_user)):
     _no_viewer(user)
-    f: dict = {}
+    f: dict = dict(await _inc_scope(user))
     if status == "active":
         f["status"] = {"$in": ["open", "ack"]}
     elif status in incmod.STATUSES:
@@ -4328,7 +4385,7 @@ async def incidents_list(status: str = "active", severity: str = "", source: str
 async def incidents_summary(user: dict = Depends(get_current_user)):
     """Contadores para o menu e o Painel NOC."""
     out = {"open": 0, "ack": 0, "by_severity": {s: 0 for s in incmod.SEVERITIES}}
-    async for r in db.incidents.find({"status": {"$in": ["open", "ack"]}}, {"_id": 0, "status": 1, "severity": 1}):
+    async for r in db.incidents.find({"status": {"$in": ["open", "ack"]}, **(await _inc_scope(user))}, {"_id": 0, "status": 1, "severity": 1}):
         out[r["status"]] += 1
         out["by_severity"][r["severity"]] = out["by_severity"].get(r["severity"], 0) + 1
     out["active"] = out["open"] + out["ack"]
@@ -4339,7 +4396,7 @@ async def incidents_summary(user: dict = Depends(get_current_user)):
 @api.get("/incidents/{inc_id}")
 async def incidents_get(inc_id: str, user: dict = Depends(get_current_user)):
     _no_viewer(user)
-    return _inc_public(await _inc_get(inc_id), full=True)
+    return _inc_public(await _inc_get(inc_id, await _inc_scope(user)), full=True)
 
 
 class IncidentIn(BaseModel):
@@ -4359,7 +4416,8 @@ async def incidents_create(body: IncidentIn, user: dict = Depends(get_current_us
     r = await inc_center.ingest("manual", {"key": f"manual:{os.urandom(6).hex()}", "status": "problem",
                                            "severity": incmod.norm_sev(body.severity), "title": body.title.strip()[:300],
                                            "description": body.description[:4000], "host": (dev or {}).get("host", ""),
-                                           "host_name": (dev or {}).get("name", "")})
+                                           "host_name": (dev or {}).get("name", ""), "device_id": body.device_id or "",
+                                           "owner_ids": [user["id"]]})
     inc = r["incident"]
     await db.incidents.update_one({"id": inc["id"]}, {"$set": {"timeline.0.by": user.get("name") or user["email"]}})
     return _inc_public(await _inc_get(inc["id"]), full=True)
@@ -4385,7 +4443,7 @@ async def incidents_act(inc_id: str, action: str, body: IncidentAct, user: dict 
         if not u:
             raise HTTPException(status_code=404, detail="Usuário não encontrado")
         assignee = {"id": u["id"], "name": u.get("name") or u["email"]}
-    inc = await inc_center.act(inc_id, action, who, body.note.strip()[:2000], assignee)
+    inc = await inc_center.act(inc_id, action, who, body.note.strip()[:2000], assignee, scope=await _inc_scope(user))
     if not inc:
         raise HTTPException(status_code=404, detail="Incidente não encontrado")
     return _inc_public(inc, full=True)
@@ -4403,6 +4461,7 @@ class IncidentSettingsIn(BaseModel):
     notify_resolved: bool = True
     internal: bool = True
     notify_internal: bool = False
+    notify_owners_private: bool = False
 
 
 async def _inc_settings_public() -> dict:
@@ -4458,7 +4517,8 @@ async def _inc_telegram(user: dict, action: str, inc_id: str) -> str:
     act = {"ack": "ack", "res": "resolve"}.get(action)
     if not act:
         return "Ação desconhecida."
-    inc = await inc_center.act(inc_id, act, f"{who} (Telegram)", "", {"id": user["id"], "name": who})
+    inc = await inc_center.act(inc_id, act, f"{who} (Telegram)", "", {"id": user["id"], "name": who},
+                               scope=incmod.scope_filter(user))
     if not inc:
         return "Incidente não encontrado."
     return f"{'👀 Reconhecido' if act == 'ack' else '✅ Resolvido'} por {who}: #{inc['number']} {inc['title']}"
