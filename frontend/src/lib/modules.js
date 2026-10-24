@@ -2,6 +2,7 @@
 // Sem lista no usuário = todos os módulos. Administrador sempre tem tudo; o perfil View tem regra própria.
 export const MODULES = [
   { key: "incidents", label: "Incidentes", path: "/incidents", desc: "alarmes do Zabbix, LibreNMS e BastiON; reconhecer e resolver" },
+  { key: "logs", label: "Syslog e Traps", path: "/logs", desc: "logs e traps SNMP; regras que abrem incidentes" },
   { key: "devices", label: "Equipamentos", path: "/devices", desc: "cadastrar, editar, importar e testar" },
   { key: "terminal", label: "Terminal SSH", path: "/terminal", desc: "abrir sessão SSH/Telnet" },
   { key: "web", label: "Acesso Web", path: "/web", desc: "abrir a página web dos equipamentos" },

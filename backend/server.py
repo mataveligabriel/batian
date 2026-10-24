@@ -58,6 +58,7 @@ import webdomain
 import incidents as incmod
 import oncall as oncallmod
 import recording
+import logparse
 import lookingglass
 import rpki
 import vendorscan
@@ -4409,25 +4410,7 @@ async def _inc_reown():
         logger.warning(f"donos dos incidentes: {e}")
 
 
-async def _inc_dm(user_ids: list, title: str, text: str, buttons):
-    """Privado no Telegram de cada dono (Telegram ID vinculado em Assistente IA; a pessoa precisa ter dado /start no bot)."""
-    st = await automation.get_settings(db)
-    token = vault.decrypt(st.get("telegram_bot_token", ""))
-    group = str(st.get("telegram_chat_id") or "").strip()
-    ai = await db.config.find_one({"key": "ai"}, {"_id": 0, "ai_users": 1}) or {}
-    tids = {str(l["telegram_id"]) for l in ai.get("ai_users") or [] if l.get("user_id") in set(user_ids) and l.get("telegram_id")}
-    tids.discard(group)
-    if not token or not tids:
-        return
-    async with httpx.AsyncClient(timeout=15) as c:
-        for tid in tids:
-            body = {"chat_id": tid, "text": f"{title}\n{text}"}
-            if buttons:
-                body["reply_markup"] = {"inline_keyboard": buttons}
-            try:
-                await c.post(f"https://api.telegram.org/bot{token}/sendMessage", json=body)
-            except Exception:
-                pass
+_inc_dm = incmod.make_dm(db)       # privado no Telegram de cada dono
 
 
 inc_center.dm = _inc_dm
@@ -7336,6 +7319,265 @@ async def trust_vpn_cert(vid: str, user: dict = Depends(get_current_user)):
     await db.vpn_profiles.update_one({"id": vid}, {"$set": {"trusted_certs": certs}})
     await db.vpn_status.update_one({"_id": vid}, {"$set": {"pending_cert": None, "error": None, "state": "disconnected"}})
     return {"trusted_certs": certs}
+
+
+# ---------- Syslog e traps SNMP (coletor no container "log") ----------
+def _iso_dt(v: str) -> Optional[datetime]:
+    if not v:
+        return None
+    try:
+        d = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, f"Data inválida: {v}")
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+async def _logs_scope(user: dict) -> dict:
+    """Mesma regra dos incidentes: admin / "vê tudo" = tudo; os demais, só o que é dos equipamentos e redes deles."""
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0, "id": 1, "role": 1, "incidents_scope": 1}) or user
+    if u.get("role") == "admin" or u.get("incidents_scope") == "all":
+        return {}
+    return {"owner_ids": u["id"]}
+
+
+def _log_public(d: dict) -> dict:
+    d.pop("_id", None)
+    at = d.get("at")
+    if isinstance(at, datetime):
+        d["at"] = (at if at.tzinfo else at.replace(tzinfo=timezone.utc)).isoformat()
+    d.pop("owner_ids", None)
+    return d
+
+
+@api.get("/logs")
+async def logs_list(q: str = "", device_id: str = "", host: str = "", kind: str = "", max_sev: int = 7, rule: str = "",
+                    since: str = "", until: str = "", after: str = "", limit: int = 300,
+                    user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    f: dict = dict(await _logs_scope(user))
+    if device_id == "none":
+        f["device_id"] = None
+    elif device_id:
+        f["device_id"] = device_id
+    if host.strip():
+        f["host"] = host.strip()
+    if kind in ("syslog", "trap"):
+        f["kind"] = kind
+    if 0 <= max_sev < 7:
+        f["severity"] = {"$lte": max_sev}
+    if rule == "any":
+        f["rules.0"] = {"$exists": True}
+    elif rule:
+        f["rules"] = rule
+    rng = {}
+    if after:
+        rng["$gt"] = _iso_dt(after)
+    elif since:
+        rng["$gte"] = _iso_dt(since)
+    elif q.strip():                     # busca de texto sem período: últimas 24 h
+        rng["$gte"] = datetime.now(timezone.utc) - timedelta(hours=24)
+    if until:
+        rng["$lte"] = _iso_dt(until)
+    if rng:
+        f["at"] = rng
+    if q.strip():
+        rx = {"$regex": re.escape(q.strip()[:120]), "$options": "i"}
+        f.setdefault("$and", []).append({"$or": [{"msg": rx}, {"host_name": rx}, {"program": rx}, {"device_name": rx}]})
+    rows = await db.logs.find(f, {"_id": 0, "owner_ids": 0}).sort("at", -1).to_list(min(1000, max(1, limit)))
+    return [_log_public(r) for r in rows]
+
+
+@api.get("/logs/summary")
+async def logs_summary(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    st = await db.config.find_one({"key": "logs_status"}, {"_id": 0}) or {}
+    online = False
+    try:
+        online = (datetime.now(timezone.utc) - datetime.fromisoformat(st.get("updated_at"))).total_seconds() < 120
+    except (TypeError, ValueError):
+        pass
+    scope = await _logs_scope(user)
+    since = datetime.now(timezone.utc) - timedelta(hours=1)
+    by_sev, top = {}, []
+    try:
+        async for r in db.logs.aggregate([{"$match": {**scope, "at": {"$gte": since}}},
+                                          {"$group": {"_id": {"k": "$kind", "s": "$severity"}, "n": {"$sum": 1}}}]):
+            k = "trap" if r["_id"].get("k") == "trap" else str(r["_id"].get("s"))
+            by_sev[k] = by_sev.get(k, 0) + r["n"]
+        async for r in db.logs.aggregate([{"$match": {**scope, "at": {"$gte": since}}},
+                                          {"$group": {"_id": "$host", "n": {"$sum": 1}, "dev": {"$last": "$device_name"},
+                                                      "did": {"$last": "$device_id"}}},
+                                          {"$sort": {"n": -1}}, {"$limit": 10}]):
+            top.append({"host": r["_id"], "count": r["n"], "device_name": r.get("dev") or "", "device_id": r.get("did")})
+    except Exception as e:
+        logger.warning(f"resumo dos logs: {e}")
+    out = {"online": online, "last_hour": by_sev, "top": top}
+    if user.get("role") == "admin":
+        out.update(listen=st.get("listen") or {}, stats=st.get("stats") or {}, sources=st.get("sources", 0),
+                   updated_at=st.get("updated_at"), open_keys=st.get("open_keys", 0))
+    return out
+
+
+class LogSettingsIn(BaseModel):
+    enabled: bool = True
+    syslog_port: int = 514
+    trap_port: int = 162
+    retention_days: int = 30
+    rate_per_source: int = 200
+    store_max_severity: int = 7
+    store_unknown: bool = True
+    trap_community: str = ""
+
+
+@api.get("/logs-settings")
+async def logs_settings_get(_: dict = Depends(require_admin)):
+    doc = await db.config.find_one({"key": "logs"}, {"_id": 0}) or {}
+    return {**logparse.DEFAULTS, **{k: v for k, v in doc.items() if k in logparse.DEFAULTS}}
+
+
+@api.put("/logs-settings")
+async def logs_settings_put(body: LogSettingsIn, _: dict = Depends(require_admin)):
+    for p in (body.syslog_port, body.trap_port):
+        if not 1 <= p <= 65535:
+            raise HTTPException(400, "Porta inválida")
+    if body.syslog_port == body.trap_port:
+        raise HTTPException(400, "Syslog e traps precisam de portas diferentes")
+    d = {"enabled": body.enabled, "syslog_port": body.syslog_port, "trap_port": body.trap_port,
+         "retention_days": min(3650, max(1, body.retention_days)), "rate_per_source": min(100000, max(1, body.rate_per_source)),
+         "store_max_severity": min(7, max(0, body.store_max_severity)), "store_unknown": body.store_unknown,
+         "trap_community": body.trap_community.strip()[:64]}
+    await db.config.update_one({"key": "logs"}, {"$set": d}, upsert=True)
+    return d
+
+
+@api.get("/log-sources")
+async def log_sources(_: dict = Depends(require_admin)):
+    rows = await db.log_sources.find({}, {"_id": 0}).sort("last_at", -1).to_list(5000)
+    for r in rows:
+        if isinstance(r.get("last_at"), datetime):
+            r["last_at"] = r["last_at"].replace(tzinfo=r["last_at"].tzinfo or timezone.utc).isoformat()
+    return rows
+
+
+class LogSourceLink(BaseModel):
+    device_id: Optional[str] = None
+
+
+@api.put("/log-sources/{ip}")
+async def log_source_link(ip: str, body: LogSourceLink, _: dict = Depends(require_admin)):
+    """Liga um IP de origem a um equipamento (ex.: o equipamento manda pelo IP de loopback ou sai NATeado)."""
+    did = (body.device_id or "").strip() or None
+    if did and not await db.devices.find_one({"id": did}, {"_id": 1}):
+        raise HTTPException(404, "Equipamento não encontrado")
+    r = await db.log_sources.update_one({"ip": ip}, {"$set": {"linked_device_id": did}})
+    if not r.matched_count:
+        raise HTTPException(404, "Origem não encontrada")
+    return {"ip": ip, "linked_device_id": did}
+
+
+@api.delete("/log-sources/{ip}")
+async def log_source_forget(ip: str, _: dict = Depends(require_admin)):
+    await db.log_sources.delete_one({"ip": ip})
+    return {"ok": True}
+
+
+class LogRuleIn(BaseModel):
+    name: str = ""
+    enabled: bool = True
+    pattern: str = ""
+    clear_pattern: str = ""
+    kinds: str = "any"
+    device_ids: List[str] = []
+    max_severity: int = 7
+    threshold: int = 1
+    window_s: int = 60
+    severity: str = "medium"
+    auto_resolve_min: int = 0
+    title: str = ""
+
+
+def _clean_log_rule(body) -> dict:
+    try:
+        return logparse.clean_rule(body.model_dump() if hasattr(body, "model_dump") else body.dict())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@api.get("/log-rules")
+async def log_rules_list(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return await db.log_rules.find({}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+
+
+@api.post("/log-rules")
+async def log_rules_create(body: LogRuleIn, user: dict = Depends(require_admin)):
+    r = _clean_log_rule(body)
+    r.update(id=uuid.uuid4().hex[:16], created_at=datetime.now(timezone.utc).isoformat(), created_by=user["email"],
+             hits=0, last_hit=None)
+    await db.log_rules.insert_one(dict(r))
+    r.pop("_id", None)
+    return r
+
+
+@api.put("/log-rules/{rid}")
+async def log_rules_update(rid: str, body: LogRuleIn, _: dict = Depends(require_admin)):
+    cur = await db.log_rules.find_one({"id": rid}, {"_id": 0})
+    if not cur:
+        raise HTTPException(404, "Regra não encontrada")
+    r = _clean_log_rule(body)
+    r["preset"] = cur.get("preset", "")
+    await db.log_rules.update_one({"id": rid}, {"$set": r})
+    return {**cur, **r}
+
+
+@api.delete("/log-rules/{rid}")
+async def log_rules_delete(rid: str, _: dict = Depends(require_admin)):
+    await db.log_rules.delete_one({"id": rid})
+    return {"ok": True}
+
+
+@api.post("/log-rules/presets")
+async def log_rules_presets(_: dict = Depends(require_admin)):
+    """Recoloca os modelos prontos que foram apagados (não mexe nos que existem)."""
+    have = {r.get("preset") async for r in db.log_rules.find({}, {"_id": 0, "preset": 1})}
+    added = 0
+    for p in logparse.PRESETS:
+        if p["preset"] in have:
+            continue
+        r = logparse.clean_rule(p)
+        r.update(id=uuid.uuid4().hex[:16], created_at=datetime.now(timezone.utc).isoformat(), hits=0, last_hit=None)
+        await db.log_rules.insert_one(r)
+        added += 1
+    return {"added": added}
+
+
+class LogRuleTest(BaseModel):
+    pattern: str = ""
+    clear_pattern: str = ""
+    text: str = ""
+
+
+@api.post("/log-rules/test")
+async def log_rules_test(body: LogRuleTest, _: dict = Depends(require_admin)):
+    """Testa a regex com linhas coladas (ou com as últimas mensagens gravadas, se não colar nada)."""
+    text = body.text[:100000]
+    if not text.strip():
+        rows = await db.logs.find({}, {"_id": 0, "msg": 1}).sort("at", -1).to_list(500)
+        text = "\n".join(r.get("msg", "") for r in rows)
+    try:
+        compiled = logparse.compile_rx(body.pattern), logparse.compile_rx(body.clear_pattern)
+    except (re.error, ValueError) as e:
+        raise HTTPException(400, f"Regex inválida: {e}")
+    if not compiled[0]:
+        raise HTTPException(400, "Informe a regex")
+    try:
+        res = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(
+            None, logparse.test_rule, body.pattern, body.clear_pattern, text), 5)
+    except asyncio.TimeoutError:
+        raise HTTPException(400, "A regex demorou demais (backtracking); simplifique a expressão")
+    hits = [r for r in res if r["match"]]
+    return {"lines": len(res), "fire": sum(1 for r in hits if r["match"] == "fire"),
+            "clear": sum(1 for r in hits if r["match"] == "clear"), "results": (hits if not body.text.strip() else res)[:300]}
 
 
 # ---------- Health ----------

@@ -20,7 +20,8 @@ from pymongo import ReturnDocument
 SEVERITIES = ["info", "low", "medium", "high", "critical"]
 SEV_LABEL = {"info": "Info", "low": "Baixa", "medium": "Média", "high": "Alta", "critical": "Crítica"}
 SEV_ICON = {"info": "ℹ️", "low": "🔵", "medium": "🟡", "high": "🟠", "critical": "🔴"}
-SOURCES = {"zabbix": "Zabbix", "librenms": "LibreNMS", "generic": "Webhook", "bastion": "BastiON", "manual": "Manual"}
+SOURCES = {"zabbix": "Zabbix", "librenms": "LibreNMS", "generic": "Webhook", "bastion": "BastiON", "manual": "Manual",
+           "syslog": "Syslog", "trap": "Trap SNMP"}
 STATUSES = ("open", "ack", "resolved")
 
 DEFAULTS = {
@@ -31,6 +32,33 @@ DEFAULTS = {
     "notify_owners_private": False,    # também no privado do Telegram de cada dono do incidente
     "token": "",
 }
+
+
+def make_dm(db):
+    """Envio no privado do Telegram de cada dono (Telegram ID vinculado em Assistente IA; a pessoa precisa ter dado
+    /start no bot). Usado pelo backend e pelo coletor de logs."""
+    async def dm(user_ids: list, title: str, text: str, buttons):
+        import httpx
+        import automation
+        import vault
+        st = await automation.get_settings(db)
+        token = vault.decrypt(st.get("telegram_bot_token", ""))
+        group = str(st.get("telegram_chat_id") or "").strip()
+        ai = await db.config.find_one({"key": "ai"}, {"_id": 0, "ai_users": 1}) or {}
+        tids = {str(l["telegram_id"]) for l in ai.get("ai_users") or [] if l.get("user_id") in set(user_ids) and l.get("telegram_id")}
+        tids.discard(group)
+        if not token or not tids:
+            return
+        async with httpx.AsyncClient(timeout=15) as c:
+            for tid in tids:
+                body = {"chat_id": tid, "text": f"{title}\n{text}"}
+                if buttons:
+                    body["reply_markup"] = {"inline_keyboard": buttons}
+                try:
+                    await c.post(f"https://api.telegram.org/bot{token}/sendMessage", json=body)
+                except Exception:
+                    pass
+    return dm
 
 
 def scope_filter(u: dict) -> dict:

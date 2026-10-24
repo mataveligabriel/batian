@@ -23,7 +23,7 @@ export const SEV = {
   info: { label: "Info", bar: "bg-slate-500", chip: "text-slate-300 border-line bg-white/5" },
 };
 const ST = { open: ["Aberto", "text-red-300"], ack: ["Reconhecido", "text-amber-300"], resolved: ["Resolvido", "text-emerald-300"] };
-const SRC = { zabbix: "Zabbix", librenms: "LibreNMS", generic: "Webhook", bastion: "BastiON", manual: "Manual" };
+const SRC = { zabbix: "Zabbix", librenms: "LibreNMS", generic: "Webhook", bastion: "BastiON", manual: "Manual", syslog: "Syslog", trap: "Trap SNMP" };
 const VIEWS = [["active", "Ativos"], ["open", "Abertos"], ["ack", "Reconhecidos"], ["resolved", "Resolvidos"], ["all", "Todos"]];
 
 export const fmtDur = (s) => {

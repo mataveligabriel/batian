@@ -35,6 +35,18 @@ services:
       mongo:
         condition: service_healthy
 
+  # coletor de syslog (UDP 514) e traps SNMP v1/v2c (UDP 162) — mesma imagem do backend. Portas, retenção e
+  # regras em Syslog e Traps; libere no firewall só para os IPs dos equipamentos.
+  log:
+    build: ../backend
+    command: ["python", "logd.py"]
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
   # mitigação de DDoS: BGP do Bastion anuncia o /32 atacado para as bordas (blackhole). Fica parado até
   # ser ligado em Flow → Mitigação. Sai do ar = as bordas retiram o blackhole sozinhas (sessão cai).
   bgp:

@@ -1129,3 +1129,39 @@ Toda sessão SSH/Telnet aberta pelo Terminal do BastiON é gravada (formato asci
 - **Configurações → Gravação de sessões**: ligar/desligar, gravar também o que foi digitado (desligado por padrão
   porque inclui senhas sem eco), retenção em dias (padrão 180, apaga sozinho) e limite por sessão (padrão 50 MB).
 - Se o BastiON reiniciar no meio de uma sessão, a gravação até ali é mantida.
+
+## 48. Syslog e traps SNMP (v2.0 — NOC item 3)
+
+Serviço novo no compose: **`log`** (`python logd.py`, mesma imagem do backend, rede do host). Recebe **syslog em UDP
+514** (RFC 3164/5424 — Cisco, Huawei, Juniper, MikroTik, ZTE, Linux…) e **traps SNMP v1/v2c em UDP 162** (INFORM é
+respondido; v3 não é decodificado). O `update.sh` já sobe o serviço.
+
+**Firewall**: as portas ficam fechadas no ufw. Libere só para as redes dos equipamentos/jumps:
+
+```bash
+sudo ufw allow from 203.0.113.0/24 to any port 514 proto udp
+sudo ufw allow from 203.0.113.0/24 to any port 162 proto udp
+```
+
+Se a tela mostrar "UDP 514 não abriu: Address already in use", outro programa do servidor está usando a porta
+(`sudo ss -lunp | grep -E ':514|:162'` — ex.: rsyslog com `imudp` ou `snmptrapd`): desligue-o ou troque a porta em
+Syslog e Traps → Configurar.
+
+- **Menu Syslog e Traps** (módulo "Syslog e Traps", liberável por usuário): mensagens ao vivo (atualiza a cada 3 s,
+  pausa), busca no texto, filtro por equipamento, tipo e severidade, "só as que casaram regra"; clicar abre os
+  detalhes (varbinds do trap). Operador vê só o que é dos equipamentos e das redes dele (mesma regra dos incidentes).
+- **Equipamento de cada mensagem**: vínculo manual em **Fontes** > IP do agente (trap) > nome que vem na mensagem
+  igual ao nome cadastrado > IP de origem igual ao IP cadastrado. Equipamento que sai pela loopback/NAT: vincule o IP
+  em Fontes.
+- **Atrás de jump server**: aponte os equipamentos para o jump e repasse com rsyslog/snmptrapd (modelo pronto em
+  Configurar). O BastiON reconhece pelo nome na mensagem ou pelo vínculo.
+- **Regras** (vêm 7 prontas, ligadas): BGP caiu (resolve quando a sessão volta), vizinho OSPF caiu, interface
+  oscilando (4× em 10 min), LOS em massa na PON (8 alarmes em 2 min na mesma PON), configuração alterada (info),
+  falhas de login repetidas, equipamento reiniciou. Cada regra = regex + "N vezes em M segundos" + severidade; o 1º
+  grupo capturado separa os incidentes (o vizinho, a interface, a PON). Normaliza por uma segunda regex ou "resolve
+  sozinho após X min quieto". Tem **teste** da regex com linhas coladas ou com as últimas 500 mensagens. As regras
+  valem em até 30 s; o incidente aparece na Central com origem Syslog/Trap SNMP e as últimas mensagens na descrição.
+- **Configurar** (admin): portas, retenção (padrão 30 dias, a coleção `logs` apaga sozinha), limite por origem
+  (padrão 200 msg/s — o excesso é descartado e contado), severidade mínima guardada, community dos traps e os
+  comandos prontos por fabricante com o IP do BastiON.
+- Status do coletor: `docker compose logs --tail 50 log`.
