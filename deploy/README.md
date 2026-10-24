@@ -1116,3 +1116,16 @@ Incidentes → aba **Plantão**:
 
 Para receber no Telegram, cada pessoa da escala precisa ter o Telegram ID vinculado (Configurações → Automação e
 alertas → Assistente IA) e ter mandado `/start` para o bot. Sem isso, recebe só o push.
+
+## 47. Gravação das sessões de terminal (replay)
+
+Toda sessão SSH/Telnet aberta pelo Terminal do BastiON é gravada (formato asciicast v2, o do asciinema) em
+`/data/recordings/AAAA/MM/` (volume `bastion_data`), e o terminal avisa "sessão gravada para auditoria".
+
+- **Histórico**: administrador vê as sessões de todos (filtro por tipo, "só gravadas", busca); cada usuário, as
+  próprias. **Assistir** abre o replay (play/pausa, 1–16×, pular pausas longas, voltar/avançar 10 s, barra de tempo)
+  e **baixar** o `.cast` (abre no asciinema). Sessões de lote mostram os comandos enviados. Assistir também fica
+  registrado ("replay").
+- **Configurações → Gravação de sessões**: ligar/desligar, gravar também o que foi digitado (desligado por padrão
+  porque inclui senhas sem eco), retenção em dias (padrão 180, apaga sozinho) e limite por sessão (padrão 50 MB).
+- Se o BastiON reiniciar no meio de uma sessão, a gravação até ali é mantida.

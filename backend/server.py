@@ -57,6 +57,7 @@ import dbbackup
 import webdomain
 import incidents as incmod
 import oncall as oncallmod
+import recording
 import lookingglass
 import rpki
 import vendorscan
@@ -141,6 +142,7 @@ async def startup():
     scheduler.start()
     _bg_tasks.append(asyncio.create_task(inc_center.backfill()))
     _bg_tasks.append(asyncio.create_task(_oncall_loop()))
+    _bg_tasks.append(asyncio.create_task(_rec_retention_loop()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
@@ -1487,9 +1489,95 @@ async def delete_script(sid: str, _: dict = Depends(get_current_user)):
 
 # ---------- Sessions ----------
 @api.get("/sessions")
-async def list_sessions(user: dict = Depends(get_current_user), limit: int = 100):
-    q = {"user_id": user["id"]}
-    return await db.sessions.find(q, {"_id": 0}).sort("started_at", -1).to_list(limit)
+async def list_sessions(user: dict = Depends(get_current_user), limit: int = 100, all: bool = False, kind: str = "",
+                        q: str = "", recorded: bool = False, user_id: str = ""):
+    """Histórico. Administrador pode ver de todos (all=1) para auditoria; os demais veem as próprias sessões."""
+    f: dict = {} if (all and user.get("role") == "admin") else {"user_id": user["id"]}
+    if user_id and user.get("role") == "admin":
+        f["user_id"] = user_id
+    if kind:
+        f["kind"] = kind
+    if recorded:
+        f["recording.file"] = {"$exists": True}
+    if q.strip():
+        rx = {"$regex": re.escape(q.strip()[:80]), "$options": "i"}
+        f["$or"] = [{"device_name": rx}, {"user_email": rx}]
+    rows = await db.sessions.find(f, {"_id": 0}).sort("started_at", -1).to_list(min(1000, max(1, limit)))
+    for r in rows:
+        if isinstance(r.get("commands"), list):
+            r["commands_count"] = len(r["commands"])
+    return rows
+
+
+async def _rec_settings() -> dict:
+    doc = await db.config.find_one({"key": "recording"}, {"_id": 0}) or {}
+    return {**recording.DEFAULTS, **{k: v for k, v in doc.items() if k != "key"}}
+
+
+async def _session_for(user: dict, sid: str) -> dict:
+    s = await db.sessions.find_one({"id": sid}, {"_id": 0})
+    if not s or (s.get("user_id") != user["id"] and user.get("role") != "admin"):
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    return s
+
+
+@api.get("/sessions/{sid}/recording")
+async def session_recording(sid: str, user: dict = Depends(get_current_user)):
+    """Gravação da sessão (asciicast v2) para o replay. Dono da sessão ou administrador."""
+    s = await _session_for(user, sid)
+    rec = s.get("recording") or {}
+    text = recording.read_text(rec.get("file", "")) if rec.get("file") else None
+    if text is None:
+        raise HTTPException(status_code=404, detail="Esta sessão não tem gravação (ou ela já foi apagada pela retenção)")
+    await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
+                                  "device_id": s.get("device_id"), "device_name": s.get("device_name"), "kind": "replay",
+                                  "started_at": datetime.now(timezone.utc).isoformat(), "ended_at": datetime.now(timezone.utc).isoformat(),
+                                  "duration_seconds": 0, "replay_of": sid, "replay_user": s.get("user_email")})
+    return PlainTextResponse(text, media_type="application/x-asciicast")
+
+
+@api.get("/sessions/{sid}")
+async def session_get(sid: str, user: dict = Depends(get_current_user)):
+    return await _session_for(user, sid)
+
+
+class RecSettingsIn(BaseModel):
+    enabled: bool = True
+    input: bool = False
+    retention_days: int = 180
+    max_mb: int = 50
+
+
+@api.get("/recording-settings")
+async def rec_settings_get(_: dict = Depends(require_admin)):
+    return {**await _rec_settings(), "usage": recording.disk_usage()}
+
+
+@api.put("/recording-settings")
+async def rec_settings_put(body: RecSettingsIn, _: dict = Depends(require_admin)):
+    d = {"enabled": body.enabled, "input": body.input, "retention_days": min(3650, max(1, body.retention_days)),
+         "max_mb": min(1000, max(1, body.max_mb))}
+    await db.config.update_one({"key": "recording"}, {"$set": d}, upsert=True)
+    return {**d, "usage": recording.disk_usage()}
+
+
+async def _rec_retention_loop():
+    await asyncio.sleep(90)
+    try:
+        recording.finalize_orphans()
+    except Exception:
+        pass
+    while True:
+        try:
+            cfg = await _rec_settings()
+            n = await asyncio.get_running_loop().run_in_executor(None, recording.purge, int(cfg["retention_days"]))
+            if n:
+                logger.info(f"gravações: {n} arquivo(s) com mais de {cfg['retention_days']} dias apagados")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"retenção das gravações: {e}")
+        await asyncio.sleep(6 * 3600)
 
 
 # ---------- Dashboard stats ----------
@@ -5431,10 +5519,20 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
     })
 
     wrapper: Optional[SSHClientWrapper] = None
+    rec: Optional[recording.Recorder] = None
+    rcfg = await _rec_settings()
     try:
         await ws.send_json({"type": "status", "message": f"Conectando em {dev['name']} ({dev['host']}:{dev.get('port',22)}) via {dev.get('protocol','ssh').upper()}..."})
         wrapper = await _connect_device(dev)
-        await ws.send_json({"type": "status", "message": "Conectado. Sessão ativa."})
+        if rcfg["enabled"]:
+            try:
+                rec = recording.Recorder(session_id, 120, 32, f"{dev['name']} — {user_email}", rcfg["input"], rcfg["max_mb"])
+            except OSError as e:
+                logger.warning(f"gravação da sessão não iniciou: {e}")
+        if rec:
+            await db.sessions.update_one({"id": session_id}, {"$set": {"recording": {"file": rec.rel + ".gz", "live": True,
+                                                                                     "input": rec.input}}})
+        await ws.send_json({"type": "status", "message": "Conectado. Sessão ativa." + (" (gravada para auditoria)" if rec else "")})
         process = await wrapper.open_shell(cols=120, rows=32)
 
         async def pump_stdout():
@@ -5445,6 +5543,8 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
                         break
                     if isinstance(chunk, bytes):
                         chunk = chunk.decode("utf-8", "replace")
+                    if rec:
+                        rec.output(chunk)
                     await ws.send_json({"type": "data", "data": chunk})
             except Exception as e:
                 logger.warning(f"stdout pump ended: {e}")
@@ -5457,6 +5557,8 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
                         break
                     if isinstance(chunk, bytes):
                         chunk = chunk.decode("utf-8", "replace")
+                    if rec:
+                        rec.output(chunk)
                     await ws.send_json({"type": "data", "data": chunk})
             except Exception:
                 pass
@@ -5469,8 +5571,12 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
             if msg.get("type") == "input":
                 data = msg.get("data", "")
                 process.stdin.write(data.encode("utf-8"))
+                if rec:
+                    rec.typed(data)
             elif msg.get("type") == "resize":
                 await wrapper.resize(int(msg.get("cols", 120)), int(msg.get("rows", 32)))
+                if rec:
+                    rec.resize(int(msg.get("cols", 120)), int(msg.get("rows", 32)))
             elif msg.get("type") == "close":
                 break
     except WebSocketDisconnect:
@@ -5484,9 +5590,16 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
         if wrapper:
             await wrapper.close()
         ended = datetime.now(timezone.utc)
+        recinfo = None
+        if rec:
+            try:
+                recinfo = rec.close()
+            except Exception as e:
+                logger.warning(f"gravação da sessão: {e}")
         await db.sessions.update_one({"id": session_id}, {"$set": {
             "ended_at": ended.isoformat(),
             "duration_seconds": int((ended - started).total_seconds()),
+            **({"recording": recinfo} if recinfo else {}),
         }})
         try:
             await ws.close()

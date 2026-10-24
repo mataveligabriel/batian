@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
   Palette, Database, BellRing, KeyRound, Download, Upload, Trash2, Loader2, RotateCcw, ShieldAlert, CheckCircle2,
-  XCircle, HardDrive, Clock, CloudUpload, ArchiveRestore, Info, Globe, Plus, RefreshCw, Copy, CircleDashed, Siren, Plug, Send,
+  XCircle, HardDrive, Clock, CloudUpload, ArchiveRestore, Info, Globe, Plus, RefreshCw, Copy, CircleDashed, Siren, Plug, Send, Video,
 } from "lucide-react";
 import { AppearanceFields, useAppearanceEditor } from "@/components/AppearanceDialog";
 import { DEFAULT_THEME } from "@/lib/theme";
@@ -19,6 +19,7 @@ const TABS = [
   { id: "aparencia", label: "Aparência", icon: Palette },
   { id: "dominio", label: "Domínio", icon: Globe },
   { id: "integracoes", label: "Integrações (incidentes)", icon: Plug },
+  { id: "gravacao", label: "Gravação de sessões", icon: Video },
   { id: "banco", label: "Banco de dados", icon: Database },
   { id: "automacao", label: "Automação e alertas", icon: BellRing },
   { id: "chave", label: "Chave SSH global", icon: KeyRound },
@@ -562,6 +563,38 @@ function IntegrationsTab() {
   );
 }
 
+function RecordingTab() {
+  const [st, setSt] = useState(null);
+  useEffect(() => { api.get("/recording-settings").then(r => setSt(r.data)).catch(e => toast.error(formatApiError(e))); }, []);
+  if (!st) return <div className="text-sm text-slate-500 font-mono">Carregando…</div>;
+  const save = async () => {
+    try { setSt((await api.put("/recording-settings", st)).data); toast.success("Salvo"); } catch (e) { toast.error(formatApiError(e)); }
+  };
+  return (
+    <Section icon={Video} title="Gravação das sessões de terminal" testid="settings-recording"
+             desc="Toda sessão SSH/Telnet aberta pelo BastiON é gravada e pode ser assistida de novo em Histórico (replay). O usuário vê no terminal que a sessão é gravada.">
+      <div className="space-y-1">
+        <Check checked={st.enabled} onChange={v => setSt({ ...st, enabled: v })} label="Gravar as sessões de terminal" testid="rec-enabled" />
+        <Check checked={st.input} onChange={v => setSt({ ...st, input: v })} testid="rec-input" label="Gravar também o que foi digitado"
+               hint="inclui senhas digitadas sem eco (enable, sudo…). Desligado: grava só o que aparece na tela, que já mostra os comandos" />
+      </div>
+      <div className="flex flex-wrap gap-4 mt-3">
+        <label className="text-xs text-slate-400">Guardar por (dias)
+          <Input type="number" min={1} value={st.retention_days} onChange={e => setSt({ ...st, retention_days: Number(e.target.value) })} className="mt-1 w-28 bg-sunken border-line h-9" data-testid="rec-days" />
+        </label>
+        <label className="text-xs text-slate-400">Limite por sessão (MB)
+          <Input type="number" min={1} value={st.max_mb} onChange={e => setSt({ ...st, max_mb: Number(e.target.value) })} className="mt-1 w-28 bg-sunken border-line h-9" />
+        </label>
+      </div>
+      <div className="flex items-center gap-3 mt-4">
+        <Button onClick={save} className="bg-brand hover:bg-brand-strong text-onbrand" data-testid="rec-save">Salvar</Button>
+        <span className="text-xs text-slate-500">{st.usage?.files || 0} gravação(ões) · {fmtBytes(st.usage?.bytes || 0)} no servidor</span>
+      </div>
+      <p className="text-[11px] text-slate-500 mt-3">Assistir uma gravação fica registrado no Histórico ("replay"). Administradores assistem as de todos; cada usuário, as próprias.</p>
+    </Section>
+  );
+}
+
 export default function Settings() {
   const [sp, setSp] = useSearchParams();
   const tab = TABS.some(t => t.id === sp.get("tab")) ? sp.get("tab") : "aparencia";
@@ -582,6 +615,7 @@ export default function Settings() {
           {tab === "aparencia" && <AppearanceTab />}
           {tab === "dominio" && <DomainTab />}
           {tab === "integracoes" && <IntegrationsTab />}
+          {tab === "gravacao" && <RecordingTab />}
           {tab === "banco" && <DatabaseTab />}
           {tab === "automacao" && <Automation embedded />}
           {tab === "chave" && <SshKey embedded />}
