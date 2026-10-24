@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { TagOptions } from "@/components/TagSelect";
-import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search, Unplug, CheckCircle2, XCircle, Send } from "lucide-react";
+import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search, Unplug, CheckCircle2, XCircle, Send, PowerOff, History } from "lucide-react";
 
 const KEY = "bastion_oltgen_form";                       // formulário lembrado neste navegador, sem senhas
 const TABS = [["ports", "Placas e portas"], ["mgmt", "Gerência"], ["services", "Serviços"], ["system", "Sistema"], ["access", "Acesso"]];
@@ -860,6 +860,188 @@ function OnuRemove({ meta, devices }) {
   );
 }
 
+// ---------- ONUs off há mais de N dias: procura, confere e remove em massa ----------
+const CLEAN_KEY = "bastion_oltgen_clean";
+
+function useCleanJob() {
+  const [job, setJob] = useState(null);
+  const t = useRef(null);
+  const follow = (j) => {
+    setJob(j);
+    clearTimeout(t.current);
+    if (j?.state === "running") t.current = setTimeout(() => api.get(`/oltgen/clean-jobs/${j.id}`).then(r => follow(r.data)).catch(e => { toast.error(formatApiError(e)); setJob(null); }), 1000);
+  };
+  useEffect(() => () => clearTimeout(t.current), []);
+  return [job, follow];
+}
+
+function JobBar({ job, what }) {
+  if (!job || job.state !== "running") return null;
+  const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
+  return (
+    <div className="rounded-md border border-brand/40 bg-brand/5 p-3" data-testid="clean-progress">
+      <div className="flex items-center gap-2 text-sm text-slate-200"><Loader2 className="w-4 h-4 animate-spin text-brand-soft" /> {what} — {job.device}</div>
+      <div className="h-1.5 bg-sunken rounded mt-2 overflow-hidden"><div className="h-full bg-brand transition-all" style={{ width: `${pct}%` }} /></div>
+      <div className="text-[11px] text-slate-500 font-mono mt-1">{job.step} {job.total ? `· ${job.done}/${job.total}` : ""}</div>
+    </div>
+  );
+}
+
+const fmtDay = (d) => (d === null || d === undefined ? "—" : d >= 1 ? `${Math.floor(d)} dia(s)` : `${Math.round(d * 24)} h`);
+
+function RemovedList({ deviceId, refresh }) {
+  const [rows, setRows] = useState(null);
+  useEffect(() => { api.get("/oltgen/removed", { params: { device_id: deviceId || "" } }).then(r => setRows(r.data)).catch(() => setRows([])); }, [deviceId, refresh]);
+  if (!rows || !rows.length) return null;
+  const dl = () => {
+    const txt = rows.map(r => `! ${r.at} · ${r.device_name} · ${r.slot}/${r.pon}:${r.onu} · ${r.sn || ""} · ${r.name || ""} · off ${fmtDay(r.days)} · removida por ${r.by}\n${r.config || ""}\n`).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([txt], { type: "text/plain" }));
+    a.download = `onus-removidas-${new Date().toISOString().slice(0, 10)}.txt`; a.click();
+  };
+  return (
+    <div className={sec} data-testid="clean-removed">
+      <div className="flex items-center gap-2 text-sm text-slate-200"><History className="w-4 h-4 text-slate-400" /> Removidas pela limpeza ({rows.length})
+        <Button size="sm" variant="ghost" onClick={dl} className="ml-auto h-7 text-xs text-brand-soft" data-testid="clean-removed-dl"><Download className="w-3.5 h-3.5 mr-1" /> Configurações (.txt)</Button>
+      </div>
+      <p className="text-[11px] text-slate-500">A configuração de cada ONU é guardada antes de remover: se o cliente voltar, use o arquivo para reautorizar igual.</p>
+      <div className="max-h-48 overflow-y-auto text-xs font-mono divide-y divide-line">
+        {rows.slice(0, 200).map(r => (
+          <div key={r.id} className="py-1 flex gap-3 text-slate-300"><span className="text-slate-500 w-32 shrink-0">{new Date(r.at).toLocaleString("pt-BR")}</span>
+            <span className="w-24 shrink-0">{r.slot}/{r.pon}:{r.onu}</span><span className="w-32 shrink-0">{r.sn}</span><span className="truncate">{r.name}</span></div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OnuClean({ devices }) {
+  const saved = (() => { try { return JSON.parse(localStorage.getItem(CLEAN_KEY) || "{}"); } catch { return {}; } })();
+  const [devId, setDevId] = useState(saved.devId || "");
+  const [days, setDays] = useState(saved.days || 15);
+  const [pons, setPons] = useState("");
+  const [scan, followScan] = useCleanJob();
+  const [rm, followRm] = useCleanJob();
+  const [sel, setSel] = useState(new Set());
+  const [onlyEl, setOnlyEl] = useState(true);
+  const [confirmTxt, setConfirmTxt] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => { try { localStorage.setItem(CLEAN_KEY, JSON.stringify({ devId, days })); } catch { /* ok */ } }, [devId, days]);
+  const k = (o) => `${o.slot}/${o.pon}:${o.onu}`;
+  const result = scan?.state === "done" ? scan : null;
+  useEffect(() => { if (result) setSel(new Set(result.onus.filter(o => o.eligible).map(k))); }, [result?.id, result?.state]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (rm?.state === "done") { toast[rm.ok ? "success" : "error"](rm.ok ? `${rm.removed.length} ONU(s) removidas e gravado` : `Parou no erro: ${rm.failed?.command || ""}`); setRefresh(x => x + 1); setConfirmTxt(""); }
+    if (rm?.state === "error") toast.error(rm.error);
+    if (scan?.state === "error") toast.error(scan.error);
+  }, [rm?.state, scan?.state]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const start = async () => {
+    if (!devId) return toast.error("Escolha a OLT");
+    const list = pons.split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
+    if (list.some(x => !/^\d{1,2}\/\d{1,2}$/.test(x))) return toast.error("PONs no formato slot/porta, ex.: 2/1, 2/2");
+    try { followRm(null); followScan((await api.post("/oltgen/offline-scan", { device_id: devId, days: Number(days) || 15, pons: list })).data); }
+    catch (e) { toast.error(formatApiError(e)); }
+  };
+  const remove = async () => {
+    const items = result.onus.filter(o => sel.has(k(o))).map(o => ({ slot: o.slot, pon: o.pon, onu: o.onu }));
+    try { followRm((await api.post("/oltgen/offline-remove", { scan_id: result.id, items })).data); }
+    catch (e) { toast.error(formatApiError(e)); }
+  };
+  const csv = () => {
+    const head = "pon;onu;serial;nome;tipo;estado;caiu_em;dias_off;causa\n";
+    const body = result.onus.map(o => [`1/${o.slot}/${o.pon}`, o.onu, o.sn, o.name, o.type, o.phase, o.last_down || "", o.days ?? "", o.cause].join(";")).join("\n");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([head + body], { type: "text/csv" }));
+    a.download = `onus-off-${result.device}.csv`; a.click();
+  };
+  const shown = result ? result.onus.filter(o => !onlyEl || o.eligible) : [];
+  const nSel = sel.size;
+  const allShown = shown.length > 0 && shown.every(o => sel.has(k(o)));
+  const flip = (o) => setSel(s => { const n = new Set(s); n.has(k(o)) ? n.delete(k(o)) : n.add(k(o)); return n; });
+  const running = scan?.state === "running" || rm?.state === "running";
+
+  return (
+    <div className="p-4 md:p-6 space-y-4 max-w-6xl" data-testid="oltgen-clean">
+      <Card className="bg-surface border-line p-4 space-y-3">
+        <div className="text-sm text-slate-300">Procura as ONUs <b>off</b> (LOS, DyingGasp, OffLine) e há quantos dias cada uma caiu, pela hora da própria OLT. Nada é removido sem você escolher e confirmar.</div>
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_8rem_12rem_auto] gap-3 items-end">
+          <Field label="OLT">
+            <select value={devId} onChange={e => setDevId(e.target.value)} data-testid="clean-device" className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100">
+              <option value="">— escolha —</option>
+              <TagOptions devices={devices} label={d => `${d.name} (${d.host})`} />
+            </select>
+          </Field>
+          <Field label="Off há mais de (dias)"><Input type="number" min={1} value={days} onChange={e => setDays(e.target.value)} className={inp} data-testid="clean-days" /></Field>
+          <Field label="Só estas PONs (opcional)"><Input value={pons} onChange={e => setPons(e.target.value)} placeholder="2/1, 2/2" className={inp} data-testid="clean-pons" /></Field>
+          <Button onClick={start} disabled={running} className="bg-brand hover:bg-brand-strong text-onbrand h-9" data-testid="clean-scan">
+            {scan?.state === "running" ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <ScanSearch className="w-4 h-4 mr-1.5" />} Procurar ONUs off
+          </Button>
+        </div>
+        <JobBar job={scan} what="Lendo a OLT" />
+      </Card>
+
+      {result && (
+        <Card className="bg-surface border-line p-4 space-y-3" data-testid="clean-result">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+            <span className="text-slate-100 font-medium">{result.device}</span>
+            <span className="text-slate-400">{result.onus_total} ONUs · <span className="text-amber-300">{result.onus.filter(o => o.off).length} off</span> · <span className="text-red-300" data-testid="clean-eligible">{result.eligible} off há {result.days}+ dias</span></span>
+            {result.olt_clock && <span className="text-[11px] text-slate-500 font-mono">hora da OLT: {result.olt_clock}</span>}
+            <label className="ml-auto flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" className="accent-brand" checked={onlyEl} onChange={e => setOnlyEl(e.target.checked)} data-testid="clean-only" /> só as acima de {result.days} dias</label>
+            <Button size="sm" variant="ghost" onClick={csv} className="h-7 text-xs text-slate-300"><Download className="w-3.5 h-3.5 mr-1" /> CSV</Button>
+          </div>
+          {shown.length === 0 ? <div className="text-sm text-slate-500 py-4">{onlyEl ? `Nenhuma ONU off há ${result.days} dias ou mais.` : "Nenhuma ONU off."}</div> : (
+            <div className="overflow-x-auto max-h-[28rem] overflow-y-auto border border-line rounded-md">
+              <table className="w-full text-sm">
+                <thead className="text-xs text-slate-500 bg-panel sticky top-0"><tr>
+                  <th className="px-2 py-2 w-8"><input type="checkbox" className="accent-brand" checked={allShown} data-testid="clean-all"
+                    onChange={() => setSel(s => { const n = new Set(s); shown.forEach(o => (allShown ? n.delete(k(o)) : o.off && n.add(k(o)))); return n; })} /></th>
+                  <th className="text-left px-2">PON:ONU</th><th className="text-left px-2">Serial</th><th className="text-left px-2">Nome</th>
+                  <th className="text-left px-2">Estado</th><th className="text-left px-2">Caiu em</th><th className="text-right px-2">Off há</th></tr></thead>
+                <tbody className="divide-y divide-line">
+                  {shown.map(o => (
+                    <tr key={k(o)} className={sel.has(k(o)) ? "bg-red-500/5" : ""} data-testid={`clean-row-${k(o)}`}>
+                      <td className="px-2 py-1.5"><input type="checkbox" className="accent-brand" disabled={!o.off} checked={sel.has(k(o))} onChange={() => flip(o)} /></td>
+                      <td className="px-2 font-mono text-slate-200 whitespace-nowrap">1/{o.slot}/{o.pon}:{o.onu}</td>
+                      <td className="px-2 font-mono text-xs text-slate-300">{o.sn || "—"}</td>
+                      <td className="px-2 text-slate-300 truncate max-w-[14rem]" title={o.description}>{o.name || "—"}</td>
+                      <td className="px-2 text-xs"><span className={o.off ? "text-red-300" : "text-amber-300"}>{o.phase}</span>{o.cause && <span className="text-slate-500"> · {o.cause}</span>}</td>
+                      <td className="px-2 text-xs font-mono text-slate-400 whitespace-nowrap">{o.last_down || "sem registro"}</td>
+                      <td className={`px-2 text-right font-mono whitespace-nowrap ${o.eligible ? "text-red-300" : "text-slate-400"}`}>{fmtDay(o.days)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {result.onus.some(o => o.off && o.days === null) && <div className="text-[11px] text-slate-500">"sem registro": a OLT não mostrou quando a ONU caiu (histórico apagado ou reinício da OLT). Essas não são marcadas sozinhas.</div>}
+
+          <div className="rounded-md border border-red-500/40 bg-red-500/5 p-3 space-y-2">
+            <div className="flex items-start gap-2 text-xs text-red-200"><AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>Remove <b>{nSel}</b> ONU(s) da OLT (<span className="font-mono">no onu</span> e <span className="font-mono">write</span>). Antes, o BastiON confere cada uma de novo: se voltou a ficar online ou o serial mudou, ela é pulada. A configuração de cada ONU removida fica guardada.</span></div>
+            <div className="flex flex-wrap gap-2 items-center">
+              <Input value={confirmTxt} onChange={e => setConfirmTxt(e.target.value)} placeholder="digite REMOVER" className={`${inp} w-44`} data-testid="clean-confirm-txt" />
+              <Button onClick={remove} disabled={!nSel || confirmTxt.trim().toUpperCase() !== "REMOVER" || running}
+                      className="bg-red-600 hover:bg-red-700 text-onbrand" data-testid="clean-remove">
+                {rm?.state === "running" ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <PowerOff className="w-4 h-4 mr-1.5" />} Remover {nSel} ONU(s) na OLT
+              </Button>
+            </div>
+            <JobBar job={rm} what="Conferindo e removendo" />
+            {rm?.state === "done" && (
+              <div className="text-sm space-y-1" data-testid="clean-done">
+                <div className={rm.ok ? "text-emerald-300" : "text-red-300"}>{rm.ok ? <CheckCircle2 className="w-4 h-4 inline mr-1" /> : <XCircle className="w-4 h-4 inline mr-1" />}
+                  {rm.removed.length} removida(s){rm.saved ? " e configuração gravada (write)" : ""}{rm.failed ? ` — parou em "${rm.failed.command}"` : ""}</div>
+                {rm.skipped?.length > 0 && <div className="text-xs text-amber-300">Puladas: {rm.skipped.map(x => `1/${x.slot}/${x.pon}:${x.onu} (${x.why})`).join(", ")}</div>}
+                {rm.failed?.output && <pre className="text-[11px] text-slate-400 bg-sunken p-2 rounded max-h-40 overflow-auto whitespace-pre-wrap">{rm.failed.output}</pre>}
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+      <RemovedList deviceId={devId} refresh={refresh} />
+    </div>
+  );
+}
+
 export default function OltScript() {
   const [view, setView] = useState(() => { try { return localStorage.getItem("bastion_oltgen_view") || "olt"; } catch { return "olt"; } });
   const [meta, setMeta] = useState(null);
@@ -876,16 +1058,16 @@ export default function OltScript() {
           <div className="hidden md:block text-xs text-slate-400">ZTE · TITAN e C300/C320 · GPON</div>
           <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 mt-1">Script de OLT</h1>
         </div>
-        <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm">
-          {[["olt", "Ativação da OLT", Cpu], ["onu", "Autorizar ONU", Router], ["rm", "Desautorizar ONU", Unplug]].map(([k, l, I]) => (
+        <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm overflow-x-auto max-w-full">
+          {[["olt", "Ativação da OLT", Cpu], ["onu", "Autorizar ONU", Router], ["rm", "Desautorizar ONU", Unplug], ["off", "ONUs off", PowerOff]].map(([k, l, I]) => (
             <button key={k} onClick={() => go(k)} data-testid={`oltgen-view-${k}`}
-              className={`flex items-center gap-1.5 px-3 h-8 rounded ${view === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}>
+              className={`shrink-0 flex items-center gap-1.5 px-3 h-8 rounded ${view === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}>
               <I className="w-4 h-4" />{l}
             </button>
           ))}
         </div>
       </div>
-      {view === "olt" ? <OltActivation /> : view === "rm" ? <OnuRemove meta={meta} devices={devices} /> : <OnuAuthorize meta={meta} devices={devices} />}
+      {view === "olt" ? <OltActivation /> : view === "rm" ? <OnuRemove meta={meta} devices={devices} /> : view === "off" ? <OnuClean devices={devices} /> : <OnuAuthorize meta={meta} devices={devices} />}
     </div>
   );
 }

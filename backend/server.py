@@ -1872,6 +1872,229 @@ async def oltgen_apply(body: OltApplyIn, user: dict = Depends(get_current_user))
             "total": len([l for l in res["script"].splitlines() if l.strip() and not l.lstrip().startswith("!")])}
 
 
+# ---------- Limpeza de ONUs off há mais de N dias ----------
+OLT_CLEAN_JOBS: Dict[str, dict] = {}       # job_id -> estado (varredura ou remoção), só do dono
+OLT_CLEAN_MAX = 2000                        # ONUs off detalhadas por varredura
+
+
+def _clean_job(user: dict, kind: str, dev: dict) -> dict:
+    for k, j in list(OLT_CLEAN_JOBS.items()):              # descarta jobs com mais de 6 h
+        if time.time() - j["_t"] > 6 * 3600:
+            OLT_CLEAN_JOBS.pop(k, None)
+    j = {"id": os.urandom(8).hex(), "kind": kind, "state": "running", "device_id": dev["id"], "device": dev["name"],
+         "owner": user["id"], "step": "conectando", "done": 0, "total": 0, "_t": time.time(),
+         "started_at": datetime.now(timezone.utc).isoformat()}
+    OLT_CLEAN_JOBS[j["id"]] = j
+    return j
+
+
+def _job_out(j: dict) -> dict:
+    return {k: v for k, v in j.items() if not k.startswith("_") and k != "owner"}
+
+
+async def _olt_detect_plat(sess, slot: int, port: int) -> str:
+    out = await sess.run(f"show gpon onu state {oltgen.pon_if('c300', slot, port)}", timeout=60)
+    return "titan" if _OLT_ERR.search(out.replace(oltgen.pon_if('c300', slot, port), "", 1)) else "c300"
+
+
+async def _olt_offline_scan(j: dict, dev: dict, days: int, only_pons: List[str]):
+    try:
+        cli = await _connect_device(dev)
+        try:
+            sess = await cli.shell()
+            try:
+                j["step"] = "lendo placas e relógio da OLT"
+                cards = oltgen.parse_show_card(await sess.run("show card", timeout=60))
+                clock = oltgen.parse_olt_clock(await sess.run("show clock", timeout=30))
+                pons = [(c["slot"], p) for c in cards["pon"] for p in range(1, c["ports"] + 1)]
+                if only_pons:
+                    want = {tuple(int(x) for x in s.split("/")) for s in only_pons}
+                    pons = [x for x in pons if x in want]
+                if not pons:
+                    raise RuntimeError("Não achei placas PON no show card")
+                plat = await _olt_detect_plat(sess, *pons[0])
+                j.update({"platform": plat, "olt_clock": clock.strftime("%Y-%m-%d %H:%M:%S") if clock else None,
+                          "pons": len(pons), "total": len(pons)})
+                offs, total_onus = [], 0
+                for i, (sl, pt) in enumerate(pons, 1):
+                    j.update(step=f"estado das ONUs da PON {sl}/{pt}", done=i)
+                    st = oltgen.parse_onu_state(await sess.run(f"show gpon onu state {oltgen.pon_if(plat, sl, pt)}", timeout=90))
+                    total_onus += len(st)
+                    offs += [o for o in st if o["off"] or o["phase"].lower() not in ("working", "online")]
+                offs = offs[:OLT_CLEAN_MAX]
+                j.update(total=len(offs), done=0, onus_total=total_onus)
+                now = clock or datetime.now()
+                res = []
+                for i, o in enumerate(offs, 1):
+                    j.update(step=f"detalhes {o['slot']}/{o['pon']}:{o['onu']}", done=i)
+                    d = oltgen.parse_onu_detail(await sess.run(
+                        f"show gpon onu detail-info {oltgen.onu_if_name(plat, o['slot'], o['pon'], o['onu'])}", timeout=60))
+                    last = datetime.strptime(d["last_down"], "%Y-%m-%d %H:%M:%S") if d["last_down"] else None
+                    off_days = round((now - last).total_seconds() / 86400, 1) if last else None
+                    res.append({**o, **{k: d[k] for k in ("name", "type", "sn", "description", "last_down", "cause")},
+                                "phase": d["phase"] or o["phase"], "days": off_days,
+                                "eligible": bool(o["off"] and off_days is not None and off_days >= days)})
+                res.sort(key=lambda r: (-(r["days"] if r["days"] is not None else -1), r["slot"], r["pon"], r["onu"]))
+                j.update(state="done", step="", onus=res, days=days,
+                         eligible=sum(1 for r in res if r["eligible"]), ended_at=datetime.now(timezone.utc).isoformat())
+            finally:
+                try:
+                    await sess.close()
+                except Exception:
+                    pass
+        finally:
+            await cli.close()
+    except Exception as e:
+        j.update(state="error", error=f"{e}"[:300] or type(e).__name__)
+
+
+class OltCleanScanIn(BaseModel):
+    device_id: str
+    days: int = 15
+    pons: List[str] = []         # opcional: só estas PONs ("2/1", "2/2"…)
+
+
+@api.post("/oltgen/offline-scan")
+async def oltgen_offline_scan(body: OltCleanScanIn, user: dict = Depends(get_current_user)):
+    """Procura as ONUs off (LOS, DyingGasp, OffLine) e há quantos dias cada uma caiu. Só leitura."""
+    _no_viewer(user)
+    dev = await _get_device_for(user, body.device_id)
+    if (dev.get("device_type") or "") != "zte":
+        raise HTTPException(status_code=400, detail="Esse equipamento não está cadastrado como ZTE")
+    if any(j["device_id"] == dev["id"] and j["state"] == "running" for j in OLT_CLEAN_JOBS.values()):
+        raise HTTPException(status_code=409, detail="Já tem uma varredura ou limpeza rodando nessa OLT")
+    j = _clean_job(user, "scan", dev)
+    asyncio.create_task(_olt_offline_scan(j, dev, max(1, min(3650, body.days)), [p for p in body.pons if re.fullmatch(r"\d{1,2}/\d{1,2}", p)]))
+    return _job_out(j)
+
+
+@api.get("/oltgen/clean-jobs/{job_id}")
+async def oltgen_clean_job(job_id: str, user: dict = Depends(get_current_user)):
+    j = OLT_CLEAN_JOBS.get(job_id)
+    if not j or j["owner"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Varredura não encontrada (o BastiON reiniciou?) — rode de novo")
+    return _job_out(j)
+
+
+class OltCleanRemoveIn(BaseModel):
+    scan_id: str
+    items: List[dict]            # [{slot, pon, onu}] escolhidas na varredura
+
+
+async def _olt_offline_remove(j: dict, dev: dict, user: dict, scan: dict, picked: List[dict]):
+    """Confere cada ONU de novo (ainda off e com o mesmo serial), guarda a configuração dela e remove as que passaram."""
+    plat = scan.get("platform") or "titan"
+    keep, skipped = [], []
+    try:
+        cli = await _connect_device(dev)
+        try:
+            sess = await cli.shell()
+            try:
+                for i, o in enumerate(picked, 1):
+                    onu_if = oltgen.onu_if_name(plat, o["slot"], o["pon"], o["onu"])
+                    j.update(step=f"conferindo {o['slot']}/{o['pon']}:{o['onu']}", done=i)
+                    d = oltgen.parse_onu_detail(await sess.run(f"show gpon onu detail-info {onu_if}", timeout=60))
+                    if (d["phase"] or "").lower() not in oltgen.OFF_PHASES:
+                        skipped.append({**o, "why": f"agora está {d['phase'] or 'sem resposta'}"})
+                        continue
+                    if o.get("sn") and d["sn"] and d["sn"] != o["sn"]:
+                        skipped.append({**o, "why": f"serial mudou ({d['sn']})"})
+                        continue
+                    cfg = await sess.run(f"show running-config interface {onu_if}", timeout=60)
+                    mng = ""
+                    for c in oltgen.MNG_COMMANDS:
+                        mng = await sess.run(c.format(onu=onu_if), timeout=60)
+                        if not _OLT_ERR.search(mng.replace(onu_if, "", 1)):
+                            break
+                    keep.append({**o, "sn": d["sn"] or o.get("sn"), "name": d["name"] or o.get("name"),
+                                 "config": (cfg.strip() + "\n!\n" + mng.strip())[-20000:]})
+            finally:
+                try:
+                    await sess.close()
+                except Exception:
+                    pass
+        finally:
+            await cli.close()
+        if not keep:
+            j.update(state="done", step="", removed=[], skipped=skipped, ok=True)
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        # guarda antes de remover: dá para reautorizar com a mesma configuração
+        await db.olt_removed_onus.insert_many([{"id": os.urandom(8).hex(), "owner_id": user["id"], "device_id": dev["id"],
+                                                "device_name": dev["name"], "at": now, "by": user.get("email", ""),
+                                                "batch": j["id"], **{k: o.get(k) for k in ("slot", "pon", "onu", "sn", "name",
+                                                "description", "type", "days", "last_down", "config")}} for o in keep])
+        j.update(step=f"removendo {len(keep)} ONU(s) e gravando")
+        r = await _olt_run_script(dev, oltgen.bulk_remove_script(plat, keep))
+        await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"],
+                                      "device_id": dev["id"], "device_name": dev["name"], "kind": "batch",
+                                      "started_at": j["started_at"], "ended_at": datetime.now(timezone.utc).isoformat(),
+                                      "duration_seconds": int(time.time() - j["_t"]),
+                                      "commands": [s["command"] for s in r["steps"]], "oltgen": "offline-clean", "ok": r["ok"]})
+        done, cur = set(), None
+        for st in r["steps"]:                       # qual PON cada "no onu N" que deu certo estava
+            m = re.match(r"interface\s+gpon[-_]olt[-_]1/(\d+)/(\d+)", st["command"])
+            if m:
+                cur = (int(m.group(1)), int(m.group(2)))
+            m = re.match(r"no\s+onu\s+(\d+)$", st["command"])
+            if m and st["ok"] and cur:
+                done.add((*cur, int(m.group(1))))
+        removed = [o for o in keep if (o["slot"], o["pon"], o["onu"]) in done]
+        if not r["ok"]:
+            await db.olt_removed_onus.delete_many({"batch": j["id"], "$or": [
+                {"slot": o["slot"], "pon": o["pon"], "onu": o["onu"]} for o in keep if o not in removed] or [{"_never": 1}]})
+        logger.info("Limpeza de ONUs off por %s em %s: %d removidas, %d puladas, %s", user.get("email"), dev["name"],
+                    len(removed), len(skipped), "ok" if r["ok"] else "ERRO")
+        j.update(state="done", step="", ok=r["ok"], failed=r["failed"], saved=r["ok"],
+                 removed=[{k: o[k] for k in ("slot", "pon", "onu", "sn", "name")} for o in removed], skipped=skipped)
+    except Exception as e:
+        j.update(state="error", error=f"{e}"[:300] or type(e).__name__, skipped=skipped)
+
+
+@api.post("/oltgen/offline-remove")
+async def oltgen_offline_remove(body: OltCleanRemoveIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    scan = OLT_CLEAN_JOBS.get(body.scan_id)
+    if not scan or scan["owner"] != user["id"] or scan["kind"] != "scan" or scan["state"] != "done":
+        raise HTTPException(status_code=404, detail="Varredura não encontrada — rode a busca de novo")
+    if time.time() - scan["_t"] > 3600:
+        raise HTTPException(status_code=409, detail="Essa varredura tem mais de 1 hora — rode a busca de novo antes de remover")
+    by_key = {(o["slot"], o["pon"], o["onu"]): o for o in scan.get("onus") or []}
+    picked = []
+    for it in body.items:
+        try:
+            k = (int(it["slot"]), int(it["pon"]), int(it["onu"]))
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Itens inválidos")
+        o = by_key.get(k)
+        if not o:
+            raise HTTPException(status_code=400, detail=f"A ONU {k[0]}/{k[1]}:{k[2]} não está na varredura")
+        if not o["off"]:
+            raise HTTPException(status_code=400, detail=f"A ONU {k[0]}/{k[1]}:{k[2]} não está off")
+        picked.append(o)
+    if not picked:
+        raise HTTPException(status_code=400, detail="Escolha ao menos uma ONU")
+    dev = await _get_device_for(user, scan["device_id"])
+    lock = _olt_apply_locks.setdefault(dev["id"], asyncio.Lock())
+    if lock.locked() or any(j["device_id"] == dev["id"] and j["state"] == "running" for j in OLT_CLEAN_JOBS.values()):
+        raise HTTPException(status_code=409, detail="Já tem um script ou limpeza rodando nessa OLT; espere terminar")
+    j = _clean_job(user, "remove", dev)
+    j["total"] = len(picked)
+
+    async def run():
+        async with lock:
+            await _olt_offline_remove(j, dev, user, scan, picked)
+    asyncio.create_task(run())
+    return _job_out(j)
+
+
+@api.get("/oltgen/removed")
+async def oltgen_removed(device_id: str = "", limit: int = 500, user: dict = Depends(get_current_user)):
+    """ONUs removidas pela limpeza, com a configuração guardada (para reautorizar se o cliente voltar)."""
+    q = {"owner_id": user["id"], **({"device_id": device_id} if device_id else {})}
+    return await db.olt_removed_onus.find(q, {"_id": 0}).sort("at", -1).to_list(min(2000, max(1, limit)))
+
+
 class FindOnuIn(BaseModel):
     query: str = ""              # serial (ZTEGD4F3D9EC) ou MAC
     mac: str = ""                # compatibilidade com a tela antiga

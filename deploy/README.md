@@ -1045,3 +1045,19 @@ porta 80, certificado e se o `https://domínio` abre este BastiON. Se a configur
 mantém a anterior e a tela mostra o motivo.
 
 A primeira vez exige `update.sh` (o compose ganhou o volume no container do Caddy).
+
+## 44. Script de OLT → ONUs off (limpeza em massa)
+
+Aba **ONUs off** do Script de OLT (ZTE C300/C320 e TITAN):
+
+1. Escolha a OLT, o mínimo de dias off (padrão 15) e, se quiser, só algumas PONs (`2/1, 2/2`).
+2. **Procurar ONUs off**: o BastiON lê o `show card`, o `show clock` e o `show gpon onu state` de cada PON; para cada
+   ONU em LOS/DyingGasp/OffLine roda o `show gpon onu detail-info` e calcula há quantos dias ela caiu pela hora da
+   própria OLT ("Last down time" ou o histórico Authpass/OfflineTime). Só leitura; mostra o progresso.
+3. As que passam do limite vêm marcadas. ONU sem horário de queda ("sem registro") não é marcada sozinha. CSV disponível.
+4. Para remover: digite **REMOVER** e confirme. Antes de cada `no onu`, o BastiON confere de novo a ONU (se voltou
+   a ficar online ou o serial mudou, ela é pulada) e guarda a configuração dela (`show running-config interface` e
+   `pon-onu-mng`). Depois roda `no onu N` agrupado por PON e `write`. Uma limpeza por OLT por vez; a varredura vale
+   por 1 hora.
+5. **Removidas pela limpeza**: lista com data, quem removeu e o arquivo `.txt` com as configurações, para
+   reautorizar o cliente igual se ele voltar. Fica registrado também no Histórico.

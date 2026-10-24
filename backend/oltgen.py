@@ -8,6 +8,7 @@ As placas (slots e quantidade de portas) vêm do modelo escolhido ou da leitura 
 """
 import ipaddress
 import re
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 # Mapas de placas. Só o C620 tem mapa fixo conferido (2 slots de serviço com 16 PON, controladoras 4 e 5 com 4 uplinks).
@@ -842,3 +843,95 @@ def onu_add_script(p: dict) -> dict:
 
 
 MNG_COMMANDS = ["show onu running config {onu}", "show running-config pon-onu-mng {onu}"]
+
+
+# ---------- limpeza de ONUs off há muito tempo ----------
+# `show gpon onu state <pon>`:  1/2/1:5   enable   disable   LOS   1(GPON)   (C300 e TITAN; TITAN às vezes com gpon_onu-)
+_STATE_ROW = re.compile(r"^\s*(?:gpon[-_]onu[-_])?1/(\d+)/(\d+):(\d+)\s+(\S+)\s+(\S+)\s+(\S+)", re.M | re.I)
+OFF_PHASES = {"los", "dyinggasp", "offline", "lof", "losi", "lofi", "dying-gasp"}
+_TS = r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})"
+_HIST_ROW = re.compile(rf"^\s*\d+\s+{_TS}\s+{_TS}\s*(\S*)", re.M)
+_LAST_DOWN = re.compile(rf"Last\s+(?:down|offline)\s+time\s*:\s*{_TS}", re.I)
+_LAST_CAUSE = re.compile(r"Last\s+(?:down|offline)\s+cause\s*:\s*(\S+)", re.I)
+_DETAIL = {k: re.compile(rf"^\s*{p}\s*:\s*(.*?)\s*$", re.M | re.I) for k, p in
+           {"name": r"Name", "type": r"Type", "sn": r"Serial\s+number", "phase": r"Phase\s+state",
+            "description": r"Description"}.items()}
+_MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def parse_onu_state(text: str) -> List[dict]:
+    """ONUs de uma PON com o estado (phase) de cada uma."""
+    out = []
+    for m in _STATE_ROW.finditer(text or ""):
+        slot, pon, onu = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        phase = m.group(6)
+        out.append({"slot": slot, "pon": pon, "onu": onu, "admin": m.group(4).lower(), "phase": phase,
+                    "off": phase.lower() in OFF_PHASES})
+    return out
+
+
+def _dt(s: str):
+    if not s or s.startswith("0000"):
+        return None
+    try:
+        return datetime.strptime(re.sub(r"\s+", " ", s.strip()), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def parse_onu_detail(text: str) -> dict:
+    """`show gpon onu detail-info`: nome, tipo, serial, estado e quando ficou off pela última vez.
+    Usa 'Last down time' quando a versão mostra; senão, o histórico (Authpass Time / OfflineTime / Cause)."""
+    d = {k: (rx.search(text or "").group(1).strip() if rx.search(text or "") else "") for k, rx in _DETAIL.items()}
+    last, cause = None, ""
+    m = _LAST_DOWN.search(text or "")
+    if m:
+        last = _dt(m.group(1))
+        c = _LAST_CAUSE.search(text or "")
+        cause = c.group(1) if c else ""
+    if last is None:
+        rows = [(_dt(a), _dt(o), c) for a, o, c in _HIST_ROW.findall(text or "")]
+        rows = [r for r in rows if r[0] or r[1]]
+        if rows:
+            # entrada mais recente = maior horário de autenticação; a queda dela é a última
+            up, down, c = max(rows, key=lambda r: (r[0] or datetime.min, r[1] or datetime.min))
+            if down and (not up or down >= up):
+                last, cause = down, c
+            else:
+                downs = [r for r in rows if r[1]]
+                if downs:
+                    r = max(downs, key=lambda r: r[1])
+                    last, cause = r[1], r[2]
+    d["last_down"] = last.strftime("%Y-%m-%d %H:%M:%S") if last else None
+    d["cause"] = cause
+    return d
+
+
+def parse_olt_clock(text: str):
+    """`show clock` → datetime (hora local da OLT). Aceita '10:23:45 BRT Thu Oct 23 2026' e '2026-10-23 10:23:45'."""
+    t = text or ""
+    m = re.search(_TS, t)
+    if m:
+        return _dt(m.group(1))
+    m = re.search(r"(\d{1,2}):(\d{2}):(\d{2}).*?\b([A-Za-z]{3})[a-z]*\s+(\d{1,2})\s+(\d{4})", t)
+    if m and m.group(4).lower() in _MONTHS:
+        try:
+            return datetime(int(m.group(6)), _MONTHS[m.group(4).lower()], int(m.group(5)),
+                            int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    return None
+
+
+def bulk_remove_script(plat: str, items: List[dict]) -> str:
+    """`no onu N` agrupado por PON, para muitas ONUs (limpeza). Grava no fim."""
+    by_pon: Dict[Tuple[int, int], List[int]] = {}
+    for it in items:
+        by_pon.setdefault((int(it["slot"]), int(it["pon"])), []).append(int(it["onu"]))
+    out = ["configure terminal"]
+    for (slot, pon), onus in sorted(by_pon.items()):
+        out.append(f"interface {pon_if(plat, slot, pon)}")
+        out += [f" no onu {o}" for o in sorted(set(onus))]
+        out.append("exit")
+    out += ["end", "write"]
+    return "\n".join(out) + "\n"
