@@ -59,6 +59,9 @@ import incidents as incmod
 import oncall as oncallmod
 import recording
 import logparse
+import probes as probemod
+import shlex
+import ipaddress
 import lookingglass
 import rpki
 import vendorscan
@@ -144,6 +147,7 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(inc_center.backfill()))
     _bg_tasks.append(asyncio.create_task(_oncall_loop()))
     _bg_tasks.append(asyncio.create_task(_rec_retention_loop()))
+    _bg_tasks.append(asyncio.create_task(_probe_loop()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
@@ -7578,6 +7582,378 @@ async def log_rules_test(body: LogRuleTest, _: dict = Depends(require_admin)):
     hits = [r for r in res if r["match"]]
     return {"lines": len(res), "fire": sum(1 for r in hits if r["match"] == "fire"),
             "clear": sum(1 for r in hits if r["match"] == "clear"), "results": (hits if not body.text.strip() else res)[:300]}
+
+
+# ---------- Sondas ativas (ping/DNS/HTTP/TCP do servidor e dos jumps) ----------
+_probe_tracker = probemod.Tracker()
+_probe_last: Dict[str, float] = {}
+_probe_busy: set = set()
+_probe_ttl = {"days": None}
+
+
+async def _probe_settings() -> dict:
+    doc = await db.config.find_one({"key": "probes"}, {"_id": 0}) or {}
+    return {**probemod.DEFAULTS, **{k: v for k, v in doc.items() if k in probemod.DEFAULTS}}
+
+
+async def _probe_indexes(days: int):
+    if _probe_ttl["days"] == days:
+        return
+    try:
+        info = await db.probe_results.index_information()
+        if "ttl_at" in info:
+            if info["ttl_at"].get("expireAfterSeconds") != days * 86400:
+                await db.command("collMod", "probe_results", index={"name": "ttl_at", "expireAfterSeconds": days * 86400})
+        else:
+            await db.probe_results.create_index("at", name="ttl_at", expireAfterSeconds=days * 86400)
+        await db.probe_results.create_index([("probe_id", 1), ("source", 1), ("at", -1)])
+        await db.probe_hourly.create_index([("probe_id", 1), ("source", 1), ("hour", 1)], unique=True)
+        await db.probe_hourly.create_index("hour", name="ttl_hour", expireAfterSeconds=400 * 86400)
+        await db.probe_status.create_index("key", unique=True)
+        _probe_ttl["days"] = days
+    except Exception as e:
+        logger.warning(f"índices das sondas: {e}")
+
+
+def _probe_host(p: dict) -> str:
+    if p["type"] == "http":
+        m = re.match(r"^https?://\[?([^\]/:]+)", p["target"])
+        return m.group(1) if m else p["target"]
+    return p["target"]
+
+
+async def _probe_source_names() -> Dict[str, str]:
+    names = {"server": "BastiON"}
+    async for a in db.agents.find({}, {"_id": 0, "id": 1, "name": 1}):
+        names[a["id"]] = a["name"]
+    return names
+
+
+async def _probe_store(p: dict, source: str, r: dict, src_name: str):
+    now = datetime.now(timezone.utc)
+    key = f"{p['id']}:{source}"
+    bad, reason = probemod.evaluate(p, r)
+    doc = {"probe_id": p["id"], "source": source, "at": now, "ok": bool(r.get("ok")), "ms": r.get("ms"),
+           "loss": r.get("loss"), "min": r.get("min"), "max": r.get("max"), "jitter": r.get("jitter"),
+           "samples": r.get("samples"), "code": r.get("code"), "error": (r.get("error") or "")[:200],
+           "bad": bad, "skipped": bool(r.get("skipped"))}
+    await db.probe_results.insert_one({k: v for k, v in doc.items() if v is not None})
+    if not r.get("skipped"):
+        hour = now.replace(minute=0, second=0, microsecond=0)
+        inc = {"n": 1, "ok_n": 0 if bad else 1, "fail_n": 0 if r.get("ok") else 1}
+        upd = {"$inc": inc, "$setOnInsert": {"probe_id": p["id"], "source": source, "hour": hour}}
+        if p["type"] == "ping":
+            inc["sent"] = r.get("sent") or 0
+            inc["recv"] = len(r.get("samples") or [])
+        if r.get("ms") is not None:
+            inc["ms_sum"] = float(r["ms"])
+            inc["ms_n"] = 1
+            upd["$min"] = {"min": r.get("min") if r.get("min") is not None else r["ms"]}
+            upd["$max"] = {"max": r.get("max") if r.get("max") is not None else r["ms"]}
+        await db.probe_hourly.update_one({"probe_id": p["id"], "source": source, "hour": hour}, upd, upsert=True)
+    act = _probe_tracker.feed(key, p, bad, reason)
+    st = _probe_tracker.state(key) if not r.get("skipped") else "skipped"
+    await db.probe_status.update_one({"key": key}, {"$set": {
+        "key": key, "probe_id": p["id"], "source": source, "at": now.isoformat(), "ok": bool(r.get("ok")),
+        "ms": r.get("ms"), "loss": r.get("loss"), "jitter": r.get("jitter"), "code": r.get("code"),
+        "error": (r.get("error") or "")[:200], "state": st, "reason": reason},
+        "$push": {"spark": {"$each": [r.get("ms") if not bad or r.get("ok") else None], "$slice": -40}}}, upsert=True)
+    if act and p.get("alert", True):
+        ev = {"key": f"probe:{key}", "severity": p.get("severity", "high"), "host": _probe_host(p), "host_name": "",
+              "title": f"Sonda {p['name']}: {reason or 'falhou'} — de {src_name}"[:250]}
+        if act == "open":
+            ev.update(status="problem", description=f"{probemod.TYPE_LABEL[p['type']]} para {p['target']} a partir de "
+                                                    f"{src_name}: {p['fail_count']} ciclo(s) ruins seguidos.\nÚltimo: {reason}")
+        else:
+            ev["status"] = "ok"
+        try:
+            await inc_center.ingest("probe", ev)
+        except Exception as e:
+            logger.warning(f"incidente da sonda: {e}")
+
+
+async def _probe_on_agent(agent_id: str, items: list) -> dict:
+    """Roda as sondas no jump (um script por ciclo, conexão compartilhada do pool)."""
+    ag = await db.agents.find_one({"id": agent_id}, {"_id": 0, "status": 1, "name": 1})
+    if not ag:
+        return {k: {"ok": False, "skipped": True, "error": "agente removido"} for k, _ in items}
+    if ag.get("status") == "offline":
+        return {k: {"ok": False, "skipped": True, "error": "agente offline"} for k, _ in items}
+    priv, _, _ = await _get_ssh_key()
+    script = probemod.agent_script(items)
+    budget = max(int(p.get("timeout_s", 5)) + int(p.get("count", 1)) // 2 for _, p in items) + 20
+    w = None
+    try:
+        chain = await _agent_chain(agent_id)
+        w = SSHClientWrapper([_agent_hop(x, priv) for x in chain])
+        await w.connect()
+        res = await w.run_command("bash -c " + shlex.quote(script), timeout=budget)
+    except VpnDown as e:
+        return {k: {"ok": False, "skipped": True, "error": str(e)[:150]} for k, _ in items}
+    except Exception as e:
+        return {k: {"ok": False, "skipped": True, "error": f"sem acesso ao jump: {str(e)[:120]}"} for k, _ in items}
+    finally:
+        if w:
+            await w.close()
+    out = probemod.parse_agent_output(res.get("stdout", ""), items)
+    if "@@B " not in (res.get("stdout") or ""):
+        err = ((res.get("stderr") or "").strip().splitlines() or ["o jump não executou o script (precisa de bash)"])[-1][:150]
+        for v in out.values():
+            v["error"] = err
+    return out
+
+
+async def _probe_cycle(p_by_id: dict, due: list, names: dict):
+    server_items = [(k, p_by_id[pid]) for k, pid, src in due if src == "server"]
+    agents: Dict[str, list] = {}
+    for k, pid, src in due:
+        if src != "server":
+            agents.setdefault(src, []).append((k, p_by_id[pid]))
+    sem = asyncio.Semaphore(20)
+
+    async def one(k, p):
+        async with sem:
+            try:
+                r = await probemod.run_local(p)
+            except Exception as e:
+                r = {"ok": False, "ms": None, "error": str(e)[:150]}
+            await _probe_store(p, "server", r, names.get("server", "BastiON"))
+            _probe_busy.discard(k)
+
+    async def agent(aid, items):
+        try:
+            res = await _probe_on_agent(aid, [(k.replace(":", "_"), p) for k, p in items])
+            for k, p in items:
+                await _probe_store(p, aid, res.get(k.replace(":", "_")) or {"ok": False, "skipped": True, "error": "sem resultado"},
+                                   names.get(aid, "jump"))
+        finally:
+            for k, _ in items:
+                _probe_busy.discard(k)
+
+    await asyncio.gather(*[one(k, p) for k, p in server_items], *[agent(a, it) for a, it in agents.items()],
+                         return_exceptions=True)
+
+
+async def _probe_loop():
+    await asyncio.sleep(25)
+    try:
+        async for i in db.incidents.find({"status": {"$in": ["open", "ack"]}, "key": {"$regex": "^probe:"}}, {"_id": 0, "key": 1}):
+            _probe_tracker.restore(i["key"][6:])
+    except Exception:
+        pass
+    tick = 0
+    while True:
+        try:
+            cfg = await _probe_settings()
+            if tick % 60 == 0:
+                await _probe_indexes(max(1, int(cfg.get("retention_days") or 14)))
+            tick += 1
+            if cfg.get("enabled", True):
+                probes = await db.probes.find({"enabled": True}, {"_id": 0}).to_list(2000)
+                now = time.monotonic()
+                due, by_id = [], {}
+                for p in probes:
+                    by_id[p["id"]] = p
+                    for src in p.get("sources") or ["server"]:
+                        k = f"{p['id']}:{src}"
+                        if k in _probe_busy or now - _probe_last.get(k, 0) < p.get("interval_s", 60):
+                            continue
+                        _probe_last[k] = now
+                        _probe_busy.add(k)
+                        due.append((k, p["id"], src))
+                if due:
+                    _bg(_probe_cycle(by_id, due, await _probe_source_names()))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"sondas: {e}")
+        await asyncio.sleep(5)
+
+
+class ProbeIn(BaseModel):
+    name: str = ""
+    type: str = "ping"
+    target: str = ""
+    group: str = ""
+    enabled: bool = True
+    sources: List[str] = ["server"]
+    interval_s: int = 60
+    count: int = 10
+    timeout_s: int = 5
+    max_loss: int = 20
+    max_ms: int = 0
+    fail_count: int = 3
+    recover_count: int = 2
+    severity: str = "high"
+    alert: bool = True
+    query: str = ""
+    qtype: str = "A"
+    port: int = 0
+    expect_status: int = 0
+    contains: str = ""
+    insecure: bool = False
+
+
+async def _clean_probe(body: ProbeIn) -> dict:
+    try:
+        p = probemod.clean_probe(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ids = {a["id"] async for a in db.agents.find({}, {"_id": 0, "id": 1})}
+    bad = [s for s in p["sources"] if s != "server" and s not in ids]
+    if bad:
+        raise HTTPException(400, "Origem (agente) não encontrada")
+    return p
+
+
+@api.get("/probes")
+async def probes_list(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    rows = await db.probes.find({}, {"_id": 0}).sort([("group", 1), ("name", 1)]).to_list(2000)
+    st: Dict[str, dict] = {}
+    async for s in db.probe_status.find({}, {"_id": 0}):
+        st.setdefault(s["probe_id"], {})[s["source"]] = s
+    for r in rows:
+        r["status"] = st.get(r["id"], {})
+    return {"probes": rows, "sources": await _probe_source_names()}
+
+
+@api.get("/probes-sources")
+async def probes_sources(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    out = [{"id": "server", "name": "BastiON (servidor)", "status": "online"}]
+    async for a in db.agents.find({}, {"_id": 0, "id": 1, "name": 1, "status": 1, "location": 1}).sort("name", 1):
+        out.append({"id": a["id"], "name": a["name"], "status": a.get("status", "unknown"), "location": a.get("location", "")})
+    return out
+
+
+@api.post("/probes")
+async def probes_create(body: ProbeIn, user: dict = Depends(require_admin)):
+    p = await _clean_probe(body)
+    p.update(id=uuid.uuid4().hex[:16], created_at=datetime.now(timezone.utc).isoformat(), created_by=user["email"])
+    await db.probes.insert_one(dict(p))
+    return p
+
+
+@api.put("/probes/{pid}")
+async def probes_update(pid: str, body: ProbeIn, _: dict = Depends(require_admin)):
+    if not await db.probes.find_one({"id": pid}, {"_id": 1}):
+        raise HTTPException(404, "Sonda não encontrada")
+    p = await _clean_probe(body)
+    await db.probes.update_one({"id": pid}, {"$set": p})
+    for k in [k for k in _probe_last if k.startswith(pid + ":")]:
+        _probe_last.pop(k, None)               # roda de novo já com a configuração nova
+    await db.probe_status.delete_many({"probe_id": pid, "source": {"$nin": p["sources"]}})
+    return {**p, "id": pid}
+
+
+@api.delete("/probes/{pid}")
+async def probes_delete(pid: str, _: dict = Depends(require_admin)):
+    await db.probes.delete_one({"id": pid})
+    for col in (db.probe_status, db.probe_results, db.probe_hourly):
+        await col.delete_many({"probe_id": pid})
+    return {"ok": True}
+
+
+class ProbePresetsIn(BaseModel):
+    dns_servers: List[str] = []
+    sources: List[str] = ["server"]
+    public: bool = True
+
+
+@api.post("/probes/presets")
+async def probes_presets(body: ProbePresetsIn, user: dict = Depends(require_admin)):
+    """Modelos: DNS recursivos da rede (os IPs informados) + DNS públicos, trânsito e HTTP."""
+    have = {(r["type"], r["target"]) async for r in db.probes.find({}, {"_id": 0, "type": 1, "target": 1})}
+    items = []
+    for i, ip in enumerate(x.strip() for x in body.dns_servers if x.strip()):
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            raise HTTPException(400, f"IP inválido: {ip}")
+        items += [{"name": f"DNS recursivo {i + 1} ({ip})", "type": "dns", "target": ip, "query": "google.com",
+                   "group": "DNS recursivos", "max_ms": 100, "severity": "critical"},
+                  {"name": f"Ping DNS recursivo {i + 1} ({ip})", "type": "ping", "target": ip, "group": "DNS recursivos",
+                   "max_loss": 10, "max_ms": 50}]
+    if body.public:
+        items += probemod.PRESETS
+    added = 0
+    for it in items:
+        if (it["type"], it["target"]) in have:
+            continue
+        try:
+            p = await _clean_probe(ProbeIn(**{**it, "sources": body.sources or ["server"]}))
+        except HTTPException:
+            continue
+        p.update(id=uuid.uuid4().hex[:16], created_at=datetime.now(timezone.utc).isoformat(), created_by=user["email"])
+        await db.probes.insert_one(p)
+        have.add((p["type"], p["target"]))
+        added += 1
+    return {"added": added}
+
+
+class ProbeTestIn(ProbeIn):
+    source: str = "server"
+
+
+@api.post("/probes/test")
+async def probes_test(body: ProbeTestIn, _: dict = Depends(require_admin)):
+    """Roda a sonda uma vez (sem gravar) — botão Testar do cadastro."""
+    p = await _clean_probe(body)
+    if body.source == "server":
+        r = await probemod.run_local(p)
+    else:
+        if not await db.agents.find_one({"id": body.source}, {"_id": 1}):
+            raise HTTPException(404, "Agente não encontrado")
+        r = (await _probe_on_agent(body.source, [("t", p)]))["t"]
+    bad, reason = probemod.evaluate(p, r)
+    return {**r, "bad": bad, "reason": reason}
+
+
+@api.get("/probes/{pid}/series")
+async def probes_series(pid: str, source: str = "server", hours: int = 24, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    p = await db.probes.find_one({"id": pid}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Sonda não encontrada")
+    hours = max(1, min(24 * 400, hours))
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    def iso(d):
+        return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).isoformat()
+    if hours <= 48:
+        rows = await db.probe_results.find({"probe_id": pid, "source": source, "at": {"$gte": since}},
+                                           {"_id": 0, "probe_id": 0, "source": 0}).sort("at", 1).to_list(6000)
+        for r in rows:
+            r["at"] = iso(r["at"])
+        return {"kind": "raw", "probe": p, "points": rows}
+    rows = await db.probe_hourly.find({"probe_id": pid, "source": source, "hour": {"$gte": since}}, {"_id": 0}).sort("hour", 1).to_list(10000)
+    pts = []
+    for r in rows:
+        sent = r.get("sent") or 0
+        pts.append({"at": iso(r["hour"]), "ms": round(r["ms_sum"] / r["ms_n"], 2) if r.get("ms_n") else None,
+                    "min": r.get("min"), "max": r.get("max"),
+                    "loss": round(100.0 * (sent - (r.get("recv") or 0)) / sent, 1) if sent else None,
+                    "avail": round(100.0 * r.get("ok_n", 0) / r["n"], 2) if r.get("n") else None, "n": r.get("n", 0),
+                    "ok": r.get("fail_n", 0) < r.get("n", 0)})
+    return {"kind": "hourly", "probe": p, "points": pts}
+
+
+class ProbeSettingsIn(BaseModel):
+    enabled: bool = True
+    retention_days: int = 14
+
+
+@api.get("/probes-settings")
+async def probes_settings_get(_: dict = Depends(require_admin)):
+    return await _probe_settings()
+
+
+@api.put("/probes-settings")
+async def probes_settings_put(body: ProbeSettingsIn, _: dict = Depends(require_admin)):
+    d = {"enabled": body.enabled, "retention_days": min(365, max(1, body.retention_days))}
+    await db.config.update_one({"key": "probes"}, {"$set": d}, upsert=True)
+    return d
 
 
 # ---------- Health ----------

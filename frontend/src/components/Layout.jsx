@@ -9,7 +9,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText,
+  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -23,6 +23,7 @@ import { AppearanceDialog } from "@/components/AppearanceDialog";
 const NAV = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Painel NOC", testid: "nav-dashboard" },
   { to: "/incidents", icon: Siren, label: "Incidentes", testid: "nav-incidents" },
+  { to: "/probes", icon: Activity, label: "Sondas ativas", testid: "nav-probes" },
   { to: "/logs", icon: ScrollText, label: "Syslog e Traps", testid: "nav-logs" },
   { to: "/devices", icon: Server, label: "Equipamentos", testid: "nav-devices" },
   { to: "/terminal", icon: TerminalSquare, label: "Terminal SSH", testid: "nav-terminal" },

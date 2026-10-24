@@ -1165,3 +1165,28 @@ Syslog e Traps → Configurar.
   (padrão 200 msg/s — o excesso é descartado e contado), severidade mínima guardada, community dos traps e os
   comandos prontos por fabricante com o IP do BastiON.
 - Status do coletor: `docker compose logs --tail 50 log`.
+
+## 49. Sondas ativas (v2.0 — NOC item 4)
+
+Menu **Sondas ativas** (módulo "Sondas ativas"). Mede, estilo SmokePing, a partir do **servidor do BastiON** e de
+**cada jump server** escolhido:
+
+- **Ping**: N pings por ciclo (padrão 10) → mediana, mín/máx, jitter e perda. No servidor é ICMP direto (o backend
+  já roda como root na rede do host); no jump usa o `ping` do sistema.
+- **DNS**: consulta ao servidor informado (nome e registro escolhidos) → tempo e código (NOERROR, SERVFAIL,
+  NXDOMAIN, timeout). No jump usa `dig` ou, sem ele, `python3`.
+- **HTTP(S)**: status esperado, tempo total e (opcional) texto que a página deve conter. No jump: `curl` ou `python3`.
+- **Porta TCP**: tempo do connect.
+
+No jump, todas as sondas daquele agente rodam juntas num único script bash por ciclo, pela conexão SSH que o
+BastiON já mantém aberta com ele — não gera um login por medição. Jump offline = "sem medir" (não alarma; o próprio
+agente offline já avisa). Jump sem a ferramenta (ex.: sem `dig` e sem `python3`) aparece como "sem medir" com o motivo.
+
+- **Sondas prontas**: informe os IPs dos DNS recursivos da rede (cria DNS + ping de cada um, severidade crítica) e,
+  se quiser, DNS públicos (8.8.8.8/1.1.1.1), trânsito por ping e HTTP.
+- **Alarme**: N ciclos ruins seguidos (falha, perda acima do limite ou latência/tempo acima do limite) abrem
+  incidente (origem "Sonda", título com o motivo e de onde foi medido); M ciclos bons seguidos resolvem.
+- **Tela**: grade sonda × origem com status, valor atual e mini gráfico; clicar abre o gráfico com a "fumaça"
+  (espalhamento dos pings), mediana colorida pela perda, períodos de 3 h, 24 h, 7 e 30 dias, mediana/p95/perda média.
+- **Guarda**: cada medição por 14 dias (configurável na engrenagem); o resumo por hora fica 400 dias — é a base do
+  relatório de SLA (próximo item).

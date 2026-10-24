@@ -88,6 +88,7 @@ def viewer_allowed(method: str, path: str) -> bool:
 # (Painel NOC e a própria conta ficam sempre liberados; Automação e Usuários são só do administrador.)
 MODULES = [
     ("incidents", "Incidentes", "central de incidentes: alarmes do Zabbix, LibreNMS e BastiON, reconhecer e resolver"),
+    ("probes", "Sondas ativas", "ping, DNS, HTTP e TCP medidos do servidor e dos jump servers (estilo SmokePing)"),
     ("logs", "Syslog e Traps", "logs e traps SNMP dos equipamentos e as regras que abrem incidentes"),
     ("devices", "Equipamentos", "cadastrar, editar, importar e testar equipamentos"),
     ("terminal", "Terminal SSH", "abrir sessão SSH/Telnet nos equipamentos"),
@@ -134,6 +135,8 @@ _MOD_RULES = [
     ("*", r"/api/incidents(/.*)?", ("incidents",)),
     ("GET", r"/api/incidents-(assignees)", ("incidents",)),
     ("*", r"/api/(logs|log-rules|log-sources|logs-settings)(/.*)?", ("logs",)),
+    ("GET", r"/api/probes-sources", ("probes",)),
+    ("*", r"/api/(probes|probes-settings)(/.*)?", ("probes",)),
     ("GET", r"/api/scripts", ("batch", "terminal")),
     ("*", r"/api/(batch|scripts|runbooks)(/.*)?", ("batch",)),
     ("GET", r"/api/agents", ("agents", "devices", "web", "batch", "rdp", "winbox")),
