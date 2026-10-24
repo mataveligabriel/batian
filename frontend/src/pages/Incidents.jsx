@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import {
   Siren, Search, Plus, Eye, CheckCircle2, RotateCcw, UserCheck, MessageSquare, TerminalSquare, ExternalLink, X, Loader2,
-  Clock, Repeat,
+  Clock, Repeat, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { TagOptions } from "@/components/TagSelect";
 import { useTerminal } from "@/context/TerminalContext";
@@ -24,6 +24,26 @@ export const SEV = {
 };
 const ST = { open: ["Aberto", "text-red-300"], ack: ["Reconhecido", "text-amber-300"], resolved: ["Resolvido", "text-emerald-300"] };
 const SRC = { zabbix: "Zabbix", librenms: "LibreNMS", generic: "Webhook", bastion: "BastiON", manual: "Manual", syslog: "Syslog", trap: "Trap SNMP", probe: "Sonda" };
+const GROUPS = [["", "sem agrupar"], ["tag", "por grupo do equipamento"], ["device", "por equipamento"], ["source", "por origem"], ["severity", "por severidade"], ["assignee", "por responsável"]];
+const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
+export function groupIncidents(rows, by) {
+  if (!by) return [{ key: "_all", label: "", rows, worst: null }];
+  const m = new Map();
+  const add = (k, label, r) => { if (!m.has(k)) m.set(k, { key: k, label, rows: [] }); m.get(k).rows.push(r); };
+  for (const r of rows) {
+    if (by === "tag") { const t = r.tags?.length ? r.tags : ["Sem grupo"]; t.forEach(x => add(`t:${x}`, x, r)); }
+    else if (by === "device") add(`d:${r.device_id || r.device_name || r.host || "-"}`, r.device_name || r.host || "Sem equipamento", r);
+    else if (by === "source") add(`s:${r.source}`, SRC[r.source] || r.source, r);
+    else if (by === "severity") add(`v:${r.severity}`, SEV[r.severity]?.label || r.severity, r);
+    else add(`a:${r.assignee?.id || "-"}`, r.assignee?.name || "Sem responsável", r);
+  }
+  const out = [...m.values()];
+  out.forEach(g => { g.worst = SEV_ORDER.find(s => g.rows.some(r => r.severity === s)) || "info"; });
+  if (by === "severity") out.sort((a, b) => SEV_ORDER.indexOf(a.worst) - SEV_ORDER.indexOf(b.worst));
+  else out.sort((a, b) => (["Sem grupo", "Sem equipamento", "Sem responsável"].includes(a.label) - ["Sem grupo", "Sem equipamento", "Sem responsável"].includes(b.label))
+    || SEV_ORDER.indexOf(a.worst) - SEV_ORDER.indexOf(b.worst) || b.rows.length - a.rows.length || a.label.localeCompare(b.label));
+  return out;
+}
 const VIEWS = [["active", "Ativos"], ["open", "Abertos"], ["ack", "Reconhecidos"], ["resolved", "Resolvidos"], ["all", "Todos"]];
 
 export const fmtDur = (s) => {
@@ -163,6 +183,11 @@ export default function Incidents() {
   const [rows, setRows] = useState(null);
   const [sum, setSum] = useState(null);
   const [newOpen, setNewOpen] = useState(false);
+  const [picked, setPicked] = useState(() => new Set());
+  const [groupBy, setGroupBy] = useState(() => { try { return localStorage.getItem("inc_group") || ""; } catch { return ""; } });
+  const [closed, setClosed] = useState({});
+  const [bulkNote, setBulkNote] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
   const sel = sp.get("id");
   const tab = sp.get("tab") === "plantao" ? "plantao" : "";
   const timer = useRef(null);
@@ -180,6 +205,27 @@ export default function Incidents() {
   }, [load, q]);
   const open = (id) => setSp(id ? { id } : {});
   const counts = useMemo(() => sum?.by_severity || {}, [sum]);
+  useEffect(() => { try { localStorage.setItem("inc_group", groupBy); } catch { /* sem storage */ } }, [groupBy]);
+  useEffect(() => { setPicked(new Set()); }, [view, q, sev, src]);
+  // seleção só do que ainda está na lista
+  useEffect(() => {
+    if (!rows) return;
+    setPicked(p => { const ids = new Set(rows.map(r => r.id)); const n = new Set([...p].filter(x => ids.has(x))); return n.size === p.size ? p : n; });
+  }, [rows]);
+  const groups = useMemo(() => groupIncidents(rows || [], groupBy), [rows, groupBy]);
+  const togglePick = (ids, on) => setPicked(p => { const n = new Set(p); ids.forEach(id => (on ? n.add(id) : n.delete(id))); return n; });
+  const pickedRows = (rows || []).filter(r => picked.has(r.id));
+  const bulk = async (action) => {
+    if (!picked.size) return;
+    if (action === "resolve" && picked.size > 5 && !window.confirm(`Resolver ${picked.size} incidentes?`)) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.post("/incidents-bulk", { ids: [...picked], action, note: bulkNote });
+      const lab = { ack: "reconhecido(s)", resolve: "resolvido(s)", assign: "assumido(s)", reopen: "reaberto(s)" }[action];
+      toast.success(`${r.data.done} ${lab}${r.data.skipped ? ` · ${r.data.skipped} já estava(m) assim` : ""}`);
+      setPicked(new Set()); setBulkNote(""); load();
+    } catch (e) { toast.error(formatApiError(e)); } finally { setBulkBusy(false); }
+  };
 
   return (
     <div className="flex-1 min-h-0 flex" data-testid="incidents-page">
@@ -223,6 +269,9 @@ export default function Incidents() {
             <option value="">todas as origens</option>
             {Object.entries(SRC).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
+          <select value={groupBy} onChange={e => setGroupBy(e.target.value)} className="h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200" data-testid="inc-group">
+            {GROUPS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
           <div className="relative flex-1 min-w-[12rem]">
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
             <Input value={q} onChange={e => setQ(e.target.value)} placeholder="buscar #número, título, equipamento…" className="pl-8 bg-sunken border-line h-9" data-testid="inc-search" />
@@ -232,29 +281,70 @@ export default function Incidents() {
           {rows === null ? <div className="p-6 text-sm text-slate-500">Carregando…</div>
             : rows.length === 0 ? <div className="p-8 text-center text-sm text-slate-500" data-testid="inc-empty">{view === "active" ? "Nenhum incidente ativo. 🎉" : "Nada por aqui."}</div>
               : (
-                <div className="divide-y divide-line" data-testid="inc-list">
-                  {rows.map(r => {
-                    const s = SEV[r.severity] || SEV.medium, [stl, stc] = ST[r.status] || ST.open;
+                <div data-testid="inc-list">
+                  <div className="flex items-center gap-2 px-3 py-1.5 border-b border-line bg-panel text-xs text-slate-400">
+                    <input type="checkbox" className="accent-brand w-4 h-4" data-testid="inc-pick-all"
+                           checked={picked.size > 0 && picked.size === rows.length} ref={el => { if (el) el.indeterminate = picked.size > 0 && picked.size < rows.length; }}
+                           onChange={e => togglePick(rows.map(r => r.id), e.target.checked)} />
+                    {picked.size ? `${picked.size} selecionado(s)` : `selecionar todos (${rows.length})`}
+                  </div>
+                  {groups.map(g => {
+                    const ids = g.rows.map(r => r.id), n = ids.filter(id => picked.has(id)).length;
+                    const isClosed = groupBy && closed[g.key];
                     return (
-                      <button key={r.id} onClick={() => open(r.id)} data-testid={`inc-row-${r.number}`}
-                              className={`w-full text-left flex items-stretch hover:bg-white/[0.03] ${sel === r.id ? "bg-brand/10" : ""}`}>
-                        <span className={`w-1 shrink-0 ${s.bar}`} />
-                        <div className="flex-1 min-w-0 px-3 py-2.5 grid grid-cols-1 md:grid-cols-[4rem_1fr_11rem_7rem_6rem] gap-x-3 gap-y-0.5 items-center">
-                          <span className="text-xs font-mono text-slate-500">#{r.number}</span>
-                          <span className="min-w-0">
-                            <span className="block text-sm text-slate-100 truncate">{r.title}</span>
-                            <span className="block text-xs text-slate-500 truncate">{r.device_name || r.host || "—"} · {SRC[r.source] || r.source}{r.count > 1 ? ` · ${r.count}×` : ""}{r.assignee ? ` · ${r.assignee.name}` : ""}</span>
-                          </span>
-                          <span className="text-xs text-slate-400">{when(r.created_at)}</span>
-                          <span className={`text-xs ${stc}`}>{stl}</span>
-                          <span className="text-xs text-slate-400 font-mono md:text-right">{fmtDur(r.duration_s)}</span>
-                        </div>
-                      </button>
+                      <div key={g.key} data-testid={groupBy ? `inc-group-${g.label}` : undefined}>
+                        {groupBy && (
+                          <div className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.02] border-b border-line text-xs">
+                            <input type="checkbox" className="accent-brand w-4 h-4" checked={n > 0 && n === ids.length}
+                                   ref={el => { if (el) el.indeterminate = n > 0 && n < ids.length; }}
+                                   onChange={e => togglePick(ids, e.target.checked)} data-testid={`inc-pick-group-${g.label}`} />
+                            <button onClick={() => setClosed(c => ({ ...c, [g.key]: !c[g.key] }))} className="flex items-center gap-1.5 min-w-0 text-slate-200 hover:text-white">
+                              {isClosed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                              <span className={`w-2 h-2 rounded-full ${(SEV[g.worst] || SEV.info).bar}`} />
+                              <span className="font-medium truncate">{g.label}</span>
+                              <span className="text-slate-500">{g.rows.length}</span>
+                            </button>
+                          </div>
+                        )}
+                        {!isClosed && <div className="divide-y divide-line">{g.rows.map(r => {
+                          const s = SEV[r.severity] || SEV.medium, [stl, stc] = ST[r.status] || ST.open;
+                          return (
+                            <div key={r.id} role="button" tabIndex={0} onClick={() => open(r.id)} onKeyDown={e => e.key === "Enter" && open(r.id)} data-testid={`inc-row-${r.number}`}
+                                 className={`w-full text-left flex items-stretch cursor-pointer hover:bg-white/[0.03] ${sel === r.id ? "bg-brand/10" : picked.has(r.id) ? "bg-brand/[0.06]" : ""}`}>
+                              <span className={`w-1 shrink-0 ${s.bar}`} />
+                              <label className="flex items-center pl-2.5 pr-1 cursor-pointer" onClick={e => e.stopPropagation()}>
+                                <input type="checkbox" className="accent-brand w-4 h-4" checked={picked.has(r.id)} onChange={e => togglePick([r.id], e.target.checked)} data-testid={`inc-pick-${r.number}`} />
+                              </label>
+                              <div className="flex-1 min-w-0 px-2 py-2.5 grid grid-cols-1 md:grid-cols-[4rem_1fr_11rem_7rem_6rem] gap-x-3 gap-y-0.5 items-center">
+                                <span className="text-xs font-mono text-slate-500">#{r.number}</span>
+                                <span className="min-w-0">
+                                  <span className="block text-sm text-slate-100 truncate">{r.title}</span>
+                                  <span className="block text-xs text-slate-500 truncate">{r.device_name || r.host || "—"} · {SRC[r.source] || r.source}{r.count > 1 ? ` · ${r.count}×` : ""}{r.assignee ? ` · ${r.assignee.name}` : ""}</span>
+                                </span>
+                                <span className="text-xs text-slate-400">{when(r.created_at)}</span>
+                                <span className={`text-xs ${stc}`}>{stl}</span>
+                                <span className="text-xs text-slate-400 font-mono md:text-right">{fmtDur(r.duration_s)}</span>
+                              </div>
+                            </div>
+                          );
+                        })}</div>}
+                      </div>
                     );
                   })}
                 </div>
               )}
         </Card>
+        {picked.size > 0 && (
+          <div className="sticky bottom-3 z-20 mt-3 mr-16 flex flex-wrap items-center gap-2 rounded-lg border border-brand/50 bg-panel/95 backdrop-blur px-3 py-2 shadow-xl" data-testid="inc-bulk">
+            <span className="text-sm text-slate-100 font-medium">{picked.size} selecionado(s)</span>
+            <Input value={bulkNote} onChange={e => setBulkNote(e.target.value)} placeholder="nota para a linha do tempo (opcional)" className="h-8 bg-sunken border-line flex-1 min-w-[10rem] text-sm" data-testid="inc-bulk-note" />
+            {pickedRows.some(r => r.status === "open") && <Button size="sm" variant="ghost" disabled={bulkBusy} onClick={() => bulk("ack")} className="text-amber-200 h-8" data-testid="inc-bulk-ack"><Eye className="w-4 h-4 mr-1" /> Reconhecer</Button>}
+            {pickedRows.some(r => r.status !== "resolved") && <Button size="sm" variant="ghost" disabled={bulkBusy} onClick={() => bulk("assign")} className="text-slate-200 h-8" data-testid="inc-bulk-assign"><UserCheck className="w-4 h-4 mr-1" /> Assumir</Button>}
+            {pickedRows.some(r => r.status !== "resolved") && <Button size="sm" disabled={bulkBusy} onClick={() => bulk("resolve")} className="bg-emerald-600 hover:bg-emerald-500 text-white h-8" data-testid="inc-bulk-resolve"><CheckCircle2 className="w-4 h-4 mr-1" /> Resolver</Button>}
+            {pickedRows.some(r => r.status === "resolved") && <Button size="sm" variant="ghost" disabled={bulkBusy} onClick={() => bulk("reopen")} className="text-slate-200 h-8" data-testid="inc-bulk-reopen"><RotateCcw className="w-4 h-4 mr-1" /> Reabrir</Button>}
+            <Button size="sm" variant="ghost" onClick={() => setPicked(new Set())} className="text-slate-400 h-8" title="Limpar seleção"><X className="w-4 h-4" /></Button>
+          </div>
+        )}
         </>)}
       </div>
       {sel && (

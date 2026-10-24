@@ -4455,7 +4455,48 @@ async def incidents_list(status: str = "active", severity: str = "", source: str
     rows = await db.incidents.find(f, {"_id": 0, "timeline": 0}).sort("created_at", -1).to_list(min(1000, max(1, limit)))
     if status == "active":   # ativos: mais graves e mais antigos primeiro
         rows.sort(key=lambda r: (-incmod.sev_rank(r["severity"]), r["status"] != "open", r["created_at"]))
-    return [_inc_public(r) for r in rows]
+    # grupos (tags) do equipamento, para agrupar a lista
+    dids = list({r["device_id"] for r in rows if r.get("device_id")})
+    tags = {d["id"]: d.get("tags") or [] async for d in db.devices.find({"id": {"$in": dids}}, {"_id": 0, "id": 1, "tags": 1})} if dids else {}
+    out = []
+    for r in rows:
+        x = _inc_public(r)
+        x["tags"] = tags.get(r.get("device_id"), [])
+        out.append(x)
+    return out
+
+
+class IncidentBulk(BaseModel):
+    ids: List[str]
+    action: str
+    note: str = ""
+
+
+@api.post("/incidents-bulk")
+async def incidents_bulk(body: IncidentBulk, user: dict = Depends(get_current_user)):
+    """Reconhecer / assumir / resolver / reabrir vários incidentes de uma vez."""
+    _no_viewer(user)
+    if body.action not in ("ack", "resolve", "reopen", "assign"):
+        raise HTTPException(status_code=400, detail="Ação desconhecida")
+    ids = list(dict.fromkeys(body.ids))[:500]
+    if not ids:
+        raise HTTPException(status_code=400, detail="Nenhum incidente selecionado")
+    who = user.get("name") or user["email"]
+    me = {"id": user["id"], "name": who}
+    scope = await _inc_scope(user)
+    done, skipped = 0, 0
+    for iid in ids:
+        before = await db.incidents.find_one({"id": iid, **scope}, {"_id": 0, "status": 1, "assignee": 1})
+        if not before:
+            skipped += 1
+            continue
+        if (body.action == "ack" and before["status"] != "open") or (body.action == "resolve" and before["status"] == "resolved") \
+                or (body.action == "reopen" and before["status"] != "resolved"):
+            skipped += 1
+            continue
+        if await inc_center.act(iid, body.action, who, body.note.strip()[:2000], me, scope=scope):
+            done += 1
+    return {"done": done, "skipped": skipped}
 
 
 @api.get("/incidents-summary")

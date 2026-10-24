@@ -134,6 +134,7 @@ _MOD_RULES = [
     ("*", r"/api/oltgen(/.*)?", ("oltgen",)),
     ("*", r"/api/incidents(/.*)?", ("incidents",)),
     ("GET", r"/api/incidents-(assignees)", ("incidents",)),
+    ("POST", r"/api/incidents-bulk", ("incidents",)),
     ("*", r"/api/(logs|log-rules|log-sources|logs-settings)(/.*)?", ("logs",)),
     ("GET", r"/api/probes-sources", ("probes",)),
     ("*", r"/api/(probes|probes-settings)(/.*)?", ("probes",)),
