@@ -953,6 +953,7 @@ class TelegramAssistant(AgentCore):
         self.status = "parado"
         self.runbook_list = None        # async (user) -> [roteiros liberados para o Telegram]
         self.runbook_run = None         # async (user, id) -> texto com o resultado
+        self.incident_action = None     # async (user, "ack"|"res", id) -> texto (botões dos incidentes)
 
     # ---------- ciclo de vida ----------
     def start(self):
@@ -1222,8 +1223,31 @@ class TelegramAssistant(AgentCore):
             typing.cancel()
         return await self.send(chat_id, text)
 
+    async def _on_incident_cb(self, cq: dict, data: str):
+        """Botões Reconhecer / Resolver dos alertas da central de incidentes."""
+        from_id = str((cq.get("from") or {}).get("id"))
+        msg = cq.get("message") or {}
+        _, action, inc_id = (data.split(":", 2) + ["", ""])[:3]
+        s = await get_ai_settings(self.db)
+        link = self._auth(s, from_id)
+        user = await self.db.users.find_one({"id": link["user_id"]}, {"_id": 0, "password_hash": 0}) if link else None
+        if not user or not self.incident_action:
+            return await self._tg("answerCallbackQuery", callback_query_id=cq["id"],
+                                  text=f"Acesso não autorizado (seu ID do Telegram é {from_id}).", show_alert=True)
+        text = await self.incident_action(user, action, inc_id)
+        await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text=text[:190])
+        if action == "res":
+            await self._tg("editMessageReplyMarkup", chat_id=(msg.get("chat") or {}).get("id"), message_id=msg.get("message_id"),
+                           reply_markup={"inline_keyboard": []})
+        elif action == "ack":
+            await self._tg("editMessageReplyMarkup", chat_id=(msg.get("chat") or {}).get("id"), message_id=msg.get("message_id"),
+                           reply_markup={"inline_keyboard": [[{"text": "✅ Resolver", "callback_data": f"inc:res:{inc_id}"}]]})
+        await self.send((msg.get("chat") or {}).get("id"), text)
+
     async def _on_callback(self, cq: dict):
         data = cq.get("data") or ""
+        if data.startswith("inc:"):
+            return await self._on_incident_cb(cq, data)
         if data.startswith(("rb:", "rbok:", "rbno:")):
             return await self._on_runbook_cb(cq, data)
         if data.startswith(("mit:", "mitok:", "mitno:")):

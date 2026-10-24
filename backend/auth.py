@@ -87,6 +87,7 @@ def viewer_allowed(method: str, path: str) -> bool:
 # O administrador escolhe quais partes do sistema cada operador usa. Sem lista definida = todos os módulos.
 # (Painel NOC e a própria conta ficam sempre liberados; Automação e Usuários são só do administrador.)
 MODULES = [
+    ("incidents", "Incidentes", "central de incidentes: alarmes do Zabbix, LibreNMS e BastiON, reconhecer e resolver"),
     ("devices", "Equipamentos", "cadastrar, editar, importar e testar equipamentos"),
     ("terminal", "Terminal SSH", "abrir sessão SSH/Telnet nos equipamentos"),
     ("web", "Acesso Web", "abrir a página web dos equipamentos"),
@@ -129,6 +130,8 @@ _MOD_RULES = [
     ("*", r"/api/lg(/.*)?", ("lg",)),
     ("*", r"/api/rpki(/.*)?", ("rpki",)),
     ("*", r"/api/oltgen(/.*)?", ("oltgen",)),
+    ("*", r"/api/incidents(/.*)?", ("incidents",)),
+    ("GET", r"/api/incidents-(assignees)", ("incidents",)),
     ("GET", r"/api/scripts", ("batch", "terminal")),
     ("*", r"/api/(batch|scripts|runbooks)(/.*)?", ("batch",)),
     ("GET", r"/api/agents", ("agents", "devices", "web", "batch", "rdp", "winbox")),

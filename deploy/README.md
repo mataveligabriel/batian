@@ -1066,3 +1066,23 @@ C300/C320 e TITAN (C600/C620/C650): primeiro tenta `show gpon onu state` sem int
 se a versão não aceitar, vai PON a PON pelo `show card`. A série é detectada testando os dois formatos de interface
 (`gpon-olt_1/S/P` e `gpon_olt-1/S/P`), e a fase da ONU é achada pelo valor (o TITAN tem a coluna "O7 State" a mais).
 Se der erro, a tela mostra o último comando e a resposta da OLT.
+
+## 45. Central de incidentes (v2.0 — fase 1)
+
+Menu **Incidentes** (módulo próprio, liberável por usuário). Junta num lugar só:
+
+- **Zabbix** (tipo de mídia webhook), **LibreNMS** (transporte API) e **qualquer sistema** (webhook genérico) — as
+  URLs, o script do Zabbix e o corpo do LibreNMS estão em Configurações → Integrações;
+- **alarmes do BastiON**: equipamento ou agente sem resposta (ping automático) e interface DOWN dos mapas.
+
+Cada problema vira um incidente numerado (#1, #2…), com severidade (Crítica, Alta, Média, Baixa, Info), origem,
+equipamento (achado pelo IP/nome) e linha do tempo. O mesmo alarme repetido soma no contador em vez de abrir outro;
+quando a origem normaliza (recuperação do Zabbix, state 0 do LibreNMS, `"status":"ok"`, equipamento voltou), o
+incidente fecha sozinho com a duração. Na tela: reconhecer, assumir/atribuir, comentar, resolver, reabrir e abrir
+o terminal do equipamento. Incidentes são da equipe (todos com o módulo veem os mesmos).
+
+Avisos: novos incidentes a partir da severidade escolhida vão pelo canal da Automação (Telegram/push) com os botões
+**Reconhecer** e **Resolver** — respondem para quem tem o Telegram ID vinculado em Assistente IA. Os alarmes do
+próprio BastiON continuam avisando como antes (sem duplicar), a não ser que você ligue "avisar pelo incidente".
+
+O menu mostra o número de incidentes ativos (pisca em vermelho com crítico/alto aberto).

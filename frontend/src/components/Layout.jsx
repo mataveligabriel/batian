@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { NavLink, Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import { api } from "@/lib/api";
 import { Toaster } from "@/components/ui/sonner";
 import { TerminalWorkspace } from "@/components/TerminalWorkspace";
 import { useTerminal } from "@/context/TerminalContext";
@@ -8,7 +9,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints,
+  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -21,6 +22,7 @@ import { AppearanceDialog } from "@/components/AppearanceDialog";
 
 const NAV = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Painel NOC", testid: "nav-dashboard" },
+  { to: "/incidents", icon: Siren, label: "Incidentes", testid: "nav-incidents" },
   { to: "/devices", icon: Server, label: "Equipamentos", testid: "nav-devices" },
   { to: "/terminal", icon: TerminalSquare, label: "Terminal SSH", testid: "nav-terminal" },
   { to: "/web", icon: Globe, label: "Acesso Web", testid: "nav-web" },
@@ -55,6 +57,16 @@ export default function Layout() {
     return () => window.removeEventListener("bastion-theme", on);
   }, []);
   const { tabs } = useTerminal();
+  // contador de incidentes ativos no menu (atualiza a cada 30 s)
+  const [incSum, setIncSum] = useState(null);
+  const incOk = user && user.role !== "viewer" && canUse(user, "incidents");
+  useEffect(() => {
+    if (!incOk) return undefined;
+    const get = () => api.get("/incidents-summary").then(r => setIncSum(r.data)).catch(() => {});
+    get();
+    const t = setInterval(get, 30000);
+    return () => clearInterval(t);
+  }, [incOk]);
   const { pathname } = useLocation();
   const onTerminal = pathname.startsWith("/terminal");
   const [cpOpen, setCpOpen] = useState(false);
@@ -135,6 +147,12 @@ export default function Layout() {
             >
               <item.icon className="w-4 h-4 shrink-0 opacity-90" />
               {!mini && <span className="truncate">{item.label}</span>}
+              {item.to === "/incidents" && incSum?.active > 0 && (
+                <span data-testid="nav-incidents-badge" title={`${incSum.open} aberto(s), ${incSum.ack} reconhecido(s)`}
+                      className={`${mini ? "absolute -top-1 -right-1 text-[9px] px-1" : "ml-auto text-[10px] px-1.5 py-0.5"} font-mono rounded border ${
+                        incSum.open ? (incSum.worst === "critical" || incSum.worst === "high" ? "bg-red-500/20 text-red-300 border-red-500/40 animate-pulse" : "bg-amber-500/15 text-amber-300 border-amber-500/30")
+                          : "bg-white/5 text-slate-300 border-line"}`}>{incSum.active}</span>
+              )}
               {item.to === "/terminal" && tabs.length > 0 && (
                 <span data-testid="nav-terminal-badge" className={mini
                   ? "absolute -top-1 -right-1 text-[9px] font-mono px-1 rounded bg-emerald-500/25 text-emerald-300"

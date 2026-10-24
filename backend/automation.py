@@ -37,6 +37,10 @@ DEFAULTS = {
 }
 
 
+# central de incidentes (definido pelo server.py): recebe ("transition", {kind, id, name, status, detail})
+INCIDENT_HOOK = None
+
+
 async def get_settings(db) -> dict:
     doc = await db.config.find_one({"key": "automation"}, {"_id": 0}) or {}
     return {**DEFAULTS, **{k: v for k, v in doc.items() if k != "key"}}
@@ -341,6 +345,12 @@ class Scheduler:
                 logger.info(f"nightly backup: {len(results)} devices, {len(changed)} changed, {len(failed)} failed")
 
     async def _notify(self, s: dict, transitions: list):
+        if INCIDENT_HOOK:                         # central de incidentes: abre/resolve sozinho
+            for t in transitions:
+                try:
+                    await INCIDENT_HOOK("transition", t)
+                except Exception as e:
+                    logger.warning(f"incidente do ping: {e}")
         for t in transitions:
             if t["kind"] == "agent" and not s["notify_agents"]:
                 continue

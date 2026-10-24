@@ -59,6 +59,7 @@ def fmt_duration(seconds: float) -> str:
 
 class Monitor:
     def __init__(self, db, client_for: Callable[[dict, dict], Awaitable], send_alert: Callable[..., Awaitable]):
+        self.incident_hook = None      # central de incidentes (definido pelo server.py)
         self.db = db
         self.client_for = client_for      # async (device, settings) -> SnmpClient | AgentSnmpClient
         self.send_alert = send_alert      # async (db, title, text)
@@ -210,6 +211,12 @@ class Monitor:
             "device_id": dev["id"], "device_name": dev["name"], "if_index": m["if_index"], "if_name": name, "alias": alias,
             "status": status, "admin_down": admin_down, "prev_duration_s": int(prev_duration) if prev_duration else None,
         })
+        if self.incident_hook and not admin_down:   # central de incidentes: interface caiu / voltou
+            try:
+                await self.incident_hook("interface", {"device": dev, "if_index": m["if_index"], "if_name": name,
+                                                       "alias": alias, "status": status, "oper": r.get("oper")})
+            except Exception as e:
+                logger.warning(f"incidente de interface: {e}")
         if status == "down":
             title = f"🔴 Interface DOWN — {dev['name']} · {name}"
             detail = "desativada administrativamente (shutdown)" if admin_down else f"status: {r.get('oper')}"

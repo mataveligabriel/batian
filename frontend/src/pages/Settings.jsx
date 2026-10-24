@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
   Palette, Database, BellRing, KeyRound, Download, Upload, Trash2, Loader2, RotateCcw, ShieldAlert, CheckCircle2,
-  XCircle, HardDrive, Clock, CloudUpload, ArchiveRestore, Info, Globe, Plus, RefreshCw, Copy, CircleDashed,
+  XCircle, HardDrive, Clock, CloudUpload, ArchiveRestore, Info, Globe, Plus, RefreshCw, Copy, CircleDashed, Siren, Plug, Send,
 } from "lucide-react";
 import { AppearanceFields, useAppearanceEditor } from "@/components/AppearanceDialog";
 import { DEFAULT_THEME } from "@/lib/theme";
@@ -18,6 +18,7 @@ import SshKey from "@/pages/SshKey";
 const TABS = [
   { id: "aparencia", label: "Aparência", icon: Palette },
   { id: "dominio", label: "Domínio", icon: Globe },
+  { id: "integracoes", label: "Integrações (incidentes)", icon: Plug },
   { id: "banco", label: "Banco de dados", icon: Database },
   { id: "automacao", label: "Automação e alertas", icon: BellRing },
   { id: "chave", label: "Chave SSH global", icon: KeyRound },
@@ -450,6 +451,115 @@ function DomainTab() {
   );
 }
 
+const ZABBIX_SCRIPT = `var p = JSON.parse(value), url = p.bastion_url;
+delete p.bastion_url;
+var req = new HttpRequest();
+req.addHeader('Content-Type: application/json');
+var resp = req.post(url, JSON.stringify(p));
+if (req.getStatus() != 200) { throw 'BastiON respondeu ' + req.getStatus() + ': ' + resp; }
+return 'OK';`;
+const ZABBIX_PARAMS = [
+  ["bastion_url", "(URL do Zabbix acima)"], ["event_id", "{EVENT.ID}"], ["event_value", "{EVENT.VALUE}"],
+  ["severity", "{EVENT.SEVERITY}"], ["host", "{HOST.NAME}"], ["host_ip", "{HOST.IP}"], ["trigger", "{EVENT.NAME}"],
+  ["message", "{ALERT.MESSAGE}"], ["url", "{$ZABBIX.URL}/tr_events.php?triggerid={TRIGGER.ID}&eventid={EVENT.ID}"],
+];
+const LIBRENMS_BODY = `{"id": "{{ $id }}", "state": "{{ $state }}", "severity": "{{ $severity }}", "hostname": "{{ $hostname }}", "sysname": "{{ $sysName }}", "title": "{{ $title }}", "rule": "{{ $name }}", "msg": "{{ $msg }}"}`;
+
+function CopyBox({ text, testid, mono = true }) {
+  const copy = () => { navigator.clipboard?.writeText(text); toast.success("Copiado"); };
+  return (
+    <div className="flex gap-2 items-start">
+      <pre className={`flex-1 min-w-0 text-[11px] ${mono ? "font-mono" : ""} text-slate-200 bg-sunken border border-line rounded-md p-2 whitespace-pre-wrap break-all`} data-testid={testid}>{text}</pre>
+      <Button size="sm" variant="ghost" onClick={copy} className="text-slate-400 hover:text-slate-100 shrink-0" title="Copiar"><Copy className="w-4 h-4" /></Button>
+    </div>
+  );
+}
+
+function IntegrationsTab() {
+  const [st, setSt] = useState(null);
+  const load = useCallback(() => api.get("/incidents-settings").then(r => setSt(r.data)).catch(e => toast.error(formatApiError(e))), []);
+  useEffect(() => { load(); }, [load]);
+  if (!st) return <div className="text-sm text-slate-500 font-mono">Carregando…</div>;
+  const base = `${window.location.origin}/api/hooks/incidents/${st.token}`;
+  const save = async (patch) => {
+    try { setSt((await api.put("/incidents-settings", { ...st, ...patch })).data); toast.success("Salvo"); } catch (e) { toast.error(formatApiError(e)); }
+  };
+  const rotate = async () => {
+    if (!window.confirm("Gerar um token novo? As URLs atuais param de funcionar e precisam ser trocadas no Zabbix/LibreNMS.")) return;
+    try { setSt((await api.post("/incidents-settings/rotate-token")).data); toast.success("Token novo gerado"); } catch (e) { toast.error(formatApiError(e)); }
+  };
+  const test = async () => {
+    try {
+      const r = await fetch(`${base}/generic`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "teste-integracao", severity: st.notify_min_severity, title: "Teste de integração do BastiON", host: "teste", description: "Pode resolver este incidente." }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || r.status);
+      toast.success(j.action === "repeated" ? `Teste somado ao incidente #${j.number} (ainda aberto)` : `Incidente de teste #${j.number} aberto — veja em Incidentes`);
+    } catch (e) { toast.error(`Falhou: ${e.message}`); }
+  };
+  return (
+    <div className="space-y-4" data-testid="settings-integrations">
+      <Section icon={Siren} title="Avisos dos incidentes" testid="inc-notify"
+               desc="Novos incidentes avisam no Telegram/push (o mesmo canal da Automação), com os botões Reconhecer e Resolver.">
+        <div className="flex flex-wrap gap-4 items-end">
+          <label className="text-xs text-slate-400">Avisar a partir de
+            <select value={st.notify_min_severity} onChange={e => save({ notify_min_severity: e.target.value })} data-testid="inc-minsev"
+                    className="block mt-1 h-9 px-2 rounded-md bg-sunken border border-line text-slate-100 text-sm">
+              {[["critical", "Crítica"], ["high", "Alta"], ["medium", "Média"], ["low", "Baixa"], ["info", "Todas"]].map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </label>
+          <Button onClick={test} variant="outline" className="border-line bg-surface text-slate-200 h-9" data-testid="inc-test"><Send className="w-4 h-4 mr-1.5" /> Mandar incidente de teste</Button>
+        </div>
+        <div className="mt-3 space-y-0.5">
+          <Check checked={st.notify_resolved} onChange={v => save({ notify_resolved: v })} label="Avisar quando a origem normalizar (resolvido sozinho)" />
+          <Check checked={st.internal} onChange={v => save({ internal: v })} label="Abrir incidentes dos alarmes do BastiON" hint="equipamento ou agente sem resposta, interface DOWN nos mapas" testid="inc-internal" />
+          <Check checked={st.notify_internal} onChange={v => save({ notify_internal: v })} label="Avisar também esses pelo incidente (com botões)" hint="desligado: o BastiON continua avisando como sempre, sem duplicar" />
+        </div>
+        <p className="text-[11px] text-slate-500 mt-2">Os botões do Telegram respondem para quem está liberado em Automação e alertas → Assistente IA (Telegram ID vinculado ao usuário).</p>
+      </Section>
+
+      <Section icon={Plug} title="URLs de entrada" testid="inc-urls"
+               desc="Sem login: o token na URL é a senha. Não publique; se vazar, gere um novo.">
+        <div className="space-y-2">
+          {[["Zabbix", "zabbix"], ["LibreNMS", "librenms"], ["Genérico (qualquer sistema)", "generic"]].map(([l, k]) => (
+            <div key={k}><div className="text-xs text-slate-400 mb-1">{l}</div><CopyBox text={`${base}/${k}`} testid={`inc-url-${k}`} /></div>
+          ))}
+        </div>
+        <Button size="sm" variant="ghost" onClick={rotate} className="mt-2 text-amber-300 h-8"><RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Gerar token novo</Button>
+      </Section>
+
+      <Section icon={Info} title="Zabbix 6.4 — tipo de mídia webhook" testid="inc-zabbix">
+        <ol className="list-decimal pl-5 space-y-2 text-sm text-slate-300">
+          <li><span className="text-slate-100">Alertas → Tipos de mídia → Criar</span>: tipo <b>Webhook</b>, nome <span className="font-mono">BastiON</span>.</li>
+          <li>Parâmetros (nome → valor):
+            <table className="text-xs font-mono mt-1 border border-line rounded"><tbody className="divide-y divide-line">
+              {ZABBIX_PARAMS.map(([n, v]) => <tr key={n}><td className="px-2 py-1 text-slate-200">{n}</td><td className="px-2 py-1 text-slate-400 break-all">{n === "bastion_url" ? `${base}/zabbix` : v}</td></tr>)}
+            </tbody></table>
+          </li>
+          <li>Script:<div className="mt-1"><CopyBox text={ZABBIX_SCRIPT} testid="inc-zbx-script" /></div></li>
+          <li>Em <span className="text-slate-100">Mensagens</span>, adicione "Problema" e "Recuperação do problema" (assim o incidente fecha sozinho).</li>
+          <li>Em <span className="text-slate-100">Usuários → Admin → Mídia</span>, adicione a mídia BastiON (Enviar para: qualquer texto, ex. <span className="font-mono">noc</span>).</li>
+          <li>Em <span className="text-slate-100">Alertas → Ações → Ações de trigger</span>, crie a ação com operação "enviar para Admin via BastiON" e marque também as <b>operações de recuperação</b>.</li>
+        </ol>
+      </Section>
+
+      <Section icon={Info} title="LibreNMS — transporte API" testid="inc-librenms">
+        <ol className="list-decimal pl-5 space-y-2 text-sm text-slate-300">
+          <li><span className="text-slate-100">Alerts → Alert Transports → Create</span>: Transport type <b>API</b>, API Method <b>POST</b>.</li>
+          <li>API URL:<div className="mt-1"><CopyBox text={`${base}/librenms`} /></div></li>
+          <li>Headers: <span className="font-mono">Content-Type=application/json</span>. Body:<div className="mt-1"><CopyBox text={LIBRENMS_BODY} testid="inc-lnms-body" /></div></li>
+          <li>Associe o transporte às regras de alerta (ou marque como padrão). Recuperações (state 0) fecham o incidente.</li>
+        </ol>
+      </Section>
+
+      <Section icon={Info} title="Genérico (scripts, Grafana, outros)" testid="inc-generic">
+        <CopyBox text={`curl -X POST ${base}/generic -H 'Content-Type: application/json' \\\n  -d '{"key":"bgp-borda-01","status":"problem","severity":"critical","title":"BGP NovatecNet down","host":"203.0.113.1","description":"sessão caiu"}'`} />
+        <p className="text-[11px] text-slate-500 mt-2">Mesma <span className="font-mono">key</span> com <span className="font-mono">"status":"ok"</span> resolve. Severidades: critical, high, medium, low, info.</p>
+      </Section>
+    </div>
+  );
+}
+
 export default function Settings() {
   const [sp, setSp] = useSearchParams();
   const tab = TABS.some(t => t.id === sp.get("tab")) ? sp.get("tab") : "aparencia";
@@ -469,6 +579,7 @@ export default function Settings() {
         <div className="flex-1 min-w-0">
           {tab === "aparencia" && <AppearanceTab />}
           {tab === "dominio" && <DomainTab />}
+          {tab === "integracoes" && <IntegrationsTab />}
           {tab === "banco" && <DatabaseTab />}
           {tab === "automacao" && <Automation embedded />}
           {tab === "chave" && <SshKey embedded />}

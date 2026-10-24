@@ -26,6 +26,7 @@ import Maps from "@/pages/Maps";
 import Dashboards from "@/pages/Dashboards";
 import Flow from "@/pages/Flow";
 import Settings from "@/pages/Settings";
+import Incidents from "@/pages/Incidents";
 import WebAccess from "@/pages/WebAccess";
 
 function RootRedirect() {
@@ -55,6 +56,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route element={<ProtectedShell />}>
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/incidents" element={<Incidents />} />
             <Route path="/devices" element={<Devices />} />
             <Route path="/terminal" element={<Terminal />} />
             <Route path="/terminal/:deviceId" element={<Terminal />} />
