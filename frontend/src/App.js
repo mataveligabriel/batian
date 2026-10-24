@@ -34,6 +34,8 @@ import Maint from "@/pages/Maint";
 import Bgp from "@/pages/Bgp";
 import Gpon from "@/pages/Gpon";
 import Compliance from "@/pages/Compliance";
+import CmdPolicy from "@/pages/CmdPolicy";
+import Siem from "@/pages/Siem";
 import Ipam from "@/pages/Ipam";
 import WebAccess from "@/pages/WebAccess";
 
@@ -73,6 +75,8 @@ function App() {
             <Route path="/bgp-monitor" element={<Bgp />} />
             <Route path="/gpon" element={<Gpon />} />
             <Route path="/compliance" element={<Compliance />} />
+            <Route path="/soc/commands" element={<CmdPolicy />} />
+            <Route path="/soc/siem" element={<Siem />} />
             <Route path="/ipam" element={<Ipam />} />
             <Route path="/devices" element={<Devices />} />
             <Route path="/terminal" element={<Terminal />} />

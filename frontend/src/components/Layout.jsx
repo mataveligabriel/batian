@@ -9,7 +9,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   ChevronDown, LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary,
+  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -57,6 +57,10 @@ const MENU = [
   { group: "inventory", icon: Server, label: "Inventário", items: [
     { to: "/ipam", icon: Binary, label: "IPAM", testid: "nav-ipam" },
     { to: "/compliance", icon: ClipboardCheck, label: "Conformidade", testid: "nav-compliance" },
+  ] },
+  { group: "soc", icon: ShieldCheck, label: "Segurança (SOC)", items: [
+    { to: "/soc/commands", icon: ShieldCheck, label: "Política de comandos", testid: "nav-cmdpolicy" },
+    { to: "/soc/siem", icon: Send, label: "SIEM e auditoria", adminOnly: true, testid: "nav-siem" },
   ] },
   { group: "system", icon: SettingsIcon, label: "Sistema", items: [
     { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key", notAdmin: true },   // admin: Configurações

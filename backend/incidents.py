@@ -23,7 +23,8 @@ SEVERITIES = ["info", "low", "medium", "high", "critical"]
 SEV_LABEL = {"info": "Info", "low": "Baixa", "medium": "Média", "high": "Alta", "critical": "Crítica"}
 SEV_ICON = {"info": "ℹ️", "low": "🔵", "medium": "🟡", "high": "🟠", "critical": "🔴"}
 SOURCES = {"zabbix": "Zabbix", "librenms": "LibreNMS", "generic": "Webhook", "bastion": "BastiON", "manual": "Manual",
-           "syslog": "Syslog", "trap": "Trap SNMP", "probe": "Sonda", "bgp": "Monitor BGP", "gpon": "GPON", "compliance": "Conformidade"}
+           "syslog": "Syslog", "trap": "Trap SNMP", "probe": "Sonda", "bgp": "Monitor BGP", "gpon": "GPON", "compliance": "Conformidade",
+           "soc": "SOC"}
 STATUSES = ("open", "ack", "resolved")
 
 DEFAULTS = {

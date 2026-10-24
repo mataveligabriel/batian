@@ -1337,3 +1337,31 @@ Cadastre a OLT em **Equipamentos** com o tipo **FiberHome (OLT)** (Telnet ou SSH
 - **GPON**: escolha a OLT FiberHome em **GPON → Configurar**: estado online/offline de cada ONU pelo `show authorization` e alerta de queda em massa por PON. O sinal aparece ao abrir a ONU (`show optic_module`).
 
 Ainda sem testar em equipamento real: a leitura de `showcard`, `show discovery` e `show authorization` é tolerante (procura o serial FHTT… e o estado up/dn em cada linha). Se algo vier vazio, a tela mostra a resposta da OLT — mande essa saída para ajustar. A AN6000 (CLI nova) não é suportada.
+
+## 58. SOC — Política de comandos e aprovação
+
+Menu **Segurança (SOC) → Política de comandos**. Cada comando, antes de chegar ao equipamento, passa pelas regras — no **terminal web** (na hora do Enter), **Execução em Lote**, **roteiros** (web e Telegram), **Script de OLT** e nas alterações do **assistente de IA**.
+
+- **Ações**: *Bloquear* (não envia; abre incidente no SOC), *Pedir aprovação* (outro administrador aprova), *Alertar* (envia e abre incidente) e *Permitir* (exceção para as regras de baixo, ex.: admins podem `reboot`).
+- **Escopo** de cada regra: fabricante, tags dos equipamentos, perfil (admin/operador), usuários e onde (terminal, lote…). O padrão é uma expressão regular sobre o comando (sem diferenciar maiúsculas).
+- **Regras prontas**: bloquear apagar configuração/formatar; aprovação para reboot e para derrubar/alterar BGP; alerta para desligar interface e mexer em usuários/AAA. Use **Simular** para testar comandos contra as regras sem registrar nada.
+- **Aprovação**: o pedido aparece em **Aprovações** e no Telegram (grupo de alertas) com botões *Aprovar/Negar* — no Telegram só vale para administrador com o ID vinculado em Assistente IA. Quem pediu não aprova o próprio pedido (dá para liberar nas configurações se houver um único admin).
+  - **Terminal**: o Enter fica segurado; aprovado, o comando segue sozinho; negado ou sem resposta no prazo, a linha é apagada. *Ctrl+C* cancela o pedido.
+  - **Lote, roteiro, OLT e IA**: a execução volta com "precisa de aprovação (pedido #N)"; depois de aprovado, execute de novo (a aprovação vale uma vez, para os mesmos comandos e equipamento, pelo tempo configurado).
+- **Eventos**: tudo que a política pegou (bloqueios, alertas, pedidos, aprovações e execuções aprovadas), com busca por usuário, equipamento ou comando. Os incidentes saem com a origem **SOC**.
+- O terminal reconstrói a linha da tela (histórico, Tab, edição no meio), e compara também com o que foi digitado: vale a decisão mais restritiva. Linhas de senha não são avaliadas.
+
+## 59. SOC — Envio para SIEM e auditoria da interface
+
+Menu **Segurança (SOC) → SIEM e auditoria** (só administradores).
+
+- **O que sai**: logins (ok, falha, bloqueio), sessões de acesso (início/fim do terminal, web, RDP, Winbox e comandos em lote), comandos pegos pela política e ações do assistente de IA, **alterações feitas na interface/API** (quem fez POST/PUT/DELETE em qual caminho, de qual IP) e incidentes (aberto/resolvido). Cada destino escolhe as categorias e uma severidade mínima (0–10).
+- **Destinos** (até 10):
+  - **Syslog** UDP, TCP ou TCP+TLS (RFC 5424, facility local4), com a mensagem em **CEF** (Wazuh, ArcSight, Sentinel), **JSON** ou **LEEF** (QRadar).
+  - **GELF** (Graylog) por UDP ou TCP.
+  - **Splunk HEC** (token guardado criptografado).
+  - **HTTP/Webhook** com JSON em lote e cabeçalho de autenticação (Elastic, Logstash, n8n…).
+- Só sai o que acontecer depois de ligar (não reenvia o histórico). Envio a cada 10 s; se o SIEM cair, os eventos ficam numa fila em memória (até 5 000 por destino) e o status mostra o erro. **Testar** manda um evento de teste na hora.
+- **Auditoria da interface**: a mesma trilha de alterações, consultável na tela, guardada por 180 dias.
+
+No Wazuh, basta um `<remote>` com `<connection>syslog</connection>` e o IP do BastiON em `<allowed-ips>`; o decoder CEF nativo já entende os campos `suser`, `src`, `dhost`, `act` e `outcome`.

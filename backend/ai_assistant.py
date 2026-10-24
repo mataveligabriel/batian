@@ -471,6 +471,8 @@ class AgentCore:
         self.http: Optional[httpx.AsyncClient] = None
         self._locks: dict = {}
         self._sem = asyncio.Semaphore(6)
+        self.cmd_policy = None          # async (user, dev, [comandos], canal) -> {action, message} (política de comandos do SOC)
+        self.cmd_decide = None          # async (admin, pedido, aprovar) -> texto (botões de aprovação no Telegram)
 
     # ----- ganchos do canal -----
     async def out_text(self, ctx: dict, text: str, final: bool):
@@ -921,6 +923,11 @@ class AgentCore:
             dev = await self.db.devices.find_one({"id": ch["device_id"], "owner_id": p["user_id"]}, {"_id": 0})
             if not dev:
                 return ch, False, "Equipamento não encontrado (removido?)"
+            if self.cmd_policy:
+                who = await self.db.users.find_one({"id": p["user_id"]}, {"_id": 0, "id": 1, "email": 1, "role": 1}) or {"id": p["user_id"]}
+                d = await self.cmd_policy(who, dev, ch["commands"], "ai")
+                if d["action"] != "allow":
+                    return ch, False, d["message"]
             try:
                 res = await self._run_on_device(dev, ch["commands"], timeout=120, idle=4.0)
                 await self._audit(ctx, dev, "change", ch["commands"], res["ok"], res["output"], p["id"])
@@ -1184,6 +1191,23 @@ class TelegramAssistant(AgentCore):
         await self.send(chat_id, f"🛡️ {m['prefix']} em blackhole nas bordas até {exp} ({'prazo estendido' if m.get('extended') else 'por ' + (user.get('email') or '')}).\n"
                                  "Remover antes: Flow → Mitigação no BastiON.")
 
+    async def _on_cmd_approval_cb(self, cq: dict, data: str):
+        """Botões do pedido de aprovação de comando (SOC): só administrador com o Telegram vinculado."""
+        from_id = str((cq.get("from") or {}).get("id"))
+        msg = cq.get("message") or {}
+        chat_id = (msg.get("chat") or {}).get("id")
+        s = await get_ai_settings(self.db)
+        link = self._auth(s, from_id)
+        user = await self.db.users.find_one({"id": link["user_id"]}, {"_id": 0, "password_hash": 0}) if link else None
+        if not user or user.get("role") != "admin":
+            return await self._tg("answerCallbackQuery", callback_query_id=cq["id"], show_alert=True,
+                                  text=f"Só administradores com o Telegram vinculado aprovam (seu ID: {from_id}).")
+        text = await self.cmd_decide(user, data.split(":", 1)[1], data.startswith("cap:"))
+        await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text=text[:190], show_alert=len(text) > 60)
+        if "aprovado" in text or "negado" in text:
+            await self._tg("editMessageReplyMarkup", chat_id=chat_id, message_id=msg.get("message_id"), reply_markup={"inline_keyboard": []})
+            await self.send(chat_id, f"{text} ({user.get('email', '')})")
+
     async def _runbook_confirm(self, chat_id, rb: dict):
         names = {d["id"]: d["name"] async for d in self.db.devices.find(
             {"id": {"$in": [st["device_id"] for st in rb.get("steps") or []]}}, {"_id": 0, "id": 1, "name": 1})}
@@ -1258,6 +1282,8 @@ class TelegramAssistant(AgentCore):
             return await self._on_runbook_cb(cq, data)
         if data.startswith(("mit:", "mitok:", "mitno:")):
             return await self._on_mitigation_cb(cq, data)
+        if data.startswith(("cap:", "cdn:")) and self.cmd_decide:
+            return await self._on_cmd_approval_cb(cq, data)
         from_id = str((cq.get("from") or {}).get("id"))
         msg = cq.get("message") or {}
         chat_id = (msg.get("chat") or {}).get("id")

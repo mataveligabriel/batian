@@ -6,6 +6,7 @@ load_dotenv(ROOT_DIR / '.env')
 
 import csv
 import io
+import json
 import os
 import re
 import hmac
@@ -75,6 +76,8 @@ import rdp
 import oltgen
 import olthw
 import oltfh
+import cmdpolicy
+import siem as siemmod
 import tcprelay
 import runbooks
 import teopt
@@ -142,6 +145,12 @@ async def startup():
             await col.update_many({"$or": [{"owner_id": None}, {"owner_id": {"$exists": False}}]}, {"$set": {"owner_id": admin["id"]}})
     await db.ai_audit.create_index([("at", -1)])
     await db.ai_pending.create_index("id")
+    await db.cmd_approvals.create_index("id")
+    await db.cmd_approvals.create_index([("hash", 1), ("status", 1)])
+    await db.cmd_events.create_index([("at", -1)])
+    await db.audit_events.create_index("ts", expireAfterSeconds=180 * 86400)
+    await db.audit_events.create_index([("at", -1)])
+    await db.sessions.create_index("ended_at")
     await _apply_retention()
     await db.if_samples.create_index([("device_id", 1), ("if_index", 1), ("ts", -1)])
     await db.optics_samples.create_index([("device_id", 1), ("if_index", 1), ("ts", -1)])
@@ -169,6 +178,7 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(_maint_loop()))
     _bg_tasks.append(asyncio.create_task(_bgp_loop()))
     _bg_tasks.append(asyncio.create_task(_gpon_loop()))
+    _bg_tasks.append(asyncio.create_task(_siem_loop()))
     _bg_tasks.append(asyncio.create_task(_comp_loop()))
     _bg_tasks.append(asyncio.create_task(_ipam_loop()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
@@ -1683,6 +1693,10 @@ async def batch_execute(payload: BatchExecPayload, user: dict = Depends(get_curr
             return BatchResultItem(device_id=dev_id, device_name="?", host="?",
                                    ok=False, exit_status=-1, stdout="", stderr="",
                                    error="Equipamento não encontrado").model_dump()
+        d = await cmd_policy(user, dev, cmdpolicy.command_lines(command), "batch")
+        if d["action"] != "allow":
+            return BatchResultItem(device_id=dev["id"], device_name=dev["name"], host=dev["host"], ok=False, exit_status=-1,
+                                   stdout="", stderr="", error=d["message"]).model_dump()
         try:
             client_ = await _connect_device(dev)
             res = await client_.run_command(command, timeout=payload.timeout)
@@ -2002,6 +2016,7 @@ async def oltgen_apply(body: OltApplyIn, user: dict = Depends(get_current_user))
     want = "huawei" if body.kind.startswith("hw-") else "fiberhome" if body.kind.startswith("fh-") else "zte"
     if (dev.get("device_type") or "") != want:
         raise HTTPException(status_code=400, detail=f"Esse equipamento não está cadastrado como {_VENDOR_NAME[want]}")
+    await _cmdpol_guard(user, dev, cmdpolicy.command_lines(res["script"]), "olt")
     lock = _olt_apply_locks.setdefault(dev["id"], asyncio.Lock())
     if lock.locked():
         raise HTTPException(status_code=409, detail="Já tem um script sendo aplicado nessa OLT; espere terminar")
@@ -3941,6 +3956,17 @@ async def run_runbook(rb: dict, user: dict, via: str) -> dict:
 
     async def get_dev(did):
         return await db.devices.find_one({"id": did, "owner_id": owner}, {"_id": 0})
+    waiting = []
+    for i, st in enumerate(rb.get("steps") or [], 1):
+        dv = await get_dev(st.get("device_id"))
+        d = await cmd_policy(user, dv, runbooks.command_lines(st.get("commands") or ""), "runbook")
+        if d["action"] == "block":
+            raise HTTPException(status_code=403, detail=f"Passo {i}: {d['message']}")
+        if d["action"] == "approve":
+            waiting.append(f"passo {i} (pedido #{d['approval']['number']})")
+    if waiting:
+        raise HTTPException(status_code=409, detail="Precisa de aprovação: " + ", ".join(waiting) +
+                            ". Um administrador aprova em SOC → Aprovações ou no Telegram; depois rode de novo.")
     started = datetime.now(timezone.utc)
     async with lock:
         res = await runbooks.run(rb, get_dev, _connect_device)
@@ -6042,6 +6068,680 @@ async def winbox_close(sid: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+# ---------- SOC: política de comandos e aprovação ----------
+_cmdpol_cache: dict = {"at": 0.0, "rules": [], "cfg": None}
+_cmd_waiters: Dict[str, asyncio.Event] = {}
+
+
+async def _cmdpol_cfg() -> dict:
+    doc = await db.config.find_one({"key": "cmdpolicy"}, {"_id": 0}) or {}
+    return {**cmdpolicy.DEFAULTS, **{k: v for k, v in doc.items() if k in cmdpolicy.DEFAULTS}}
+
+
+async def _cmdpol_rules(force: bool = False) -> tuple:
+    if force or time.time() - _cmdpol_cache["at"] > 15 or _cmdpol_cache["cfg"] is None:
+        _cmdpol_cache["rules"] = await db.cmd_rules.find({"enabled": {"$ne": False}}, {"_id": 0}).sort("order", 1).to_list(500)
+        _cmdpol_cache["cfg"] = await _cmdpol_cfg()
+        _cmdpol_cache["at"] = time.time()
+    return _cmdpol_cache["rules"], _cmdpol_cache["cfg"]
+
+
+async def _cmdpol_event(user: dict, dev: Optional[dict], channel: str, action: str, hits: list, **extra) -> dict:
+    ev = {"id": os.urandom(8).hex(), "at": datetime.now(timezone.utc).isoformat(), "user_id": user.get("id"),
+          "user_email": user.get("email", ""), "device_id": (dev or {}).get("id"), "device_name": (dev or {}).get("name", ""),
+          "host": (dev or {}).get("host", ""), "channel": channel, "action": action,
+          "commands": [h["command"] for h in hits][:50], "rules": sorted({h["rule"] for h in hits}), **extra}
+    await db.cmd_events.insert_one(dict(ev))
+    return ev
+
+
+async def _cmdpol_incident(ev: dict, hits: list, kind: str):
+    sev = max((h.get("severity", "medium") for h in hits), key=lambda s: incmod.sev_rank(s), default="medium")
+    what = {"block": "Comando bloqueado", "alert": "Comando sensível", "denied": "Aprovação negada"}.get(kind, kind)
+    try:
+        await inc_center.ingest("soc", {"key": f"soc:cmd:{ev['id']}", "status": "problem", "severity": sev,
+                                        "device_id": ev.get("device_id"), "host": ev.get("host", ""), "host_name": ev.get("device_name", ""),
+                                        "title": f"{what}: {ev['commands'][0][:80] if ev['commands'] else ''} — {ev['user_email']} em {ev['device_name'] or '?'}",
+                                        "description": f"Canal: {ev['channel']}. Regra(s): {', '.join(ev['rules'])}.\n" + "\n".join(ev["commands"][:20])})
+    except Exception as e:
+        logger.warning(f"SOC incidente: {e}")
+
+
+async def _cmdpol_notify(ap: dict):
+    lines = "\n".join(f"  {c}" for c in ap["commands"][:15])
+    text = (f"Pedido #{ap['number']} de {ap['user_email']} em {ap['device_name']} ({ap['channel']}):\n{lines}\n"
+            f"Regra: {', '.join(ap['rules'])}. Vale até {datetime.fromisoformat(ap['expires_at']).astimezone().strftime('%H:%M')}.")
+    try:
+        await automation.send_alert(db, "🛂 Aprovação de comando", text, push_url="/soc/commands", push_tag=f"cap-{ap['id']}",
+                                    buttons=[[{"text": "✅ Aprovar", "callback_data": f"cap:{ap['id']}"},
+                                              {"text": "❌ Negar", "callback_data": f"cdn:{ap['id']}"}]])
+    except Exception as e:
+        logger.warning(f"SOC aviso de aprovação: {e}")
+
+
+async def cmd_policy(user: dict, dev: Optional[dict], commands: List[str], channel: str, wait_terminal: bool = False) -> dict:
+    """Decide antes de mandar comandos ao equipamento. Devolve {action: allow|block|approve, hits, approval?, message}.
+    'approve': cria (ou reaproveita) o pedido; uma aprovação já dada para os mesmos comandos/equipamento libera uma vez."""
+    rules, cfg = await _cmdpol_rules()
+    if not cfg.get("enabled") or not rules or not commands:
+        return {"action": "allow", "hits": []}
+    ev = cmdpolicy.evaluate(rules, user, dev or {}, commands, channel)
+    act, hits = ev["action"], ev["hits"]
+    if act == "allow":
+        return {"action": "allow", "hits": []}
+    if act == "alert":
+        e = await _cmdpol_event(user, dev, channel, "alert", hits)
+        await _cmdpol_incident(e, hits, "alert")
+        return {"action": "allow", "hits": hits, "alerted": True}
+    if act == "block":
+        e = await _cmdpol_event(user, dev, channel, "block", [h for h in hits if h["action"] == "block"])
+        await _cmdpol_incident(e, [h for h in hits if h["action"] == "block"], "block")
+        cmd = next(h["command"] for h in hits if h["action"] == "block")
+        rule = next(h["rule"] for h in hits if h["action"] == "block")
+        return {"action": "block", "hits": hits, "message": f"Comando bloqueado pela política ({rule}): {cmd}"}
+    need = [h for h in hits if h["action"] == "approve"]
+    cmds = [h["command"] for h in need]
+    h = cmdpolicy.grant_hash(user["id"], (dev or {}).get("id", ""), cmds)
+    now = datetime.now(timezone.utc)
+    if not wait_terminal:
+        g = await db.cmd_approvals.find_one_and_update(
+            {"hash": h, "status": "approved", "used": False, "grant_until": {"$gt": now.isoformat()}},
+            {"$set": {"used": True, "used_at": now.isoformat()}}, projection={"_id": 0})
+        if g:
+            await _cmdpol_event(user, dev, channel, "approved-run", need, approval_id=g["id"])
+            return {"action": "allow", "hits": hits, "approval": g}
+    cur = await db.cmd_approvals.find_one({"hash": h, "status": "pending", "expires_at": {"$gt": now.isoformat()}}, {"_id": 0})
+    if not cur:
+        last = await db.cmd_approvals.find_one({}, {"_id": 0, "number": 1}, sort=[("number", -1)])
+        cur = {"id": os.urandom(8).hex(), "number": int((last or {}).get("number") or 0) + 1, "hash": h, "status": "pending",
+               "user_id": user["id"], "user_email": user.get("email", ""), "device_id": (dev or {}).get("id"),
+               "device_name": (dev or {}).get("name", ""), "host": (dev or {}).get("host", ""), "channel": channel,
+               "commands": cmds, "rules": sorted({x["rule"] for x in need}), "created_at": now.isoformat(),
+               "expires_at": (now + timedelta(minutes=int(cfg.get("wait_min") or 10))).isoformat(), "used": False,
+               "decided_by": None, "decided_at": None, "note": ""}
+        await db.cmd_approvals.insert_one(dict(cur))
+        await _cmdpol_event(user, dev, channel, "approval-requested", need, approval_id=cur["id"])
+        if cfg.get("notify", True):
+            _bg(_cmdpol_notify(cur))
+    msg = (f"Precisa de aprovação (pedido #{cur['number']}, regra {', '.join(cur['rules'])}). Um administrador aprova em "
+           f"SOC → Aprovações ou no Telegram" + ("." if wait_terminal else "; depois de aprovado, execute de novo."))
+    return {"action": "approve", "hits": hits, "approval": cur, "message": msg}
+
+
+async def _cmdpol_guard(user: dict, dev: Optional[dict], commands: List[str], channel: str):
+    """Para os endpoints: bloqueio = 403, aprovação pendente = 409 com o número do pedido."""
+    d = await cmd_policy(user, dev, commands, channel)
+    if d["action"] == "block":
+        raise HTTPException(status_code=403, detail=d["message"])
+    if d["action"] == "approve":
+        raise HTTPException(status_code=409, detail=d["message"])
+    return d
+
+
+async def cmd_decide(approver: dict, aid: str, approve: bool, note: str = "") -> dict:
+    if approver.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Só administradores aprovam comandos")
+    ap = await db.cmd_approvals.find_one({"id": aid}, {"_id": 0})
+    if not ap:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    cfg = await _cmdpol_cfg()
+    if ap["user_id"] == approver["id"] and not cfg.get("self_approve"):
+        raise HTTPException(status_code=403, detail="Quem pediu não pode aprovar o próprio pedido (ative em Configurações da política, se for o único admin)")
+    now = datetime.now(timezone.utc)
+    st = "approved" if approve else "denied"
+    upd = {"status": st, "decided_by": approver.get("email", ""), "decided_by_id": approver["id"], "decided_at": now.isoformat(),
+           "note": str(note or "")[:300]}
+    if approve:
+        upd["grant_until"] = (now + timedelta(minutes=int(cfg.get("grant_min") or 30))).isoformat()
+    r = await db.cmd_approvals.update_one({"id": aid, "status": "pending", "expires_at": {"$gt": now.isoformat()}}, {"$set": upd})
+    if not r.modified_count:
+        cur = await db.cmd_approvals.find_one({"id": aid}, {"_id": 0, "status": 1})
+        raise HTTPException(status_code=409, detail=f"Esse pedido já está {(cur or {}).get('status', '?') if (cur or {}).get('status') != 'pending' else 'expirado'}")
+    ap.update(upd)
+    req = await db.users.find_one({"id": ap["user_id"]}, {"_id": 0, "id": 1, "email": 1}) or {"id": ap["user_id"], "email": ap["user_email"]}
+    dev = await db.devices.find_one({"id": ap.get("device_id")}, {"_id": 0}) if ap.get("device_id") else None
+    e = await _cmdpol_event(req, dev, ap["channel"], st, [{"command": c, "rule": ", ".join(ap["rules"])} for c in ap["commands"]],
+                            approval_id=aid, decided_by=approver.get("email", ""))
+    if not approve:
+        await _cmdpol_incident(e, [{"severity": "medium"}], "denied")
+    w = _cmd_waiters.get(aid)
+    if w:
+        w.set()
+    try:
+        await _inc_dm([ap["user_id"]], f"{'✅ Aprovado' if approve else '❌ Negado'}: pedido #{ap['number']}",
+                      f"{ap['device_name']}: {' | '.join(ap['commands'][:5])}\npor {approver.get('email', '')}" + (f" — {note}" if note else ""), None)
+    except Exception:
+        pass
+    logger.info("Pedido de comando #%s %s por %s", ap["number"], st, approver.get("email"))
+    return ap
+
+
+async def _cmd_decide_tg(user: dict, aid: str, approve: bool) -> str:
+    try:
+        ap = await cmd_decide(user, aid, approve)
+        return f"Pedido #{ap['number']} {'aprovado' if approve else 'negado'}."
+    except HTTPException as e:
+        return str(e.detail)
+
+
+assistant.cmd_decide = _cmd_decide_tg
+assistant.cmd_policy = cmd_policy
+web_assistant.cmd_policy = cmd_policy
+
+
+class CmdRuleIn(BaseModel):
+    name: str = ""
+    pattern: str = ""
+    action: str = "alert"
+    device_types: List[str] = []
+    tags: List[str] = []
+    device_ids: List[str] = []
+    roles: List[str] = []
+    user_ids: List[str] = []
+    channels: List[str] = []
+    severity: str = "medium"
+    enabled: bool = True
+    description: str = ""
+
+
+@api.get("/cmdpolicy/rules")
+async def cmdpol_rules(_: dict = Depends(require_admin)):
+    return await db.cmd_rules.find({}, {"_id": 0}).sort("order", 1).to_list(500)
+
+
+@api.post("/cmdpolicy/rules")
+async def cmdpol_rule_create(body: CmdRuleIn, _: dict = Depends(require_admin)):
+    try:
+        r = cmdpolicy.clean_rule(body.model_dump())
+    except cmdpolicy.PolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    last = await db.cmd_rules.find_one({}, {"_id": 0, "order": 1}, sort=[("order", -1)])
+    r.update(id=os.urandom(8).hex(), order=int((last or {}).get("order") or 0) + 10, created_at=datetime.now(timezone.utc).isoformat())
+    await db.cmd_rules.insert_one(dict(r))
+    await _cmdpol_rules(True)
+    return r
+
+
+@api.put("/cmdpolicy/rules/{rid}")
+async def cmdpol_rule_update(rid: str, body: CmdRuleIn, _: dict = Depends(require_admin)):
+    cur = await db.cmd_rules.find_one({"id": rid}, {"_id": 0})
+    if not cur:
+        raise HTTPException(status_code=404, detail="Regra não encontrada")
+    try:
+        r = cmdpolicy.clean_rule({**body.model_dump(), "preset": cur.get("preset", "")})
+    except cmdpolicy.PolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.cmd_rules.update_one({"id": rid}, {"$set": r})
+    await _cmdpol_rules(True)
+    return {**cur, **r}
+
+
+@api.delete("/cmdpolicy/rules/{rid}")
+async def cmdpol_rule_delete(rid: str, _: dict = Depends(require_admin)):
+    await db.cmd_rules.delete_one({"id": rid})
+    await _cmdpol_rules(True)
+    return {"ok": True}
+
+
+class CmdOrderIn(BaseModel):
+    ids: List[str]
+
+
+@api.put("/cmdpolicy/rules-order")
+async def cmdpol_rules_order(body: CmdOrderIn, _: dict = Depends(require_admin)):
+    for i, rid in enumerate(body.ids[:500]):
+        await db.cmd_rules.update_one({"id": rid}, {"$set": {"order": (i + 1) * 10}})
+    await _cmdpol_rules(True)
+    return {"ok": True}
+
+
+@api.post("/cmdpolicy/rules/presets")
+async def cmdpol_presets(_: dict = Depends(require_admin)):
+    have = {r.get("preset") async for r in db.cmd_rules.find({}, {"_id": 0, "preset": 1})}
+    last = await db.cmd_rules.find_one({}, {"_id": 0, "order": 1}, sort=[("order", -1)])
+    order, added = int((last or {}).get("order") or 0), 0
+    for p in cmdpolicy.PRESETS:
+        if p["preset"] in have:
+            continue
+        order += 10
+        r = cmdpolicy.clean_rule(p)
+        r.update(id=os.urandom(8).hex(), order=order, created_at=datetime.now(timezone.utc).isoformat())
+        await db.cmd_rules.insert_one(r)
+        added += 1
+    await _cmdpol_rules(True)
+    return {"added": added}
+
+
+class CmdTestIn(BaseModel):
+    commands: str
+    device_id: str = ""
+    user_id: str = ""
+    channel: str = "terminal"
+
+
+@api.post("/cmdpolicy/test")
+async def cmdpol_test(body: CmdTestIn, admin: dict = Depends(require_admin)):
+    """Simula a política (não registra nada): qual regra pega cada linha."""
+    rules = await db.cmd_rules.find({"enabled": {"$ne": False}}, {"_id": 0}).sort("order", 1).to_list(500)
+    u = await db.users.find_one({"id": body.user_id}, {"_id": 0, "id": 1, "role": 1, "email": 1}) if body.user_id else None
+    dev = await db.devices.find_one({"id": body.device_id}, {"_id": 0}) if body.device_id else {}
+    out = []
+    for c in cmdpolicy.command_lines(body.commands)[:100]:
+        r = cmdpolicy.match(rules, u or admin, dev or {}, c, body.channel if body.channel in cmdpolicy.CHANNELS else "terminal")
+        out.append({"command": c, "action": r["action"] if r else "allow", "rule": r["name"] if r else ""})
+    return {"results": out}
+
+
+@api.get("/cmdpolicy/settings")
+async def cmdpol_settings(_: dict = Depends(require_admin)):
+    return await _cmdpol_cfg()
+
+
+class CmdSettingsIn(BaseModel):
+    enabled: bool = True
+    wait_min: int = 10
+    grant_min: int = 30
+    self_approve: bool = False
+    notify: bool = True
+
+
+@api.put("/cmdpolicy/settings")
+async def cmdpol_settings_put(body: CmdSettingsIn, _: dict = Depends(require_admin)):
+    d = {"enabled": body.enabled, "wait_min": max(1, min(120, body.wait_min)), "grant_min": max(5, min(1440, body.grant_min)),
+         "self_approve": body.self_approve, "notify": body.notify}
+    await db.config.update_one({"key": "cmdpolicy"}, {"$set": d}, upsert=True)
+    await _cmdpol_rules(True)
+    return d
+
+
+def _ap_out(a: dict) -> dict:
+    a = {k: v for k, v in a.items() if k != "hash"}
+    if a.get("status") == "pending" and a.get("expires_at", "") <= datetime.now(timezone.utc).isoformat():
+        a["status"] = "expired"
+    return a
+
+
+@api.get("/cmdpolicy/approvals")
+async def cmdpol_approvals(status: str = "", limit: int = 200, user: dict = Depends(get_current_user)):
+    """Admin vê todos; os demais, só os próprios pedidos."""
+    q: dict = {} if user.get("role") == "admin" else {"user_id": user["id"]}
+    if status == "pending":
+        q.update(status="pending", expires_at={"$gt": datetime.now(timezone.utc).isoformat()})
+    elif status in ("approved", "denied", "cancelled"):
+        q["status"] = status
+    rows = await db.cmd_approvals.find(q, {"_id": 0}).sort("created_at", -1).to_list(min(1000, max(1, limit)))
+    return [_ap_out(a) for a in rows]
+
+
+class CmdDecideIn(BaseModel):
+    approve: bool
+    note: str = ""
+
+
+@api.post("/cmdpolicy/approvals/{aid}/decide")
+async def cmdpol_decide(aid: str, body: CmdDecideIn, user: dict = Depends(require_admin)):
+    return _ap_out(await cmd_decide(user, aid, body.approve, body.note))
+
+
+@api.post("/cmdpolicy/approvals/{aid}/cancel")
+async def cmdpol_cancel(aid: str, user: dict = Depends(get_current_user)):
+    r = await db.cmd_approvals.update_one({"id": aid, "user_id": user["id"], "status": "pending"},
+                                          {"$set": {"status": "cancelled", "decided_at": datetime.now(timezone.utc).isoformat()}})
+    if not r.modified_count:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado ou já decidido")
+    w = _cmd_waiters.get(aid)
+    if w:
+        w.set()
+    return {"ok": True}
+
+
+@api.get("/cmdpolicy/events")
+async def cmdpol_events(q: str = "", action: str = "", limit: int = 300, _: dict = Depends(require_admin)):
+    f: dict = {}
+    if action:
+        f["action"] = action
+    if q:
+        rx = {"$regex": re.escape(q[:80]), "$options": "i"}
+        f["$or"] = [{"user_email": rx}, {"device_name": rx}, {"commands": rx}]
+    return await db.cmd_events.find(f, {"_id": 0}).sort("at", -1).to_list(min(2000, max(1, limit)))
+
+
+# Terminal: o Enter só vai para o equipamento depois da política
+_KILL_LINE = {"mikrotik": "\x03", "huawei": "\x05\x18"}
+
+
+class _TermPolicy:
+    def __init__(self, user: dict, dev: dict, process, ws):
+        self.user, self.dev, self.p, self.ws = user, dev, process, ws
+        self.tracker = cmdpolicy.LineTracker()
+        self.typed: Optional[List[str]] = []
+        self.mark = True
+        self.held: Optional[dict] = None
+        self.task: Optional[asyncio.Task] = None
+        self.active = False
+        self.checked = 0.0
+
+    async def refresh(self):
+        if time.time() - self.checked > 30:
+            rules, cfg = await _cmdpol_rules()
+            self.active = bool(cfg.get("enabled") and rules)
+            self.checked = time.time()
+
+    def out(self, chunk: str):
+        self.tracker.feed(chunk)
+
+    async def say(self, text: str, color: str = "33"):
+        await self.ws.send_json({"type": "data", "data": f"\r\n\x1b[{color}m[BastiON] {text}\x1b[0m\r\n"})
+
+    def kill_line(self):
+        self.p.stdin.write(_KILL_LINE.get(self.dev.get("device_type") or "", "\x05\x15").encode())
+
+    async def input(self, data: str):
+        await self.refresh()
+        if self.held:
+            if "\x03" in data:
+                await db.cmd_approvals.update_one({"id": self.held["id"], "status": "pending"},
+                                                  {"$set": {"status": "cancelled", "decided_at": datetime.now(timezone.utc).isoformat()}})
+                if self.task:
+                    self.task.cancel()
+                self.held = None
+                self.kill_line()
+                await self.say("Pedido cancelado.")
+            else:
+                await self.say(f"Aguardando a aprovação do pedido #{self.held['number']} (Ctrl+C cancela).")
+            return
+        if not self.active:
+            self.p.stdin.write(data.encode("utf-8"))
+            return
+        chunk = []
+        for ch in data:
+            if ch in "\r\n":
+                if chunk:
+                    self.p.stdin.write("".join(chunk).encode("utf-8"))
+                    chunk = []
+                if ch == "\n" and data.endswith("\r\n"):
+                    continue
+                await self._enter()
+                if self.held:
+                    return
+                continue
+            if self.mark:
+                self.tracker.mark_prompt()
+                self.mark = False
+            if ch in ("\x7f", "\b"):
+                if self.typed:
+                    self.typed.pop()
+            elif ch in ("\x15", "\x03"):
+                self.typed = []
+                if ch == "\x03":
+                    self.mark = True
+            elif ch in ("\x1b", "\t") or (ord(ch) < 32):
+                self.typed = None
+            elif self.typed is not None:
+                self.typed.append(ch)
+            chunk.append(ch)
+        if chunk:
+            self.p.stdin.write("".join(chunk).encode("utf-8"))
+
+    async def _enter(self):
+        prompt_line = self.tracker.prompt or self.tracker.line()
+        cands = []
+        if self.typed:
+            cands.append("".join(self.typed).strip())
+        tc = self.tracker.command()
+        if tc:
+            cands.append(tc)
+        cands = [c for c in dict.fromkeys(cands) if c]
+        self.typed, self.mark = [], True
+        if not cands or cmdpolicy.at_password(prompt_line):
+            self.p.stdin.write(b"\r")
+            return
+        d = await cmd_policy(self.user, self.dev, cands, "terminal", wait_terminal=True)
+        if d["action"] == "allow":
+            self.p.stdin.write(b"\r")
+            if d.get("alerted"):
+                await self.say("Comando registrado pelo SOC.", "36")
+            return
+        if d["action"] == "block":
+            self.kill_line()
+            await self.say(d["message"], "31")
+            return
+        ap = d["approval"]
+        self.held = ap
+        ev = _cmd_waiters.setdefault(ap["id"], asyncio.Event())
+        await self.say(f"{d['message']} Aguardando até {datetime.fromisoformat(ap['expires_at']).astimezone().strftime('%H:%M')} — Ctrl+C cancela.")
+        self.task = asyncio.create_task(self._wait(ap, ev))
+
+    async def _wait(self, ap: dict, ev: asyncio.Event):
+        try:
+            left = (datetime.fromisoformat(ap["expires_at"]) - datetime.now(timezone.utc)).total_seconds()
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=max(1.0, left))
+            except asyncio.TimeoutError:
+                pass
+            cur = await db.cmd_approvals.find_one({"id": ap["id"]}, {"_id": 0}) or {}
+            if cur.get("status") == "approved":
+                await db.cmd_approvals.update_one({"id": ap["id"]}, {"$set": {"used": True, "used_at": datetime.now(timezone.utc).isoformat()}})
+                await self.say(f"Aprovado por {cur.get('decided_by', '')}. Executando.", "32")
+                await _cmdpol_event(self.user, self.dev, "terminal", "approved-run",
+                                    [{"command": c, "rule": ", ".join(cur.get("rules") or [])} for c in cur.get("commands") or []], approval_id=ap["id"])
+                self.p.stdin.write(b"\r")
+            else:
+                if cur.get("status") == "pending":
+                    await db.cmd_approvals.update_one({"id": ap["id"], "status": "pending"}, {"$set": {"status": "expired"}})
+                self.kill_line()
+                why = {"denied": f"Negado por {cur.get('decided_by', '')}" + (f": {cur.get('note')}" if cur.get("note") else ""),
+                       "cancelled": "Pedido cancelado"}.get(cur.get("status"), "O pedido expirou sem resposta")
+                await self.say(f"{why}. O comando não foi enviado.", "31")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"SOC terminal: {e}")
+        finally:
+            self.held = None
+            _cmd_waiters.pop(ap["id"], None)
+
+    def close(self):
+        if self.task:
+            self.task.cancel()
+
+
+# ---------- SOC: envio para SIEM ----------
+_siem_rt: dict = {"senders": {}, "sig": None, "http": None, "cfg": None}
+_AUDIT_SKIP = re.compile(r"^/api/(auth/(login|refresh|2fa)|ws/|push/|assistant(/.*)?/chat|.*/test$|cmdpolicy/test|"
+                         r"oltgen/(hw/|fh/)?(generate|onu|onu-remove|onu-add)$|incidents/webhook|logs/ingest|siem/preview)")
+
+
+@app.middleware("http")
+async def _audit_mw(request: Request, call_next):
+    resp = await call_next(request)
+    try:
+        path = request.url.path
+        if request.method in ("POST", "PUT", "PATCH", "DELETE") and path.startswith("/api/") and not _AUDIT_SKIP.match(path):
+            tok = auth_mod.extract_token(request)
+            if tok:
+                try:
+                    pl = decode_token(tok)
+                except HTTPException:
+                    pl = None
+                if pl:
+                    now = datetime.now(timezone.utc)
+                    await db.audit_events.insert_one({"id": os.urandom(8).hex(), "ts": now, "at": now.isoformat(), "user_id": pl.get("sub"),
+                                                      "user_email": pl.get("email", ""), "method": request.method, "path": path[:300],
+                                                      "status": resp.status_code, "ip": security.client_ip(request)})
+    except Exception as e:
+        logger.debug(f"auditoria: {e}")
+    return resp
+
+
+async def _siem_cfg() -> dict:
+    doc = await db.config.find_one({"key": "siem"}, {"_id": 0}) or {}
+    return {"enabled": bool(doc.get("enabled")), "destinations": doc.get("destinations") or [], "secrets": doc.get("secrets") or {}}
+
+
+def _siem_senders(cfg: dict) -> dict:
+    sig = json.dumps([cfg["destinations"], sorted(cfg["secrets"].items())], sort_keys=True, default=str)
+    if sig != _siem_rt["sig"]:
+        old = _siem_rt["senders"]
+        new = {}
+        for d in cfg["destinations"]:
+            s = siemmod.Sender(d, vault.decrypt(cfg["secrets"].get(d["id"], "")))
+            if d["id"] in old:
+                o = old[d["id"]]
+                s.q, s.sent, s.failed, s.dropped, s.last_ok, s.last_error = o.q, o.sent, o.failed, o.dropped, o.last_ok, o.last_error
+            new[d["id"]] = s
+        _siem_rt["senders"], _siem_rt["sig"] = new, sig
+    return _siem_rt["senders"]
+
+
+_SIEM_SRC = [
+    ("login_events", "at", lambda d: siemmod.from_login(d)),
+    ("sessions", "started_at", lambda d: siemmod.from_session(d, False)),
+    ("sessions", "ended_at", lambda d: None if (d.get("kind") or "") == "batch" else siemmod.from_session(d, True)),
+    ("cmd_events", "at", lambda d: siemmod.from_cmd_event(d)),
+    ("ai_audit", "at", lambda d: siemmod.from_ai(d)),
+    ("audit_events", "at", lambda d: siemmod.from_change(d)),
+    ("incidents", "created_at", lambda d: siemmod.from_incident(d, False)),
+    ("incidents", "resolved_at", lambda d: siemmod.from_incident(d, True) if d.get("status") == "resolved" else None),
+]
+
+
+async def _siem_collect(cp: dict) -> list:
+    """Eventos novos desde o último ponto de cada coleção (o ponto anda mesmo sem saída configurada)."""
+    out = []
+    for col, field, fn in _SIEM_SRC:
+        k = f"{col}.{field}"
+        since = cp.get(k)
+        if not since:
+            cp[k] = datetime.now(timezone.utc).isoformat()
+            continue
+        rows = await db[col].find({field: {"$gt": since}}, {"_id": 0, "output": 0, "timeline": 0, "ts": 0}).sort(field, 1).to_list(2000)
+        for r in rows:
+            try:
+                e = fn(r)
+            except Exception as ex:
+                logger.debug(f"SIEM {col}: {ex}")
+                e = None
+            if e:
+                out.append(e)
+        if rows:
+            cp[k] = rows[-1][field]
+    out.sort(key=lambda e: e["ts"])
+    return out
+
+
+async def _siem_loop():
+    await asyncio.sleep(20)
+    import httpx
+    while True:
+        try:
+            cfg = await _siem_cfg()
+            cpdoc = await db.config.find_one({"key": "siem_cp"}, {"_id": 0}) or {}
+            cp = dict(cpdoc.get("cp") or {})
+            events = await _siem_collect(cp)
+            await db.config.update_one({"key": "siem_cp"}, {"$set": {"cp": cp}}, upsert=True)
+            if cfg["enabled"] and cfg["destinations"]:
+                senders = _siem_senders(cfg)
+                for e in events:
+                    for s in senders.values():
+                        if s.wants(e):
+                            s.push(e)
+                if not _siem_rt["http"]:
+                    _siem_rt["http"] = httpx.AsyncClient(verify=True)
+                for s in senders.values():
+                    if s.q:
+                        http = _siem_rt["http"]
+                        if s.d.get("kind") in ("http", "splunk") and not s.d.get("verify_tls", True):
+                            http = httpx.AsyncClient(verify=False)
+                        try:
+                            await s.flush(http)
+                        finally:
+                            if http is not _siem_rt["http"]:
+                                await http.aclose()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"SIEM: {e}")
+        await asyncio.sleep(10)
+
+
+def _siem_public(cfg: dict) -> dict:
+    st = {k: s.status() for k, s in _siem_rt["senders"].items()}
+    return {"enabled": cfg["enabled"], "categories": siemmod.CATEGORIES, "formats": siemmod.FORMATS,
+            "destinations": [{**d, "has_secret": bool(cfg["secrets"].get(d["id"])), "status": st.get(d["id"])} for d in cfg["destinations"]]}
+
+
+@api.get("/siem/settings")
+async def siem_settings(_: dict = Depends(require_admin)):
+    return _siem_public(await _siem_cfg())
+
+
+class SiemIn(BaseModel):
+    enabled: bool = False
+    destinations: List[dict] = []
+
+
+@api.put("/siem/settings")
+async def siem_settings_put(body: SiemIn, _: dict = Depends(require_admin)):
+    cur = await _siem_cfg()
+    dests, secrets = [], {}
+    for i, d in enumerate(body.destinations[:10], 1):
+        d = dict(d)
+        d["id"] = re.sub(r"[^a-f0-9]", "", str(d.get("id") or ""))[:16] or os.urandom(6).hex()
+        try:
+            c = siemmod.clean_dest(d)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(status_code=400, detail=f"Destino {i}: {e}")
+        dests.append(c)
+        sec = d.get("secret")
+        if sec:
+            secrets[c["id"]] = vault.encrypt(str(sec))
+        elif not d.get("clear_secret") and cur["secrets"].get(c["id"]):
+            secrets[c["id"]] = cur["secrets"][c["id"]]
+    await db.config.update_one({"key": "siem"}, {"$set": {"enabled": body.enabled, "destinations": dests, "secrets": secrets}}, upsert=True)
+    cfg = await _siem_cfg()
+    _siem_senders(cfg)
+    return _siem_public(cfg)
+
+
+class SiemTestIn(BaseModel):
+    id: str
+
+
+@api.post("/siem/test")
+async def siem_test(body: SiemTestIn, _: dict = Depends(require_admin)):
+    cfg = await _siem_cfg()
+    s = _siem_senders(cfg).get(body.id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Destino não encontrado — salve antes de testar")
+    import httpx
+    t = siemmod.Sender(s.d, s.secret)
+    e = siemmod.event("auth", "test", "success", 1, user="bastion", message="Teste de envio do BastiON para o SIEM")
+    t.push(e)
+    async with httpx.AsyncClient(verify=s.d.get("verify_tls", True)) as http:
+        await t.flush(http)
+    if t.last_error:
+        raise HTTPException(status_code=502, detail=f"Falhou: {t.last_error}")
+    return {"ok": True, "sent": siemmod.syslog_line(e, s.d.get("format", "json")) if s.d["kind"] == "syslog" else
+            (siemmod.to_gelf(e) if s.d["kind"] == "gelf" else siemmod.to_json(e))}
+
+
+@api.get("/siem/preview")
+async def siem_preview(format: str = "cef", _: dict = Depends(require_admin)):
+    return {"lines": [siemmod.syslog_line(e, format) for e in siemmod.sample_events()],
+            "gelf": siemmod.to_gelf(siemmod.sample_events()[1]), "json": siemmod.to_json(siemmod.sample_events()[1])}
+
+
+@api.get("/soc/audit")
+async def soc_audit(q: str = "", limit: int = 300, _: dict = Depends(require_admin)):
+    """Alterações feitas pela interface/API (quem, o quê, quando, de onde)."""
+    f: dict = {}
+    if q:
+        rx = {"$regex": re.escape(q[:80]), "$options": "i"}
+        f["$or"] = [{"user_email": rx}, {"path": rx}, {"ip": rx}]
+    return await db.audit_events.find(f, {"_id": 0, "ts": 0}).sort("at", -1).to_list(min(2000, max(1, limit)))
+
+
 # ---------- WebSocket Terminal ----------
 @app.websocket("/api/ws/terminal/{device_id}")
 async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
@@ -6095,6 +6795,8 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
                                                                                      "input": rec.input}}})
         await ws.send_json({"type": "status", "message": "Conectado. Sessão ativa." + (" (gravada para auditoria)" if rec else "")})
         process = await wrapper.open_shell(cols=120, rows=32)
+        pol = _TermPolicy({"id": user_id, "email": user_email, "role": u.get("role")}, dev, process, ws)
+        await pol.refresh()
 
         async def pump_stdout():
             try:
@@ -6106,6 +6808,7 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
                         chunk = chunk.decode("utf-8", "replace")
                     if rec:
                         rec.output(chunk)
+                    pol.out(chunk)
                     await ws.send_json({"type": "data", "data": chunk})
             except Exception as e:
                 logger.warning(f"stdout pump ended: {e}")
@@ -6131,9 +6834,9 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
             msg = await ws.receive_json()
             if msg.get("type") == "input":
                 data = msg.get("data", "")
-                process.stdin.write(data.encode("utf-8"))
                 if rec:
                     rec.typed(data)
+                await pol.input(data)
             elif msg.get("type") == "resize":
                 await wrapper.resize(int(msg.get("cols", 120)), int(msg.get("rows", 32)))
                 if rec:
@@ -6148,6 +6851,10 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
         except Exception:
             pass
     finally:
+        try:
+            pol.close()
+        except NameError:
+            pass
         if wrapper:
             await wrapper.close()
         ended = datetime.now(timezone.utc)
