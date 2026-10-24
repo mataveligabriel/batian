@@ -3340,7 +3340,6 @@ async def _runbook_telegram_run(user: dict, rid: str) -> str:
 
 assistant.runbook_list = _runbooks_for_telegram
 assistant.runbook_run = _runbook_telegram_run
-assistant.incident_action = _inc_telegram
 
 
 @api.get("/runbooks")
@@ -4463,6 +4462,9 @@ async def _inc_telegram(user: dict, action: str, inc_id: str) -> str:
     if not inc:
         return "Incidente não encontrado."
     return f"{'👀 Reconhecido' if act == 'ack' else '✅ Resolvido'} por {who}: #{inc['number']} {inc['title']}"
+
+
+assistant.incident_action = _inc_telegram
 
 
 # ---------- Configurações → Banco de dados (backup / importação) ----------
