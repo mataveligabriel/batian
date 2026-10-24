@@ -1061,3 +1061,8 @@ Aba **ONUs off** do Script de OLT (ZTE C300/C320 e TITAN):
    por 1 hora.
 5. **Removidas pela limpeza**: lista com data, quem removeu e o arquivo `.txt` com as configurações, para
    reautorizar o cliente igual se ele voltar. Fica registrado também no Histórico.
+
+C300/C320 e TITAN (C600/C620/C650): primeiro tenta `show gpon onu state` sem interface (todas as ONUs de uma vez);
+se a versão não aceitar, vai PON a PON pelo `show card`. A série é detectada testando os dois formatos de interface
+(`gpon-olt_1/S/P` e `gpon_olt-1/S/P`), e a fase da ONU é achada pelo valor (o TITAN tem a coluna "O7 State" a mais).
+Se der erro, a tela mostra o último comando e a resposta da OLT.

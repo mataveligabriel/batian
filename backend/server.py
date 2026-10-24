@@ -1892,36 +1892,66 @@ def _job_out(j: dict) -> dict:
     return {k: v for k, v in j.items() if not k.startswith("_") and k != "owner"}
 
 
+class _OltSess:
+    """Sessão que lembra o último comando e a saída (para mostrar no erro o que a OLT respondeu)."""
+    def __init__(self, sess, j):
+        self.sess, self.j = sess, j
+
+    async def run(self, cmd, timeout=60):
+        out = await self.sess.run(cmd, timeout=timeout)
+        self.j["_last"] = {"command": cmd, "output": (out or "")[-1500:]}
+        return out
+
+
+def _olt_err(out: str, cmd: str) -> bool:
+    return bool(_OLT_ERR.search((out or "").replace(cmd, "", 1)))
+
+
 async def _olt_detect_plat(sess, slot: int, port: int) -> str:
-    out = await sess.run(f"show gpon onu state {oltgen.pon_if('c300', slot, port)}", timeout=60)
-    return "titan" if _OLT_ERR.search(out.replace(oltgen.pon_if('c300', slot, port), "", 1)) else "c300"
+    """C300 usa gpon-olt_1/S/P; TITAN (C600/C620/C650) usa gpon_olt-1/S/P. Testa os dois."""
+    for plat in ("c300", "titan"):
+        cmd = f"show gpon onu state {oltgen.pon_if(plat, slot, port)}"
+        out = await sess.run(cmd, timeout=60)
+        if not _olt_err(out, cmd) and (oltgen.parse_onu_state(out) or "OnuIndex" in out or "No related" in out or not out.strip()):
+            return plat
+    raise RuntimeError(f"A OLT não aceitou 'show gpon onu state' nem no formato do C300 nem no do TITAN (PON {slot}/{port})")
 
 
 async def _olt_offline_scan(j: dict, dev: dict, days: int, only_pons: List[str]):
     try:
         cli = await _connect_device(dev)
         try:
-            sess = await cli.shell()
+            raw = await cli.shell()
+            sess = _OltSess(raw, j)
             try:
                 j["step"] = "lendo placas e relógio da OLT"
-                cards = oltgen.parse_show_card(await sess.run("show card", timeout=60))
                 clock = oltgen.parse_olt_clock(await sess.run("show clock", timeout=30))
-                pons = [(c["slot"], p) for c in cards["pon"] for p in range(1, c["ports"] + 1)]
-                if only_pons:
-                    want = {tuple(int(x) for x in s.split("/")) for s in only_pons}
+                want = {tuple(int(x) for x in p.split("/")) for p in only_pons} if only_pons else None
+                # 1º: todas as ONUs de uma vez (TITAN e versões novas do C300 aceitam sem a interface)
+                all_out = await sess.run("show gpon onu state", timeout=180)
+                rows = [] if _olt_err(all_out, "show gpon onu state") else oltgen.parse_onu_state(all_out)
+                if rows:
+                    pons = sorted({(r["slot"], r["pon"]) for r in rows})
+                else:
+                    card_out = await sess.run("show card", timeout=60)
+                    cards = oltgen.parse_show_card(card_out)
+                    pons = [(c["slot"], p) for c in cards["pon"] for p in range(1, c["ports"] + 1)]
+                    if not pons:
+                        raise RuntimeError("Não achei placas PON no 'show card' nem ONUs no 'show gpon onu state'")
+                if want:
                     pons = [x for x in pons if x in want]
+                    rows = [r for r in rows if (r["slot"], r["pon"]) in want]
                 if not pons:
-                    raise RuntimeError("Não achei placas PON no show card")
+                    raise RuntimeError("Nenhuma das PONs informadas existe nessa OLT")
                 plat = await _olt_detect_plat(sess, *pons[0])
                 j.update({"platform": plat, "olt_clock": clock.strftime("%Y-%m-%d %H:%M:%S") if clock else None,
                           "pons": len(pons), "total": len(pons)})
-                offs, total_onus = [], 0
-                for i, (sl, pt) in enumerate(pons, 1):
-                    j.update(step=f"estado das ONUs da PON {sl}/{pt}", done=i)
-                    st = oltgen.parse_onu_state(await sess.run(f"show gpon onu state {oltgen.pon_if(plat, sl, pt)}", timeout=90))
-                    total_onus += len(st)
-                    offs += [o for o in st if o["off"] or o["phase"].lower() not in ("working", "online")]
-                offs = offs[:OLT_CLEAN_MAX]
+                if not rows:
+                    for i, (sl, pt) in enumerate(pons, 1):
+                        j.update(step=f"estado das ONUs da PON {sl}/{pt}", done=i)
+                        rows += oltgen.parse_onu_state(await sess.run(f"show gpon onu state {oltgen.pon_if(plat, sl, pt)}", timeout=90))
+                total_onus = len(rows)
+                offs = [o for o in rows if o["off"] or o["phase"].lower() not in ("working", "online")][:OLT_CLEAN_MAX]
                 j.update(total=len(offs), done=0, onus_total=total_onus)
                 now = clock or datetime.now()
                 res = []
@@ -1935,17 +1965,19 @@ async def _olt_offline_scan(j: dict, dev: dict, days: int, only_pons: List[str])
                                 "phase": d["phase"] or o["phase"], "days": off_days,
                                 "eligible": bool(o["off"] and off_days is not None and off_days >= days)})
                 res.sort(key=lambda r: (-(r["days"] if r["days"] is not None else -1), r["slot"], r["pon"], r["onu"]))
+                # amostra do detalhe da 1ª ONU off, para conferir a leitura se as datas vierem vazias
                 j.update(state="done", step="", onus=res, days=days,
-                         eligible=sum(1 for r in res if r["eligible"]), ended_at=datetime.now(timezone.utc).isoformat())
+                         eligible=sum(1 for r in res if r["eligible"]), ended_at=datetime.now(timezone.utc).isoformat(),
+                         sample=(j.get("_last") or {}) if res and all(r["days"] is None for r in res) else None)
             finally:
                 try:
-                    await sess.close()
+                    await raw.close()
                 except Exception:
                     pass
         finally:
             await cli.close()
     except Exception as e:
-        j.update(state="error", error=f"{e}"[:300] or type(e).__name__)
+        j.update(state="error", error=f"{e}"[:300] or type(e).__name__, diag=j.get("_last"))
 
 
 class OltCleanScanIn(BaseModel):
@@ -1988,7 +2020,8 @@ async def _olt_offline_remove(j: dict, dev: dict, user: dict, scan: dict, picked
     try:
         cli = await _connect_device(dev)
         try:
-            sess = await cli.shell()
+            raw = await cli.shell()
+            sess = _OltSess(raw, j)
             try:
                 for i, o in enumerate(picked, 1):
                     onu_if = oltgen.onu_if_name(plat, o["slot"], o["pon"], o["onu"])
@@ -2010,7 +2043,7 @@ async def _olt_offline_remove(j: dict, dev: dict, user: dict, scan: dict, picked
                                  "config": (cfg.strip() + "\n!\n" + mng.strip())[-20000:]})
             finally:
                 try:
-                    await sess.close()
+                    await raw.close()
                 except Exception:
                     pass
         finally:
@@ -2048,7 +2081,7 @@ async def _olt_offline_remove(j: dict, dev: dict, user: dict, scan: dict, picked
         j.update(state="done", step="", ok=r["ok"], failed=r["failed"], saved=r["ok"],
                  removed=[{k: o[k] for k in ("slot", "pon", "onu", "sn", "name")} for o in removed], skipped=skipped)
     except Exception as e:
-        j.update(state="error", error=f"{e}"[:300] or type(e).__name__, skipped=skipped)
+        j.update(state="error", error=f"{e}"[:300] or type(e).__name__, skipped=skipped, diag=j.get("_last"))
 
 
 @api.post("/oltgen/offline-remove")

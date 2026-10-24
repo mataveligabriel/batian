@@ -404,7 +404,8 @@ def generate(p: dict) -> dict:
 
 
 # ---------- leitura do `show card` ----------
-_CARD_ROW = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+([A-Z][A-Z0-9_-]*)\s+(?:([A-Z][A-Z0-9_-]*)\s+)?(\d+)\s+(.*)$")
+# Rack Shelf Slot (C300) ou só Shelf Slot (algumas versões do TITAN) antes do tipo da placa
+_CARD_ROW = re.compile(r"^\s*(?:(\d+)\s+)?(\d+)\s+(\d+)\s+([A-Z][A-Z0-9_-]*)\s+(?:([A-Z][A-Z0-9_-]*)\s+)?(\d+)\s+(.*)$")
 
 
 def parse_show_card(text: str) -> dict:
@@ -847,8 +848,12 @@ MNG_COMMANDS = ["show onu running config {onu}", "show running-config pon-onu-mn
 
 # ---------- limpeza de ONUs off há muito tempo ----------
 # `show gpon onu state <pon>`:  1/2/1:5   enable   disable   LOS   1(GPON)   (C300 e TITAN; TITAN às vezes com gpon_onu-)
-_STATE_ROW = re.compile(r"^\s*(?:gpon[-_]onu[-_])?1/(\d+)/(\d+):(\d+)\s+(\S+)\s+(\S+)\s+(\S+)", re.M | re.I)
-OFF_PHASES = {"los", "dyinggasp", "offline", "lof", "losi", "lofi", "dying-gasp"}
+# C300:  1/2/1:5   enable  disable  LOS  1(GPON)
+# TITAN: gpon_onu-1/3/1:5  enable  disable  operation  LOS  1(GPON)   (tem a coluna "O7 State" antes da Phase)
+_STATE_ROW = re.compile(r"^\s*(?:gpon[-_]onu[-_])?1/(\d+)/(\d+):(\d+)\s+(.+?)\s*$", re.M | re.I)
+OFF_PHASES = {"los", "dyinggasp", "offline", "lof", "losi", "lofi", "dying-gasp", "dyinggasp(dg)"}
+KNOWN_PHASES = OFF_PHASES | {"working", "online", "logging", "syncmib", "authfailed", "authfail", "deny", "emergencystop",
+                             "registering", "initial", "standby", "ranging", "popup"}
 _TS = r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})"
 _HIST_ROW = re.compile(rf"^\s*\d+\s+{_TS}\s+{_TS}\s*(\S*)", re.M)
 _LAST_DOWN = re.compile(rf"Last\s+(?:down|offline)\s+time\s*:\s*{_TS}", re.I)
@@ -864,8 +869,14 @@ def parse_onu_state(text: str) -> List[dict]:
     out = []
     for m in _STATE_ROW.finditer(text or ""):
         slot, pon, onu = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        phase = m.group(6)
-        out.append({"slot": slot, "pon": pon, "onu": onu, "admin": m.group(4).lower(), "phase": phase,
+        cols = m.group(4).split()
+        if len(cols) < 2:
+            continue
+        # a fase é a coluna com um estado conhecido (não depende da posição: C300 e TITAN têm colunas diferentes)
+        phase = next((c for c in reversed(cols) if c.lower() in KNOWN_PHASES), None)
+        if phase is None:
+            phase = cols[-2] if len(cols) >= 3 and "(" in cols[-1] else cols[-1]
+        out.append({"slot": slot, "pon": pon, "onu": onu, "admin": cols[0].lower(), "phase": phase,
                     "off": phase.lower() in OFF_PHASES})
     return out
 

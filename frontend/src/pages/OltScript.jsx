@@ -978,6 +978,17 @@ function OnuClean({ devices }) {
           </Button>
         </div>
         <JobBar job={scan} what="Lendo a OLT" />
+        {(scan?.state === "error" || rm?.state === "error") && (
+          <div className="rounded-md border border-red-500/40 bg-red-500/5 p-3 text-sm" data-testid="clean-error">
+            <div className="text-red-300 flex items-center gap-1.5"><XCircle className="w-4 h-4" /> {(scan?.state === "error" ? scan : rm).error}</div>
+            {(scan?.state === "error" ? scan : rm).diag && (
+              <>
+                <div className="text-xs text-slate-400 mt-2">Último comando: <span className="font-mono text-slate-200">{(scan?.state === "error" ? scan : rm).diag.command}</span> — resposta da OLT:</div>
+                <pre className="text-[11px] text-slate-300 bg-sunken p-2 rounded mt-1 max-h-48 overflow-auto whitespace-pre-wrap">{(scan?.state === "error" ? scan : rm).diag.output || "(vazia)"}</pre>
+              </>
+            )}
+          </div>
+        )}
       </Card>
 
       {result && (
@@ -1012,6 +1023,10 @@ function OnuClean({ devices }) {
                 </tbody>
               </table>
             </div>
+          )}
+          {result.sample && (
+            <details className="text-xs text-amber-300" data-testid="clean-sample"><summary className="cursor-pointer">Nenhuma ONU veio com a data da queda — ver a resposta da OLT ({result.sample.command})</summary>
+              <pre className="text-[11px] text-slate-300 bg-sunken p-2 rounded mt-1 max-h-48 overflow-auto whitespace-pre-wrap">{result.sample.output}</pre></details>
           )}
           {result.onus.some(o => o.off && o.days === null) && <div className="text-[11px] text-slate-500">"sem registro": a OLT não mostrou quando a ONU caiu (histórico apagado ou reinício da OLT). Essas não são marcadas sozinhas.</div>}
 
