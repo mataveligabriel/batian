@@ -1099,3 +1099,20 @@ quem tem a **rede** do IP (faixas CIDR no usuário). Em Usuários → editar ope
 Alarme sem dono (IP que ninguém tem) aparece só para administradores e para quem vê todos. Os botões do Telegram
 respeitam a mesma regra. Em Configurações → Integrações, "Avisar também no privado do Telegram de cada dono" manda
 cada incidente direto para os donos (Telegram ID vinculado em Assistente IA; a pessoa precisa ter dado /start no bot).
+
+## 46. Plantão e escalonamento (v2.0 — fase 1)
+
+Incidentes → aba **Plantão**:
+
+- **Escala em rodízio**: pessoas em ordem, cada uma fica um dia ou uma semana, trocando no dia/hora escolhidos (hora
+  de Brasília). "1º da lista começou em" ancora o rodízio. **Trocas pontuais** (fulano cobre de sexta 18h a segunda
+  8h) têm prioridade sobre o rodízio.
+- **Escalonamento**: para incidentes abertos e não reconhecidos a partir da severidade escolhida, cada nível avisa
+  depois de X minutos: quem está de plantão, o próximo da escala, toda a escala ou um usuário específico. O aviso vai
+  no privado do Telegram (com Reconhecer/Resolver) e por push nos aparelhos da pessoa. Reconhecer para a escalada.
+  Quem é acionado passa a ver o incidente (mesmo com "só os da rede dele") e aparece na linha do tempo.
+- Ao ligar o escalonamento, só os incidentes abertos daí para frente escalam.
+- `/plantao` no bot do Telegram mostra quem está de plantão e os próximos turnos.
+
+Para receber no Telegram, cada pessoa da escala precisa ter o Telegram ID vinculado (Configurações → Automação e
+alertas → Assistente IA) e ter mandado `/start` para o bot. Sem isso, recebe só o push.

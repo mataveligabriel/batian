@@ -298,6 +298,7 @@ HELP_TEXT = (
     "• desativa a interface GE0/0/5 do switch S5732-Caxixe\n\n"
     "Leitura roda direto. Qualquer alteração eu mostro os comandos e só executo depois do botão ✅.\n\n"
     "/roteiros — roteiros automatizados (ex.: ATIVAR ROTA LIMOEIRO); também dá para mandar só o nome do roteiro\n"
+    "/plantao — quem está de plantão agora e os próximos turnos\n"
     "/novo — começa uma conversa nova\n/id — mostra seu ID do Telegram\n/ajuda — esta mensagem"
 )
 
@@ -954,6 +955,7 @@ class TelegramAssistant(AgentCore):
         self.runbook_list = None        # async (user) -> [roteiros liberados para o Telegram]
         self.runbook_run = None         # async (user, id) -> texto com o resultado
         self.incident_action = None     # async (user, "ack"|"res", id) -> texto (botões dos incidentes)
+        self.oncall_text = None         # async (user) -> texto do /plantao
 
     # ---------- ciclo de vida ----------
     def start(self):
@@ -1092,6 +1094,8 @@ class TelegramAssistant(AgentCore):
             return await self.send(chat_id, "Seu ID do Telegram está vinculado a um usuário do BastiON que não existe mais. Fale com o administrador.")
         if cmd in ("/start", "/ajuda", "/help"):
             return await self.send(chat_id, HELP_TEXT)
+        if cmd in ("/plantao", "/plantão", "/oncall") and self.oncall_text:
+            return await self.send(chat_id, await self.oncall_text(user))
         if self.runbook_list and (cmd in ("/roteiros", "/roteiro", "/scripts") or not cmd):
             rbs = await self.runbook_list(user)
             if cmd in ("/roteiros", "/scripts") or (cmd == "/roteiro" and len(text.split()) == 1):

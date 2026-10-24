@@ -13,6 +13,7 @@ import {
 import { TagOptions } from "@/components/TagSelect";
 import { useTerminal } from "@/context/TerminalContext";
 import { useAuth } from "@/context/AuthContext";
+import { OncallPanel } from "@/components/OncallPanel";
 
 export const SEV = {
   critical: { label: "Crítica", bar: "bg-red-500", chip: "text-red-300 border-red-500/50 bg-red-500/10" },
@@ -163,6 +164,7 @@ export default function Incidents() {
   const [sum, setSum] = useState(null);
   const [newOpen, setNewOpen] = useState(false);
   const sel = sp.get("id");
+  const tab = sp.get("tab") === "plantao" ? "plantao" : "";
   const timer = useRef(null);
   const load = useCallback(async () => {
     try {
@@ -188,8 +190,17 @@ export default function Incidents() {
             <p className="text-sm text-slate-400 mt-1">Alarmes do Zabbix, LibreNMS e BastiON num lugar só. Reconheça, assuma e resolva — também pelo Telegram.
               {user?.role !== "admin" && user?.incidents_scope !== "all" && <span className="block text-xs text-slate-500">Você vê os incidentes dos seus equipamentos e da sua rede.</span>}</p>
           </div>
-          <Button onClick={() => setNewOpen(true)} className="bg-brand hover:bg-brand-strong text-onbrand" data-testid="inc-new"><Plus className="w-4 h-4 mr-1.5" /> Novo incidente</Button>
+          <div className="flex gap-2 items-center">
+            <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm">
+              {[["", "Incidentes"], ["plantao", "Plantão"]].map(([k, l]) => (
+                <button key={k} onClick={() => setSp(k ? { tab: k } : {})} data-testid={`inc-tab-${k || "list"}`}
+                        className={`px-3 h-7 rounded ${tab === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
+              ))}
+            </div>
+            {tab === "" && <Button onClick={() => setNewOpen(true)} className="bg-brand hover:bg-brand-strong text-onbrand" data-testid="inc-new"><Plus className="w-4 h-4 mr-1.5" /> Novo incidente</Button>}
+          </div>
         </div>
+        {tab === "plantao" ? <OncallPanel isAdmin={user?.role === "admin"} /> : (<>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4" data-testid="inc-counters">
           {["critical", "high", "medium", "low", "info"].map(k => (
             <button key={k} onClick={() => setSev(sev === k ? "" : k)} data-testid={`inc-count-${k}`}
@@ -244,6 +255,7 @@ export default function Incidents() {
                 </div>
               )}
         </Card>
+        </>)}
       </div>
       {sel && (
         <aside className="w-full lg:w-[28rem] shrink-0 border-l border-line bg-panel min-h-0">

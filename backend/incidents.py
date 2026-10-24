@@ -38,7 +38,7 @@ def scope_filter(u: dict) -> dict:
     equipamentos/agentes deles e das redes (faixas de IP) cadastradas no usuário."""
     if not u or u.get("role") == "admin" or u.get("incidents_scope") == "all":
         return {}
-    return {"owner_ids": u["id"]}
+    return {"$or": [{"owner_ids": u["id"]}, {"watchers": u["id"]}]}   # watchers: avisados pelo plantão
 
 
 def clean_nets(nets) -> list:

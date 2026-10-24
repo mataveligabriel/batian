@@ -56,6 +56,7 @@ import cloudsync
 import dbbackup
 import webdomain
 import incidents as incmod
+import oncall as oncallmod
 import lookingglass
 import rpki
 import vendorscan
@@ -139,6 +140,7 @@ async def startup():
     await db.net_reports_raw.create_index("rid")
     scheduler.start()
     _bg_tasks.append(asyncio.create_task(inc_center.backfill()))
+    _bg_tasks.append(asyncio.create_task(_oncall_loop()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
@@ -4373,8 +4375,8 @@ async def incidents_list(status: str = "active", severity: str = "", source: str
         f["source"] = source
     if q.strip():
         rx = {"$regex": re.escape(q.strip()[:80]), "$options": "i"}
-        f["$or"] = [{"title": rx}, {"host": rx}, {"device_name": rx}, {"description": rx}] + \
-                   ([{"number": int(q.strip().lstrip("#"))}] if q.strip().lstrip("#").isdigit() else [])
+        f.setdefault("$and", []).append({"$or": [{"title": rx}, {"host": rx}, {"device_name": rx}, {"description": rx}] + \
+                   ([{"number": int(q.strip().lstrip("#"))}] if q.strip().lstrip("#").isdigit() else [])})
     rows = await db.incidents.find(f, {"_id": 0, "timeline": 0}).sort("created_at", -1).to_list(min(1000, max(1, limit)))
     if status == "active":   # ativos: mais graves e mais antigos primeiro
         rows.sort(key=lambda r: (-incmod.sev_rank(r["severity"]), r["status"] != "open", r["created_at"]))
@@ -4511,6 +4513,126 @@ async def incidents_hook(token: str, source: str, request: Request):
     return {"ok": True, "action": r["action"], "number": inc.get("number"), "id": inc.get("id")}
 
 
+# ---------- Plantão e escalonamento ----------
+async def _oncall_cfg() -> dict:
+    doc = await db.config.find_one({"key": "oncall"}, {"_id": 0}) or {}
+    return {**oncallmod.DEFAULTS, **{k: v for k, v in doc.items() if k != "key"}}
+
+
+async def _user_names(ids) -> Dict[str, str]:
+    us = await db.users.find({"id": {"$in": list(ids)}}, {"_id": 0, "id": 1, "name": 1, "email": 1}).to_list(500)
+    return {u["id"]: u.get("name") or u["email"] for u in us}
+
+
+async def _oncall_view(cfg: dict) -> dict:
+    now = datetime.now(timezone.utc)
+    sh = oncallmod.shifts(cfg, now, 8)
+    ids = set(cfg["members"]) | {o["user_id"] for o in cfg["overrides"]} | \
+          {l["target"][5:] for l in cfg["levels"] if l["target"].startswith("user:")}
+    names = await _user_names(ids)
+    cur = oncallmod.who(cfg, now)
+    _, _, end = oncallmod._slot(cfg, now)
+    ov = oncallmod.override_at(cfg, now)
+    if ov:
+        end = oncallmod._parse_local(ov["end"], cfg)
+    tg = {l["user_id"] for l in ((await db.config.find_one({"key": "ai"}, {"_id": 0, "ai_users": 1})) or {}).get("ai_users") or []}
+    return {**cfg, "names": names, "now": {"user_id": cur, "name": names.get(cur), "until": oncallmod._local(end, cfg).isoformat(),
+                                           "override": ov, "next": oncallmod.next_after(cfg, now)},
+            "shifts": sh, "telegram_ok": sorted(i for i in ids if i in tg)}
+
+
+@api.get("/oncall")
+async def oncall_get(user: dict = Depends(get_current_user)):
+    """Quem está de plantão agora, os próximos turnos e as regras de escalonamento."""
+    _no_viewer(user)
+    return await _oncall_view(await _oncall_cfg())
+
+
+@api.put("/oncall")
+async def oncall_put(body: dict, _: dict = Depends(require_admin)):
+    users = {u["id"] for u in await db.users.find({"role": {"$ne": "viewer"}}, {"_id": 0, "id": 1}).to_list(1000)}
+    try:
+        cfg = oncallmod.clean(body or {}, users, incmod.SEVERITIES)
+    except (oncallmod.OncallError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e) or "Dados inválidos")
+    prev = await _oncall_cfg()
+    # ao ligar, só incidentes abertos daqui para frente escalam (os antigos não disparam todos os níveis de uma vez)
+    cfg["enabled_at"] = (prev.get("enabled_at") if prev.get("enabled") else None) or (incmod.now_iso() if cfg["enabled"] else None)
+    await db.config.update_one({"key": "oncall"}, {"$set": cfg}, upsert=True)
+    return await _oncall_view(cfg)
+
+
+async def _escalate(inc: dict, level_idx: int, cfg: dict) -> List[str]:
+    lv = cfg["levels"][level_idx]
+    uids = [u for u in oncallmod.targets_for(cfg, lv) if u]
+    names = await _user_names(uids)
+    now = incmod.now_iso()
+    label = {"oncall": "plantão", "next": "próximo da escala", "all": "toda a escala"}.get(lv["target"], "usuário")
+    sev = inc["severity"]
+    title = f"📟 {incmod.SEV_ICON.get(sev, '')} #{inc['number']} {incmod.SEV_LABEL.get(sev, sev).upper()} — {inc['title']}"
+    text = "\n".join(x for x in [
+        f"Você foi acionado ({label}{', nível ' + str(level_idx + 1) if level_idx else ''}).",
+        (inc.get("device_name") or inc.get("host")) and f"📍 {inc.get('device_name') or inc.get('host')}",
+        f"Aberto há {incmod.fmt_dur(incmod.duration(inc))} e ainda sem reconhecimento." if level_idx else "",
+        (inc.get("description") or "")[:400]] if x)
+    buttons = [[{"text": "👀 Reconhecer", "callback_data": f"inc:ack:{inc['id']}"},
+                {"text": "✅ Resolver", "callback_data": f"inc:res:{inc['id']}"}]]
+    if uids:
+        await _inc_dm(uids, title, text, buttons)
+        for u in uids:
+            try:
+                await webpush.send(db, title, text, url=f"/incidents?id={inc['id']}", user_id=u, tag=f"inc-{inc['id']}")
+            except Exception:
+                pass
+    who = ", ".join(names.get(u, u) for u in uids) or "ninguém (escala vazia)"
+    await db.incidents.update_one({"id": inc["id"]}, {
+        "$addToSet": {"escalated": level_idx, "watchers": {"$each": uids}},
+        "$push": {"timeline": {"at": now, "by": "Plantão", "type": "escalate",
+                               "text": f"Acionado: {who} ({label}{', nível ' + str(level_idx + 1) if level_idx else ''})"}}})
+    return uids
+
+
+async def _oncall_loop():
+    """A cada 30 s: incidentes abertos (sem reconhecimento) que passaram do tempo de cada nível acionam o próximo."""
+    await asyncio.sleep(20)
+    while True:
+        try:
+            cfg = await _oncall_cfg()
+            if cfg.get("enabled") and cfg.get("levels"):
+                minrank = incmod.sev_rank(cfg.get("min_severity", "high"))
+                since = cfg.get("enabled_at") or incmod.now_iso()
+                async for inc in db.incidents.find({"status": "open", "created_at": {"$gte": since}}, {"_id": 0, "timeline": 0}):
+                    if incmod.sev_rank(inc["severity"]) < minrank:
+                        continue
+                    for idx in oncallmod.due_levels(cfg, inc):
+                        await _escalate(inc, idx, cfg)
+                        inc.setdefault("escalated", []).append(idx)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"plantão: {e}")
+        await asyncio.sleep(30)
+
+
+async def _oncall_text(user: dict) -> str:
+    """/plantao no Telegram."""
+    v = await _oncall_view(await _oncall_cfg())
+    if not v["members"]:
+        return "Ainda não há escala de plantão. Configure em Incidentes → Plantão."
+    n = v["now"]
+    lines = [f"📟 De plantão agora: {n['name'] or '—'} (até {datetime.fromisoformat(n['until']).strftime('%d/%m %H:%M')})"]
+    if n.get("override"):
+        lines.append(f"   troca pontual{': ' + n['override']['note'] if n['override'].get('note') else ''}")
+    if n.get("next"):
+        lines.append(f"Próximo se ninguém responder: {v['names'].get(n['next'], '—')}")
+    lines.append("")
+    for s_ in v["shifts"][1:5]:
+        lines.append(f"• {datetime.fromisoformat(s_['start']).strftime('%d/%m %H:%M')} — {v['names'].get(s_['user_id'], '—')}")
+    if not v["enabled"]:
+        lines.append("\n(escalonamento desligado)")
+    return "\n".join(lines)
+
+
 async def _inc_telegram(user: dict, action: str, inc_id: str) -> str:
     """Botões do Telegram (Reconhecer / Resolver) no alerta do incidente."""
     who = user.get("name") or user["email"]
@@ -4525,6 +4647,7 @@ async def _inc_telegram(user: dict, action: str, inc_id: str) -> str:
 
 
 assistant.incident_action = _inc_telegram
+assistant.oncall_text = _oncall_text
 
 
 # ---------- Configurações → Banco de dados (backup / importação) ----------
