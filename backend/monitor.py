@@ -217,6 +217,12 @@ class Monitor:
                                                        "alias": alias, "status": status, "oper": r.get("oper")})
             except Exception as e:
                 logger.warning(f"incidente de interface: {e}")
+        try:
+            import maint
+            if await maint.active_for(self.db, dev["id"]):
+                return                           # janela de manutenção: registra o evento, sem aviso
+        except Exception:
+            pass
         if status == "down":
             title = f"🔴 Interface DOWN — {dev['name']} · {name}"
             detail = "desativada administrativamente (shutdown)" if admin_down else f"status: {r.get('oper')}"

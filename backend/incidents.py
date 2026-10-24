@@ -17,11 +17,13 @@ from typing import Awaitable, Callable, Optional
 
 from pymongo import ReturnDocument
 
+import maint
+
 SEVERITIES = ["info", "low", "medium", "high", "critical"]
 SEV_LABEL = {"info": "Info", "low": "Baixa", "medium": "Média", "high": "Alta", "critical": "Crítica"}
 SEV_ICON = {"info": "ℹ️", "low": "🔵", "medium": "🟡", "high": "🟠", "critical": "🔴"}
 SOURCES = {"zabbix": "Zabbix", "librenms": "LibreNMS", "generic": "Webhook", "bastion": "BastiON", "manual": "Manual",
-           "syslog": "Syslog", "trap": "Trap SNMP", "probe": "Sonda"}
+           "syslog": "Syslog", "trap": "Trap SNMP", "probe": "Sonda", "bgp": "Monitor BGP", "gpon": "GPON", "compliance": "Conformidade"}
 STATUSES = ("open", "ack", "resolved")
 
 DEFAULTS = {
@@ -276,8 +278,18 @@ class Incidents:
                "created_at": now, "updated_at": now, "last_seen": now, "count": 1,
                "ack_by": None, "ack_at": None, "assignee": None, "resolved_at": None, "resolved_by": None,
                "timeline": [{"at": now, "by": SOURCES.get(source, source), "type": "open", "text": "Aberto"}]}
+        pid = key.split(":")[1] if key.startswith("probe:") else None
+        try:
+            mw = await maint.active_for(self.db, inc["device_id"], inc["host"], pid)
+        except Exception:
+            mw = None
+        if mw:     # janela de manutenção: abre para o histórico, mas não avisa nem escala
+            inc["maintenance"] = {"id": mw["id"], "name": mw.get("name", "")}
+            inc["timeline"].append({"at": now, "by": "BastiON", "type": "maintenance",
+                                    "text": f"Em janela de manutenção: {mw.get('name', '')} — sem aviso"})
         await self.db.incidents.insert_one(dict(inc))
-        await self._notify(inc, "open", s)
+        if not mw:
+            await self._notify(inc, "open", s)
         return {"action": "opened", "incident": inc}
 
     async def act(self, inc_id: str, action: str, who: str, note: str = "", assignee: Optional[dict] = None,

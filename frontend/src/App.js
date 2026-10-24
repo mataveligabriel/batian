@@ -29,6 +29,12 @@ import Settings from "@/pages/Settings";
 import Incidents from "@/pages/Incidents";
 import Logs from "@/pages/Logs";
 import Probes from "@/pages/Probes";
+import Sla, { SlaReport } from "@/pages/Sla";
+import Maint from "@/pages/Maint";
+import Bgp from "@/pages/Bgp";
+import Gpon from "@/pages/Gpon";
+import Compliance from "@/pages/Compliance";
+import Ipam from "@/pages/Ipam";
 import WebAccess from "@/pages/WebAccess";
 
 function RootRedirect() {
@@ -56,11 +62,18 @@ function App() {
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/sla/report" element={<ProtectedRoute><SlaReport /></ProtectedRoute>} />
           <Route element={<ProtectedShell />}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/incidents" element={<Incidents />} />
             <Route path="/logs" element={<Logs />} />
             <Route path="/probes" element={<Probes />} />
+            <Route path="/sla" element={<Sla />} />
+            <Route path="/maint" element={<Maint />} />
+            <Route path="/bgp-monitor" element={<Bgp />} />
+            <Route path="/gpon" element={<Gpon />} />
+            <Route path="/compliance" element={<Compliance />} />
+            <Route path="/ipam" element={<Ipam />} />
             <Route path="/devices" element={<Devices />} />
             <Route path="/terminal" element={<Terminal />} />
             <Route path="/terminal/:deviceId" element={<Terminal />} />

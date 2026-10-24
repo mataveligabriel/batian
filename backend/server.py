@@ -60,6 +60,12 @@ import oncall as oncallmod
 import recording
 import logparse
 import probes as probemod
+import sla as slamod
+import maint as maintmod
+import bgpmon as bgpmod
+import gpon as gponmod
+import compliance as compmod
+import ipam as ipammod
 import shlex
 import ipaddress
 import lookingglass
@@ -140,6 +146,15 @@ async def startup():
     await db.dashboards.create_index("owner_id")
     await db.if_monitors.create_index([("device_id", 1), ("if_index", 1)], unique=True)
     await db.if_events.create_index([("at", -1)])
+    await db.bgp_peers.create_index("key", unique=True)
+    await db.gpon_onus.create_index("key", unique=True)
+    await db.gpon_onus.create_index([("olt_id", 1), ("slot", 1), ("pon", 1)])
+    await db.gpon_onus.create_index("sn")
+    await db.ipam_addresses.create_index("device_id")
+    await db.ipam_addresses.create_index("ip")
+    await db.gpon_pons.create_index("key", unique=True)
+    await db.gpon_samples.create_index([("key", 1), ("at", 1)])
+    await db.bgp_events.create_index([("key", 1), ("at", -1)])
     await db.maps.create_index("owner_id")
     await db.net_reports.create_index([("map_id", 1), ("at", -1)])
     await db.net_reports_raw.create_index("rid")
@@ -148,6 +163,12 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(_oncall_loop()))
     _bg_tasks.append(asyncio.create_task(_rec_retention_loop()))
     _bg_tasks.append(asyncio.create_task(_probe_loop()))
+    _bg_tasks.append(asyncio.create_task(_sla_monthly_loop()))
+    _bg_tasks.append(asyncio.create_task(_maint_loop()))
+    _bg_tasks.append(asyncio.create_task(_bgp_loop()))
+    _bg_tasks.append(asyncio.create_task(_gpon_loop()))
+    _bg_tasks.append(asyncio.create_task(_comp_loop()))
+    _bg_tasks.append(asyncio.create_task(_ipam_loop()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
@@ -4717,7 +4738,7 @@ async def _oncall_loop():
             if cfg.get("enabled") and cfg.get("levels"):
                 minrank = incmod.sev_rank(cfg.get("min_severity", "high"))
                 since = cfg.get("enabled_at") or incmod.now_iso()
-                async for inc in db.incidents.find({"status": "open", "created_at": {"$gte": since}}, {"_id": 0, "timeline": 0}):
+                async for inc in db.incidents.find({"status": "open", "created_at": {"$gte": since}, "maintenance": {"$exists": False}}, {"_id": 0, "timeline": 0}):
                     if incmod.sev_rank(inc["severity"]) < minrank:
                         continue
                     for idx in oncallmod.due_levels(cfg, inc):
@@ -7995,6 +8016,1764 @@ async def probes_settings_put(body: ProbeSettingsIn, _: dict = Depends(require_a
     d = {"enabled": body.enabled, "retention_days": min(365, max(1, body.retention_days))}
     await db.config.update_one({"key": "probes"}, {"$set": d}, upsert=True)
     return d
+
+
+# ---------- SLA e disponibilidade ----------
+class SlaComponent(BaseModel):
+    type: str                       # probe | device | interface
+    probe_id: Optional[str] = None
+    source: Optional[str] = "server"
+    device_id: Optional[str] = None
+    if_index: Optional[int] = None
+
+
+class SlaItemIn(BaseModel):
+    name: str
+    kind: str = "link"
+    target: float = 99.5
+    customer: str = ""
+    notes: str = ""
+    components: List[SlaComponent] = []
+
+
+def _sla_scope(user: dict) -> dict:
+    return {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+
+
+async def _sla_clean(body: SlaItemIn, user: dict) -> dict:
+    if not body.name.strip():
+        raise HTTPException(400, "Informe o nome")
+    comps = []
+    my_devs = {d["id"]: d async for d in db.devices.find(_scope(user), {"_id": 0, "id": 1, "name": 1})}
+    for c in body.components[:50]:
+        if c.type == "probe":
+            p = await db.probes.find_one({"id": c.probe_id}, {"_id": 0, "id": 1, "name": 1, "sources": 1})
+            if not p:
+                raise HTTPException(400, "Sonda não encontrada")
+            src = c.source or "server"
+            if src not in (p.get("sources") or []):
+                raise HTTPException(400, f"A sonda {p['name']} não mede dessa origem")
+            comps.append({"type": "probe", "probe_id": p["id"], "source": src})
+        elif c.type in ("device", "interface"):
+            if c.device_id not in my_devs:
+                raise HTTPException(400, "Equipamento não encontrado")
+            if c.type == "interface":
+                m = await db.if_monitors.find_one({"device_id": c.device_id, "if_index": c.if_index}, {"_id": 0, "if_index": 1})
+                if not m:
+                    raise HTTPException(400, "Interface não está monitorada (marque em Mapas → monitorar interface)")
+                comps.append({"type": "interface", "device_id": c.device_id, "if_index": int(c.if_index)})
+            else:
+                comps.append({"type": "device", "device_id": c.device_id})
+    if not comps:
+        raise HTTPException(400, "Escolha pelo menos um componente")
+    return {"name": body.name.strip()[:100], "kind": body.kind if body.kind in slamod.KINDS else "other",
+            "target": min(100.0, max(0.0, float(body.target))), "customer": body.customer.strip()[:100],
+            "notes": body.notes.strip()[:500], "components": comps}
+
+
+@api.get("/sla/items")
+async def sla_items(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return await db.sla_items.find(_sla_scope(user), {"_id": 0}).sort([("kind", 1), ("name", 1)]).to_list(2000)
+
+
+@api.post("/sla/items")
+async def sla_create(body: SlaItemIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    it = await _sla_clean(body, user)
+    it.update(id=uuid.uuid4().hex[:16], owner_id=user["id"], created_at=datetime.now(timezone.utc).isoformat())
+    await db.sla_items.insert_one(dict(it))
+    return it
+
+
+@api.put("/sla/items/{iid}")
+async def sla_update(iid: str, body: SlaItemIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await db.sla_items.find_one({"id": iid, **_sla_scope(user)}, {"_id": 0})
+    if not cur:
+        raise HTTPException(404, "Item não encontrado")
+    it = await _sla_clean(body, user)
+    await db.sla_items.update_one({"id": iid}, {"$set": it})
+    return {**cur, **it}
+
+
+@api.delete("/sla/items/{iid}")
+async def sla_delete(iid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await db.sla_items.delete_one({"id": iid, **_sla_scope(user)})
+    return {"ok": True}
+
+
+@api.get("/sla/components")
+async def sla_components(user: dict = Depends(get_current_user)):
+    """O que pode entrar num item: sondas (por origem), equipamentos e interfaces monitoradas."""
+    _no_viewer(user)
+    names = await _probe_source_names()
+    probes = [{"probe_id": p["id"], "source": s, "label": f"{p['name']} — de {names.get(s, s)}", "group": p.get("group") or ""}
+              for p in await db.probes.find({}, {"_id": 0}).sort("name", 1).to_list(2000) for s in p.get("sources") or []]
+    devs = await db.devices.find(_scope(user), {"_id": 0, "id": 1, "name": 1, "host": 1, "tags": 1}).sort("name", 1).to_list(5000)
+    ids = [d["id"] for d in devs]
+    dn = {d["id"]: d["name"] for d in devs}
+    ifs = [{"device_id": m["device_id"], "if_index": m["if_index"],
+            "label": f"{dn.get(m['device_id'], '?')} · {m.get('if_name') or m['if_index']}" + (f" ({m['alias']})" if m.get("alias") else "")}
+           for m in await db.if_monitors.find({"device_id": {"$in": ids}}, {"_id": 0, "device_id": 1, "if_index": 1, "if_name": 1, "alias": 1}).to_list(10000)]
+    ifs.sort(key=lambda x: x["label"])
+    return {"probes": probes, "devices": devs, "interfaces": ifs}
+
+
+async def _maint_for(device_id: Optional[str], probe_id: Optional[str], start: float, end: float) -> list:
+    """Janelas de manutenção que cobrem o componente no período (equipamento por id/tag, sonda por id, ou 'tudo')."""
+    out = []
+    tags = []
+    if device_id:
+        d = await db.devices.find_one({"id": device_id}, {"_id": 0, "tags": 1}) or {}
+        tags = d.get("tags") or []
+    async for w in db.maint_windows.find({"status": {"$ne": "cancelled"}}, {"_id": 0, "start": 1, "end": 1, "all": 1,
+                                                                          "device_ids": 1, "tags": 1, "probe_ids": 1}):
+        a, b = slamod.ts(w.get("start")), slamod.ts(w.get("end"))
+        if a is None or b is None or b <= start or a >= end:
+            continue
+        hit = w.get("all") or (device_id and device_id in (w.get("device_ids") or [])) or \
+            (tags and set(tags) & set(w.get("tags") or [])) or (probe_id and probe_id in (w.get("probe_ids") or []))
+        if hit:
+            out.append((a, b))
+    return out
+
+
+async def _sla_compute(it: dict, month: str) -> dict:
+    start_dt, end_dt = slamod.month_range(month)
+    start, end, now = start_dt.timestamp(), end_dt.timestamp(), time.time()
+    names = await _probe_source_names()
+    comps, extra = [], []
+    for c in it.get("components") or []:
+        if c["type"] == "device":
+            d = await db.devices.find_one({"id": c["device_id"]}, {"_id": 0, "name": 1}) or {}
+            incs = await db.incidents.find({"key": f"bastion:device:{c['device_id']}", "created_at": {"$lt": end_dt.isoformat()},
+                                            "$or": [{"resolved_at": None}, {"resolved_at": {"$gte": start_dt.isoformat()}}]},
+                                           {"_id": 0, "created_at": 1, "resolved_at": 1}).to_list(5000)
+            comps.append({"label": f"Equipamento {d.get('name', '?')}", "type": "device", "down": slamod.device_outages(incs, now),
+                          "maint": await _maint_for(c["device_id"], None, start, end), "measured": None})
+        elif c["type"] == "interface":
+            m = await db.if_monitors.find_one({"device_id": c["device_id"], "if_index": c["if_index"]}, {"_id": 0}) or {}
+            d = await db.devices.find_one({"id": c["device_id"]}, {"_id": 0, "name": 1}) or {}
+            q = {"device_id": c["device_id"], "if_index": c["if_index"]}
+            before = await db.if_events.find({**q, "at": {"$lt": start_dt.isoformat()}}, {"_id": 0, "at": 1, "status": 1}).sort("at", -1).to_list(1)
+            evs = before + await db.if_events.find({**q, "at": {"$gte": start_dt.isoformat(), "$lt": end_dt.isoformat()}},
+                                                   {"_id": 0, "at": 1, "status": 1}).sort("at", 1).to_list(20000)
+            lbl = f"Interface {d.get('name', '?')} · {m.get('if_name') or c['if_index']}" + (f" ({m['alias']})" if m.get("alias") else "")
+            comps.append({"label": lbl, "type": "interface", "down": slamod.iface_outages(evs, start, end, now),
+                          "maint": await _maint_for(c["device_id"], None, start, end), "measured": None})
+        else:
+            p = await db.probes.find_one({"id": c["probe_id"]}, {"_id": 0, "name": 1, "type": 1, "target": 1}) or {"name": "?", "type": ""}
+            hours = await db.probe_hourly.find({"probe_id": c["probe_id"], "source": c["source"], "hour": {"$gte": start_dt, "$lt": end_dt}},
+                                               {"_id": 0}).to_list(2000)
+            down, meas = slamod.probe_outages(hours)
+            comps.append({"label": f"Sonda {p['name']} — de {names.get(c['source'], c['source'])}", "type": "probe", "down": down,
+                          "maint": await _maint_for(None, c["probe_id"], start, end), "measured": meas})
+            ms_sum = sum(h.get("ms_sum") or 0 for h in hours)
+            ms_n = sum(h.get("ms_n") or 0 for h in hours)
+            sent = sum(h.get("sent") or 0 for h in hours)
+            recv = sum(h.get("recv") or 0 for h in hours)
+            ok_n, n = sum(h.get("ok_n") or 0 for h in hours), sum(h.get("n") or 0 for h in hours)
+            extra.append({"label": comps[-1]["label"], "ms_avg": round(ms_sum / ms_n, 2) if ms_n else None,
+                          "loss": round(100.0 * (sent - recv) / sent, 2) if sent else None,
+                          "within_limits": round(100.0 * ok_n / n, 2) if n else None, "max": max((h.get("max") or 0 for h in hours), default=None)})
+    r = slamod.summarize(comps, start, end, now, float(it.get("target") or 0))
+    r["quality"] = extra
+    r["month"] = month
+    return r
+
+
+@api.get("/sla/report")
+async def sla_report(month: str = "", ids: str = "", user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    if not month:
+        month = datetime.now(slamod.BR).strftime("%Y-%m")
+    if not re.fullmatch(r"\d{4}-\d{2}", month) or not 1 <= int(month[5:]) <= 12:
+        raise HTTPException(400, "Mês inválido (AAAA-MM)")
+    f = _sla_scope(user)
+    if ids:
+        f["id"] = {"$in": [x for x in ids.split(",") if x][:500]}
+    items = await db.sla_items.find(f, {"_id": 0}).sort([("kind", 1), ("name", 1)]).to_list(2000)
+    out = []
+    for it in items:
+        out.append({"item": it, "result": await _sla_compute(it, month)})
+    return {"month": month, "generated_at": datetime.now(timezone.utc).isoformat(), "items": out,
+            "kinds": slamod.KINDS}
+
+
+@api.get("/sla/report.csv")
+async def sla_report_csv(month: str = "", ids: str = "", user: dict = Depends(get_current_user)):
+    rep = await sla_report(month, ids, user)
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(["item", "tipo", "cliente", "meta_%", "disponibilidade_%", "cumpriu", "indisponivel_min", "manutencao_min",
+                "quedas", "mttr_min", "maior_queda_min", "cobertura_%"])
+    for x in rep["items"]:
+        it, r = x["item"], x["result"]
+        w.writerow([it["name"], slamod.KINDS.get(it["kind"], it["kind"]), it.get("customer", ""), it.get("target"),
+                    "" if r["availability"] is None else f"{r['availability']:.3f}".replace(".", ","),
+                    "sim" if r["met"] else "não", round(r["downtime_s"] / 60, 1), round(r["maint_s"] / 60, 1), r["outages"],
+                    round(r["mttr_s"] / 60, 1), round(r["longest_s"] / 60, 1), r["coverage"]])
+    return PlainTextResponse("﻿" + buf.getvalue(), media_type="text/csv",
+                             headers={"Content-Disposition": f'attachment; filename="sla-{rep["month"]}.csv"'})
+
+
+class SlaSettingsIn(BaseModel):
+    monthly_alert: bool = False
+
+
+@api.get("/sla/settings")
+async def sla_settings_get(_: dict = Depends(require_admin)):
+    doc = await db.config.find_one({"key": "sla"}, {"_id": 0}) or {}
+    return {"monthly_alert": bool(doc.get("monthly_alert")), "last_sent": doc.get("last_sent")}
+
+
+@api.put("/sla/settings")
+async def sla_settings_put(body: SlaSettingsIn, _: dict = Depends(require_admin)):
+    await db.config.update_one({"key": "sla"}, {"$set": {"monthly_alert": body.monthly_alert}}, upsert=True)
+    return await sla_settings_get(_)
+
+
+async def _sla_monthly_loop():
+    """Dia 1, a partir das 08h (Brasília): resumo do mês anterior no Telegram/push."""
+    await asyncio.sleep(120)
+    while True:
+        try:
+            now = datetime.now(slamod.BR)
+            cfg = await db.config.find_one({"key": "sla"}, {"_id": 0}) or {}
+            prev = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+            if cfg.get("monthly_alert") and now.day == 1 and now.hour >= 8 and cfg.get("last_sent") != prev:
+                await db.config.update_one({"key": "sla"}, {"$set": {"last_sent": prev}}, upsert=True)
+                lines = []
+                for it in await db.sla_items.find({}, {"_id": 0}).sort("name", 1).to_list(500):
+                    r = await _sla_compute(it, prev)
+                    av = "—" if r["availability"] is None else f"{r['availability']:.3f}%"
+                    lines.append(f"{'✅' if r['met'] else '❌'} {it['name']}: {av} (meta {it['target']}%) · "
+                                 f"{r['outages']} queda(s), {slamod.fmt_dur(r['downtime_s'])} fora")
+                if lines:
+                    await automation.send_alert(db, f"📊 SLA de {prev[5:]}/{prev[:4]}", "\n".join(lines)[:3800],
+                                                push_url=f"/sla?month={prev}", push_tag=f"sla-{prev}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"SLA mensal: {e}")
+        await asyncio.sleep(1800)
+
+
+# ---------- Janelas de manutenção e pré/pós-check ----------
+class MaintIn(BaseModel):
+    name: str
+    description: str = ""
+    start: str
+    end: str
+    all: bool = False
+    device_ids: List[str] = []
+    tags: List[str] = []
+    probe_ids: List[str] = []
+    silence: bool = True
+    auto_checks: bool = True
+    check_device_ids: List[str] = []
+    commands: Dict[str, List[List[str]]] = {}
+    notify: bool = True
+
+
+def _maint_scope(user: dict) -> dict:
+    return {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+
+
+def _maint_public(w: dict, full: bool = False) -> dict:
+    out = {k: v for k, v in w.items() if k not in ("_id",)}
+    out["state"] = maintmod.window_state(w)
+    ch = w.get("checks") or {}
+    if not full:
+        out["checks"] = {ph: {k: v for k, v in (ch.get(ph) or {}).items() if k != "devices"} |
+                         {"n": len((ch.get(ph) or {}).get("devices") or {})} for ph in ("pre", "post") if ch.get(ph)}
+    return out
+
+
+async def _maint_clean(body: MaintIn, user: dict) -> dict:
+    a, b = maintmod._ts(body.start), maintmod._ts(body.end)
+    if a is None or b is None:
+        raise HTTPException(400, "Informe início e fim")
+    if b <= a:
+        raise HTTPException(400, "O fim precisa ser depois do início")
+    if b - a > 7 * 86400:
+        raise HTTPException(400, "Janela de no máximo 7 dias")
+    if body.all and user.get("role") != "admin":
+        raise HTTPException(403, "Só o administrador cria janela para a rede toda")
+    mine = {d["id"] async for d in db.devices.find(_scope(user), {"_id": 0, "id": 1})}
+    devs = [d for d in dict.fromkeys(body.device_ids) if d in mine]
+    chk = [d for d in dict.fromkeys(body.check_device_ids) if d in mine][:200]
+    if not (body.all or devs or body.tags or body.probe_ids):
+        raise HTTPException(400, "Escolha o que entra na janela (equipamentos, grupos ou sondas)")
+    cmds = {}
+    for vt, lst in (body.commands or {}).items():
+        if vt in maintmod.TEMPLATES:
+            cmds[vt] = [[k if k in maintmod.KINDS else "custom", c.strip()[:300]] for k, c in lst if c.strip()][:30]
+    return {"name": body.name.strip()[:120] or "Manutenção", "description": body.description.strip()[:2000],
+            "start": datetime.fromtimestamp(a, timezone.utc).isoformat(), "end": datetime.fromtimestamp(b, timezone.utc).isoformat(),
+            "all": body.all, "device_ids": devs, "tags": [t.strip() for t in body.tags if t.strip()][:50],
+            "probe_ids": body.probe_ids[:100], "silence": body.silence, "auto_checks": body.auto_checks,
+            "check_device_ids": chk, "commands": cmds, "notify": body.notify}
+
+
+async def _maint_get(wid: str, user: dict) -> dict:
+    w = await db.maint_windows.find_one({"id": wid, **_maint_scope(user)}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Janela não encontrada")
+    return w
+
+
+@api.get("/maint")
+async def maint_list(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    rows = await db.maint_windows.find(_maint_scope(user), {"_id": 0}).sort("start", -1).to_list(500)
+    return [_maint_public(w) for w in rows]
+
+
+@api.get("/maint/templates")
+async def maint_templates(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return {"kinds": maintmod.KINDS, "templates": {k: [list(x) for x in v] for k, v in maintmod.TEMPLATES.items()}}
+
+
+@api.post("/maint")
+async def maint_create(body: MaintIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    w = await _maint_clean(body, user)
+    w.update(id=uuid.uuid4().hex[:16], owner_id=user["id"], created_by=user.get("name") or user["email"],
+             created_at=datetime.now(timezone.utc).isoformat(), status="ok", checks={})
+    await db.maint_windows.insert_one(dict(w))
+    maintmod.invalidate()
+    return _maint_public(w)
+
+
+@api.put("/maint/{wid}")
+async def maint_update(wid: str, body: MaintIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await _maint_get(wid, user)
+    w = await _maint_clean(body, user)
+    await db.maint_windows.update_one({"id": wid}, {"$set": w})
+    maintmod.invalidate()
+    return _maint_public({**cur, **w})
+
+
+@api.post("/maint/{wid}/{action}")
+async def maint_action(wid: str, action: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    w = await _maint_get(wid, user)
+    now = datetime.now(timezone.utc).isoformat()
+    if action == "cancel":
+        await db.maint_windows.update_one({"id": wid}, {"$set": {"status": "cancelled"}})
+    elif action == "end-now":
+        if maintmod.window_state(w) != "active":
+            raise HTTPException(400, "A janela não está em andamento")
+        await db.maint_windows.update_one({"id": wid}, {"$set": {"end": now}})
+    elif action == "start-now":
+        if maintmod.window_state(w) != "scheduled":
+            raise HTTPException(400, "A janela já começou")
+        await db.maint_windows.update_one({"id": wid}, {"$set": {"start": now}})
+    elif action in ("pre", "post"):
+        st = ((w.get("checks") or {}).get(action) or {}).get("status")
+        if st == "running":
+            raise HTTPException(409, "Já está rodando")
+        if not await _maint_check_devices(w, user):
+            raise HTTPException(400, "Nenhum equipamento para o check (escolha em 'Rodar o check em')")
+        _bg(_maint_run_check(wid, action, user.get("name") or user["email"], user))
+    else:
+        raise HTTPException(404, "Ação desconhecida")
+    maintmod.invalidate()
+    return _maint_public(await _maint_get(wid, user))
+
+
+@api.delete("/maint/{wid}")
+async def maint_delete(wid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _maint_get(wid, user)
+    await db.maint_windows.delete_one({"id": wid})
+    maintmod.invalidate()
+    return {"ok": True}
+
+
+@api.get("/maint/{wid}")
+async def maint_detail(wid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    w = await _maint_get(wid, user)
+    out = _maint_public(w, full=True)
+    ch = w.get("checks") or {}
+    pre, post = (ch.get("pre") or {}).get("devices") or {}, (ch.get("post") or {}).get("devices") or {}
+    cmp_ = []
+    for did in dict.fromkeys(list(pre) + list(post)):
+        a, b = pre.get(did) or {}, post.get(did) or {}
+        rows = maintmod.compare(a.get("outputs") or {}, b.get("outputs") or {}) if b else []
+        cmp_.append({"device_id": did, "device_name": a.get("name") or b.get("name") or "?", "pre_ok": a.get("ok"),
+                     "post_ok": b.get("ok") if b else None, "pre_error": a.get("error", ""), "post_error": b.get("error", ""),
+                     "rows": rows, "worse": any(r["worse"] for r in rows), "changed": any(r["changed"] for r in rows),
+                     "pre_metrics": [{"cmd": c, "kind": v.get("kind"), "m": maintmod.metrics(v.get("kind", ""), v.get("out", ""))}
+                                     for c, v in (a.get("outputs") or {}).items()]})
+    out["compare"] = cmp_
+    out["incidents"] = await db.incidents.find({"maintenance.id": wid}, {"_id": 0, "id": 1, "number": 1, "title": 1, "status": 1,
+                                                                         "severity": 1, "created_at": 1}).sort("created_at", 1).to_list(500)
+    return out
+
+
+@api.get("/maint/{wid}/output")
+async def maint_output(wid: str, phase: str, device_id: str, cmd: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    w = await _maint_get(wid, user)
+    o = ((((w.get("checks") or {}).get(phase) or {}).get("devices") or {}).get(device_id) or {}).get("outputs") or {}
+    if cmd not in o:
+        raise HTTPException(404, "Saída não encontrada")
+    return {"out": o[cmd].get("out", ""), "error": o[cmd].get("error", "")}
+
+
+async def _maint_check_devices(w: dict, user: Optional[dict] = None) -> List[dict]:
+    ids = w.get("check_device_ids") or w.get("device_ids") or []
+    q = {"id": {"$in": ids}} if ids else ({"tags": {"$in": w["tags"]}} if w.get("tags") else None)
+    if q is None:
+        return []
+    q.update({"owner_id": w["owner_id"]} if w.get("owner_id") else {})
+    return await db.devices.find(q, {"_id": 0}).to_list(200)
+
+
+async def _maint_run_check(wid: str, phase: str, who: str, user: Optional[dict] = None):
+    w = await db.maint_windows.find_one({"id": wid}, {"_id": 0})
+    if not w:
+        return
+    devs = await _maint_check_devices(w)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.maint_windows.update_one({"id": wid}, {"$set": {f"checks.{phase}": {"status": "running", "started_at": now, "by": who,
+                                                                               "total": len(devs), "done": 0, "devices": {}}}})
+    sem = asyncio.Semaphore(8)
+
+    async def one(dev):
+        async with sem:
+            dtype = dev.get("device_type") or "other"
+            cmds = (w.get("commands") or {}).get(dtype) or [list(x) for x in maintmod.TEMPLATES.get(dtype, maintmod.TEMPLATES["other"])]
+            res = {"name": dev["name"], "ok": True, "error": "", "outputs": {}}
+            cli = None
+            try:
+                cli = await asyncio.wait_for(_connect_device(dev), 40)
+                sh = await cli.shell()
+                for kind, cmd in cmds:
+                    try:
+                        out = await asyncio.wait_for(sh.run(cmd, timeout=60, idle=2.0), 90)
+                        res["outputs"][cmd] = {"kind": kind, "out": (out or "")[:200000]}
+                    except Exception as e:
+                        res["outputs"][cmd] = {"kind": kind, "out": "", "error": str(e)[:200]}
+                await sh.close()
+                await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": (user or {}).get("id"), "user_email": who,
+                                              "device_id": dev["id"], "device_name": dev["name"],
+                                              "started_at": datetime.now(timezone.utc).isoformat(),
+                                              "ended_at": datetime.now(timezone.utc).isoformat(), "duration_seconds": 0,
+                                              "kind": "batch", "commands": [c for _, c in cmds], "commands_count": len(cmds),
+                                              "note": f"{'pré' if phase == 'pre' else 'pós'}-check da manutenção {w.get('name', '')}"})
+            except Exception as e:
+                res.update(ok=False, error=str(e)[:300] or e.__class__.__name__)
+            finally:
+                if cli:
+                    try:
+                        await cli.close()
+                    except Exception:
+                        pass
+            await db.maint_windows.update_one({"id": wid}, {"$set": {f"checks.{phase}.devices.{dev['id']}": res},
+                                                            "$inc": {f"checks.{phase}.done": 1}})
+
+    await asyncio.gather(*[one(d) for d in devs], return_exceptions=True)
+    await db.maint_windows.update_one({"id": wid}, {"$set": {f"checks.{phase}.status": "done",
+                                                            f"checks.{phase}.finished_at": datetime.now(timezone.utc).isoformat()}})
+    if phase == "post" and w.get("notify", True):
+        try:
+            full = await db.maint_windows.find_one({"id": wid}, {"_id": 0})
+            ch = full.get("checks") or {}
+            pre, post = (ch.get("pre") or {}).get("devices") or {}, (ch.get("post") or {}).get("devices") or {}
+            lines = []
+            for did, b in post.items():
+                rows = maintmod.compare((pre.get(did) or {}).get("outputs") or {}, b.get("outputs") or {})
+                bad = [f"{maintmod.KINDS.get(r['kind'], r['kind'])}: " + ", ".join(f"{k} {x}→{y}" for k, (x, y) in r["delta"].items())
+                       for r in rows if r["worse"]]
+                if not b.get("ok"):
+                    lines.append(f"❌ {b['name']}: {b.get('error')}")
+                elif bad:
+                    lines.append(f"⚠️ {b['name']}: " + "; ".join(bad)[:300])
+            title = f"🛠️ Pós-check — {w.get('name')}: " + ("tudo igual ao pré-check" if not lines else f"{len(lines)} equipamento(s) com diferença")
+            await automation.send_alert(db, title, "\n".join(lines)[:3500] or "Vizinhos, sessões e rotas como antes da manutenção.",
+                                        push_url=f"/maint?id={wid}", push_tag=f"maint-{wid}")
+        except Exception as e:
+            logger.warning(f"aviso do pós-check: {e}")
+
+
+async def _maint_loop():
+    """Avisa início/fim das janelas e roda o pré-check no início e o pós-check no fim (se ligado)."""
+    await asyncio.sleep(40)
+    while True:
+        try:
+            now = time.time()
+            async for w in db.maint_windows.find({"status": {"$ne": "cancelled"}, "start": {"$gte": datetime.fromtimestamp(now - 8 * 86400, timezone.utc).isoformat()}}, {"_id": 0}):
+                st = maintmod.window_state(w, now)
+                ev = w.get("events") or {}
+                ch = w.get("checks") or {}
+                if st in ("active", "done") and not ev.get("started"):
+                    await db.maint_windows.update_one({"id": w["id"]}, {"$set": {"events.started": datetime.now(timezone.utc).isoformat()}})
+                    if w.get("auto_checks") and not ch.get("pre") and st == "active":
+                        _bg(_maint_run_check(w["id"], "pre", "BastiON (automático)"))
+                    if w.get("notify", True) and st == "active":
+                        await automation.send_alert(db, f"🛠️ Manutenção iniciada — {w['name']}",
+                                                    f"Até {datetime.fromisoformat(w['end']).astimezone(slamod.BR).strftime('%d/%m %H:%M')}. "
+                                                    + ("Alarmes do escopo silenciados." if w.get("silence", True) else ""),
+                                                    push_url=f"/maint?id={w['id']}", push_tag=f"maint-{w['id']}")
+                if st == "done" and not ev.get("ended"):
+                    await db.maint_windows.update_one({"id": w["id"]}, {"$set": {"events.ended": datetime.now(timezone.utc).isoformat()}})
+                    maintmod.invalidate()
+                    if w.get("auto_checks") and (ch.get("pre") or {}).get("status") == "done" and not ch.get("post") \
+                            and now - (maintmod._ts(w["end"]) or now) < 6 * 3600:
+                        _bg(_maint_run_check(w["id"], "post", "BastiON (automático)"))
+                    elif w.get("notify", True):
+                        await automation.send_alert(db, f"✅ Manutenção encerrada — {w['name']}", "Alarmes voltaram ao normal.",
+                                                    push_url=f"/maint?id={w['id']}", push_tag=f"maint-{w['id']}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"janelas de manutenção: {e}")
+        await asyncio.sleep(30)
+
+
+# ---------- Monitor BGP (sessões + prefixos próprios no RIPE RIS) ----------
+_bgp_state = {"sess_at": 0.0, "cli_at": {}, "pfx_at": 0.0, "running": False, "pfx_running": False}
+
+
+async def _bgp_cfg() -> dict:
+    doc = await db.config.find_one({"key": "bgpmon"}, {"_id": 0}) or {}
+    return {**bgpmod.DEFAULTS, **{k: v for k, v in doc.items() if k in bgpmod.DEFAULTS}}
+
+
+async def _bgp_poll_router(r: dict, cfg: dict, force_cli: bool = False) -> dict:
+    dev = await db.devices.find_one({"id": r["device_id"]}, {"_id": 0})
+    if not dev:
+        return {"error": "equipamento removido"}
+    peers: Dict[str, dict] = {}
+    err = ""
+    mode = r.get("mode") or "snmp"
+    if mode == "snmp":
+        try:
+            cli = await _snmp_client(dev)
+            walk = await cli.walk(bgpmod.BGP_PEER, limit=50000)
+            peers = bgpmod.peers_from_walk(walk)
+            if (dev.get("device_type") or "") == "cisco":
+                try:
+                    for ip, n in bgpmod.cisco_prefixes(await cli.walk(bgpmod.CISCO_ACCEPTED, limit=20000)).items():
+                        if ip in peers:
+                            peers[ip]["prefixes"] = n
+                except Exception:
+                    pass
+        except Exception as e:
+            err = f"SNMP: {str(e)[:150]}"
+    now = time.time()
+    due_cli = mode == "cli" or (r.get("cli_prefixes") and now - _bgp_state["cli_at"].get(dev["id"], 0) >= cfg["cli_interval_min"] * 60)
+    if due_cli or force_cli:
+        _bgp_state["cli_at"][dev["id"]] = now
+        c = None
+        try:
+            c = await asyncio.wait_for(_connect_device(dev), 40)
+            sh = await c.shell()
+            text = ""
+            for cmd in bgpmod.CLI_SUMMARY.get(dev.get("device_type") or "other", bgpmod.CLI_SUMMARY["other"]):
+                text += "\n" + await asyncio.wait_for(sh.run(cmd, timeout=60, idle=2.0), 90)
+            await sh.close()
+            parsed = bgpmod.parse_cli_summary(text)
+            for ip, p in parsed.items():
+                cur = peers.setdefault(ip, {"peer": ip})
+                if mode == "cli" or "state" not in cur:
+                    cur.update({k: v for k, v in p.items() if v is not None})
+                elif p.get("prefixes") is not None:
+                    cur["prefixes"] = p["prefixes"]
+            if mode == "cli" and not parsed:
+                err = "CLI: não reconheci o resumo do BGP na saída"
+        except Exception as e:
+            err = (err + " · " if err else "") + f"CLI: {str(e)[:150]}"
+        finally:
+            if c:
+                try:
+                    await c.close()
+                except Exception:
+                    pass
+    if err and not peers:
+        await db.config.update_one({"key": "bgpmon_status"}, {"$set": {f"routers.{dev['id']}": {"error": err, "at": datetime.now(timezone.utc).isoformat()}}}, upsert=True)
+        return {"error": err}
+    await _bgp_store(dev, peers, cfg)
+    await db.config.update_one({"key": "bgpmon_status"}, {"$set": {f"routers.{dev['id']}": {"error": err, "at": datetime.now(timezone.utc).isoformat(), "peers": len(peers)}}}, upsert=True)
+    return {"peers": len(peers), "error": err}
+
+
+async def _bgp_store(dev: dict, peers: Dict[str, dict], cfg: dict):
+    now = datetime.now(timezone.utc)
+    nowi = now.isoformat()
+    names = cfg.get("peer_names") or {}
+    seen = set()
+    for ip, p in peers.items():
+        key = f"{dev['id']}|{ip}"
+        seen.add(key)
+        cur = await db.bgp_peers.find_one({"key": key}, {"_id": 0}) or {}
+        st = p.get("state") or cur.get("state") or "unknown"
+        upd = {"key": key, "device_id": dev["id"], "device_name": dev["name"], "peer": ip, "state": st, "seen_at": nowi, "missing": 0}
+        for k in ("asn", "admin", "established_s", "last_error"):
+            if p.get(k) is not None:
+                upd[k] = p[k]
+        flaps = [t for t in cur.get("flaps") or [] if (now - datetime.fromisoformat(t)).total_seconds() < 86400]
+        changed = cur and cur.get("state") != st
+        if changed or not cur:
+            upd["since"] = nowi
+        if changed:
+            flaps.append(nowi)
+            await db.bgp_events.insert_one({"at": nowi, "key": key, "device_id": dev["id"], "peer": ip, "from": cur.get("state"), "to": st})
+        upd["flaps"] = flaps[-50:]
+        label = names.get(key) or names.get(ip) or (f"AS{upd.get('asn') or cur.get('asn')}" if (upd.get("asn") or cur.get("asn")) else "")
+        # prefixos: base = média móvel enquanto está normal
+        pf = p.get("prefixes")
+        drop = False
+        if pf is not None:
+            upd["prefixes"] = pf
+            base = cur.get("prefixes_base")
+            if st == "established" and base and pf < base * (1 - cfg["prefix_drop_pct"] / 100.0):
+                drop = True
+            elif st == "established":
+                upd["prefixes_base"] = round(pf if not base else base * 0.8 + pf * 0.2, 1)
+        await db.bgp_peers.update_one({"key": key}, {"$set": upd}, upsert=True)
+        if not cfg.get("alert_sessions", True) or not cur:
+            continue
+        sev_down = "critical" if (upd.get("prefixes_base") or cur.get("prefixes_base") or 0) > 100000 else "high"
+        if changed and st != "established" and cur.get("state") == "established" and upd.get("admin", cur.get("admin")) != "stop":
+            # o syslog já abriu incidente desse vizinho? não duplica
+            dup = await db.incidents.find_one({"status": {"$in": ["open", "ack"]}, "device_id": dev["id"], "key": {"$regex": "^log:"},
+                                               "title": {"$regex": re.escape(ip)}}, {"_id": 0, "id": 1})
+            if not dup:
+                await inc_center.ingest("bgp", {"key": f"bgp:sess:{key}", "status": "problem", "severity": sev_down, "device_id": dev["id"],
+                                                "host": dev.get("host", ""), "host_name": dev["name"],
+                                                "title": f"Sessão BGP {ip}{f' ({label})' if label else ''} caiu — {dev['name']}",
+                                                "description": f"Estado: {st}" + (f" · último erro {p.get('last_error')}" if p.get("last_error") else "")})
+        elif changed and st == "established":
+            await inc_center.ingest("bgp", {"key": f"bgp:sess:{key}", "status": "ok", "severity": "high", "title": ""})
+        pkey = f"bgp:pfx:{key}"
+        if drop:
+            await inc_center.ingest("bgp", {"key": pkey, "status": "problem", "severity": "high", "device_id": dev["id"], "host": dev.get("host", ""),
+                                            "host_name": dev["name"], "title": f"Prefixos de {ip}{f' ({label})' if label else ''} caíram para {pf} — {dev['name']}",
+                                            "description": f"Normal ~{int(cur.get('prefixes_base') or 0)}; limite de queda {cfg['prefix_drop_pct']}%."})
+        elif pf is not None and st == "established" and cur.get("prefixes_base"):
+            await inc_center.ingest("bgp", {"key": pkey, "status": "ok", "severity": "high", "title": ""})
+    # vizinhos que sumiram da tabela
+    async for old in db.bgp_peers.find({"device_id": dev["id"]}, {"_id": 0, "key": 1, "missing": 1}):
+        if old["key"] not in seen:
+            await db.bgp_peers.update_one({"key": old["key"]}, {"$set": {"missing": (old.get("missing") or 0) + 1}})
+
+
+async def _ripestat(path: str, params: dict) -> Optional[dict]:
+    async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "BastiON-NOC bgp-monitor"}) as c:
+        r = await c.get(f"{bgpmod.RIPESTAT}/{path}/data.json", params={**params, "sourceapp": "bastion-noc"})
+        r.raise_for_status()
+        return (r.json() or {}).get("data")
+
+
+async def _bgp_check_prefixes(cfg: dict) -> int:
+    n = 0
+    for pc in cfg.get("prefixes") or []:
+        doc = {"prefix": pc["prefix"], "checked_at": datetime.now(timezone.utc).isoformat(), "expected": pc["origins"],
+               "upstreams": pc.get("upstreams") or [], "note": pc.get("note", ""), "error": ""}
+        try:
+            rs = await _ripestat("routing-status", {"resource": pc["prefix"]})
+            rpki_st = {}
+            for asn in pc["origins"][:5]:
+                try:
+                    rv = await _ripestat("rpki-validation", {"resource": f"AS{asn}", "prefix": pc["prefix"]})
+                    rpki_st[str(asn)] = (rv or {}).get("status") or ""
+                except Exception:
+                    rpki_st[str(asn)] = ""
+            lg = None
+            if pc.get("upstreams"):
+                try:
+                    lg = await _ripestat("looking-glass", {"resource": pc["prefix"]})
+                except Exception:
+                    lg = None
+            doc.update(bgpmod.evaluate_prefix(pc, rs, lg, rpki_st, float(cfg.get("visibility_min_pct") or 50)))
+        except Exception as e:
+            doc["error"] = f"RIPEstat: {str(e)[:150]}"
+        old = await db.bgp_prefixes.find_one({"prefix": pc["prefix"]}, {"_id": 0}) or {}
+        await db.bgp_prefixes.update_one({"prefix": pc["prefix"]}, {"$set": doc}, upsert=True)
+        n += 1
+        if doc["error"] or not cfg.get("alert_prefixes", True):
+            continue
+        now_codes = {f["code"]: f for f in doc.get("findings") or []}
+        for code, f in now_codes.items():
+            await inc_center.ingest("bgp", {"key": f"bgp:{code}:{pc['prefix']}", "status": "problem", "severity": f["level"],
+                                            "host": pc["prefix"].split("/")[0], "host_name": pc["prefix"],
+                                            "title": f"{pc['prefix']}: {f['text']}"[:250],
+                                            "description": "Dados públicos do RIPE RIS (RIPEstat). Origem esperada: AS" + ", AS".join(map(str, pc["origins"]))})
+        for f in old.get("findings") or []:
+            if f["code"] not in now_codes:
+                await inc_center.ingest("bgp", {"key": f"bgp:{f['code']}:{pc['prefix']}", "status": "ok", "severity": "high", "title": ""})
+    return n
+
+
+async def _bgp_poll_all(cfg: dict):
+    if _bgp_state["running"]:
+        return
+    _bgp_state["running"] = True
+    try:
+        sem = asyncio.Semaphore(6)
+
+        async def one(r):
+            async with sem:
+                try:
+                    await _bgp_poll_router(r, cfg)
+                except Exception as e:
+                    logger.warning(f"bgp {r.get('device_id')}: {e}")
+        await asyncio.gather(*[one(r) for r in cfg.get("routers") or []])
+    finally:
+        _bgp_state["running"] = False
+        _bgp_state["sess_at"] = time.time()
+
+
+async def _bgp_loop():
+    await asyncio.sleep(70)
+    while True:
+        try:
+            cfg = await _bgp_cfg()
+            now = time.time()
+            if cfg.get("routers") and now - _bgp_state["sess_at"] >= cfg["interval_min"] * 60:
+                await _bgp_poll_all(cfg)
+                if int(now) % 86400 < 60 * cfg["interval_min"]:      # uma vez por dia: histórico de 90 dias
+                    await db.bgp_events.delete_many({"at": {"$lt": (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()}})
+            if cfg.get("prefixes") and now - _bgp_state["pfx_at"] >= cfg["ripe_interval_min"] * 60 and not _bgp_state["pfx_running"]:
+                _bgp_state["pfx_running"] = True
+                try:
+                    await _bgp_check_prefixes(cfg)
+                finally:
+                    _bgp_state["pfx_running"] = False
+                    _bgp_state["pfx_at"] = time.time()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"monitor BGP: {e}")
+        await asyncio.sleep(30)
+
+
+@api.get("/bgpmon")
+async def bgpmon_view(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cfg = await _bgp_cfg()
+    mine = {d["id"] for d in await db.devices.find({} if user.get("role") == "admin" else _scope(user), {"_id": 0, "id": 1}).to_list(10000)}
+    peers = [p for p in await db.bgp_peers.find({}, {"_id": 0}).sort([("device_name", 1), ("peer", 1)]).to_list(10000) if p["device_id"] in mine]
+    names = cfg.get("peer_names") or {}
+    for p in peers:
+        p["name"] = names.get(p["key"]) or names.get(p["peer"]) or ""
+        p["flaps_24h"] = len(p.get("flaps") or [])
+    st = await db.config.find_one({"key": "bgpmon_status"}, {"_id": 0}) or {}
+    out = {"peers": peers, "prefixes": await db.bgp_prefixes.find({}, {"_id": 0}).sort("prefix", 1).to_list(500),
+           "routers_status": st.get("routers") or {}}
+    if user.get("role") == "admin":
+        out["settings"] = cfg
+    return out
+
+
+class BgpRouter(BaseModel):
+    device_id: str
+    mode: str = "snmp"
+    cli_prefixes: bool = False
+
+
+class BgpPrefix(BaseModel):
+    prefix: str
+    origins: List[str] = []
+    upstreams: List[str] = []
+    note: str = ""
+
+
+class BgpSettingsIn(BaseModel):
+    routers: List[BgpRouter] = []
+    interval_min: int = 5
+    cli_interval_min: int = 30
+    prefix_drop_pct: int = 50
+    alert_sessions: bool = True
+    prefixes: List[BgpPrefix] = []
+    ripe_interval_min: int = 15
+    visibility_min_pct: int = 50
+    alert_prefixes: bool = True
+
+
+@api.put("/bgpmon/settings")
+async def bgpmon_settings(body: BgpSettingsIn, _: dict = Depends(require_admin)):
+    ids = {d["id"] async for d in db.devices.find({}, {"_id": 0, "id": 1})}
+    routers = [{"device_id": r.device_id, "mode": r.mode if r.mode in ("snmp", "cli") else "snmp", "cli_prefixes": r.cli_prefixes}
+               for r in body.routers if r.device_id in ids][:200]
+    try:
+        pfx = bgpmod.clean_prefixes([x.model_dump() for x in body.prefixes])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    d = {"routers": routers, "interval_min": min(60, max(1, body.interval_min)), "cli_interval_min": min(1440, max(10, body.cli_interval_min)),
+         "prefix_drop_pct": min(99, max(5, body.prefix_drop_pct)), "alert_sessions": body.alert_sessions, "prefixes": pfx,
+         "ripe_interval_min": min(1440, max(5, body.ripe_interval_min)), "visibility_min_pct": min(100, max(1, body.visibility_min_pct)),
+         "alert_prefixes": body.alert_prefixes}
+    await db.config.update_one({"key": "bgpmon"}, {"$set": d}, upsert=True)
+    keep = [p["prefix"] for p in pfx]
+    await db.bgp_prefixes.delete_many({"prefix": {"$nin": keep}})
+    keep_dev = [r["device_id"] for r in routers]
+    await db.bgp_peers.delete_many({"device_id": {"$nin": keep_dev}})
+    _bgp_state["sess_at"] = 0
+    _bgp_state["pfx_at"] = 0
+    return await _bgp_cfg()
+
+
+class BgpPeerName(BaseModel):
+    key: str
+    name: str = ""
+
+
+@api.put("/bgpmon/peer-name")
+async def bgpmon_peer_name(body: BgpPeerName, _: dict = Depends(require_admin)):
+    cfg = await _bgp_cfg()
+    names = dict(cfg.get("peer_names") or {})
+    if body.name.strip():
+        names[body.key] = body.name.strip()[:60]
+    else:
+        names.pop(body.key, None)
+    await db.config.update_one({"key": "bgpmon"}, {"$set": {"peer_names": names}}, upsert=True)
+    return {"ok": True}
+
+
+@api.post("/bgpmon/refresh")
+async def bgpmon_refresh(what: str = "all", _: dict = Depends(require_admin)):
+    cfg = await _bgp_cfg()
+    if what in ("all", "sessions"):
+        for r in cfg.get("routers") or []:
+            r["cli_prefixes"] = r.get("cli_prefixes")
+        _bg(_bgp_poll_all(cfg))
+    if what in ("all", "prefixes") and not _bgp_state["pfx_running"]:
+        _bgp_state["pfx_at"] = 0
+    return {"ok": True}
+
+
+@api.get("/bgpmon/events")
+async def bgpmon_events(key: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return await db.bgp_events.find({"key": key}, {"_id": 0}).sort("at", -1).to_list(200)
+
+
+# ---------- GPON: sinal, estado e ocupação de todas as ONUs ----------
+_gpon_rt = {"state_at": {}, "power_at": {}, "plat": {}, "running": set(), "inv": {}}
+
+
+async def _gpon_cfg() -> dict:
+    doc = await db.config.find_one({"key": "gpon"}, {"_id": 0}) or {}
+    return {**gponmod.DEFAULTS, **{k: v for k, v in doc.items() if k in gponmod.DEFAULTS}}
+
+
+async def _gpon_inventory(olt_id: str) -> dict:
+    b = await db.backups.find_one({"device_id": olt_id, "ok": {"$ne": False}}, {"_id": 0, "id": 1, "content": 1, "created_at": 1}, sort=[("created_at", -1)])
+    if not b:
+        return {}
+    c = _gpon_rt["inv"].get(olt_id)
+    if c and c[0] == b["id"]:
+        return c[1]
+    inv = gponmod.parse_inventory(b.get("content") or "")
+    _gpon_rt["inv"][olt_id] = (b["id"], inv, b.get("created_at"))
+    return inv
+
+
+async def _gpon_cycle(olt_id: str, cfg: dict, power: bool):
+    if olt_id in _gpon_rt["running"]:
+        return
+    _gpon_rt["running"].add(olt_id)
+    now = datetime.now(timezone.utc)
+    nowi = now.isoformat()
+    st_key = f"olts.{olt_id}"
+    try:
+        dev = await db.devices.find_one({"id": olt_id}, {"_id": 0})
+        if not dev:
+            return
+        inv = await _gpon_inventory(olt_id)
+        j: dict = {}
+        cli = await asyncio.wait_for(_connect_device(dev), 45)
+        try:
+            raw = await cli.shell()
+            sess = _OltSess(raw, j)
+            try:
+                out = await sess.run("show gpon onu state", timeout=180)
+                rows = [] if _olt_err(out, "show gpon onu state") else oltgen.parse_onu_state(out)
+                pons = sorted({(r["slot"], r["pon"]) for r in rows})
+                if not rows:
+                    cards = oltgen.parse_show_card(await sess.run("show card", timeout=60))
+                    pons = [(c["slot"], p) for c in cards["pon"] for p in range(1, c["ports"] + 1)]
+                if not pons:
+                    raise RuntimeError("não achei PONs (show gpon onu state / show card)")
+                plat = _gpon_rt["plat"].get(olt_id) or await _olt_detect_plat(sess, *pons[0])
+                _gpon_rt["plat"][olt_id] = plat
+                if not rows:
+                    for sl, pt in pons:
+                        rows += oltgen.parse_onu_state(await sess.run(f"show gpon onu state {oltgen.pon_if(plat, sl, pt)}", timeout=90))
+                rx: Dict[tuple, float] = {}
+                if power:
+                    for sl, pt in pons:
+                        rx.update(gponmod.parse_power(await sess.run(f"show pon power onu-rx {oltgen.pon_if(plat, sl, pt)}", timeout=90)))
+            finally:
+                try:
+                    await raw.close()
+                except Exception:
+                    pass
+        finally:
+            await cli.close()
+        prev = {(o["slot"], o["pon"], o["onu"]): o async for o in db.gpon_onus.find({"olt_id": olt_id}, {"_id": 0})}
+        from pymongo import UpdateOne
+        ops, by_pon, newly = [], {}, {}
+        seen = set()
+        for r in rows:
+            k = (r["slot"], r["pon"], r["onu"])
+            seen.add(k)
+            old = prev.get(k) or {}
+            info = inv.get(k) or {}
+            doc = {"key": f"{olt_id}|{k[0]}/{k[1]}:{k[2]}", "olt_id": olt_id, "olt_name": dev["name"], "slot": k[0], "pon": k[1], "onu": k[2],
+                   "admin": r["admin"], "phase": r["phase"], "off": r["off"], "state_at": nowi,
+                   "sn": info.get("sn") or old.get("sn"), "type": info.get("type") or old.get("type"),
+                   "name": info.get("name") or old.get("name"), "description": info.get("description") or old.get("description"),
+                   "pppoe": info.get("pppoe") or old.get("pppoe") or [], "platform": plat}
+            if k in rx:
+                doc["rx"], doc["rx_at"] = rx[k], nowi
+            elif power and r["off"]:
+                doc["rx"] = None
+            if old and old.get("off") != r["off"]:
+                doc["last_change"] = nowi
+                if r["off"]:
+                    doc["down_since"] = nowi
+                    newly[(k[0], k[1])] = newly.get((k[0], k[1]), 0) + 1
+                else:
+                    doc["down_since"] = None
+            elif not old:
+                doc["last_change"] = nowi
+                doc["down_since"] = nowi if r["off"] else None
+            ops.append(UpdateOne({"key": doc["key"]}, {"$set": doc}, upsert=True))
+            merged = {**old, **doc}
+            by_pon.setdefault((k[0], k[1]), []).append(merged)
+        if ops:
+            await db.gpon_onus.bulk_write(ops, ordered=False)
+        gone = [prev[k]["key"] for k in prev if k not in seen]
+        if gone:
+            await db.gpon_onus.delete_many({"key": {"$in": gone}})
+        for (sl, pt) in pons:
+            onus = by_pon.get((sl, pt), [])
+            sm = gponmod.pon_summary(onus, float(cfg["rx_bad"]), int(cfg["pon_max"]))
+            pkey = f"{olt_id}|{sl}/{pt}"
+            oldp = await db.gpon_pons.find_one({"key": pkey}, {"_id": 0}) or {}
+            upd = {"key": pkey, "olt_id": olt_id, "olt_name": dev["name"], "slot": sl, "pon": pt, "at": nowi, **sm,
+                   "if_name": oltgen.pon_if(plat, sl, pt)}
+            if sm["rx_median"] is None and not power:
+                upd["rx_median"], upd["rx_min"], upd["rx_bad"], upd["rx_n"] = oldp.get("rx_median"), oldp.get("rx_min"), oldp.get("rx_bad", 0), oldp.get("rx_n", 0)
+            base = oldp.get("rx_base")
+            degraded = bool(power and base is not None and sm["rx_median"] is not None and sm["rx_n"] >= 5
+                            and sm["rx_median"] < base - float(cfg["rx_drop_db"]))
+            if power and sm["rx_median"] is not None and sm["rx_n"] >= 3 and not degraded:
+                upd["rx_base"] = round(sm["rx_median"] if base is None else base * 0.8 + sm["rx_median"] * 0.2, 2)
+            mass = gponmod.mass_event(oldp.get("offline", sm["offline"]), sm["offline"], sm["total"], newly.get((sl, pt), 0), cfg) if oldp else False
+            ev_open = oldp.get("mass_open")
+            if mass and not ev_open:
+                upd["mass_open"] = {"at": nowi, "newly": newly.get((sl, pt), 0), "offline": sm["offline"]}
+            elif ev_open and gponmod.recovered(sm["offline"], sm["total"], ev_open.get("newly", 0), cfg):
+                upd["mass_open"] = None
+            upd["degraded"] = degraded
+            await db.gpon_pons.update_one({"key": pkey}, {"$set": upd}, upsert=True)
+            await db.gpon_samples.insert_one({"key": pkey, "at": now, "online": sm["online"], "offline": sm["offline"], "los": sm["los"],
+                                              "rx_median": upd.get("rx_median")})
+            if not cfg.get("alert", True):
+                continue
+            where = f"PON 1/{sl}/{pt} — {dev['name']}"
+            if mass and not ev_open:
+                dup = await db.incidents.find_one({"status": {"$in": ["open", "ack"]}, "device_id": olt_id, "key": {"$regex": "^log:"},
+                                                   "title": {"$regex": re.escape(f"{sl}/{pt}")}}, {"_id": 0, "id": 1})
+                if not dup:
+                    await inc_center.ingest("gpon", {"key": f"gpon:mass:{pkey}", "status": "problem", "severity": "critical", "device_id": olt_id,
+                                                     "host": dev.get("host", ""), "host_name": dev["name"],
+                                                     "title": f"{newly.get((sl, pt), 0) or sm['offline']} ONUs caíram na {where} ({sm['los']} em LOS) — possível fibra rompida",
+                                                     "description": f"{sm['offline']} de {sm['total']} ONUs fora; {sm['dying_gasp']} por falta de energia (dying gasp)."})
+            elif ev_open and upd.get("mass_open", ev_open) is None:
+                await inc_center.ingest("gpon", {"key": f"gpon:mass:{pkey}", "status": "ok", "severity": "critical", "title": ""})
+            if degraded and not oldp.get("degraded"):
+                await inc_center.ingest("gpon", {"key": f"gpon:rx:{pkey}", "status": "problem", "severity": "high", "device_id": olt_id,
+                                                 "host": dev.get("host", ""), "host_name": dev["name"],
+                                                 "title": f"Sinal degradado na {where}: mediana {sm['rx_median']} dBm (normal {base} dBm)",
+                                                 "description": f"{sm['rx_bad']} ONU(s) abaixo de {cfg['rx_bad']} dBm. Fusão, conector ou splitter com problema?"})
+            elif power and not degraded and oldp.get("degraded"):
+                await inc_center.ingest("gpon", {"key": f"gpon:rx:{pkey}", "status": "ok", "severity": "high", "title": ""})
+        await db.gpon_pons.delete_many({"olt_id": olt_id, "key": {"$nin": [f"{olt_id}|{a}/{b}" for a, b in pons]}})
+        await db.config.update_one({"key": "gpon_status"}, {"$set": {st_key: {"at": nowi, "error": "", "onus": len(rows), "pons": len(pons),
+                                                                             "platform": plat, "power_at": nowi if power else None,
+                                                                             "inventory": len(inv)}}}, upsert=True)
+    except Exception as e:
+        await db.config.update_one({"key": "gpon_status"}, {"$set": {f"{st_key}.error": str(e)[:200] or e.__class__.__name__, f"{st_key}.error_at": nowi}}, upsert=True)
+    finally:
+        _gpon_rt["running"].discard(olt_id)
+
+
+async def _gpon_loop():
+    await asyncio.sleep(90)
+    tick = 0
+    while True:
+        try:
+            cfg = await _gpon_cfg()
+            now = time.time()
+            for oid in cfg.get("olts") or []:
+                pw = now - _gpon_rt["power_at"].get(oid, 0) >= cfg["power_interval_min"] * 60
+                if pw or now - _gpon_rt["state_at"].get(oid, 0) >= cfg["state_interval_min"] * 60:
+                    _gpon_rt["state_at"][oid] = now
+                    if pw:
+                        _gpon_rt["power_at"][oid] = now
+                    _bg(_gpon_cycle(oid, cfg, pw))
+            tick += 1
+            if tick % 120 == 1:
+                await db.gpon_samples.delete_many({"at": {"$lt": datetime.now(timezone.utc) - timedelta(days=30)}})
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"GPON: {e}")
+        await asyncio.sleep(30)
+
+
+async def _gpon_olt_ids(user: dict) -> List[str]:
+    cfg = await _gpon_cfg()
+    ids = cfg.get("olts") or []
+    if user.get("role") == "admin":
+        return ids
+    mine = {d["id"] async for d in db.devices.find({"id": {"$in": ids}, **_scope(user)}, {"_id": 0, "id": 1})}
+    return [i for i in ids if i in mine]
+
+
+@api.get("/gpon/overview")
+async def gpon_overview(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    ids = await _gpon_olt_ids(user)
+    st = (await db.config.find_one({"key": "gpon_status"}, {"_id": 0}) or {}).get("olts") or {}
+    names = {d["id"]: d["name"] async for d in db.devices.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1})}
+    pons = await db.gpon_pons.find({"olt_id": {"$in": ids}}, {"_id": 0}).sort([("slot", 1), ("pon", 1)]).to_list(5000)
+    out = []
+    for oid in ids:
+        ps = [p for p in pons if p["olt_id"] == oid]
+        out.append({"id": oid, "name": names.get(oid, "?"), "status": st.get(oid) or {}, "pons": ps,
+                    "total": sum(p["total"] for p in ps), "online": sum(p["online"] for p in ps), "offline": sum(p["offline"] for p in ps),
+                    "rx_bad": sum(p.get("rx_bad") or 0 for p in ps), "alarms": sum(1 for p in ps if p.get("mass_open") or p.get("degraded"))})
+    cfg = await _gpon_cfg()
+    return {"olts": out, "rx_bad_limit": cfg["rx_bad"], "pon_max": cfg["pon_max"], **({"settings": cfg} if user.get("role") == "admin" else {})}
+
+
+@api.get("/gpon/pon")
+async def gpon_pon(olt_id: str, slot: int, pon: int, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    if olt_id not in await _gpon_olt_ids(user):
+        raise HTTPException(404, "OLT não encontrada")
+    onus = await db.gpon_onus.find({"olt_id": olt_id, "slot": slot, "pon": pon}, {"_id": 0}).sort("onu", 1).to_list(1000)
+    hist = await db.gpon_samples.find({"key": f"{olt_id}|{slot}/{pon}", "at": {"$gte": datetime.now(timezone.utc) - timedelta(days=7)}},
+                                      {"_id": 0, "key": 0}).sort("at", 1).to_list(5000)
+    for h in hist:
+        h["at"] = (h["at"] if h["at"].tzinfo else h["at"].replace(tzinfo=timezone.utc)).isoformat()
+    return {"onus": onus, "history": hist, "pon": await db.gpon_pons.find_one({"key": f"{olt_id}|{slot}/{pon}"}, {"_id": 0})}
+
+
+@api.get("/gpon/search")
+async def gpon_search(q: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    q = q.strip()
+    if len(q) < 3:
+        raise HTTPException(400, "Digite pelo menos 3 caracteres (serial, nome, descrição ou usuário PPPoE)")
+    ids = await _gpon_olt_ids(user)
+    rx = {"$regex": re.escape(q[:60]), "$options": "i"}
+    ors = [{"sn": rx}, {"name": rx}, {"description": rx}, {"pppoe": rx}]
+    sn = gponmod.search_terms(q)
+    if len(sn) >= 6:
+        ors.append({"sn": {"$regex": re.escape(sn)}})
+    m = re.fullmatch(r"(\d+)/(\d+)(?::(\d+))?", q)
+    if m:
+        ors.append({"slot": int(m.group(1)), "pon": int(m.group(2)), **({"onu": int(m.group(3))} if m.group(3) else {})})
+    return await db.gpon_onus.find({"olt_id": {"$in": ids}, "$or": ors}, {"_id": 0}).sort([("olt_name", 1), ("slot", 1), ("pon", 1), ("onu", 1)]).to_list(100)
+
+
+class GponLiveIn(BaseModel):
+    olt_id: str
+    slot: int
+    pon: int
+    onu: int
+
+
+@api.post("/gpon/onu/live")
+async def gpon_onu_live(body: GponLiveIn, user: dict = Depends(get_current_user)):
+    """Consulta a ONU agora: estado/última queda (detail-info) e atenuação (sinal nos dois sentidos)."""
+    _no_viewer(user)
+    if body.olt_id not in await _gpon_olt_ids(user):
+        raise HTTPException(404, "OLT não encontrada")
+    dev = await db.devices.find_one({"id": body.olt_id}, {"_id": 0})
+    plat = _gpon_rt["plat"].get(body.olt_id) or (await db.gpon_onus.find_one({"olt_id": body.olt_id}, {"_id": 0, "platform": 1}) or {}).get("platform") or "c300"
+    ifn = oltgen.onu_if_name(plat, body.slot, body.pon, body.onu)
+    cli = await _connect_device(dev)
+    try:
+        sh = await cli.shell()
+        det = await sh.run(f"show gpon onu detail-info {ifn}", timeout=60)
+        att = await sh.run(f"show pon power attenuation {ifn}", timeout=60)
+        await sh.close()
+    finally:
+        await cli.close()
+    d = oltgen.parse_onu_detail(det)
+    await db.sessions.insert_one({"id": os.urandom(8).hex(), "user_id": user["id"], "user_email": user["email"], "device_id": dev["id"],
+                                  "device_name": dev["name"], "started_at": datetime.now(timezone.utc).isoformat(),
+                                  "ended_at": datetime.now(timezone.utc).isoformat(), "duration_seconds": 0, "kind": "batch",
+                                  "commands": [f"show gpon onu detail-info {ifn}", f"show pon power attenuation {ifn}"], "commands_count": 2})
+    return {"interface": ifn, "detail": d, "attenuation": att.strip()[-3000:], "detail_raw": det.strip()[-4000:]}
+
+
+class GponSettingsIn(BaseModel):
+    olts: List[str] = []
+    state_interval_min: int = 15
+    power_interval_min: int = 60
+    mass_min: int = 8
+    mass_pct: int = 50
+    rx_bad: float = -27.0
+    rx_drop_db: float = 3.0
+    pon_max: int = 128
+    alert: bool = True
+
+
+@api.put("/gpon/settings")
+async def gpon_settings(body: GponSettingsIn, _: dict = Depends(require_admin)):
+    ids = {d["id"] async for d in db.devices.find({"id": {"$in": body.olts}}, {"_id": 0, "id": 1})}
+    d = {"olts": [i for i in body.olts if i in ids][:50], "state_interval_min": min(240, max(5, body.state_interval_min)),
+         "power_interval_min": min(1440, max(15, body.power_interval_min)), "mass_min": min(500, max(2, body.mass_min)),
+         "mass_pct": min(100, max(5, body.mass_pct)), "rx_bad": max(-40.0, min(-10.0, body.rx_bad)),
+         "rx_drop_db": max(0.5, min(20.0, body.rx_drop_db)), "pon_max": min(512, max(16, body.pon_max)), "alert": body.alert}
+    await db.config.update_one({"key": "gpon"}, {"$set": d}, upsert=True)
+    for col in (db.gpon_onus, db.gpon_pons):
+        await col.delete_many({"olt_id": {"$nin": d["olts"]}})
+    return await _gpon_cfg()
+
+
+@api.post("/gpon/refresh")
+async def gpon_refresh(_: dict = Depends(require_admin)):
+    cfg = await _gpon_cfg()
+    for oid in cfg.get("olts") or []:
+        _gpon_rt["state_at"][oid] = _gpon_rt["power_at"][oid] = time.time()
+        _bg(_gpon_cycle(oid, cfg, True))
+    return {"ok": True, "olts": len(cfg.get("olts") or [])}
+
+
+# ---------- Conformidade de configuração + firmware ----------
+_comp_rt = {"running": False}
+
+
+async def _comp_rules(enabled_only: bool = True) -> List[dict]:
+    if not await db.config.find_one({"key": "compliance_seeded"}):
+        if await db.compliance_rules.count_documents({}) == 0:
+            for p in compmod.PRESETS:
+                await db.compliance_rules.insert_one({**{k: v for k, v in p.items()}, "id": uuid.uuid4().hex[:16], "enabled": True,
+                                                      "created_at": datetime.now(timezone.utc).isoformat()})
+        await db.config.update_one({"key": "compliance_seeded"}, {"$set": {"key": "compliance_seeded", "ver": 1}}, upsert=True)
+    q = {"enabled": True} if enabled_only else {}
+    return await db.compliance_rules.find(q, {"_id": 0}).sort([("vendor", 1), ("name", 1)]).to_list(2000)
+
+
+async def _comp_cfg() -> dict:
+    doc = await db.config.find_one({"key": "compliance"}, {"_id": 0}) or {}
+    return {"approved": doc.get("approved") or {}, "alert": doc.get("alert", True), "rules_ver": doc.get("rules_ver", 1)}
+
+
+async def _comp_bump():
+    await db.config.update_one({"key": "compliance"}, {"$inc": {"rules_ver": 1}}, upsert=True)
+
+
+async def _comp_refresh(device_ids: Optional[List[str]] = None, force: bool = False) -> int:
+    if _comp_rt["running"]:
+        return 0
+    _comp_rt["running"] = True
+    n = 0
+    try:
+        cfg = await _comp_cfg()
+        rules = await _comp_rules()
+        by_id = {r["id"]: r for r in rules}
+        q = {"id": {"$in": device_ids}} if device_ids else {}
+        async for dev in db.devices.find(q, {"_id": 0, "id": 1, "name": 1, "device_type": 1, "host": 1, "owner_id": 1}):
+            b = await db.backups.find_one({"device_id": dev["id"], "ok": {"$ne": False}, "content": {"$exists": True}},
+                                          {"_id": 0, "id": 1, "created_at": 1}, sort=[("created_at", -1)])
+            if not b:
+                continue
+            cur = await db.compliance_results.find_one({"device_id": dev["id"]}, {"_id": 0}) or {}
+            if not force and cur.get("backup_id") == b["id"] and cur.get("rules_ver") == cfg["rules_ver"]:
+                continue
+            content = (await db.backups.find_one({"id": b["id"]}, {"_id": 0, "content": 1}) or {}).get("content") or ""
+            vt = dev.get("device_type") or "other"
+            mine = [r for r in rules if r["vendor"] in ("any", vt)]
+            res = compmod.check(content, mine)
+            fw = compmod.firmware(vt, content)
+            doc = {"device_id": dev["id"], "device_name": dev["name"], "device_type": vt, "owner_id": dev.get("owner_id"),
+                   "backup_id": b["id"], "backup_at": b.get("created_at"), "rules_ver": cfg["rules_ver"], "results": res,
+                   "score": compmod.score(res, by_id), "failed": sum(1 for x in res if x["ok"] is False),
+                   "failed_high": sum(1 for x in res if x["ok"] is False and by_id.get(x["rule_id"], {}).get("severity") == "high"),
+                   "firmware": fw, "at": datetime.now(timezone.utc).isoformat()}
+            await db.compliance_results.update_one({"device_id": dev["id"]}, {"$set": doc}, upsert=True)
+            n += 1
+            if not cfg.get("alert", True) or not cur.get("results"):
+                continue
+            old = {x["rule_id"]: x.get("ok") for x in cur["results"]}
+            for x in res:
+                r = by_id.get(x["rule_id"]) or {}
+                if r.get("severity") != "high":
+                    continue
+                key = f"compliance:{dev['id']}:{x['rule_id']}"
+                if x["ok"] is False and old.get(x["rule_id"]) is True:
+                    await inc_center.ingest("compliance", {"key": key, "status": "problem", "severity": "medium", "device_id": dev["id"],
+                                                           "host": dev.get("host", ""), "host_name": dev["name"],
+                                                           "title": f"Fora do padrão: {r['name']} — {dev['name']}",
+                                                           "description": f"Mudou no backup de {b.get('created_at', '')[:16]}." + (f"\nTrecho: {x['evidence']}" if x.get("evidence") else "")
+                                                                          + (f"\nComo corrigir:\n{r['fix']}" if r.get("fix") else "")})
+                elif x["ok"] is True and old.get(x["rule_id"]) is False:
+                    await inc_center.ingest("compliance", {"key": key, "status": "ok", "severity": "medium", "title": ""})
+    finally:
+        _comp_rt["running"] = False
+    return n
+
+
+async def _comp_loop():
+    await asyncio.sleep(150)
+    while True:
+        try:
+            await _comp_refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"conformidade: {e}")
+        await asyncio.sleep(1800)
+
+
+def _comp_fw_status(fw: dict, vt: str, approved: dict) -> str:
+    std = (approved or {}).get(vt) or {}
+    if not fw.get("version"):
+        return "unknown"
+    if std.get("min") and compmod.version_cmp(fw["version"], std["min"]) < 0:
+        return "outdated"
+    if std.get("min"):
+        return "ok"
+    return "nostd"
+
+
+@api.get("/compliance/summary")
+async def compliance_summary(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cfg = await _comp_cfg()
+    rules = await _comp_rules(enabled_only=False)
+    q = {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+    rows = await db.compliance_results.find(q, {"_id": 0}).sort("device_name", 1).to_list(10000)
+    by_id = {r["id"]: r for r in rules}
+    stats: Dict[str, list] = {}
+    for d in rows:
+        d["fw_status"] = _comp_fw_status(d.get("firmware") or {}, d["device_type"], cfg["approved"])
+        d["fails"] = [{"rule_id": x["rule_id"], "name": by_id.get(x["rule_id"], {}).get("name", "?"), "severity": by_id.get(x["rule_id"], {}).get("severity")}
+                      for x in d.get("results") or [] if x["ok"] is False]
+        for x in d.get("results") or []:
+            if x["ok"] is not None:
+                stats.setdefault(x["rule_id"], [0, 0])
+                stats[x["rule_id"]][0 if x["ok"] else 1] += 1
+        d.pop("results", None)
+    for r in rules:
+        ok, bad = stats.get(r["id"], [0, 0])
+        r["passed"], r["failed"] = ok, bad
+    total_devs = await db.devices.count_documents({} if user.get("role") == "admin" else _scope(user))
+    return {"devices": rows, "rules": rules, "approved": cfg["approved"], "alert": cfg["alert"], "vendors": compmod.VENDORS,
+            "no_backup": max(0, total_devs - len(rows)), "running": _comp_rt["running"]}
+
+
+@api.get("/compliance/device/{device_id}")
+async def compliance_device(device_id: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    d = await db.compliance_results.find_one({"device_id": device_id, **({} if user.get("role") == "admin" else {"owner_id": user["id"]})}, {"_id": 0})
+    if not d:
+        raise HTTPException(404, "Sem resultado para esse equipamento (precisa de um backup de configuração)")
+    by_id = {r["id"]: r for r in await _comp_rules(enabled_only=False)}
+    d["results"] = [{**x, "rule": {k: by_id.get(x["rule_id"], {}).get(k) for k in ("name", "kind", "severity", "fix", "why", "pattern")}} for x in d.get("results") or []]
+    return d
+
+
+class CompRuleIn(BaseModel):
+    name: str
+    vendor: str = "any"
+    kind: str = "must"
+    pattern: str
+    severity: str = "medium"
+    fix: str = ""
+    why: str = ""
+    enabled: bool = True
+
+
+def _comp_clean(body: CompRuleIn) -> dict:
+    try:
+        return compmod.clean_rule(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@api.post("/compliance/rules")
+async def compliance_rule_create(body: CompRuleIn, _: dict = Depends(require_admin)):
+    r = _comp_clean(body)
+    r.update(id=uuid.uuid4().hex[:16], created_at=datetime.now(timezone.utc).isoformat())
+    await db.compliance_rules.insert_one(dict(r))
+    await _comp_bump()
+    _bg(_comp_refresh())
+    return r
+
+
+@api.put("/compliance/rules/{rid}")
+async def compliance_rule_update(rid: str, body: CompRuleIn, _: dict = Depends(require_admin)):
+    r = _comp_clean(body)
+    res = await db.compliance_rules.update_one({"id": rid}, {"$set": r})
+    if not res.matched_count:
+        raise HTTPException(404, "Regra não encontrada")
+    await _comp_bump()
+    _bg(_comp_refresh())
+    return {**r, "id": rid}
+
+
+@api.delete("/compliance/rules/{rid}")
+async def compliance_rule_delete(rid: str, _: dict = Depends(require_admin)):
+    await db.compliance_rules.delete_one({"id": rid})
+    await _comp_bump()
+    _bg(_comp_refresh())
+    return {"ok": True}
+
+
+@api.post("/compliance/rules/presets")
+async def compliance_rule_presets(_: dict = Depends(require_admin)):
+    have = {r.get("preset") async for r in db.compliance_rules.find({}, {"_id": 0, "preset": 1})}
+    n = 0
+    for p in compmod.PRESETS:
+        if p["preset"] not in have:
+            await db.compliance_rules.insert_one({**p, "id": uuid.uuid4().hex[:16], "enabled": True, "created_at": datetime.now(timezone.utc).isoformat()})
+            n += 1
+    if n:
+        await _comp_bump()
+        _bg(_comp_refresh())
+    return {"added": n}
+
+
+class CompTestIn(BaseModel):
+    pattern: str
+    kind: str = "must"
+    vendor: str = "any"
+
+
+@api.post("/compliance/rules/test")
+async def compliance_rule_test(body: CompTestIn, _: dict = Depends(require_admin)):
+    """Roda a regra nos backups mais recentes (do fabricante escolhido) e diz quem passa e quem não."""
+    try:
+        r = compmod.clean_rule({"name": "teste", "pattern": body.pattern, "kind": body.kind, "vendor": body.vendor})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    q = {} if r["vendor"] == "any" else {"device_type": r["vendor"]}
+    out = []
+    for dev in await db.devices.find(q, {"_id": 0, "id": 1, "name": 1}).to_list(200):
+        b = await db.backups.find_one({"device_id": dev["id"], "ok": {"$ne": False}, "content": {"$exists": True}}, {"_id": 0, "content": 1}, sort=[("created_at", -1)])
+        if not b:
+            continue
+        try:
+            x = (await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, compmod.check, b["content"], [r]), 5))[0]
+        except asyncio.TimeoutError:
+            raise HTTPException(400, "A regex demorou demais (backtracking); simplifique a expressão")
+        out.append({"device": dev["name"], "ok": x["ok"], "evidence": x.get("evidence", "")})
+    return {"total": len(out), "pass": sum(1 for x in out if x["ok"]), "results": out[:300]}
+
+
+class CompStdIn(BaseModel):
+    approved: Dict[str, Dict[str, str]] = {}
+    alert: bool = True
+
+
+@api.put("/compliance/settings")
+async def compliance_settings(body: CompStdIn, _: dict = Depends(require_admin)):
+    appr = {k: {"min": (v.get("min") or "").strip()[:60], "note": (v.get("note") or "").strip()[:120]}
+            for k, v in body.approved.items() if k in compmod.VENDORS and (v.get("min") or "").strip()}
+    await db.config.update_one({"key": "compliance"}, {"$set": {"approved": appr, "alert": body.alert}}, upsert=True)
+    return {"approved": appr, "alert": body.alert}
+
+
+@api.post("/compliance/refresh")
+async def compliance_refresh(_: dict = Depends(require_admin)):
+    _bg(_comp_refresh(force=True))
+    return {"ok": True}
+
+
+# ---------- Inventário / IPAM (+ NetBox) ----------
+_ipam_rt = {"running": False}
+
+
+async def _ipam_refresh(force: bool = False) -> int:
+    if _ipam_rt["running"]:
+        return 0
+    _ipam_rt["running"] = True
+    n = 0
+    try:
+        live = set()
+        async for dev in db.devices.find({}, {"_id": 0, "id": 1, "name": 1, "device_type": 1, "owner_id": 1, "host": 1}):
+            live.add(dev["id"])
+            b = await db.backups.find_one({"device_id": dev["id"], "ok": {"$ne": False}, "content": {"$exists": True}},
+                                          {"_id": 0, "id": 1, "created_at": 1}, sort=[("created_at", -1)])
+            if not b:
+                continue
+            st = await db.ipam_dev_state.find_one({"device_id": dev["id"]}, {"_id": 0}) or {}
+            if not force and st.get("backup_id") == b["id"]:
+                continue
+            content = (await db.backups.find_one({"id": b["id"]}, {"_id": 0, "content": 1}) or {}).get("content") or ""
+            rows = ipammod.parse_addresses(dev.get("device_type") or "other", content)
+            await db.ipam_addresses.delete_many({"device_id": dev["id"]})
+            if rows:
+                await db.ipam_addresses.insert_many([{**r, "device_id": dev["id"], "device_name": dev["name"], "owner_id": dev.get("owner_id"),
+                                                      "source": "config", "backup_at": b.get("created_at")} for r in rows])
+            await db.ipam_dev_state.update_one({"device_id": dev["id"]}, {"$set": {"device_id": dev["id"], "backup_id": b["id"], "count": len(rows),
+                                                                                   "at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+            n += 1
+        await db.ipam_addresses.delete_many({"device_id": {"$nin": list(live)}})
+        await db.ipam_dev_state.delete_many({"device_id": {"$nin": list(live)}})
+    finally:
+        _ipam_rt["running"] = False
+    return n
+
+
+async def _ipam_loop():
+    await asyncio.sleep(180)
+    while True:
+        try:
+            await _ipam_refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"IPAM: {e}")
+        await asyncio.sleep(1800)
+
+
+def _ipam_scope(user: dict) -> dict:
+    return {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+
+
+async def _ipam_rows(user: dict) -> List[dict]:
+    rows = await db.ipam_addresses.find(_ipam_scope(user), {"_id": 0}).to_list(200000)
+    man = await db.ipam_manual.find(_ipam_scope(user), {"_id": 0}).to_list(50000)
+    for m in man:
+        rows.append({**m, "device_id": f"manual:{m['id']}", "device_name": "reservado", "interface": "", "source": "manual",
+                     "network": m["ip"] + ("/32" if ":" not in m["ip"] else "/128"), "plen": 32 if ":" not in m["ip"] else 128})
+    return rows
+
+
+class IpamPrefixIn(BaseModel):
+    prefix: str
+    description: str = ""
+    vrf: str = ""
+    vlan: Optional[int] = None
+    status: str = "active"
+    tags: List[str] = []
+
+
+def _ipam_clean(body: IpamPrefixIn) -> dict:
+    try:
+        pfx = ipammod.clean_prefix(body.prefix)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"prefix": pfx, "description": body.description.strip()[:200], "vrf": body.vrf.strip()[:60],
+            "vlan": body.vlan if body.vlan and 1 <= body.vlan <= 4094 else None,
+            "status": body.status if body.status in ("active", "reserved", "container", "deprecated") else "active",
+            "tags": [t.strip()[:30] for t in body.tags if t.strip()][:20]}
+
+
+@api.get("/ipam/prefixes")
+async def ipam_prefixes(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    pfx = await db.ipam_prefixes.find(_ipam_scope(user), {"_id": 0}).to_list(20000)
+    rows = await _ipam_rows(user)
+    allp = [p["prefix"] for p in pfx]
+    nets = {p["prefix"]: ipaddress.ip_network(p["prefix"]) for p in pfx}
+    ips_v = [(ipaddress.ip_address(r["ip"]), r.get("vrf") or "") for r in rows]
+    for p in pfx:
+        n = nets[p["prefix"]]
+        inside = {str(i) for i, v in ips_v if i.version == n.version and i in n and (not p.get("vrf") or v == p["vrf"])}
+        p.update(ipammod.usage(p["prefix"], inside))
+        p["children"] = len(ipammod.children(p["prefix"], allp))
+        parents = [q for q in allp if q != p["prefix"] and nets[q].version == n.version and n.subnet_of(nets[q])]
+        p["parent"] = max(parents, key=lambda q: nets[q].prefixlen) if parents else None
+        p["depth"] = len(parents)
+    pfx.sort(key=lambda p: (nets[p["prefix"]].version, nets[p["prefix"]].network_address, nets[p["prefix"]].prefixlen))
+    dups = ipammod.duplicates([r for r in rows if r["source"] == "config"])
+    return {"prefixes": pfx, "addresses": len(rows), "duplicates": len(dups),
+            "uncovered": len(ipammod.uncovered_networks([r for r in rows if r["source"] == "config"], allp))}
+
+
+@api.post("/ipam/prefixes")
+async def ipam_prefix_create(body: IpamPrefixIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    p = _ipam_clean(body)
+    if await db.ipam_prefixes.find_one({"prefix": p["prefix"], "vrf": p["vrf"], **_ipam_scope(user)}):
+        raise HTTPException(409, "Esse prefixo já está cadastrado")
+    p.update(id=uuid.uuid4().hex[:16], owner_id=user["id"], created_at=datetime.now(timezone.utc).isoformat())
+    await db.ipam_prefixes.insert_one(dict(p))
+    return p
+
+
+@api.put("/ipam/prefixes/{pid}")
+async def ipam_prefix_update(pid: str, body: IpamPrefixIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    p = _ipam_clean(body)
+    r = await db.ipam_prefixes.update_one({"id": pid, **_ipam_scope(user)}, {"$set": p})
+    if not r.matched_count:
+        raise HTTPException(404, "Prefixo não encontrado")
+    return {**p, "id": pid}
+
+
+@api.delete("/ipam/prefixes/{pid}")
+async def ipam_prefix_delete(pid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await db.ipam_prefixes.delete_one({"id": pid, **_ipam_scope(user)})
+    return {"ok": True}
+
+
+@api.get("/ipam/prefix")
+async def ipam_prefix_detail(prefix: str, vrf: str = "", want: int = 0, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    try:
+        pfx = ipammod.clean_prefix(prefix)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    n = ipaddress.ip_network(pfx)
+    rows = [r for r in await _ipam_rows(user) if ipaddress.ip_address(r["ip"]).version == n.version and ipaddress.ip_address(r["ip"]) in n
+            and (not vrf or (r.get("vrf") or "") == vrf)]
+    rows.sort(key=lambda r: ipaddress.ip_address(r["ip"]))
+    allp = [p["prefix"] async for p in db.ipam_prefixes.find(_ipam_scope(user), {"_id": 0, "prefix": 1})]
+    kids = ipammod.children(pfx, allp)
+    used_nets = kids + [r["network"] for r in rows if r["source"] == "config"] + [r["ip"] + ("/32" if n.version == 4 else "/128") for r in rows]
+    return {"prefix": pfx, "vrf": vrf, "addresses": rows, "children": kids, **ipammod.usage(pfx, [r["ip"] for r in rows]),
+            "free": ipammod.free_blocks(pfx, used_nets, want or None, 30)}
+
+
+@api.get("/ipam/search")
+async def ipam_search(q: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    q = q.strip()
+    if len(q) < 2:
+        raise HTTPException(400, "Digite pelo menos 2 caracteres")
+    rows = await _ipam_rows(user)
+    out = []
+    try:
+        addr = ipaddress.ip_address(q)
+        out = [r for r in rows if r["ip"] == str(addr) or (ipaddress.ip_address(r["ip"]).version == addr.version and addr in ipaddress.ip_network(r["network"]))]
+    except ValueError:
+        try:
+            net = ipaddress.ip_network(q, strict=False)
+            out = [r for r in rows if ipaddress.ip_address(r["ip"]).version == net.version and ipaddress.ip_address(r["ip"]) in net]
+        except ValueError:
+            low = q.lower()
+            out = [r for r in rows if r["ip"].startswith(low) or low in (r.get("device_name") or "").lower() or low in (r.get("interface") or "").lower()
+                   or low in (r.get("description") or "").lower() or low in (r.get("vrf") or "").lower()]
+    pfx = await db.ipam_prefixes.find(_ipam_scope(user), {"_id": 0}).to_list(20000)
+    for r in out[:300]:
+        a = ipaddress.ip_address(r["ip"])
+        inn = [p for p in pfx if ipaddress.ip_network(p["prefix"]).version == a.version and a in ipaddress.ip_network(p["prefix"])]
+        r["prefix"] = max(inn, key=lambda p: ipaddress.ip_network(p["prefix"]).prefixlen)["prefix"] if inn else None
+    return out[:300]
+
+
+@api.get("/ipam/issues")
+async def ipam_issues(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    rows = [r for r in await _ipam_rows(user) if r["source"] == "config"]
+    allp = [p["prefix"] async for p in db.ipam_prefixes.find(_ipam_scope(user), {"_id": 0, "prefix": 1})]
+    return {"duplicates": [{"ip": k, "where": [{"device_name": x["device_name"], "interface": x["interface"]} for x in v]}
+                           for k, v in ipammod.duplicates(rows).items()],
+            "uncovered": ipammod.uncovered_networks(rows, allp)[:1000]}
+
+
+class IpamImportIn(BaseModel):
+    networks: List[str]
+    description: str = ""
+
+
+@api.post("/ipam/import")
+async def ipam_import(body: IpamImportIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    n = 0
+    for x in body.networks[:2000]:
+        try:
+            pfx = ipammod.clean_prefix(x)
+        except ValueError:
+            continue
+        if await db.ipam_prefixes.find_one({"prefix": pfx, **_ipam_scope(user)}):
+            continue
+        await db.ipam_prefixes.insert_one({"id": uuid.uuid4().hex[:16], "prefix": pfx, "description": body.description.strip()[:200], "vrf": "",
+                                           "vlan": None, "status": "active", "tags": [], "owner_id": user["id"],
+                                           "created_at": datetime.now(timezone.utc).isoformat()})
+        n += 1
+    return {"added": n}
+
+
+class IpamManualIn(BaseModel):
+    ip: str
+    description: str = ""
+    vrf: str = ""
+
+
+@api.post("/ipam/manual")
+async def ipam_manual_add(body: IpamManualIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    try:
+        ip = str(ipaddress.ip_address(body.ip.strip()))
+    except ValueError:
+        raise HTTPException(400, "IP inválido")
+    doc = {"id": uuid.uuid4().hex[:16], "ip": ip, "description": body.description.strip()[:200], "vrf": body.vrf.strip()[:60],
+           "owner_id": user["id"], "created_by": user.get("name") or user["email"], "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.ipam_manual.insert_one(dict(doc))
+    return doc
+
+
+@api.delete("/ipam/manual/{mid}")
+async def ipam_manual_delete(mid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await db.ipam_manual.delete_one({"id": mid, **_ipam_scope(user)})
+    return {"ok": True}
+
+
+@api.get("/ipam/inventory")
+async def ipam_inventory(user: dict = Depends(get_current_user)):
+    """Inventário dos equipamentos: fabricante, modelo, firmware, IP de gerência, agente, grupos, último backup e IPs."""
+    _no_viewer(user)
+    devs = await db.devices.find(_scope(user), {"_id": 0, "password": 0, "snmp_community": 0}).sort("name", 1).to_list(20000)
+    comp = {c["device_id"]: c async for c in db.compliance_results.find({}, {"_id": 0, "device_id": 1, "firmware": 1})}
+    cnt = {s["device_id"]: s.get("count", 0) async for s in db.ipam_dev_state.find({}, {"_id": 0, "device_id": 1, "count": 1})}
+    ags = {a["id"]: a["name"] async for a in db.agents.find({}, {"_id": 0, "id": 1, "name": 1})}
+    last = {}
+    async for b in db.backups.aggregate([{"$match": {"device_id": {"$in": [d["id"] for d in devs]}, "ok": {"$ne": False}}},
+                                         {"$group": {"_id": "$device_id", "at": {"$max": "$created_at"}}}]):
+        last[b["_id"]] = b["at"]
+    return [{"id": d["id"], "name": d["name"], "host": d.get("host"), "device_type": d.get("device_type"), "tags": d.get("tags") or [],
+             "agent": ags.get(d.get("agent_id")) if d.get("agent_id") else None, "status": d.get("status"),
+             "model": ((comp.get(d["id"]) or {}).get("firmware") or {}).get("model"),
+             "firmware": ((comp.get(d["id"]) or {}).get("firmware") or {}).get("version"),
+             "addresses": cnt.get(d["id"], 0), "last_backup": last.get(d["id"])} for d in devs]
+
+
+@api.post("/ipam/refresh")
+async def ipam_refresh(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    _bg(_ipam_refresh(force=True))
+    return {"ok": True}
+
+
+class NetboxIn(BaseModel):
+    url: str = ""
+    token: Optional[str] = None
+    verify_tls: bool = True
+
+
+async def _netbox_cfg() -> dict:
+    return await db.config.find_one({"key": "netbox"}, {"_id": 0}) or {}
+
+
+@api.get("/ipam/netbox")
+async def netbox_get(_: dict = Depends(require_admin)):
+    c = await _netbox_cfg()
+    return {"url": c.get("url", ""), "has_token": bool(c.get("token")), "verify_tls": c.get("verify_tls", True), "last_sync": c.get("last_sync")}
+
+
+@api.put("/ipam/netbox")
+async def netbox_put(body: NetboxIn, _: dict = Depends(require_admin)):
+    url = body.url.strip().rstrip("/")
+    if url and not re.match(r"^https?://", url):
+        raise HTTPException(400, "URL do NetBox deve começar com http:// ou https://")
+    upd = {"key": "netbox", "url": url, "verify_tls": body.verify_tls}
+    if body.token is not None:
+        upd["token"] = vault.encrypt(body.token.strip()) if body.token.strip() else ""
+    await db.config.update_one({"key": "netbox"}, {"$set": upd}, upsert=True)
+    return await netbox_get(_)
+
+
+def _netbox_client(c: dict) -> httpx.AsyncClient:
+    tok = vault.decrypt(c.get("token", ""))
+    if not c.get("url") or not tok:
+        raise HTTPException(400, "Configure a URL e o token do NetBox")
+    return httpx.AsyncClient(timeout=30, verify=c.get("verify_tls", True),
+                             headers={"Authorization": f"Token {tok}", "Accept": "application/json", "Content-Type": "application/json"})
+
+
+@api.post("/ipam/netbox/test")
+async def netbox_test(_: dict = Depends(require_admin)):
+    c = await _netbox_cfg()
+    try:
+        async with _netbox_client(c) as cl:
+            r = await cl.get(f"{c['url']}/api/status/")
+            if r.status_code in (401, 403):
+                return {"ok": False, "error": "Token recusado pelo NetBox"}
+            r.raise_for_status()
+            j = r.json()
+            return {"ok": True, "version": j.get("netbox-version") or j.get("netbox_version") or "?"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+class NetboxSyncIn(BaseModel):
+    push_prefixes: bool = True
+    push_ips: bool = True
+    pull_prefixes: bool = False
+    dry_run: bool = True
+
+
+@api.post("/ipam/netbox/sync")
+async def netbox_sync(body: NetboxSyncIn, user: dict = Depends(require_admin)):
+    """Compara o IPAM do BastiON com o NetBox; sem dry_run cria no NetBox o que falta (prefixos e IPs de interface)
+    e, se pedido, traz para cá os prefixos que só existem lá. Nada é apagado em nenhum dos lados."""
+    c = await _netbox_cfg()
+    local_p = await db.ipam_prefixes.find({}, {"_id": 0}).to_list(50000)
+    local_i = [r for r in await _ipam_rows(user) if r["source"] == "config"]
+    try:
+        async with _netbox_client(c) as cl:
+            nb_p = await ipammod.netbox_all(cl, c["url"], "ipam/prefixes")
+            nb_i = await ipammod.netbox_all(cl, c["url"], "ipam/ip-addresses")
+            vrfs = {v["name"]: v["id"] for v in await ipammod.netbox_all(cl, c["url"], "ipam/vrfs")}
+            plan = ipammod.netbox_plan(local_p, local_i, nb_p, nb_i)
+            res = {"to_create_prefixes": len(plan["new_prefixes"]), "to_create_ips": len(plan["new_ips"]),
+                   "only_netbox": len(plan["only_netbox"]), "created_prefixes": 0, "created_ips": 0, "imported": 0, "errors": [],
+                   "sample_prefixes": [p["prefix"] for p in plan["new_prefixes"][:10]], "sample_ips": [a["ip"] for a in plan["new_ips"][:10]],
+                   "sample_only_netbox": [p["prefix"] for p in plan["only_netbox"][:10]], "dry_run": body.dry_run}
+            if body.dry_run:
+                return res
+
+            async def bulk(path, items):
+                done = 0
+                for i in range(0, len(items), 100):
+                    r = await cl.post(f"{c['url']}/api/{path}/", json=items[i:i + 100])
+                    if r.status_code >= 400:
+                        res["errors"].append(f"{path}: HTTP {r.status_code} {r.text[:200]}")
+                        break
+                    done += len(items[i:i + 100])
+                return done
+            if body.push_prefixes and plan["new_prefixes"]:
+                items = [{"prefix": p["prefix"], "description": (p.get("description") or "")[:200], "status": p.get("status", "active"),
+                          **({"vrf": vrfs[p["vrf"]]} if p.get("vrf") in vrfs else {})} for p in plan["new_prefixes"]]
+                res["created_prefixes"] = await bulk("ipam/prefixes", items)
+            if body.push_ips and plan["new_ips"]:
+                items = [{"address": f"{a['ip']}/{a['plen']}", "status": "active",
+                          "description": f"{a['device_name']} · {a['interface']}{(' · ' + a['description']) if a.get('description') else ''}"[:200],
+                          **({"vrf": vrfs[a["vrf"]]} if a.get("vrf") in vrfs else {})} for a in plan["new_ips"]]
+                res["created_ips"] = await bulk("ipam/ip-addresses", items)
+            if body.pull_prefixes:
+                for p in plan["only_netbox"]:
+                    await db.ipam_prefixes.insert_one({"id": uuid.uuid4().hex[:16], "prefix": p["prefix"], "description": p["description"][:200],
+                                                       "vrf": p["vrf"], "vlan": None, "status": "active", "tags": ["netbox"], "owner_id": user["id"],
+                                                       "created_at": datetime.now(timezone.utc).isoformat()})
+                    res["imported"] += 1
+            await db.config.update_one({"key": "netbox"}, {"$set": {"last_sync": {"at": datetime.now(timezone.utc).isoformat(),
+                                                                                  **{k: res[k] for k in ("created_prefixes", "created_ips", "imported")}}}})
+            return res
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(400, f"NetBox respondeu {e.response.status_code}: {e.response.text[:200]}")
+    except Exception as e:
+        raise HTTPException(400, f"NetBox: {str(e)[:200]}")
 
 
 # ---------- Health ----------

@@ -356,6 +356,13 @@ class Scheduler:
                 continue
             if t["kind"] == "device" and not s["notify_devices"]:
                 continue
+            if t["kind"] == "device" and t.get("id"):
+                try:
+                    import maint
+                    if await maint.active_for(self.db, t["id"]):
+                        continue                  # equipamento em janela de manutenção: sem aviso
+                except Exception:
+                    pass
             icon = "🔴" if t["status"] == "offline" else "🟢"
             label = "Agente" if t["kind"] == "agent" else "Equipamento"
             await send_alert(self.db, f"{icon} {label} {t['name']} está {t['status'].upper()}",

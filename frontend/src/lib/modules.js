@@ -2,6 +2,12 @@
 // Sem lista no usuário = todos os módulos. Administrador sempre tem tudo; o perfil View tem regra própria.
 export const MODULES = [
   { key: "incidents", label: "Incidentes", path: "/incidents", desc: "alarmes do Zabbix, LibreNMS e BastiON; reconhecer e resolver" },
+  { key: "ipam", label: "Inventário e IPAM", path: "/ipam", desc: "prefixos, IPs em uso, blocos livres, inventário e NetBox" },
+  { key: "compliance", label: "Conformidade", path: "/compliance", desc: "regras de configuração e inventário de firmware" },
+  { key: "gpon", label: "GPON", path: "/gpon", desc: "sinal e estado das ONUs, queda em massa, busca do cliente" },
+  { key: "bgpmon", label: "Monitor BGP", path: "/bgp-monitor", desc: "sessões BGP e sequestro/vazamento dos prefixos" },
+  { key: "maint", label: "Janelas de manutenção", path: "/maint", desc: "manutenção programada com pré/pós-check" },
+  { key: "sla", label: "SLA e disponibilidade", path: "/sla", desc: "disponibilidade por enlace/POP/cliente e relatório mensal" },
   { key: "probes", label: "Sondas ativas", path: "/probes", desc: "ping, DNS, HTTP e TCP do servidor e dos jumps" },
   { key: "logs", label: "Syslog e Traps", path: "/logs", desc: "logs e traps SNMP; regras que abrem incidentes" },
   { key: "devices", label: "Equipamentos", path: "/devices", desc: "cadastrar, editar, importar e testar" },

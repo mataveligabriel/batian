@@ -9,7 +9,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity,
+  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -23,6 +23,10 @@ import { AppearanceDialog } from "@/components/AppearanceDialog";
 const NAV = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Painel NOC", testid: "nav-dashboard" },
   { to: "/incidents", icon: Siren, label: "Incidentes", testid: "nav-incidents" },
+  { to: "/gpon", icon: Cable, label: "GPON", testid: "nav-gpon" },
+  { to: "/bgp-monitor", icon: Share2, label: "Monitor BGP", testid: "nav-bgp" },
+  { to: "/maint", icon: Wrench, label: "Manutenções", testid: "nav-maint" },
+  { to: "/sla", icon: BadgeCheck, label: "SLA", testid: "nav-sla" },
   { to: "/probes", icon: Activity, label: "Sondas ativas", testid: "nav-probes" },
   { to: "/logs", icon: ScrollText, label: "Syslog e Traps", testid: "nav-logs" },
   { to: "/devices", icon: Server, label: "Equipamentos", testid: "nav-devices" },
@@ -42,6 +46,8 @@ const NAV = [
   { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key", notAdmin: true },   // admin: Configurações
   { to: "/sessions", icon: History, label: "Histórico", testid: "nav-sessions" },
   { to: "/backups", icon: Archive, label: "Backups", testid: "nav-backups" },
+  { to: "/compliance", icon: ClipboardCheck, label: "Conformidade", testid: "nav-compliance" },
+  { to: "/ipam", icon: Binary, label: "Inventário / IPAM", testid: "nav-ipam" },
   { to: "/users", icon: UsersIcon, label: "Usuários", adminOnly: true, testid: "nav-users" },
   { to: "/settings", icon: SettingsIcon, label: "Configurações", adminOnly: true, testid: "nav-settings" },
 ];

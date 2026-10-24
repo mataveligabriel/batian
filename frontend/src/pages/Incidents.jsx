@@ -23,7 +23,7 @@ export const SEV = {
   info: { label: "Info", bar: "bg-slate-500", chip: "text-slate-300 border-line bg-white/5" },
 };
 const ST = { open: ["Aberto", "text-red-300"], ack: ["Reconhecido", "text-amber-300"], resolved: ["Resolvido", "text-emerald-300"] };
-const SRC = { zabbix: "Zabbix", librenms: "LibreNMS", generic: "Webhook", bastion: "BastiON", manual: "Manual", syslog: "Syslog", trap: "Trap SNMP", probe: "Sonda" };
+const SRC = { zabbix: "Zabbix", librenms: "LibreNMS", generic: "Webhook", bastion: "BastiON", manual: "Manual", syslog: "Syslog", trap: "Trap SNMP", probe: "Sonda", bgp: "Monitor BGP", gpon: "GPON", compliance: "Conformidade" };
 const GROUPS = [["", "sem agrupar"], ["tag", "por grupo do equipamento"], ["device", "por equipamento"], ["source", "por origem"], ["severity", "por severidade"], ["assignee", "por responsável"]];
 const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 export function groupIncidents(rows, by) {
@@ -319,7 +319,7 @@ export default function Incidents() {
                                 <span className="text-xs font-mono text-slate-500">#{r.number}</span>
                                 <span className="min-w-0">
                                   <span className="block text-sm text-slate-100 truncate">{r.title}</span>
-                                  <span className="block text-xs text-slate-500 truncate">{r.device_name || r.host || "—"} · {SRC[r.source] || r.source}{r.count > 1 ? ` · ${r.count}×` : ""}{r.assignee ? ` · ${r.assignee.name}` : ""}</span>
+                                  <span className="block text-xs text-slate-500 truncate">{r.maintenance && <span className="text-amber-300">🛠 em manutenção · </span>}{r.device_name || r.host || "—"} · {SRC[r.source] || r.source}{r.count > 1 ? ` · ${r.count}×` : ""}{r.assignee ? ` · ${r.assignee.name}` : ""}</span>
                                 </span>
                                 <span className="text-xs text-slate-400">{when(r.created_at)}</span>
                                 <span className={`text-xs ${stc}`}>{stl}</span>

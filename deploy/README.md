@@ -1190,3 +1190,119 @@ agente offline já avisa). Jump sem a ferramenta (ex.: sem `dig` e sem `python3`
   (espalhamento dos pings), mediana colorida pela perda, períodos de 3 h, 24 h, 7 e 30 dias, mediana/p95/perda média.
 - **Guarda**: cada medição por 14 dias (configurável na engrenagem); o resumo por hora fica 400 dias — é a base do
   relatório de SLA (próximo item).
+
+## 50. SLA e disponibilidade (v2.0 — NOC item 5)
+
+Menu **SLA** (módulo "SLA e disponibilidade"). Um **item de SLA** (enlace, POP, cliente, serviço) junta
+componentes e tem uma meta (ex.: 99,9%). O item fica **indisponível quando qualquer componente está fora**:
+
+- **Interface monitorada**: quedas e voltas do monitor de interfaces (marque a interface para monitorar no mapa).
+- **Equipamento**: período em que o BastiON não alcançou o equipamento (incidente "sem resposta").
+- **Sonda**: ciclos que falharam no resumo por hora das Sondas ativas (de uma origem: servidor ou jump).
+
+Janelas de manutenção (item 6) que cobrem o componente não contam como indisponibilidade e aparecem à parte.
+Horas sem medição (sonda desligada, BastiON parado) ficam fora do tempo medido ("cobertura").
+
+- Tela com o mês escolhido: disponibilidade × meta, tempo fora, quedas, MTTR; abrindo o item, cada componente, a
+  latência/perda das sondas e a lista de quedas.
+- **Relatório PDF**: abre o relatório do mês numa página própria (resumo + detalhe por item) — botão
+  "Imprimir / salvar em PDF" (no diálogo do navegador, "Salvar como PDF"). **CSV** para planilha.
+- **Resumo mensal** (admin): liga e, no dia 1 a partir das 8h, o BastiON manda no Telegram/push o resultado do mês
+  anterior de todos os itens.
+- Operador vê e cria só os itens dele (com os equipamentos dele); administrador vê todos.
+
+## 51. Janelas de manutenção e pré/pós-check (v2.0 — NOC item 6)
+
+Menu **Manutenções** (módulo "Janelas de manutenção").
+
+- **Janela**: o que vai ser feito, início/fim (até 7 dias) e o escopo — equipamentos, grupos (tags), sondas ou a
+  rede toda (só admin). Enquanto está em andamento, os alarmes do escopo **não avisam** (Telegram, push, plantão):
+  o incidente ainda abre, marcado "🛠 em manutenção", para o histórico, e aparece na tela da janela. Os avisos
+  diretos de equipamento fora e de interface caiu também ficam em silêncio. No **SLA**, o tempo da janela não
+  conta como indisponibilidade.
+- Avisa no Telegram quando a janela começa e termina. Dá para começar/encerrar antes da hora ou cancelar.
+- **Pré/pós-check** (automático no início e no fim, ou na mão): roda nos equipamentos escolhidos os comandos do
+  fabricante — vizinhos OSPF, sessões BGP, tabela de rotas, LDP, l2vc/VSI e interfaces (Huawei, Cisco, Juniper,
+  Datacom, ZTE, MikroTik, Linux; editáveis por janela) — e compara: números antes → depois (vizinhos Full, sessões
+  estabelecidas, rotas, up/down), em vermelho o que piorou, e o diff de cada saída sem as colunas que mudam sozinhas
+  (uptime, contadores). Saída completa de antes/depois à mão. Ao terminar o pós-check, manda no Telegram o resumo
+  ("tudo igual" ou o que piorou em cada equipamento). Os comandos ficam registrados no Histórico.
+
+## 52. Monitor BGP (v2.0 — NOC item 7)
+
+Menu **Monitor BGP** (módulo "Monitor BGP"). Duas partes:
+
+**Sessões dos roteadores** (Configurar → roteadores):
+- **SNMP** (padrão, sem login): BGP4-MIB — estado, AS remoto e tempo de cada sessão IPv4; prefixos aceitos só em
+  Cisco (CISCO-BGP4-MIB). Usa a community do equipamento (ou a padrão do Mapa); atrás de jump, o net-snmp do jump.
+- **CLI**: lê o resumo do BGP (`display bgp peer` / `show bgp all summary` / `show bgp summary`…) e traz os
+  prefixos recebidos de Huawei, Cisco, Juniper, Datacom e ZTE (inclui IPv6). Faz login a cada leitura — dá para
+  ficar no SNMP e buscar só os prefixos pela CLI de tempo em tempo (padrão 30 min).
+- Incidente (origem "Monitor BGP") quando uma sessão estabelecida cai (crítica se trazia mais de 100 mil
+  prefixos) e quando os prefixos recebidos caem mais que o limite (padrão 50%) — resolve sozinho quando volta.
+  Sessão desligada administrativamente não alarma; se o syslog já abriu incidente do mesmo vizinho, não duplica.
+- Tela: sessões por roteador, há quanto tempo, prefixos (× o normal), quedas em 24 h, nome do vizinho editável.
+
+**Seus prefixos na Internet** (Configurar → prefixos; informe o AS que deve originar cada bloco — quem não tem ASN
+próprio coloca o AS de quem anuncia):
+- A cada 15 min consulta os dados públicos do RIPE RIS (RIPEstat, `stat.ripe.net`): **origem diferente**
+  (sequestro), **sub-prefixo de outra origem**, **visibilidade** abaixo do mínimo (sumiu da Internet), estado
+  **RPKI** do anúncio e, se você informar os upstreams esperados, **vazamento** (caminhos chegando por outro AS).
+- Cada achado vira incidente e resolve sozinho quando some. O servidor precisa alcançar `stat.ripe.net` (HTTPS).
+
+## 53. GPON (v2.0 — NOC item 8)
+
+Menu **GPON** (módulo "GPON"), para OLTs ZTE C300/C320 e TITAN (C600/C650/C620). Em Configurar escolha as OLTs.
+
+- **Inventário** (serial, modelo, nome, descrição e usuário PPPoE de cada ONU) vem do **último backup de
+  configuração** da OLT — deixe o backup da OLT ligado. A senha do PPPoE não é lida nem guardada.
+- **Estado** de todas as ONUs (`show gpon onu state`, um comando) a cada 15 min e **sinal recebido pela ONU**
+  (`show pon power onu-rx` de cada PON) a cada 60 min — uma sessão por OLT por ciclo.
+- **Por PON**: ocupação (× 128, ajustável), online/off, quantas em LOS e em dying gasp (falta de energia),
+  mediana do sinal × o normal da PON e quantas ONUs com sinal ruim (abaixo de −27 dBm, ajustável).
+- **Alarmes** (Central de Incidentes, origem "GPON"): **queda em massa** (8 ONUs caíram de uma vez ou mais de 50%
+  da PON fora — possível fibra rompida; resolve quando voltam) e **sinal degradado** (mediana da PON caiu 3 dB do
+  normal — fusão, conector, splitter). Se a regra de LOS em massa do syslog já abriu incidente da mesma PON, não
+  duplica.
+- **Buscar cliente** por serial (com ou sem hífen), nome, descrição, usuário PPPoE ou `2/1:15`: mostra OLT/PON/ONU,
+  estado, há quanto tempo está off e o sinal; **Consultar agora na OLT** roda `show gpon onu detail-info` e
+  `show pon power attenuation` da ONU na hora (fica no Histórico).
+- Histórico de online/off e sinal por PON: 30 dias.
+
+## 54. Conformidade de configuração e firmware (v2.0 — NOC item 9)
+
+Menu **Conformidade** (módulo "Conformidade"), a partir dos **backups de configuração** (não roda nada nos
+equipamentos). Recalcula a cada 30 min só o que teve backup novo ou regra alterada.
+
+- **Regras por fabricante** (vêm prontas para Huawei, Cisco, Juniper, MikroTik, Datacom e ZTE): NTP, SSH v2,
+  telnet/FTP/www desligados, VTY só com SSH, SNMP sem community `public/private`, AAA (TACACS/RADIUS), syslog
+  para servidor, senhas criptografadas, HTTP desligado, root sem SSH… Cada regra = "precisa ter"/"não pode ter" +
+  regex por linha + importância + **como corrigir**. Dá para criar, editar, desligar e **testar nos backups** antes de
+  salvar.
+- **Nota por equipamento** (peso: alta 3, média 2, baixa 1) e o que está fora do padrão com o trecho da
+  configuração e o comando de correção.
+- Quando um backup novo **quebra uma regra de importância alta** (ex.: alguém ligou o telnet), abre incidente
+  (origem "Conformidade"); resolve sozinho quando o backup seguinte volta ao padrão.
+- **Firmware**: versão lida da configuração (Huawei `!Software Version`, Cisco `version`/IOS XR, Juniper
+  `set version`, MikroTik `by RouterOS`, Datacom/ZTE quando aparece), agrupada por fabricante e versão; defina a
+  **versão mínima aprovada** por fabricante para marcar quem está desatualizado.
+
+## 55. Inventário, IPAM e NetBox (v2.0 — NOC item 10)
+
+Menu **Inventário / IPAM** (módulo "Inventário e IPAM").
+
+- **IPs em uso**: lidos dos **backups de configuração** (Huawei, Cisco/ZTE/Datacom, Juniper `display set`, MikroTik
+  `/export`) com equipamento, interface, descrição e VRF. Relê a cada 30 min o que teve backup novo (botão para
+  reler tudo).
+- **Prefixos**: cadastre seus blocos (descrição, VRF, VLAN, situação); a lista mostra a hierarquia e o uso de cada
+  um. Abrindo um prefixo: IPs ocupados, sub-prefixos, **blocos livres** (todos ou de um tamanho — ex.: o próximo /30
+  para um enlace) e **reserva de IP** (aparece como ocupado).
+- **Problemas**: **IP duplicado** (mesmo IP em dois equipamentos na mesma VRF) e **redes nas configurações sem
+  prefixo cadastrado** — marque e crie os prefixos de uma vez.
+- **Buscar IP**: IP, rede, pedaço de IP, equipamento, interface ou descrição → onde está e em qual prefixo.
+- **Inventário**: todos os equipamentos com fabricante, modelo, firmware (da Conformidade), IP, grupos, por onde é
+  acessado, quantos IPs configurados e último backup; exporta CSV.
+- **NetBox** (admin): URL + token de API (guardado criptografado). **Comparar** mostra o que falta de cada lado;
+  **Sincronizar** cria no NetBox os prefixos e os IPs das interfaces (descrição "equipamento · interface"; VRF pelo
+  nome quando existe lá) e, se marcado, traz para o BastiON os prefixos que só existem no NetBox. Nada é apagado
+  em nenhum dos lados.
