@@ -8,7 +8,7 @@ import { useTerminal } from "@/context/TerminalContext";
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
-  LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
+  ChevronDown, LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
   History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
@@ -20,37 +20,52 @@ import { Wordmark, LogoMark } from "@/components/Brand";
 import { canUse, PATH_MODULE } from "@/lib/modules";
 import { AppearanceDialog } from "@/components/AppearanceDialog";
 
-const NAV = [
+// Menu por categoria: item solto ou grupo com submenus (abre ao clicar ou passar o mouse)
+const MENU = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Painel NOC", testid: "nav-dashboard" },
   { to: "/incidents", icon: Siren, label: "Incidentes", testid: "nav-incidents" },
-  { to: "/gpon", icon: Cable, label: "GPON", testid: "nav-gpon" },
-  { to: "/bgp-monitor", icon: Share2, label: "Monitor BGP", testid: "nav-bgp" },
-  { to: "/maint", icon: Wrench, label: "Manutenções", testid: "nav-maint" },
-  { to: "/sla", icon: BadgeCheck, label: "SLA", testid: "nav-sla" },
-  { to: "/probes", icon: Activity, label: "Sondas ativas", testid: "nav-probes" },
-  { to: "/logs", icon: ScrollText, label: "Syslog e Traps", testid: "nav-logs" },
-  { to: "/devices", icon: Server, label: "Equipamentos", testid: "nav-devices" },
-  { to: "/terminal", icon: TerminalSquare, label: "Terminal SSH", testid: "nav-terminal" },
-  { to: "/web", icon: Globe, label: "Acesso Web", testid: "nav-web" },
-  { to: "/winbox", icon: Router, label: "Winbox", testid: "nav-winbox" },
-  { to: "/rdp", icon: MonitorUp, label: "Área de Trabalho", testid: "nav-rdp" },
-  { to: "/maps", icon: Network, label: "Mapas de rede", testid: "nav-maps" },
-  { to: "/te", icon: Waypoints, label: "Eng. de tráfego", testid: "nav-te" },
-  { to: "/dashboards", icon: Gauge, label: "Dashboards", testid: "nav-dashboards" },
-  { to: "/flow", icon: Waves, label: "Análise de Flow", testid: "nav-flow" },
-  { to: "/batch", icon: Play, label: "Execução em Lote", testid: "nav-batch" },
-  { to: "/lg", icon: Telescope, label: "Looking Glass", testid: "nav-lg" },
-  { to: "/rpki", icon: FileBadge, label: "RPKI", testid: "nav-rpki" },
-  { to: "/olt-script", icon: Cpu, label: "Script de OLT", testid: "nav-oltgen" },
-  { to: "/agents", icon: Radio, label: "Agentes Remotos", testid: "nav-agents" },
-  { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key", notAdmin: true },   // admin: Configurações
-  { to: "/sessions", icon: History, label: "Histórico", testid: "nav-sessions" },
-  { to: "/backups", icon: Archive, label: "Backups", testid: "nav-backups" },
-  { to: "/compliance", icon: ClipboardCheck, label: "Conformidade", testid: "nav-compliance" },
-  { to: "/ipam", icon: Binary, label: "Inventário / IPAM", testid: "nav-ipam" },
-  { to: "/users", icon: UsersIcon, label: "Usuários", adminOnly: true, testid: "nav-users" },
-  { to: "/settings", icon: SettingsIcon, label: "Configurações", adminOnly: true, testid: "nav-settings" },
+  { group: "monitor", icon: Gauge, label: "Monitoramento", items: [
+    { to: "/maps", icon: Network, label: "Mapas de rede", testid: "nav-maps" },
+    { to: "/dashboards", icon: Gauge, label: "Dashboards", testid: "nav-dashboards" },
+    { to: "/probes", icon: Activity, label: "Sondas ativas", testid: "nav-probes" },
+    { to: "/logs", icon: ScrollText, label: "Syslog e Traps", testid: "nav-logs" },
+    { to: "/bgp-monitor", icon: Share2, label: "Monitor BGP", testid: "nav-bgp" },
+    { to: "/gpon", icon: Cable, label: "GPON", testid: "nav-gpon" },
+    { to: "/sla", icon: BadgeCheck, label: "SLA", testid: "nav-sla" },
+  ] },
+  { group: "access", icon: TerminalSquare, label: "Acesso", items: [
+    { to: "/devices", icon: Server, label: "Equipamentos", testid: "nav-devices" },
+    { to: "/terminal", icon: TerminalSquare, label: "Terminal SSH", testid: "nav-terminal" },
+    { to: "/web", icon: Globe, label: "Acesso Web", testid: "nav-web" },
+    { to: "/winbox", icon: Router, label: "Winbox", testid: "nav-winbox" },
+    { to: "/rdp", icon: MonitorUp, label: "Área de Trabalho", testid: "nav-rdp" },
+    { to: "/agents", icon: Radio, label: "Agentes Remotos", testid: "nav-agents" },
+  ] },
+  { group: "ops", icon: Wrench, label: "Operação", items: [
+    { to: "/maint", icon: Wrench, label: "Manutenções", testid: "nav-maint" },
+    { to: "/batch", icon: Play, label: "Execução em Lote", testid: "nav-batch" },
+    { to: "/olt-script", icon: Cpu, label: "Script de OLT", testid: "nav-oltgen" },
+    { to: "/backups", icon: Archive, label: "Backups", testid: "nav-backups" },
+    { to: "/sessions", icon: History, label: "Histórico", testid: "nav-sessions" },
+  ] },
+  { group: "routing", icon: Waves, label: "Tráfego e rotas", items: [
+    { to: "/flow", icon: Waves, label: "Análise de Flow", testid: "nav-flow" },
+    { to: "/te", icon: Waypoints, label: "Eng. de tráfego", testid: "nav-te" },
+    { to: "/lg", icon: Telescope, label: "Looking Glass", testid: "nav-lg" },
+    { to: "/rpki", icon: FileBadge, label: "RPKI", testid: "nav-rpki" },
+  ] },
+  { group: "inventory", icon: Server, label: "Inventário", items: [
+    { to: "/ipam", icon: Binary, label: "IPAM", testid: "nav-ipam" },
+    { to: "/compliance", icon: ClipboardCheck, label: "Conformidade", testid: "nav-compliance" },
+  ] },
+  { group: "system", icon: SettingsIcon, label: "Sistema", items: [
+    { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key", notAdmin: true },   // admin: Configurações
+    { to: "/users", icon: UsersIcon, label: "Usuários", adminOnly: true, testid: "nav-users" },
+    { to: "/settings", icon: SettingsIcon, label: "Configurações", adminOnly: true, testid: "nav-settings" },
+  ] },
 ];
+const NAV = MENU.flatMap(m => m.items || [m]);
+const OPEN_KEY = "bastion_nav_open";
 
 // perfil View: só estas telas (o servidor também bloqueia o resto)
 const VIEWER_PATHS = ["/dashboard", "/dashboards", "/maps"];
@@ -83,6 +98,8 @@ export default function Layout() {
   const [prefs, setPrefs] = useTermPrefs();
   const isMobile = useIsMobile();
   const [drawer, setDrawer] = useState(false);            // celular: menu em gaveta
+  const [openGroups, setOpenGroups] = useState(() => { try { return JSON.parse(localStorage.getItem(OPEN_KEY) || "{}"); } catch { return {}; } });
+  useEffect(() => { try { localStorage.setItem(OPEN_KEY, JSON.stringify(openGroups)); } catch { /* sem storage */ } }, [openGroups]);
   useEffect(() => { setDrawer(false); }, [pathname]);
   // celular: com o teclado aberto o iOS não encolhe a página — acompanha a área visível para o terminal não ficar atrás do teclado
   useEffect(() => {
@@ -97,9 +114,39 @@ export default function Layout() {
   const isViewer = user?.role === "viewer";
   const current = NAV.find(n => pathname === n.to || pathname.startsWith(n.to + "/"));
   const allowed = (to) => !PATH_MODULE[to] || canUse(user, PATH_MODULE[to]);     // módulos liberados para este usuário
-  const nav = NAV.filter(n => (!n.adminOnly || user?.role === "admin") && !(n.notAdmin && user?.role === "admin") && (!isViewer || VIEWER_PATHS.includes(n.to)) && (isViewer || allowed(n.to)));
+  const show = (n) => (!n.adminOnly || user?.role === "admin") && !(n.notAdmin && user?.role === "admin") && (!isViewer || VIEWER_PATHS.includes(n.to)) && (isViewer || allowed(n.to));
+  const menu = MENU.map(m => (m.items ? { ...m, items: m.items.filter(show) } : m)).filter(m => (m.items ? m.items.length > 0 : show(m)))
+    .map(m => (m.items && m.items.length === 1 ? m.items[0] : m));      // grupo com um item só vira item
   const onDash = pathname.startsWith("/dashboards");
   const hidden = (onTerminal && prefs.focusMode) || (onDash && prefs.dashFocus);   // modo foco esconde o menu lateral
+
+  const renderItem = (item, sub) => (
+    <NavLink
+      key={item.to}
+      to={item.to}
+      data-testid={item.testid}
+      title={mini && !sub ? item.label : undefined}
+      className={({ isActive }) =>
+        `relative flex items-center gap-2.5 ${mini && !sub ? "justify-center px-0" : sub && !mini ? "pl-8 pr-2.5" : "px-2.5"} ${sub ? "py-2 md:py-[6px] text-[13px]" : "py-2.5 md:py-[7px] text-sm md:text-[13.5px]"} rounded-md transition-colors ${
+          isActive
+            ? "bg-white/[0.06] text-slate-50 font-medium before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-brand-soft"
+            : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.04]"
+        }`
+      }
+    >
+      <item.icon className={`${sub ? "w-3.5 h-3.5" : "w-4 h-4"} shrink-0 opacity-90`} />
+      {(!mini || sub) && <span className="truncate">{item.label}</span>}
+      {item.to === "/incidents" && incSum?.active > 0 && (
+        <span data-testid="nav-incidents-badge" title={`${incSum.open} aberto(s), ${incSum.ack} reconhecido(s)`}
+              className={`${mini ? "absolute -top-1 -right-1 text-[9px] px-1" : "ml-auto text-[10px] px-1.5 py-0.5"} font-mono rounded border ${
+                incSum.open ? (incSum.worst === "critical" || incSum.worst === "high" ? "bg-red-500/20 text-red-300 border-red-500/40 animate-pulse" : "bg-amber-500/15 text-amber-300 border-amber-500/30")
+                  : "bg-white/5 text-slate-300 border-line"}`}>{incSum.active}</span>
+      )}
+      {item.to === "/terminal" && tabs.length > 0 && (
+        <span data-testid="nav-terminal-badge" className="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">{tabs.length}</span>
+      )}
+    </NavLink>
+  );
 
   if (isViewer && !VIEWER_PATHS.some(p => pathname === p || pathname.startsWith(p + "/"))) return <Navigate to="/dashboard" replace />;
   if (!isViewer && current && !allowed(current.to)) return <Navigate to="/dashboard" replace />;   // módulo não liberado
@@ -139,35 +186,10 @@ export default function Layout() {
         </div>
 
         <nav className={`flex-1 space-y-px overflow-y-auto ${mini ? "p-2" : "px-2.5 py-2"}`}>
-          {nav.map(item => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              data-testid={item.testid}
-              title={mini ? item.label : undefined}
-              className={({ isActive }) =>
-                `relative flex items-center gap-2.5 ${mini ? "justify-center px-0" : "px-2.5"} py-2.5 md:py-[7px] rounded-md text-sm md:text-[13.5px] transition-colors ${
-                  isActive
-                    ? "bg-white/[0.06] text-slate-50 font-medium before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-brand-soft"
-                    : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.04]"
-                }`
-              }
-            >
-              <item.icon className="w-4 h-4 shrink-0 opacity-90" />
-              {!mini && <span className="truncate">{item.label}</span>}
-              {item.to === "/incidents" && incSum?.active > 0 && (
-                <span data-testid="nav-incidents-badge" title={`${incSum.open} aberto(s), ${incSum.ack} reconhecido(s)`}
-                      className={`${mini ? "absolute -top-1 -right-1 text-[9px] px-1" : "ml-auto text-[10px] px-1.5 py-0.5"} font-mono rounded border ${
-                        incSum.open ? (incSum.worst === "critical" || incSum.worst === "high" ? "bg-red-500/20 text-red-300 border-red-500/40 animate-pulse" : "bg-amber-500/15 text-amber-300 border-amber-500/30")
-                          : "bg-white/5 text-slate-300 border-line"}`}>{incSum.active}</span>
-              )}
-              {item.to === "/terminal" && tabs.length > 0 && (
-                <span data-testid="nav-terminal-badge" className={mini
-                  ? "absolute -top-1 -right-1 text-[9px] font-mono px-1 rounded bg-emerald-500/25 text-emerald-300"
-                  : "ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"}>{tabs.length}</span>
-              )}
-            </NavLink>
-          ))}
+          {menu.map(m => (m.items
+            ? <NavGroup key={m.group} g={m} mini={mini} isMobile={isMobile} pathname={pathname} open={openGroups} setOpen={setOpenGroups}
+                        renderItem={(it, sub) => renderItem(it, sub)} badge={m.group === "access" && tabs.length > 0 ? tabs.length : null} />
+            : renderItem(m, false)))}
         </nav>
         {!isViewer && canUse(user, "agents") && <VpnIndicator mini={mini} />}
 
@@ -230,6 +252,48 @@ export default function Layout() {
       </main>
       {!isViewer && canUse(user, "assistant") && <AssistantChat hideButton={onTerminal || hidden} isAdmin={user?.role === "admin"} />}
       <Toaster theme={uiTheme} richColors position={isMobile ? "top-center" : "top-right"} />
+    </div>
+  );
+}
+
+
+/** Grupo do menu. Menu aberto: clicar fixa aberto/fechado; passar o mouse abre por baixo enquanto o mouse estiver nele.
+ *  Menu encolhido: passar o mouse (ou clicar) mostra os submenus ao lado. O grupo da tela atual fica sempre aberto. */
+function NavGroup({ g, mini, isMobile, pathname, open, setOpen, renderItem, badge }) {
+  const [hover, setHover] = useState(false);
+  const [pos, setPos] = useState(null);
+  const timer = React.useRef(null);
+  const btn = React.useRef(null);
+  const active = g.items.some(it => pathname === it.to || pathname.startsWith(it.to + "/"));
+  const pinned = open[g.group];
+  const base = pinned === undefined ? active : pinned;          // aberto "fixo" (clique) ou por ser a tela atual
+  const expanded = !mini && (base || hover);
+  const place = () => { const r = btn.current?.getBoundingClientRect(); if (r) setPos({ left: r.right + 8, top: Math.min(r.top, window.innerHeight - 40 - g.items.length * 34) }); };
+  const enter = () => { if (isMobile) return; clearTimeout(timer.current); if (mini) place(); timer.current = setTimeout(() => setHover(true), mini ? 0 : 120); };
+  const leave = () => { clearTimeout(timer.current); timer.current = setTimeout(() => setHover(false), mini ? 200 : 250); };
+  useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => { setHover(false); }, [pathname]);
+  const toggle = () => { if (mini) { place(); setHover(h => !h); return; } setOpen(o => ({ ...o, [g.group]: !base })); setHover(false); };
+  return (
+    <div onMouseEnter={enter} onMouseLeave={leave} className="relative" data-testid={`nav-group-${g.group}`}>
+      <button ref={btn} onClick={toggle} title={mini ? g.label : undefined} aria-expanded={expanded || (mini && hover)}
+              className={`relative w-full flex items-center gap-2.5 ${mini ? "justify-center px-0" : "px-2.5"} py-2.5 md:py-[7px] rounded-md text-sm md:text-[13.5px] transition-colors ${
+                active ? "text-slate-100" : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.04]"}`}>
+        <g.icon className="w-4 h-4 shrink-0 opacity-90" />
+        {!mini && <span className="truncate flex-1 text-left">{g.label}</span>}
+        {badge != null && <span className={mini ? "absolute -top-1 -right-1 text-[9px] font-mono px-1 rounded bg-emerald-500/25 text-emerald-300"
+          : "text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"}>{badge}</span>}
+        {!mini && <ChevronDown className={`w-3.5 h-3.5 shrink-0 text-slate-500 transition-transform ${expanded ? "" : "-rotate-90"}`} />}
+        {mini && active && <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full bg-brand-soft" />}
+      </button>
+      {expanded && <div className="space-y-px pb-1" data-testid={`nav-sub-${g.group}`}>{g.items.map(it => renderItem(it, true))}</div>}
+      {mini && hover && pos && (
+        <div className="fixed z-50 w-52 rounded-md border border-line2 bg-panel shadow-2xl p-1.5 space-y-px before:absolute before:-left-3 before:top-0 before:bottom-0 before:w-3"
+             style={{ left: pos.left, top: Math.max(8, pos.top) }} data-testid={`nav-fly-${g.group}`}>
+          <div className="px-2.5 pt-1 pb-1.5 text-[11px] uppercase tracking-wide text-slate-500">{g.label}</div>
+          {g.items.map(it => renderItem(it, true))}
+        </div>
+      )}
     </div>
   );
 }
