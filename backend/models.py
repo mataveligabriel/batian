@@ -30,6 +30,7 @@ class UserUpdate(BaseModel):
     modules_all: Optional[bool] = None    # True = volta a liberar todos os módulos
     incidents_scope: Optional[str] = None  # "own" = só os incidentes dos equipamentos/redes dele | "all" = todos
     incident_nets: Optional[List[str]] = None  # redes (CIDR) dele: alarme com IP dentro aparece para ele
+    login_mode: Optional[str] = None      # default | both | sso | password (login único x senha, por usuário)
 
 
 class ChangePasswordPayload(BaseModel):

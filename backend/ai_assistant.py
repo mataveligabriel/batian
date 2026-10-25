@@ -473,6 +473,7 @@ class AgentCore:
         self._sem = asyncio.Semaphore(6)
         self.cmd_policy = None          # async (user, dev, [comandos], canal) -> {action, message} (política de comandos do SOC)
         self.cmd_decide = None          # async (admin, pedido, aprovar) -> texto (botões de aprovação no Telegram)
+        self.login_anom = None          # async (usuário, registro, foi_eu) -> texto ("Foi você?" do login anômalo)
 
     # ----- ganchos do canal -----
     async def out_text(self, ctx: dict, text: str, final: bool):
@@ -1208,6 +1209,20 @@ class TelegramAssistant(AgentCore):
             await self._tg("editMessageReplyMarkup", chat_id=chat_id, message_id=msg.get("message_id"), reply_markup={"inline_keyboard": []})
             await self.send(chat_id, f"{text} ({user.get('email', '')})")
 
+    async def _on_login_anom_cb(self, cq: dict, data: str):
+        from_id = str((cq.get("from") or {}).get("id"))
+        msg = cq.get("message") or {}
+        chat_id = (msg.get("chat") or {}).get("id")
+        s = await get_ai_settings(self.db)
+        link = self._auth(s, from_id)
+        user = await self.db.users.find_one({"id": link["user_id"]}, {"_id": 0, "password_hash": 0}) if link else None
+        if not user:
+            return await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text="Telegram não vinculado.", show_alert=True)
+        text = await self.login_anom(user, data.split(":", 1)[1], data.startswith("lay:"))
+        await self._tg("answerCallbackQuery", callback_query_id=cq["id"], text=text[:190])
+        await self._tg("editMessageReplyMarkup", chat_id=chat_id, message_id=msg.get("message_id"), reply_markup={"inline_keyboard": []})
+        await self.send(chat_id, text)
+
     async def _runbook_confirm(self, chat_id, rb: dict):
         names = {d["id"]: d["name"] async for d in self.db.devices.find(
             {"id": {"$in": [st["device_id"] for st in rb.get("steps") or []]}}, {"_id": 0, "id": 1, "name": 1})}
@@ -1284,6 +1299,8 @@ class TelegramAssistant(AgentCore):
             return await self._on_mitigation_cb(cq, data)
         if data.startswith(("cap:", "cdn:")) and self.cmd_decide:
             return await self._on_cmd_approval_cb(cq, data)
+        if data.startswith(("lay:", "lan:")) and self.login_anom:
+            return await self._on_login_anom_cb(cq, data)
         from_id = str((cq.get("from") or {}).get("id"))
         msg = cq.get("message") or {}
         chat_id = (msg.get("chat") or {}).get("id")

@@ -9,7 +9,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   ChevronDown, LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send,
+  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send, UserX, Radar, ShieldAlert, Bug,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -58,9 +58,14 @@ const MENU = [
     { to: "/ipam", icon: Binary, label: "IPAM", testid: "nav-ipam" },
     { to: "/compliance", icon: ClipboardCheck, label: "Conformidade", testid: "nav-compliance" },
   ] },
-  { group: "soc", icon: ShieldCheck, label: "Segurança (SOC)", items: [
+  { group: "soc", icon: ShieldCheck, label: "Painel SOC", items: [
     { to: "/soc/commands", icon: ShieldCheck, label: "Política de comandos", testid: "nav-cmdpolicy" },
+    { to: "/soc/logins", icon: UserX, label: "Logins suspeitos", adminOnly: true, testid: "nav-logins" },
+    { to: "/soc/threat", icon: Radar, label: "Threat intel", adminOnly: true, testid: "nav-ti" },
+    { to: "/soc/certbr", icon: ShieldAlert, label: "Auditoria CERT.br", adminOnly: true, testid: "nav-certbr" },
+    { to: "/soc/cves", icon: Bug, label: "CVEs do firmware", adminOnly: true, testid: "nav-cves" },
     { to: "/soc/siem", icon: Send, label: "SIEM e auditoria", adminOnly: true, testid: "nav-siem" },
+    { to: "/soc/sso", icon: KeyRound, label: "Login único (SSO)", adminOnly: true, testid: "nav-sso" },
   ] },
   { group: "system", icon: SettingsIcon, label: "Sistema", items: [
     { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key", notAdmin: true },   // admin: Configurações

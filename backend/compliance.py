@@ -56,6 +56,18 @@ _r("datacom", "snmp-public", "SNMP sem community padrão", "must_not", r"^\s*snm
 _r("zte", "ntp", "NTP configurado", "must", r"^\s*(ntp|sntp)\s+(server|enable)\b", "medium", "ntp server <IP_NTP>")
 _r("zte", "telnet", "Telnet desligado", "must_not", r"^\s*(ip\s+)?telnet\s+(server\s+)?enable\b", "high", "no telnet enable (conforme a versão)")
 _r("zte", "snmp-public", "SNMP sem community padrão", "must_not", r"^\s*snmp-server\s+community\s+(public|private)\b", "high", "no snmp-server community public")
+# Serviços que viram refletor/amplificador (notificações do CERT.br)
+_CB = "CERT.br: serviço aberto para a internet vira refletor de DDoS"
+_r("mikrotik", "dns-open", "DNS não atende a internet", "must_not", r"^/ip dns\s*\n(?:[^/\n][^\n]*\n)*?[^\n]*allow-remote-requests=yes", "high",
+   "/ip dns set allow-remote-requests=no  (ou bloquear UDP/TCP 53 de fora no /ip firewall filter, chain input)", _CB)
+_r("mikrotik", "ntp-server", "Servidor NTP só para a rede interna", "must_not", r"^/system ntp server\s*\n(?:[^/\n][^\n]*\n)*?[^\n]*enabled=yes", "medium",
+   "/system ntp server set enabled=no  (ou bloquear UDP 123 de fora na chain input)", _CB)
+_r("mikrotik", "upnp", "UPnP desligado", "must_not", r"^/ip upnp\s*\n(?:[^/\n][^\n]*\n)*?[^\n]*enabled=yes", "medium", "/ip upnp set enabled=no", _CB + " (SSDP)")
+_r("mikrotik", "socks", "SOCKS desligado", "must_not", r"^/ip socks\s*\n(?:[^/\n][^\n]*\n)*?[^\n]*enabled=yes", "high", "/ip socks set enabled=no", "proxy aberto é usado para abuso")
+_r("cisco", "dns-open", "Servidor DNS desligado", "must_not", r"^\s*ip\s+dns\s+server\b", "high", "no ip dns server", _CB)
+_r("cisco", "ntp-master", "Não é servidor NTP para a internet", "must_not", r"^\s*ntp\s+master\b", "medium", "no ntp master  (ou ntp access-group peer <ACL>)", _CB)
+_r("huawei", "dns-proxy", "DNS proxy desligado", "must_not", r"^\s*dns\s+proxy\s+enable\b", "medium", "undo dns proxy enable", _CB)
+_r("juniper", "dns-open", "Serviço DNS desligado", "must_not", r"^set\s+system\s+services\s+dns\b", "medium", "delete system services dns", _CB)
 PRESETS = P
 
 

@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse, RedirectResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -78,6 +78,11 @@ import olthw
 import oltfh
 import cmdpolicy
 import siem as siemmod
+import loginanom
+import threatintel
+import certbr
+import cves as cvemod
+import sso as ssomod
 import tcprelay
 import runbooks
 import teopt
@@ -150,6 +155,21 @@ async def startup():
     await db.cmd_events.create_index([("at", -1)])
     await db.audit_events.create_index("ts", expireAfterSeconds=180 * 86400)
     await db.audit_events.create_index([("at", -1)])
+    await db.login_anomalies.create_index([("at", -1)])
+    await db.ti_hits.create_index("key", unique=True)
+    await db.ti_hits.create_index([("day", -1), ("dir", 1)])
+    await db.ti_hits.create_index("alerted")
+    await db.cert_items.create_index("key", unique=True)
+    await db.cve_results.create_index("device_id", unique=True)
+    await db.sso_states.create_index("ts", expireAfterSeconds=900)
+    await db.sso_codes.create_index("ts", expireAfterSeconds=300)
+    await db.cert_flow.create_index("key", unique=True)
+    await db.cert_flow.create_index("ts", expireAfterSeconds=30 * 86400)
+    try:
+        await flowstore.ensure_ttl(db, "ti_hits", (await _ti_cfg())["retention_days"] * 86400)
+    except Exception as e:
+        logger.warning(f"threat intel TTL: {e}")
+    await db.login_events.create_index([("email", 1), ("at", -1)])
     await db.sessions.create_index("ended_at")
     await _apply_retention()
     await db.if_samples.create_index([("device_id", 1), ("if_index", 1), ("ts", -1)])
@@ -179,6 +199,9 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(_bgp_loop()))
     _bg_tasks.append(asyncio.create_task(_gpon_loop()))
     _bg_tasks.append(asyncio.create_task(_siem_loop()))
+    _bg_tasks.append(asyncio.create_task(_ti_loop()))
+    _bg_tasks.append(asyncio.create_task(_cert_loop()))
+    _bg_tasks.append(asyncio.create_task(_cve_loop()))
     _bg_tasks.append(asyncio.create_task(_comp_loop()))
     _bg_tasks.append(asyncio.create_task(_ipam_loop()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
@@ -318,6 +341,10 @@ async def login(payload: LoginPayload, request: Request):
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(payload.password, user.get("password_hash", "")):
         await fail("senha", "Credenciais inválidas", user["id"] if user else None)
+    if not ssomod.password_allowed(user, await db.config.find_one({"key": "sso"}, {"_id": 0, "password_login": 1}) or {}) and not (
+            user.get("role") == "admin" and await db.users.count_documents({"role": "admin"}) <= 1):      # o único admin sempre entra
+        await security.log_event(db, email, ip, ua, False, "senha: só login único", user["id"])
+        raise HTTPException(status_code=403, detail="Este usuário entra pelo login único (botão abaixo), não com senha")
     if user.get("totp_enabled"):
         code = (payload.totp or "").strip()
         if not code:
@@ -334,8 +361,10 @@ async def login(payload: LoginPayload, request: Request):
             left = len(user.get("totp_recovery") or []) - 1
             await automation.send_alert(db, "🔑 Código de recuperação usado",
                                         f"{email} entrou com um código de recuperação (restam {left}). IP {ip}.", push_url="/")
+    await _login_gate(user, ip, ua)
     await security.clear_fails(db, email)
     await security.log_event(db, email, ip, ua, True, "", user["id"])
+    _bg(_login_anomaly(user, ip, ua))
     await db.users.update_one({"id": user["id"]}, {"$set": {"last_login_at": datetime.now(timezone.utc).isoformat(), "last_login_ip": ip}})
     return _session_payload(user)
 
@@ -347,7 +376,8 @@ async def me(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
     sec = await _security_settings()
     return {"id": u["id"], "email": u["email"], "name": u.get("name", ""), "role": u.get("role", "operator"),
-            "totp_enabled": bool(u.get("totp_enabled")), "require_2fa": sec["require_2fa"],
+            "totp_enabled": bool(u.get("totp_enabled")), "require_2fa": sec["require_2fa"] and not u.get("sso"),
+            "sso": u.get("sso") or None,
             "modules": u.get("modules") if isinstance(u.get("modules"), list) and u.get("role") == "operator" else None,
             "theme": u.get("theme") or None, "incidents_scope": u.get("incidents_scope") or "own"}
 
@@ -580,6 +610,12 @@ async def update_user(user_id: str, payload: UserUpdate, current: dict = Depends
             unset["modules"] = ""                       # todos os módulos (ou papel que não usa a lista)
     elif payload.modules is not None:
         update["modules"] = auth_mod.clean_modules(payload.modules)
+    if payload.login_mode is not None:
+        if payload.login_mode not in ssomod.LOGIN_MODES:
+            raise HTTPException(status_code=400, detail="Modo de login inválido")
+        if user_id == current["id"] and payload.login_mode == "sso":
+            raise HTTPException(status_code=400, detail="Você não pode deixar a sua própria conta só com login único (risco de ficar trancado fora)")
+        update["login_mode"] = payload.login_mode
     if payload.incidents_scope is not None:
         if payload.incidents_scope not in ("own", "all"):
             raise HTTPException(status_code=400, detail="Escopo de incidentes inválido")
@@ -6548,7 +6584,7 @@ class _TermPolicy:
 
 # ---------- SOC: envio para SIEM ----------
 _siem_rt: dict = {"senders": {}, "sig": None, "http": None, "cfg": None}
-_AUDIT_SKIP = re.compile(r"^/api/(auth/(login|refresh|2fa)|ws/|push/|assistant(/.*)?/chat|.*/test$|cmdpolicy/test|"
+_AUDIT_SKIP = re.compile(r"^/api/(auth/(login|refresh|2fa)|ws/|push/|assistant(/.*)?/chat|.*/test$|cmdpolicy/test|soc/certbr/inbound/|"
                          r"oltgen/(hw/|fh/)?(generate|onu|onu-remove|onu-add)$|incidents/webhook|logs/ingest|siem/preview)")
 
 
@@ -6740,6 +6776,1030 @@ async def soc_audit(q: str = "", limit: int = 300, _: dict = Depends(require_adm
         rx = {"$regex": re.escape(q[:80]), "$options": "i"}
         f["$or"] = [{"user_email": rx}, {"path": rx}, {"ip": rx}]
     return await db.audit_events.find(f, {"_id": 0, "ts": 0}).sort("at", -1).to_list(min(2000, max(1, limit)))
+
+
+# ---------- SOC: login anômalo ----------
+async def _la_cfg() -> dict:
+    doc = await db.config.find_one({"key": "loginanom"}, {"_id": 0}) or {}
+    return {**loginanom.DEFAULTS, **{k: v for k, v in doc.items() if k in loginanom.DEFAULTS}}
+
+
+async def _geo(ip: str) -> dict:
+    """País/operadora do IP pela base de ASN do Flow (vazio se a base não foi importada ou o IP é interno)."""
+    if loginanom.is_private(ip):
+        return {}
+    try:
+        a = await _asn_db()
+        if not a:
+            return {}
+        addr = ipaddress.ip_address(ip)
+        asn = a.lookup(addr.version, int(addr))
+        if not asn:
+            return {}
+        nm = a.names.get(int(asn)) or ("", "")
+        return {"asn": int(asn), "asn_name": nm[0], "cc": (nm[1] or "").upper()}
+    except Exception:
+        return {}
+
+
+async def _login_gate(user: dict, ip: str, ua: str):
+    """Depois da senha/2FA certos: bloqueia fora dos países permitidos (cerca geográfica)."""
+    cfg = await _la_cfg()
+    if not cfg.get("enabled") or not cfg.get("allowed_countries"):
+        return
+    g = await _geo(ip)
+    if loginanom.geofence_blocks(g.get("cc", ""), ip, cfg, user.get("role") == "admin"):
+        await security.log_event(db, user["email"], ip, ua, False, f"país {g['cc']}", user["id"])
+        f = [{"kind": "geo_block", "severity": "high", "text": f"Login de {g['cc']} (AS{g.get('asn')} {g.get('asn_name', '')}) bloqueado — permitidos: {', '.join(cfg['allowed_countries'])}"}]
+        _bg(_la_record(user, ip, ua, g, f, "high", blocked=True))
+        raise HTTPException(status_code=403, detail="Login não permitido a partir deste país. Fale com o administrador.")
+
+
+async def _la_record(user: dict, ip: str, ua: str, g: dict, findings: list, sev: str, blocked: bool = False) -> dict:
+    cfg = await _la_cfg()
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": os.urandom(8).hex(), "at": now, "user_id": user["id"], "email": user["email"], "ip": ip, "ua": (ua or "")[:200],
+           "device": loginanom.device_of(ua), **g, "findings": findings, "severity": sev, "blocked": blocked,
+           "status": "blocked" if blocked else "open", "decided_by": None}
+    await db.login_anomalies.insert_one(dict(doc))
+    if loginanom.SEV_RANK[sev] < loginanom.SEV_RANK.get(cfg.get("notify_min") or "medium", 2):
+        return doc
+    where = f"{ip}" + (f" ({g.get('cc')}, AS{g.get('asn')} {g.get('asn_name', '')})" if g.get("cc") else "")
+    try:
+        await inc_center.ingest("soc", {"key": f"soc:login:{doc['id']}", "status": "problem", "severity": sev,
+                                        "title": f"{'Login bloqueado' if blocked else 'Login suspeito'}: {user['email']} de {where}",
+                                        "description": "\n".join(f"• {f['text']}" for f in findings) + f"\nNavegador: {doc['device']}"})
+    except Exception as e:
+        logger.warning(f"SOC login: {e}")
+    if cfg.get("ask_user", True) and not blocked:
+        try:
+            await _inc_dm([user["id"]], "🔐 Foi você?", f"Login na sua conta do BastiON de {where}, {doc['device']}.\n"
+                          + "\n".join(f"• {f['text']}" for f in findings),
+                          [[{"text": "✅ Fui eu", "callback_data": f"lay:{doc['id']}"}, {"text": "🚨 Não fui eu", "callback_data": f"lan:{doc['id']}"}]])
+        except Exception:
+            pass
+    return doc
+
+
+async def _login_anomaly(user: dict, ip: str, ua: str):
+    try:
+        cfg = await _la_cfg()
+        if not cfg.get("enabled") or loginanom.in_nets(ip, cfg.get("trusted_nets") or []):
+            return
+        now = datetime.now(timezone.utc)
+        hist_raw = await db.login_events.find({"user_id": user["id"], "ok": True}, {"_id": 0, "ip": 1, "ua": 1, "at": 1}).sort("at", -1).to_list(301)
+        hist_raw = hist_raw[1:] if hist_raw and hist_raw[0].get("ip") == ip and hist_raw[0].get("at", "") >= (now - timedelta(seconds=30)).isoformat() else hist_raw
+        geo_cache: dict = {}
+        hist = []
+        for h in hist_raw[:300]:
+            if h["ip"] not in geo_cache:
+                geo_cache[h["ip"]] = await _geo(h["ip"])
+            hist.append({**h, **geo_cache[h["ip"]]})
+        fails = await db.login_events.count_documents({"email": user["email"], "ok": False,
+                                                       "at": {"$gte": (now - timedelta(minutes=30)).isoformat()}})
+        g = await _geo(ip)
+        cur = {"ip": ip, "ua": ua, "at": now.isoformat(), **g}
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(cfg.get("timezone") or "America/Sao_Paulo")
+        except Exception:
+            tz = None
+        f = loginanom.analyze(cur, hist, fails, cfg, tz)
+        try:
+            intel = await _ti_intel()
+            rep_ = intel.lookup(ip) if intel and not loginanom.is_private(ip) else []
+        except Exception:
+            rep_ = []
+        if rep_:
+            cat = threatintel.worst_category(rep_)
+            f.append({"kind": "ip_reputation", "severity": "medium" if cat in ("tor", "scanner") else "high",
+                      "text": f"IP em lista de ameaças: {', '.join(x['name'] for x in rep_[:3])}"})
+        if f:
+            await _la_record(user, ip, ua, g, f, loginanom.overall(f))
+    except Exception as e:
+        logger.warning(f"login anômalo: {e}")
+
+
+async def _la_decide(who: dict, aid: str, action: str) -> dict:
+    a = await db.login_anomalies.find_one({"id": aid}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Registro não encontrado")
+    if who.get("role") != "admin" and who["id"] != a["user_id"]:
+        raise HTTPException(status_code=403, detail="Sem permissão")
+    now = datetime.now(timezone.utc).isoformat()
+    if action == "benign":
+        upd = {"status": "benign", "decided_by": who.get("email"), "decided_at": now}
+    elif action == "revoke":
+        await db.users.update_one({"id": a["user_id"]}, {"$inc": {"token_version": 1}})
+        upd = {"status": "compromised", "decided_by": who.get("email"), "decided_at": now}
+        try:
+            await inc_center.ingest("soc", {"key": f"soc:login-revoke:{aid}", "status": "problem", "severity": "critical",
+                                            "title": f"Conta possivelmente comprometida: {a['email']} — sessões encerradas",
+                                            "description": f"Login de {a['ip']} ({a.get('cc', '?')}) marcado como 'não fui eu' por {who.get('email')}. Troque a senha e confira o 2FA."})
+        except Exception:
+            pass
+        logger.warning("Sessões de %s encerradas por login suspeito (%s)", a["email"], who.get("email"))
+    else:
+        raise HTTPException(status_code=400, detail="Ação inválida")
+    await db.login_anomalies.update_one({"id": aid}, {"$set": upd})
+    if action == "benign":
+        await db.incidents.update_many({"key": f"soc:login:{aid}", "status": {"$in": ["open", "ack"]}}, {"$set": {
+            "status": "resolved", "resolved_at": now, "resolved_by": who.get("email"), "updated_at": now}})
+    return {**a, **upd}
+
+
+async def _la_tg(user: dict, aid: str, me: bool) -> str:
+    try:
+        await _la_decide(user, aid, "benign" if me else "revoke")
+        return "Obrigado — registrado." if me else "Sessões encerradas. Troque sua senha agora e avise o administrador."
+    except HTTPException as e:
+        return str(e.detail)
+
+
+assistant.login_anom = _la_tg
+
+
+@api.get("/soc/logins/settings")
+async def la_settings(_: dict = Depends(require_admin)):
+    meta = await asndb.get_meta(db)
+    return {**await _la_cfg(), "geo_ready": bool(meta)}
+
+
+class LaSettingsIn(BaseModel):
+    enabled: bool = True
+    notify_min: str = "medium"
+    ask_user: bool = True
+    allowed_countries: List[str] = []
+    trusted_nets: List[str] = []
+    geofence_admins: bool = True
+    min_history: int = 5
+    travel_hours: float = 3
+    fail_burst: int = 5
+    timezone: str = "America/Sao_Paulo"
+
+
+@api.put("/soc/logins/settings")
+async def la_settings_put(body: LaSettingsIn, request: Request, admin: dict = Depends(require_admin)):
+    try:
+        d = {**body.model_dump(), "allowed_countries": loginanom.clean_cc(body.allowed_countries), "trusted_nets": loginanom.clean_nets(body.trusted_nets)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if d["notify_min"] not in loginanom.SEV_RANK:
+        d["notify_min"] = "medium"
+    d["min_history"] = max(1, min(100, d["min_history"]))
+    d["fail_burst"] = max(2, min(100, d["fail_burst"]))
+    d["travel_hours"] = max(0.5, min(48.0, d["travel_hours"]))
+    if d["allowed_countries"]:
+        ip = security.client_ip(request)
+        g = await _geo(ip)
+        if loginanom.geofence_blocks(g.get("cc", ""), ip, d, True):
+            raise HTTPException(status_code=400, detail=f"Você está entrando de {g['cc']}: incluir {g['cc']} na lista (ou sua rede nas confiáveis) para não se trancar fora")
+    await db.config.update_one({"key": "loginanom"}, {"$set": d}, upsert=True)
+    return d
+
+
+@api.get("/soc/logins/anomalies")
+async def la_list(status: str = "", limit: int = 300, _: dict = Depends(require_admin)):
+    q = {"status": status} if status else {}
+    return await db.login_anomalies.find(q, {"_id": 0}).sort("at", -1).to_list(min(2000, max(1, limit)))
+
+
+class LaActIn(BaseModel):
+    action: str
+
+
+@api.post("/soc/logins/anomalies/{aid}")
+async def la_act(aid: str, body: LaActIn, admin: dict = Depends(require_admin)):
+    return await _la_decide(admin, aid, body.action)
+
+
+@api.get("/soc/logins/recent")
+async def la_recent(email: str = "", limit: int = 200, _: dict = Depends(require_admin)):
+    q = {"email": email.lower()} if email else {}
+    rows = await db.login_events.find(q, {"_id": 0, "ts": 0}).sort("at", -1).to_list(min(1000, max(1, limit)))
+    cache: dict = {}
+    for r in rows:
+        if r.get("ip") not in cache:
+            cache[r.get("ip")] = await _geo(r.get("ip") or "")
+        r.update(cache[r.get("ip")])
+        r["device"] = loginanom.device_of(r.get("ua", ""))
+    return rows
+
+
+# ---------- SOC: threat intel no Flow ----------
+_ti_rt: dict = {"intel": None, "sig": None, "busy": False}
+
+
+async def _ti_cfg() -> dict:
+    return threatintel.clean_settings(await db.config.find_one({"key": "threatintel"}, {"_id": 0}) or {})
+
+
+async def _ti_intel():
+    """Conjunto carregado no backend (consulta de IP e login anômalo); recarrega quando as listas mudam."""
+    cfg = await _ti_cfg()
+    meta = await db.config.find_one({"key": "ti_meta"}, {"_id": 0}) or {}
+    sig = (str(sorted((k, str(v)) for k, v in cfg.items())), meta.get("at"))
+    if sig != _ti_rt["sig"]:
+        _ti_rt["sig"] = sig
+        if not cfg["enabled"]:
+            _ti_rt["intel"] = None
+        else:
+            feeds = threatintel.feed_list(cfg)
+            lists = {}
+            for f in feeds:
+                d = await db.ti_lists.find_one({"_id": f["id"]}, {"blob": 1})
+                if d and d.get("blob"):
+                    lists[f["id"]] = threatintel.unpack(d["blob"])
+            _ti_rt["intel"] = await asyncio.to_thread(threatintel.Intel, lists, {f["id"]: f for f in feeds}, cfg["manual"], cfg["ignore"])
+    return _ti_rt["intel"]
+
+
+async def _ti_refresh(force: bool = False) -> dict:
+    if _ti_rt["busy"]:
+        return {"busy": True}
+    _ti_rt["busy"] = True
+    done = {}
+    try:
+        cfg = await _ti_cfg()
+        if not cfg["enabled"]:
+            return {}
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True, headers={"User-Agent": "BastiON-threat-intel/2.0"}) as c:
+            for f in threatintel.feed_list(cfg):
+                cur = await db.ti_lists.find_one({"_id": f["id"]}, {"_id": 0, "at": 1, "url": 1})
+                fresh = cur and cur.get("url") == f["url"] and cur.get("at", "") > (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+                if fresh and not force:
+                    continue
+                st = {"fid": f["id"], "url": f["url"], "name": f["name"], "category": f["category"], "at": datetime.now(timezone.utc).isoformat()}
+                try:
+                    r = await c.get(f["url"])
+                    r.raise_for_status()
+                    cidrs = threatintel.parse(r.text[:20_000_000])
+                    if not cidrs:
+                        raise ValueError("nenhum IP reconhecido na lista")
+                    st.update(blob=threatintel.pack(cidrs), count=len(cidrs), error="", ok_at=st["at"])
+                except Exception as e:
+                    st["error"] = f"{type(e).__name__}: {str(e)[:150]}"
+                await db.ti_lists.update_one({"_id": f["id"]}, {"$set": st}, upsert=True)
+                done[f["id"]] = st.get("count") or st["error"]
+        if done:
+            await db.config.update_one({"key": "ti_meta"}, {"$set": {"at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+            logger.info(f"threat intel: listas atualizadas {done}")
+    finally:
+        _ti_rt["busy"] = False
+    return done
+
+
+async def _ti_alerts():
+    """Host seu falando com IP malicioso (saída): incidente por dia, IP local e IP ruim. Entrada só acima do limite de flows."""
+    cfg = await _ti_cfg()
+    rows = await db.ti_hits.find({"alerted": False, "dir": "out"}, {"_id": 0}).sort("first", 1).to_list(500)
+    if cfg["alert_in_min_flows"]:
+        rows += await db.ti_hits.find({"alerted": False, "dir": "in", "flows": {"$gte": cfg["alert_in_min_flows"]}}, {"_id": 0}).to_list(200)
+    for h in rows:
+        await db.ti_hits.update_one({"key": h["key"]}, {"$set": {"alerted": True}})
+        sev = threatintel.OUT_SEVERITY.get(h.get("category"), "medium") if h["dir"] == "out" else "low"
+        if h["dir"] == "out" and (not cfg["alert_out"] or sev == "info"):
+            continue
+        feeds = ", ".join((threatintel.FEED_BY_ID.get(f) or {}).get("name", f) for f in h.get("feeds") or [])
+        cat = threatintel.CATEGORIES.get(h.get("category"), h.get("category"))
+        title = (f"Host {h['local_ip']} falando com {cat.lower()} {h['bad_ip']}" if h["dir"] == "out"
+                 else f"{cat} {h['bad_ip']} insistindo em {h['local_ip']} ({h.get('flows', 0)} flows)")
+        try:
+            await inc_center.ingest("soc", {"key": f"soc:ti:{h['day']}:{h['local_ip']}:{h['bad_ip']}:{h['dir']}", "status": "problem",
+                                            "severity": sev, "host": h["local_ip"], "title": title,
+                                            "description": f"Listas: {feeds}.\nPortas: {', '.join(h.get('ports') or [])}. "
+                                                           f"Visto pela 1ª vez {h.get('first', '')[:16].replace('T', ' ')} UTC (flow)."})
+        except Exception as e:
+            logger.warning(f"threat intel incidente: {e}")
+
+
+async def _ti_loop():
+    await asyncio.sleep(60)
+    n = 0
+    while True:
+        try:
+            if n % 10 == 0:
+                await _ti_refresh()
+            await _ti_alerts()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"threat intel: {e}")
+        n += 1
+        await asyncio.sleep(60)
+
+
+@api.get("/soc/ti/settings")
+async def ti_settings(_: dict = Depends(require_admin)):
+    cfg = await _ti_cfg()
+    st = {d.get("fid") or d.get("_id"): {k: v for k, v in d.items() if k != "_id"} async for d in db.ti_lists.find({}, {"blob": 0})}
+    feeds = [{**f, "on": f["id"] in cfg["feeds"], "status": st.get(f["id"])} for f in threatintel.FEEDS]
+    custom = [{**c, "status": st.get(c["id"])} for c in cfg["custom"]]
+    intel = await _ti_intel()
+    return {**cfg, "catalog": feeds, "custom": custom, "categories": threatintel.CATEGORIES, "networks": intel.count if intel else 0,
+            "flow_own_prefixes": len((await flowstore.get_settings(db)).get("own_prefixes") or [])}
+
+
+@api.put("/soc/ti/settings")
+async def ti_settings_put(body: dict, _: dict = Depends(require_admin)):
+    try:
+        cfg = threatintel.clean_settings(body or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.config.update_one({"key": "threatintel"}, {"$set": cfg}, upsert=True)
+    await flowstore.ensure_ttl(db, "ti_hits", cfg["retention_days"] * 86400)
+    _bg(_ti_refresh())
+    return cfg
+
+
+@api.post("/soc/ti/refresh")
+async def ti_refresh(_: dict = Depends(require_admin)):
+    r = await _ti_refresh(force=True)
+    if r.get("busy"):
+        raise HTTPException(status_code=409, detail="Já está atualizando as listas")
+    return {"updated": r}
+
+
+@api.get("/soc/ti/hits")
+async def ti_hits(direction: str = "", q: str = "", days: int = 7, category: str = "", limit: int = 500, _: dict = Depends(require_admin)):
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(365, days)))).strftime("%Y-%m-%d")
+    f: dict = {"day": {"$gte": since}}
+    if direction in ("in", "out"):
+        f["dir"] = direction
+    if category:
+        f["category"] = category
+    if q:
+        f["$or"] = [{"bad_ip": {"$regex": "^" + re.escape(q.strip())}}, {"local_ip": {"$regex": "^" + re.escape(q.strip())}}]
+    rows = await db.ti_hits.find(f, {"_id": 0, "ts": 0}).sort("last", -1).to_list(min(3000, max(1, limit)))
+    return rows
+
+
+@api.get("/soc/ti/summary")
+async def ti_summary(days: int = 1, _: dict = Depends(require_admin)):
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(90, days)))).strftime("%Y-%m-%d")
+    rows = await db.ti_hits.find({"day": {"$gte": since}}, {"_id": 0, "dir": 1, "category": 1, "local_ip": 1, "bad_ip": 1, "flows": 1, "bytes": 1}).to_list(200000)
+    by: dict = {}
+    hosts_out: dict = {}
+    for r in rows:
+        k = (r["dir"], r.get("category"))
+        b = by.setdefault(k, {"dir": r["dir"], "category": r.get("category"), "hits": 0, "flows": 0, "bytes": 0, "bad": set(), "local": set()})
+        b["hits"] += 1
+        b["flows"] += r.get("flows", 0)
+        b["bytes"] += r.get("bytes", 0)
+        b["bad"].add(r["bad_ip"])
+        b["local"].add(r["local_ip"])
+        if r["dir"] == "out":
+            h = hosts_out.setdefault(r["local_ip"], {"ip": r["local_ip"], "bad": set(), "flows": 0, "categories": set()})
+            h["bad"].add(r["bad_ip"])
+            h["flows"] += r.get("flows", 0)
+            h["categories"].add(r.get("category"))
+    cats = [{**v, "bad": len(v["bad"]), "local": len(v["local"])} for v in by.values()]
+    top = sorted(({**h, "bad": len(h["bad"]), "categories": sorted(h["categories"])} for h in hosts_out.values()), key=lambda h: -h["flows"])[:20]
+    return {"by_category": sorted(cats, key=lambda c: (c["dir"], -c["hits"])), "top_hosts_out": top}
+
+
+@api.get("/soc/ti/lookup")
+async def ti_lookup(ip: str, _: dict = Depends(require_admin)):
+    try:
+        a = ipaddress.ip_address(ip.strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="IP inválido")
+    intel = await _ti_intel()
+    feeds = intel.lookup(str(a)) if intel else []
+    hits = await db.ti_hits.find({"$or": [{"bad_ip": str(a)}, {"local_ip": str(a)}]}, {"_id": 0, "ts": 0}).sort("last", -1).to_list(200)
+    return {"ip": str(a), "feeds": feeds, "geo": await _geo(str(a)), "hits": hits, "loaded": bool(intel)}
+
+
+# ---------- SOC: auditoria CERT.br (passiva) ----------
+async def _cert_cfg() -> dict:
+    return certbr.clean_settings(await db.config.find_one({"key": "certbr"}, {"_id": 0}) or {})
+
+
+async def _cert_upsert(ip: str, service: str, source: str, at: str, **extra) -> dict:
+    key = f"{ip}|{service}"
+    cur = await db.cert_items.find_one({"key": key}, {"_id": 0})
+    now = datetime.now(timezone.utc).isoformat()
+    if not cur:
+        cur = {"id": os.urandom(8).hex(), "key": key, "ip": ip, "service": service, "status": "open", "sources": [source],
+               "first": at or now, "last": at or now, "notices": [], "flow": None, "reopened": 0, "note": "", "created_at": now}
+        await db.cert_items.insert_one(dict(cur))
+        if (await _cert_cfg())["alert"]:
+            svc = certbr.SERVICES.get(service, {}).get("name", service)
+            try:
+                await inc_center.ingest("soc", {"key": f"soc:certbr:{key}", "status": "problem", "severity": "medium", "host": ip,
+                                                "title": f"{svc}: {ip}" + (" (aviso do CERT.br)" if source == "certbr" else " (visto no flow)"),
+                                                "description": certbr.SERVICES.get(service, {}).get("fix", "")})
+            except Exception as e:
+                logger.warning(f"CERT.br incidente: {e}")
+    upd: dict = {"$set": {"last": max(cur.get("last") or "", at or now)}, "$addToSet": {"sources": source}}
+    if cur["status"] == "resolved" and (at or now) > (cur.get("resolved_at") or ""):
+        upd["$set"].update(status="open", reopened_at=now)
+        upd["$inc"] = {"reopened": 1}
+    if source == "certbr":
+        upd["$push"] = {"notices": {"$each": [{"at": at or now, "line": extra.get("line", ""), "subject": extra.get("subject", "")[:200]}], "$slice": -20}}
+    if extra.get("flow"):
+        upd["$set"]["flow"] = extra["flow"]
+    await db.cert_items.update_one({"key": key}, upd)
+    return cur
+
+
+async def _cert_cycle():
+    cfg = await _cert_cfg()
+    since = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d")
+    rows = await db.cert_flow.find({"day": {"$gte": since}, "remotes_sum": {"$gte": cfg["min_remotes"]}}, {"_id": 0, "ts": 0}).to_list(20000)
+    for r in rows:
+        await _cert_upsert(r["ip"], r["service"], "flow", r.get("last"), flow={"day": r["day"], "last": r.get("last"), "bytes": r.get("bytes", 0),
+                                                                            "remotes": r.get("remotes_sum", 0), "minutes": r.get("minutes", 0),
+                                                                            "sample": r.get("sample") or []})
+    # só flow e sem resposta para fora há N dias: resolvido sozinho
+    limit = (datetime.now(timezone.utc) - timedelta(days=cfg["auto_resolve_days"])).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+    async for it in db.cert_items.find({"status": "open", "sources": ["flow"], "last": {"$lt": limit}}, {"_id": 0, "key": 1}):
+        await db.cert_items.update_one({"key": it["key"]}, {"$set": {"status": "resolved", "resolved_at": now, "resolved_by": "sem resposta para fora no flow"}})
+        await db.incidents.update_many({"key": f"soc:certbr:{it['key']}", "status": {"$in": ["open", "ack"]}},
+                                       {"$set": {"status": "resolved", "resolved_at": now, "resolved_by": "SOC", "updated_at": now}})
+
+
+async def _cert_loop():
+    await asyncio.sleep(90)
+    while True:
+        try:
+            if (await _cert_cfg())["enabled"]:
+                await _cert_cycle()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"CERT.br: {e}")
+        await asyncio.sleep(300)
+
+
+async def _cert_import(text: str, subject: str, via: str) -> dict:
+    found = certbr.parse_notice(text, subject)
+    own = (await flowstore.get_settings(db)).get("own_prefixes") or []
+    nets = []
+    for p in own:
+        try:
+            nets.append(ipaddress.ip_network(p, strict=False))
+        except ValueError:
+            pass
+    now = datetime.now(timezone.utc).isoformat()
+    added, outside = 0, []
+    for x in found:
+        a = ipaddress.ip_address(x["ip"])
+        if nets and not any(a.version == n.version and a in n for n in nets):
+            outside.append(x["ip"])
+            continue
+        await _cert_upsert(x["ip"], x["service"], "certbr", now, line=x["line"], subject=subject)
+        added += 1
+    await db.cert_notices.insert_one({"id": os.urandom(8).hex(), "at": now, "via": via, "subject": subject[:200], "count": added,
+                                      "outside": outside[:200], "text": text[:20000]})
+    return {"found": len(found), "added": added, "outside": outside[:50], "items": found[:200]}
+
+
+@api.get("/soc/certbr/settings")
+async def cert_settings(_: dict = Depends(require_admin)):
+    cfg = await _cert_cfg()
+    if not cfg["token"]:
+        cfg["token"] = os.urandom(16).hex()
+        await db.config.update_one({"key": "certbr"}, {"$set": {"token": cfg["token"]}}, upsert=True)
+    return {**cfg, "services": {k: {"name": v["name"], "port": v["port"], "fix": v["fix"]} for k, v in certbr.SERVICES.items()},
+            "own_prefixes": len((await flowstore.get_settings(db)).get("own_prefixes") or [])}
+
+
+@api.put("/soc/certbr/settings")
+async def cert_settings_put(body: dict, _: dict = Depends(require_admin)):
+    cur = await _cert_cfg()
+    try:
+        cfg = certbr.clean_settings({**body, "token": cur["token"]})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.config.update_one({"key": "certbr"}, {"$set": cfg}, upsert=True)
+    return cfg
+
+
+@api.post("/soc/certbr/token")
+async def cert_token(_: dict = Depends(require_admin)):
+    t = os.urandom(16).hex()
+    await db.config.update_one({"key": "certbr"}, {"$set": {"token": t}}, upsert=True)
+    return {"token": t}
+
+
+class CertImportIn(BaseModel):
+    text: str
+    subject: str = ""
+    preview: bool = False
+
+
+@api.post("/soc/certbr/import")
+async def cert_import(body: CertImportIn, _: dict = Depends(require_admin)):
+    if body.preview:
+        return {"items": certbr.parse_notice(body.text[:200000], body.subject)[:500]}
+    return await _cert_import(body.text[:200000], body.subject, "tela")
+
+
+@api.post("/soc/certbr/inbound/{token}")
+async def cert_inbound(token: str, request: Request):
+    """Encaminhamento do e-mail do CERT.br (n8n, regra do servidor de e-mail…): JSON {subject, text} ou o texto puro."""
+    cfg = await _cert_cfg()
+    if not cfg["token"] or not hmac.compare_digest(token, cfg["token"]):
+        raise HTTPException(status_code=403, detail="Token inválido")
+    raw = (await request.body())[:500000].decode("utf-8", "replace")
+    subject, text = "", raw
+    try:
+        j = json.loads(raw)
+        if isinstance(j, dict):
+            subject, text = str(j.get("subject") or ""), str(j.get("text") or j.get("body") or j.get("html") or "")
+    except ValueError:
+        pass
+    text = re.sub(r"<[^>]+>", " ", text)
+    r = await _cert_import(text, subject, "webhook")
+    return {"found": r["found"], "added": r["added"]}
+
+
+def _ipam_owner(ip: str, prefixes: list) -> str:
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return ""
+    best, desc = -1, ""
+    for p in prefixes:
+        try:
+            n = ipaddress.ip_network(p["prefix"], strict=False)
+        except (ValueError, KeyError):
+            continue
+        if n.version == a.version and a in n and n.prefixlen > best and (p.get("description") or "").strip():
+            best, desc = n.prefixlen, f"{p['prefix']} — {p['description'].strip()}"
+    return desc
+
+
+@api.get("/soc/certbr/items")
+async def cert_items(status: str = "open", _: dict = Depends(require_admin)):
+    q = {"status": status} if status else {}
+    rows = await db.cert_items.find(q, {"_id": 0}).sort("last", -1).to_list(3000)
+    pfx = await db.ipam_prefixes.find({}, {"_id": 0, "prefix": 1, "description": 1}).to_list(20000)
+    for r in rows:
+        r["owner"] = _ipam_owner(r["ip"], pfx)
+    return rows
+
+
+class CertActIn(BaseModel):
+    action: str
+    note: str = ""
+
+
+@api.post("/soc/certbr/items/{iid}")
+async def cert_item_act(iid: str, body: CertActIn, admin: dict = Depends(require_admin)):
+    st = {"resolve": "resolved", "ignore": "ignored", "reopen": "open"}.get(body.action)
+    if not st:
+        raise HTTPException(status_code=400, detail="Ação inválida")
+    now = datetime.now(timezone.utc).isoformat()
+    it = await db.cert_items.find_one({"id": iid}, {"_id": 0})
+    if not it:
+        raise HTTPException(status_code=404, detail="Item não encontrado")
+    await db.cert_items.update_one({"id": iid}, {"$set": {"status": st, "note": body.note[:300], "resolved_at": now if st != "open" else None,
+                                                          "resolved_by": admin.get("email") if st != "open" else None}})
+    if st != "open":
+        await db.incidents.update_many({"key": f"soc:certbr:{it['key']}", "status": {"$in": ["open", "ack"]}},
+                                       {"$set": {"status": "resolved", "resolved_at": now, "resolved_by": admin.get("email"), "updated_at": now}})
+    return {"ok": True, "status": st}
+
+
+@api.get("/soc/certbr/notices")
+async def cert_notices(_: dict = Depends(require_admin)):
+    return await db.cert_notices.find({}, {"_id": 0, "text": 0}).sort("at", -1).to_list(200)
+
+
+# ---------- SOC: CVEs do firmware ----------
+_cve_rt: dict = {"busy": False, "step": ""}
+
+
+async def _cve_cfg() -> dict:
+    doc = await db.config.find_one({"key": "cves"}, {"_id": 0}) or {}
+    out = {**cvemod.DEFAULTS, **{k: v for k, v in doc.items() if k in cvemod.DEFAULTS}}
+    out["has_key"] = bool(doc.get("nvd_key"))
+    return out
+
+
+async def _cve_devices() -> List[dict]:
+    devs = await db.devices.find({}, {"_id": 0, "id": 1, "name": 1, "host": 1, "device_type": 1, "owner_id": 1}).to_list(5000)
+    comp = {c["device_id"]: (c.get("firmware") or {}) async for c in db.compliance_results.find({}, {"_id": 0, "device_id": 1, "firmware": 1})}
+    ovr = {o["device_id"]: o async for o in db.cve_overrides.find({}, {"_id": 0})}
+    out = []
+    for d in devs:
+        fw = comp.get(d["id"]) or {}
+        o = ovr.get(d["id"])
+        if o and o.get("product") and o.get("version"):
+            prods = [(o["product"], o["version"])]
+        else:
+            head = ""
+            if d.get("device_type") == "cisco" and fw.get("version"):
+                b = await db.backups.find_one({"device_id": d["id"], "ok": {"$ne": False}}, {"_id": 0, "content": 1}, sort=[("created_at", -1)])
+                head = ((b or {}).get("content") or "")[:3000]
+            prods = cvemod.products_for(d.get("device_type"), fw.get("version") or "", fw.get("model") or "", head)
+        out.append({**d, "version": fw.get("version"), "model": fw.get("model"), "products": prods, "override": bool(o)})
+    return out
+
+
+async def _cve_refresh(force: bool = False) -> dict:
+    if _cve_rt["busy"]:
+        return {"busy": True}
+    _cve_rt["busy"] = True
+    done = {}
+    try:
+        cfgdoc = await db.config.find_one({"key": "cves"}, {"_id": 0}) or {}
+        cfg = await _cve_cfg()
+        key = vault.decrypt(cfgdoc.get("nvd_key", "")) if cfgdoc.get("nvd_key") else ""
+        headers = {"User-Agent": "BastiON-cve/2.0", **({"apiKey": key} if key else {})}
+        pause = 0.8 if key else 6.5
+        needed = sorted({p for d in await _cve_devices() for p, _ in d["products"]})
+        limit = (datetime.now(timezone.utc) - timedelta(days=cfg["refresh_days"])).isoformat()
+        async with httpx.AsyncClient(timeout=90, headers=headers, follow_redirects=True) as c:
+            kev = await db.config.find_one({"key": "cve_kev"}, {"_id": 0, "at": 1}) or {}
+            if force or (kev.get("at") or "") < (datetime.now(timezone.utc) - timedelta(days=1)).isoformat():
+                _cve_rt["step"] = "catálogo KEV (CISA)"
+                try:
+                    r = await c.get(cvemod.KEV_URL)
+                    r.raise_for_status()
+                    ids = sorted({v.get("cveID") for v in (r.json().get("vulnerabilities") or []) if v.get("cveID")})
+                    await db.config.update_one({"key": "cve_kev"}, {"$set": {"ids": ids, "count": len(ids), "at": datetime.now(timezone.utc).isoformat(), "error": ""}}, upsert=True)
+                except Exception as e:
+                    await db.config.update_one({"key": "cve_kev"}, {"$set": {"error": f"{type(e).__name__}: {str(e)[:150]}"}}, upsert=True)
+            for prod in needed:
+                cur = await db.cve_db.find_one({"_id": prod}, {"_id": 0, "at": 1})
+                if cur and (cur.get("at") or "") > limit and not force:
+                    continue
+                vendor, product = prod.split(":", 1)
+                items, start, total, err = [], 0, None, ""
+                try:
+                    while total is None or start < total:
+                        _cve_rt["step"] = f"NVD {cvemod.PRODUCT_LABEL.get(prod, prod)} ({start}/{total or '?'})"
+                        r = await c.get(cvemod.NVD_URL, params={"virtualMatchString": f"cpe:2.3:o:{vendor}:{product}", "resultsPerPage": 2000, "startIndex": start})
+                        if r.status_code == 404:
+                            total = 0
+                            break
+                        r.raise_for_status()
+                        js = r.json()
+                        total = int(js.get("totalResults") or 0)
+                        items += cvemod.compact_nvd(js, prod)
+                        start += int(js.get("resultsPerPage") or 2000) or 2000
+                        await asyncio.sleep(pause)
+                except Exception as e:
+                    err = f"{type(e).__name__}: {str(e)[:150]}"
+                st = {"at": datetime.now(timezone.utc).isoformat(), "error": err}
+                if not err:
+                    st.update(items=items, count=len(items), ok_at=st["at"])
+                await db.cve_db.update_one({"_id": prod}, {"$set": {"product": prod, **st}}, upsert=True)
+                done[prod] = len(items) if not err else err
+                await asyncio.sleep(pause)
+        await _cve_evaluate()
+    finally:
+        _cve_rt["busy"], _cve_rt["step"] = False, ""
+    return done
+
+
+async def _cve_evaluate():
+    cfg = await _cve_cfg()
+    kev = set((await db.config.find_one({"key": "cve_kev"}, {"_id": 0, "ids": 1}) or {}).get("ids") or [])
+    cache: dict = {}
+    now = datetime.now(timezone.utc).isoformat()
+    for d in await _cve_devices():
+        found, prods = [], []
+        for prod, ver in d["products"]:
+            if prod not in cache:
+                cache[prod] = (await db.cve_db.find_one({"_id": prod}, {"_id": 0, "items": 1}) or {}).get("items") or []
+            found += cvemod.matches(cache[prod], ver, prod, kev)
+            prods.append({"product": prod, "label": cvemod.PRODUCT_LABEL.get(prod, prod), "version": ver, "loaded": bool(cache[prod])})
+        prev = await db.cve_results.find_one({"device_id": d["id"]}, {"_id": 0, "ids": 1, "version": 1}) or {}
+        ids = [c["id"] for c in found]
+        await db.cve_results.update_one({"device_id": d["id"]}, {"$set": {
+            "device_id": d["id"], "device_name": d["name"], "device_type": d.get("device_type"), "host": d.get("host"), "model": d.get("model"),
+            "version": d.get("version"), "products": prods, "override": d["override"], "summary": cvemod.summary(found), "cves": found[:400],
+            "ids": ids, "at": now}}, upsert=True)
+        before = set(prev.get("ids") or [])
+        old = before if prev.get("version") == d.get("version") else set()   # firmware mudou: reavalia o que continua
+        for c in found:
+            if c["id"] in old:
+                continue
+            if not ((cfg["alert_kev"] and c["kev"]) or (c["score"] or 0) >= float(cfg["alert_min_score"] or 99)):
+                continue
+            try:
+                await inc_center.ingest("soc", {"key": f"soc:cve:{d['id']}:{c['id']}", "status": "problem",
+                                                "severity": "high" if c["kev"] else "medium", "device_id": d["id"], "host": d.get("host", ""),
+                                                "host_name": d["name"],
+                                                "title": f"{c['id']}{' (explorada ativamente — KEV)' if c['kev'] else ''} em {d['name']} — {d.get('version')}",
+                                                "description": f"CVSS {c['score']}. {c['desc'][:300]}\nhttps://nvd.nist.gov/vuln/detail/{c['id']}"})
+            except Exception as e:
+                logger.warning(f"CVE incidente: {e}")
+        for gone in before - set(ids):
+            await db.incidents.update_many({"key": f"soc:cve:{d['id']}:{gone}", "status": {"$in": ["open", "ack"]}},
+                                           {"$set": {"status": "resolved", "resolved_at": now, "resolved_by": "firmware atualizado", "updated_at": now}})
+
+
+async def _cve_loop():
+    await asyncio.sleep(180)
+    while True:
+        try:
+            if (await _cve_cfg())["enabled"]:
+                await _cve_refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"CVE: {e}")
+        await asyncio.sleep(3600)
+
+
+@api.get("/soc/cves/summary")
+async def cve_summary(_: dict = Depends(require_admin)):
+    rows = await db.cve_results.find({}, {"_id": 0, "cves": 0, "ids": 0}).to_list(5000)
+    ids = {d["id"] for d in await db.devices.find({}, {"_id": 0, "id": 1}).to_list(5000)}
+    rows = [r for r in rows if r["device_id"] in ids]
+    rows.sort(key=lambda r: (-(r["summary"] or {}).get("kev", 0), -(r["summary"] or {}).get("max_score", 0), r["device_name"]))
+    db_st = await db.cve_db.find({}, {"_id": 0, "items": 0}).to_list(100)
+    kev = await db.config.find_one({"key": "cve_kev"}, {"_id": 0, "ids": 0}) or {}
+    return {"devices": rows, "products": db_st, "kev": kev, "busy": _cve_rt["busy"], "step": _cve_rt["step"], "settings": await _cve_cfg(),
+            "labels": cvemod.PRODUCT_LABEL}
+
+
+@api.get("/soc/cves/device/{device_id}")
+async def cve_device(device_id: str, _: dict = Depends(require_admin)):
+    r = await db.cve_results.find_one({"device_id": device_id}, {"_id": 0, "ids": 0})
+    if not r:
+        raise HTTPException(status_code=404, detail="Sem análise para esse equipamento ainda")
+    return r
+
+
+class CveOverrideIn(BaseModel):
+    product: str = ""
+    version: str = ""
+
+
+@api.put("/soc/cves/override/{device_id}")
+async def cve_override(device_id: str, body: CveOverrideIn, _: dict = Depends(require_admin)):
+    if not body.product or not body.version:
+        await db.cve_overrides.delete_one({"device_id": device_id})
+    else:
+        if not re.fullmatch(r"[a-z0-9_.-]+:[a-z0-9_.-]+", body.product.strip().lower()):
+            raise HTTPException(status_code=400, detail="Produto no formato fornecedor:produto da NVD (ex.: mikrotik:routeros)")
+        await db.cve_overrides.update_one({"device_id": device_id}, {"$set": {"device_id": device_id, "product": body.product.strip().lower(),
+                                                                             "version": body.version.strip()[:60]}}, upsert=True)
+    _bg(_cve_refresh())
+    return {"ok": True}
+
+
+class CveSettingsIn(BaseModel):
+    enabled: bool = True
+    alert_kev: bool = True
+    alert_min_score: float = 9.0
+    refresh_days: int = 3
+    nvd_key: str = ""
+    clear_key: bool = False
+
+
+@api.put("/soc/cves/settings")
+async def cve_settings_put(body: CveSettingsIn, _: dict = Depends(require_admin)):
+    d = {"enabled": body.enabled, "alert_kev": body.alert_kev, "alert_min_score": max(0.0, min(10.1, body.alert_min_score)),
+         "refresh_days": max(1, min(30, body.refresh_days))}
+    if body.nvd_key.strip():
+        d["nvd_key"] = vault.encrypt(body.nvd_key.strip())
+    elif body.clear_key:
+        d["nvd_key"] = ""
+    await db.config.update_one({"key": "cves"}, {"$set": d}, upsert=True)
+    return await _cve_cfg()
+
+
+@api.post("/soc/cves/refresh")
+async def cve_refresh(_: dict = Depends(require_admin)):
+    if _cve_rt["busy"]:
+        raise HTTPException(status_code=409, detail=f"Já está atualizando ({_cve_rt['step']})")
+    _bg(_cve_refresh(force=True))
+    return {"started": True}
+
+
+# ---------- SOC: login único (SSO / OpenID Connect) ----------
+_sso_cache: dict = {}
+
+
+async def _sso_cfg() -> dict:
+    doc = await db.config.find_one({"key": "sso"}, {"_id": 0}) or {}
+    return {"providers": doc.get("providers") or [], "secrets": doc.get("secrets") or {},
+            "public_url": (doc.get("public_url") or os.environ.get("PUBLIC_URL", "")).rstrip("/"),
+            "password_login": doc.get("password_login") if doc.get("password_login") in ("all", "admins") else "all",
+            "sso_users": doc.get("sso_users") if doc.get("sso_users") in ("all", "selected") else "all"}
+
+
+async def _sso_get(url: str, ttl: int = 3600, force: bool = False) -> dict:
+    hit = _sso_cache.get(url)
+    if hit and not force and time.time() - hit[0] < ttl:
+        return hit[1]
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+        r = await c.get(url)
+        r.raise_for_status()
+        js = r.json()
+    _sso_cache[url] = (time.time(), js)
+    return js
+
+
+async def _sso_disc(prov: dict, force: bool = False) -> dict:
+    d = await _sso_get(prov["issuer"].rstrip("/") + "/.well-known/openid-configuration", force=force)
+    for k in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+        if not d.get(k):
+            raise ssomod.SsoError(f"Discovery do provedor sem {k}")
+    return d
+
+
+def _sso_redirect_uri(cfg: dict, pid: str) -> str:
+    return f"{cfg['public_url']}/api/auth/sso/{pid}/callback"
+
+
+def _sso_fail(cfg: dict, msg: str):
+    from urllib.parse import quote
+    return RedirectResponse(f"{cfg['public_url'] or ''}/login?sso_error={quote(msg[:200])}", status_code=302)
+
+
+@api.get("/auth/sso/providers")
+async def sso_providers():
+    cfg = await _sso_cfg()
+    return {"providers": [{"id": p["id"], "name": p["name"]} for p in cfg["providers"] if p.get("enabled")],
+            "password_login": cfg["password_login"]}
+
+
+@api.get("/auth/sso/{pid}/start")
+async def sso_start(pid: str):
+    cfg = await _sso_cfg()
+    prov = next((p for p in cfg["providers"] if p["id"] == pid and p.get("enabled")), None)
+    if not prov:
+        return _sso_fail(cfg, "Provedor de login não encontrado")
+    if not cfg["public_url"]:
+        return _sso_fail(cfg, "Endereço público do BastiON não configurado (PUBLIC_URL)")
+    try:
+        disc = await _sso_disc(prov)
+    except Exception as e:
+        return _sso_fail(cfg, f"Não consegui falar com o provedor: {e}")
+    state, nonce = ssomod.b64url(os.urandom(24)), ssomod.b64url(os.urandom(16))
+    verifier, challenge = ssomod.pkce()
+    await db.sso_states.insert_one({"state": state, "nonce": nonce, "verifier": verifier, "pid": pid, "ts": datetime.now(timezone.utc)})
+    return RedirectResponse(ssomod.auth_url(disc, prov, _sso_redirect_uri(cfg, pid), state, nonce, challenge), status_code=302)
+
+
+@api.get("/auth/sso/{pid}/callback")
+async def sso_callback(pid: str, request: Request, code: str = "", state: str = "", error: str = "", error_description: str = ""):
+    cfg = await _sso_cfg()
+    ip = security.client_ip(request)
+    ua = request.headers.get("user-agent", "")
+    if error:
+        return _sso_fail(cfg, f"O provedor recusou: {error_description or error}")
+    st = await db.sso_states.find_one_and_delete({"state": state, "pid": pid}) if state else None
+    if not st or (datetime.now(timezone.utc) - (st["ts"] if st["ts"].tzinfo else st["ts"].replace(tzinfo=timezone.utc))).total_seconds() > 600:
+        return _sso_fail(cfg, "Login expirado ou repetido — tente de novo")
+    prov = next((p for p in cfg["providers"] if p["id"] == pid and p.get("enabled")), None)
+    if not prov:
+        return _sso_fail(cfg, "Provedor de login não encontrado")
+    email = ""
+    try:
+        disc = await _sso_disc(prov)
+        secret = vault.decrypt(cfg["secrets"].get(pid, ""))
+        data = {"grant_type": "authorization_code", "code": code, "redirect_uri": _sso_redirect_uri(cfg, pid),
+                "client_id": prov["client_id"], "code_verifier": st["verifier"]}
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(disc["token_endpoint"], data={**data, **({"client_secret": secret} if secret else {})}, headers={"Accept": "application/json"})
+            if r.status_code in (400, 401) and secret:
+                r = await c.post(disc["token_endpoint"], data=data, auth=(prov["client_id"], secret), headers={"Accept": "application/json"})
+            if r.status_code >= 300:
+                raise ssomod.SsoError(f"troca do código falhou (HTTP {r.status_code}): {r.text[:150]}")
+            tok = r.json()
+            if not tok.get("id_token"):
+                raise ssomod.SsoError("o provedor não devolveu id_token (escopo openid?)")
+            jwks = await _sso_get(disc["jwks_uri"])
+            try:
+                claims = ssomod.verify_id_token(tok["id_token"], jwks, prov, disc.get("issuer") or prov["issuer"], st["nonce"])
+            except ssomod.SsoError as e:
+                if "Assinatura" not in str(e):
+                    raise
+                jwks = await _sso_get(disc["jwks_uri"], force=True)                # chave girou
+                claims = ssomod.verify_id_token(tok["id_token"], jwks, prov, disc.get("issuer") or prov["issuer"], st["nonce"])
+            info = None
+            if not claims.get("email") and disc.get("userinfo_endpoint") and tok.get("access_token"):
+                ui = await c.get(disc["userinfo_endpoint"], headers={"Authorization": f"Bearer {tok['access_token']}"})
+                if ui.status_code < 300:
+                    info = ui.json()
+        who = ssomod.identity(claims, info)
+        email = who["email"]
+        if not email:
+            raise ssomod.SsoError("o provedor não informou o e-mail da conta")
+        if not who["verified"]:
+            raise ssomod.SsoError("e-mail não verificado no provedor")
+        if not ssomod.domain_ok(prov, email):
+            raise ssomod.SsoError(f"domínio de {email} não é permitido")
+        groups = ssomod.groups_of(who["claims"], prov.get("groups_claim") or "groups")
+        mapped = ssomod.role_from_groups(prov, groups)
+        if prov.get("require_group") and not mapped:
+            raise ssomod.SsoError("sua conta não está em nenhum grupo liberado para o BastiON")
+        user = await db.users.find_one({"email": email}, {"_id": 0})
+        if user and not ssomod.sso_allowed(user, cfg):
+            raise ssomod.SsoError(f"o login único não está liberado para {email} — entre com a senha ou peça ao administrador")
+        if not user:
+            if cfg["sso_users"] == "selected":
+                raise ssomod.SsoError(f"{email} não tem usuário liberado para o login único — peça ao administrador")
+            if not prov.get("auto_create"):
+                raise ssomod.SsoError(f"{email} não tem usuário no BastiON — peça ao administrador")
+            user = {"id": os.urandom(8).hex(), "email": email, "name": who["name"] or email.split("@")[0], "role": mapped or prov["default_role"],
+                    "password_hash": hash_password(os.urandom(24).hex()), "sso": pid, "created_at": datetime.now(timezone.utc).isoformat()}
+            await db.users.insert_one(dict(user))
+            logger.info("Usuário %s criado pelo login único (%s)", email, pid)
+        elif mapped and mapped != user.get("role"):
+            admins = await db.users.count_documents({"role": "admin"})
+            if not (user.get("role") == "admin" and admins <= 1):
+                await db.users.update_one({"id": user["id"]}, {"$set": {"role": mapped}})
+                user["role"] = mapped
+        await _login_gate(user, ip, ua)
+    except HTTPException as e:
+        return _sso_fail(cfg, str(e.detail))
+    except Exception as e:
+        await security.log_event(db, email or f"sso:{pid}", ip, ua, False, f"sso: {str(e)[:80]}")
+        return _sso_fail(cfg, f"Login único falhou: {e}")
+    await security.log_event(db, user["email"], ip, ua, True, f"sso:{pid}", user["id"])
+    await db.users.update_one({"id": user["id"]}, {"$set": {"last_login_at": datetime.now(timezone.utc).isoformat(), "last_login_ip": ip}})
+    _bg(_login_anomaly(user, ip, ua))
+    one = ssomod.b64url(os.urandom(24))
+    await db.sso_codes.insert_one({"code": one, "user_id": user["id"], "ts": datetime.now(timezone.utc)})
+    return RedirectResponse(f"{cfg['public_url']}/login?sso={one}", status_code=302)
+
+
+class SsoExchangeIn(BaseModel):
+    code: str
+
+
+@api.post("/auth/sso/exchange")
+async def sso_exchange(body: SsoExchangeIn):
+    d = await db.sso_codes.find_one_and_delete({"code": body.code}) if body.code else None
+    if not d or (datetime.now(timezone.utc) - (d["ts"] if d["ts"].tzinfo else d["ts"].replace(tzinfo=timezone.utc))).total_seconds() > 90:
+        raise HTTPException(status_code=401, detail="Login expirado — entre de novo")
+    user = await db.users.find_one({"id": d["user_id"]})
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuário não encontrado")
+    return _session_payload(user)
+
+
+@api.get("/soc/sso/settings")
+async def sso_settings(_: dict = Depends(require_admin)):
+    cfg = await _sso_cfg()
+    return {"providers": [{**p, "has_secret": bool(cfg["secrets"].get(p["id"])), "redirect_uri": _sso_redirect_uri(cfg, p["id"])} for p in cfg["providers"]],
+            "public_url": cfg["public_url"], "password_login": cfg["password_login"], "sso_users": cfg["sso_users"], "presets": ssomod.PRESETS,
+            "users": [{"id": u["id"], "email": u["email"], "role": u.get("role"), "login_mode": u.get("login_mode") or "default"}
+                      async for u in db.users.find({}, {"_id": 0, "id": 1, "email": 1, "role": 1, "login_mode": 1})]}
+
+
+class SsoSettingsIn(BaseModel):
+    providers: List[dict] = []
+    public_url: str = ""
+    password_login: str = "all"
+    sso_users: str = "all"
+
+
+@api.put("/soc/sso/settings")
+async def sso_settings_put(body: SsoSettingsIn, admin: dict = Depends(require_admin)):
+    cur = await _sso_cfg()
+    provs, secrets, seen = [], {}, set()
+    for p in body.providers[:10]:
+        try:
+            c = ssomod.clean_provider(p)
+        except ssomod.SsoError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if c["id"] in seen:
+            raise HTTPException(status_code=400, detail=f"Identificador repetido: {c['id']}")
+        seen.add(c["id"])
+        provs.append(c)
+        if p.get("client_secret"):
+            secrets[c["id"]] = vault.encrypt(str(p["client_secret"]))
+        elif not p.get("clear_secret") and cur["secrets"].get(c["id"]):
+            secrets[c["id"]] = cur["secrets"][c["id"]]
+    pub = body.public_url.strip().rstrip("/")
+    if pub and not re.fullmatch(r"https?://[A-Za-z0-9.:\-]+", pub):
+        raise HTTPException(status_code=400, detail="Endereço público: https://nome.do.bastion (sem caminho)")
+    mode = body.password_login if body.password_login in ("all", "admins") else "all"
+    if mode == "admins" and admin.get("role") != "admin":
+        mode = "all"
+    scope = body.sso_users if body.sso_users in ("all", "selected") else "all"
+    await db.config.update_one({"key": "sso"}, {"$set": {"providers": provs, "secrets": secrets, "public_url": pub, "password_login": mode,
+                                                         "sso_users": scope}}, upsert=True)
+    return await sso_settings(_=admin)
+
+
+@api.post("/soc/sso/test/{pid}")
+async def sso_test(pid: str, _: dict = Depends(require_admin)):
+    cfg = await _sso_cfg()
+    prov = next((p for p in cfg["providers"] if p["id"] == pid), None)
+    if not prov:
+        raise HTTPException(status_code=404, detail="Salve o provedor antes de testar")
+    try:
+        disc = await _sso_disc(prov, force=True)
+        jwks = await _sso_get(disc["jwks_uri"], force=True)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Falhou: {e}"[:300])
+    if (disc.get("issuer") or "").rstrip("/") != prov["issuer"].rstrip("/") and "{tenantid}" not in (disc.get("issuer") or ""):
+        raise HTTPException(status_code=400, detail=f"O provedor diz que o emissor é {disc.get('issuer')} — use exatamente esse valor")
+    return {"ok": True, "issuer": disc.get("issuer"), "keys": len(jwks.get("keys") or []), "authorization_endpoint": disc["authorization_endpoint"],
+            "pkce": "S256" in (disc.get("code_challenge_methods_supported") or ["S256"])}
 
 
 # ---------- WebSocket Terminal ----------

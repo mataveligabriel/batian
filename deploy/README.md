@@ -1340,7 +1340,7 @@ Ainda sem testar em equipamento real: a leitura de `showcard`, `show discovery` 
 
 ## 58. SOC — Política de comandos e aprovação
 
-Menu **Segurança (SOC) → Política de comandos**. Cada comando, antes de chegar ao equipamento, passa pelas regras — no **terminal web** (na hora do Enter), **Execução em Lote**, **roteiros** (web e Telegram), **Script de OLT** e nas alterações do **assistente de IA**.
+Menu **Painel SOC → Política de comandos**. Cada comando, antes de chegar ao equipamento, passa pelas regras — no **terminal web** (na hora do Enter), **Execução em Lote**, **roteiros** (web e Telegram), **Script de OLT** e nas alterações do **assistente de IA**.
 
 - **Ações**: *Bloquear* (não envia; abre incidente no SOC), *Pedir aprovação* (outro administrador aprova), *Alertar* (envia e abre incidente) e *Permitir* (exceção para as regras de baixo, ex.: admins podem `reboot`).
 - **Escopo** de cada regra: fabricante, tags dos equipamentos, perfil (admin/operador), usuários e onde (terminal, lote…). O padrão é uma expressão regular sobre o comando (sem diferenciar maiúsculas).
@@ -1353,7 +1353,7 @@ Menu **Segurança (SOC) → Política de comandos**. Cada comando, antes de cheg
 
 ## 59. SOC — Envio para SIEM e auditoria da interface
 
-Menu **Segurança (SOC) → SIEM e auditoria** (só administradores).
+Menu **Painel SOC → SIEM e auditoria** (só administradores).
 
 - **O que sai**: logins (ok, falha, bloqueio), sessões de acesso (início/fim do terminal, web, RDP, Winbox e comandos em lote), comandos pegos pela política e ações do assistente de IA, **alterações feitas na interface/API** (quem fez POST/PUT/DELETE em qual caminho, de qual IP) e incidentes (aberto/resolvido). Cada destino escolhe as categorias e uma severidade mínima (0–10).
 - **Destinos** (até 10):
@@ -1365,3 +1365,56 @@ Menu **Segurança (SOC) → SIEM e auditoria** (só administradores).
 - **Auditoria da interface**: a mesma trilha de alterações, consultável na tela, guardada por 180 dias.
 
 No Wazuh, basta um `<remote>` com `<connection>syslog</connection>` e o IP do BastiON em `<allowed-ips>`; o decoder CEF nativo já entende os campos `suser`, `src`, `dhost`, `act` e `outcome`.
+
+## 60. SOC — Logins suspeitos e cerca geográfica
+
+Menu **Painel SOC → Logins suspeitos** (só administradores). Cada login certo é comparado com o histórico do próprio usuário (90 dias):
+
+- **País novo**, **operadora (ASN) nova**, **IP novo**, **viagem impossível** (troca de país em menos de N horas), **horário fora do costume** (com 20+ logins de histórico), **navegador/sistema novo** e **acerto depois de várias falhas** (força bruta que deu certo). Dois sinais juntos sobem a severidade.
+- A partir da severidade escolhida abre incidente com origem **SOC** e, se o usuário tiver o Telegram vinculado (Assistente IA), pergunta **"Foi você?"** no privado. *Não fui eu* encerra todas as sessões dele na hora e abre incidente crítico. Na tela: *Foi o usuário* ou *Encerrar sessões dele*.
+- **Cerca geográfica**: só aceita login dos países da lista (ex.: `BR`). Rede interna, IPs sem país conhecido e as **redes confiáveis** sempre passam; dá para não aplicar aos administradores. O BastiON recusa salvar uma lista que bloquearia o seu próprio acesso.
+- O país/operadora vem da **base IP → ASN** (Análise de Flow → Configurações). Sem ela, valem só IP novo, horário, navegador e força bruta.
+- **Últimos logins**: logins e falhas com país, operadora e navegador, filtrando por e-mail.
+
+## 61. SOC — Threat intel no Flow
+
+Menu **Painel SOC → Threat intel** (só administradores). O coletor de flow confere a origem e o destino de **cada flow** contra listas públicas de IPs maliciosos e registra, por dia, quem falou com quem.
+
+- **Listas** (atualizadas a cada 6 h pelo servidor): abuse.ch Feodo Tracker (C2), Spamhaus DROP v4/v6 (blocos sequestrados), Emerging Threats (comprometidos), blocklist.de (ataques SSH/mail/web), CINS Army (scanners) e, opcionais, DShield e saídas Tor. Dá para somar **listas próprias** por URL (um IP/CIDR por linha, com categoria), uma **lista manual** e uma lista de **nunca alertar** (falsos positivos). Se um download falha, a versão anterior continua valendo.
+- **Saída × entrada**: os **prefixos próprios** do Flow (Análise de Flow → Configuração) dizem qual lado é seu. **Saída** (um host seu falando com C2/malware/comprometido/bloco DROP) abre incidente com origem SOC — normalmente é cliente infectado; veja também Flow → Botnet. **Entrada** (scanners, força bruta) é ruído de fundo da internet: fica registrada e só vira incidente se você definir um mínimo de flows por dia.
+- **Ocorrências**: resumo por categoria, seus hosts com mais contatos maliciosos e a tabela (sentido, IP seu, IP malicioso, lista, portas, flows, volume). **Consultar IP** mostra em quais listas o IP está, país/operadora e todas as ocorrências dele no flow.
+- O **login anômalo** também usa as listas: login vindo de IP listado entra como sinal ("IP em lista de ameaças").
+- Ocorrências guardadas por 30 dias (configurável).
+
+## 62. SOC — Auditoria CERT.br (passiva)
+
+Menu **Painel SOC → Auditoria CERT.br** (só administradores). Acha serviços que respondem para a internet e viram refletor de DDoS — DNS recursivo, NTP, SSDP/UPnP, SNMP, Memcached, Portmap, NetBIOS, mDNS, CLDAP, Ubiquiti, Chargen, WS-Discovery, TFTP, DVR — **sem varrer a rede**:
+
+- **Pelo flow**: um IP dos seus prefixos respondendo de uma porta de serviço UDP para IPs de fora (porta de destino diferente da do serviço, para não confundir com o próprio cliente NTP/DNS). Confirma a partir de N destinos no dia e fecha sozinho quando para de responder por N dias. Ponha em **Nunca acusar** os servidores que respondem de propósito (DNS autoritativo, NTP público).
+- **Pelos avisos**: cole o e-mail do CERT.br em **Importar aviso** (o BastiON acha os IPs e o serviço pelo assunto, porta ou texto) ou configure o e-mail/n8n para fazer POST no endereço de **Configurações** (JSON `{subject, text}` ou texto puro). Só IPs dos seus prefixos entram.
+- **Pelos backups**: botão **Adicionar as regras na Conformidade** — MikroTik com `allow-remote-requests=yes`, servidor NTP, UPnP e SOCKS ligados; Cisco `ip dns server` e `ntp master`; Huawei `dns proxy enable`; Juniper `system services dns`.
+- Cada pendência mostra o prefixo do IPAM (cliente/POP), as fontes (flow e/ou aviso), quantas vezes voltou e como corrigir. Item novo abre incidente com origem SOC.
+
+## 63. SOC — CVEs do firmware
+
+Menu **Painel SOC → CVEs do firmware** (só administradores). A versão de cada equipamento — a mesma que a Conformidade lê dos backups — é cruzada com a **NVD** (NIST) e com o catálogo **KEV** da CISA (vulnerabilidades exploradas ativamente).
+
+- **Produtos**: MikroTik RouterOS, Juniper Junos, Cisco IOS / IOS XE / IOS XR / NX-OS (pelo número da versão e pelo cabeçalho do backup) e Huawei por modelo (`<modelo>_firmware` na NVD — cobertura parcial). ZTE, Datacom, FiberHome e Linux quase não têm dados na NVD: informe produto e versão à mão no detalhe do equipamento (ex.: `mikrotik:routeros` / `7.11.2`) quando o automático não servir.
+- A base é baixada pelo servidor a cada N dias (só os produtos que você tem) e a comparação é local. Sem chave da API a NVD é lenta (5 consultas a cada 30 s) — peça uma chave gratuita no site da NVD e cole em ⚙.
+- **Incidente** (origem SOC) para CVE KEV e/ou acima do CVSS escolhido, um por equipamento e CVE; fecha sozinho quando o firmware é atualizado e a CVE deixa de valer.
+- Limitação: a NVD às vezes liga a CVE a "sistema X rodando no modelo Y"; o BastiON olha só o sistema, então pode aparecer CVE de outro modelo da mesma linha — cada CVE traz o texto e o link da NVD para conferir.
+
+## 64. SOC — Login único (SSO / OpenID Connect)
+
+Menu **Painel SOC → Login único (SSO)** (só administradores). Botão "Entrar com …" na tela de login para Google Workspace, Microsoft Entra ID, Keycloak, Authentik, Authelia ou qualquer provedor OpenID Connect.
+
+1. **Adicionar** o provedor (modelos prontos) e preencher o **emissor** (issuer — ex.: `https://accounts.google.com`, `https://login.microsoftonline.com/<TENANT_ID>/v2.0`, `https://sso.exemplo.net/realms/<REALM>`).
+2. No provedor, criar o app/client do tipo *Web* e cadastrar **exatamente** a **URL de retorno** mostrada (`<endereço público>/api/auth/sso/<id>/callback`). O endereço público vem do `PUBLIC_URL` do `.env` e pode ser trocado na tela.
+3. Colar **client ID** e **client secret** (guardado criptografado), salvar e **Testar** (confere discovery e chaves).
+
+- **Quem entra**: o e-mail da conta do provedor precisa existir no BastiON — ou ligue *Criar o usuário no 1º login* (com o perfil padrão) e restrinja por **domínio** (ex.: `exemplo.net`). E-mail não verificado é recusado.
+- **Perfil pelos grupos** (opcional): claim `groups` (ou `roles`) → Administrador/Operador/View, atualizado a cada login; *Só quem está num grupo* bloqueia o resto. O único administrador nunca perde o perfil.
+- **Quem pode usar o SSO**: *Todos* (quem tem usuário ou é de um domínio liberado) ou *Só os usuários marcados*. Neste modo ninguém é criado no 1º login: libere cada pessoa.
+- **Por usuário** (Painel SOC → Login único → Por usuário, ou Usuários → editar → *Como ele entra*): *Padrão* (segue as regras gerais), *Senha e SSO*, *Só SSO* (a senha passa a ser recusada) ou *Só senha* (o SSO é recusado). O modo da pessoa vale acima da regra geral. Você não pode deixar a sua própria conta *Só SSO*, e o único administrador sempre consegue entrar com senha. A tela avisa quem ficaria sem nenhum jeito de entrar.
+- **Senha só para administradores** (regra geral para quem está no *Padrão*): os demais só entram pelo SSO; o login com senha do admin fica como acesso de emergência.
+- **Segurança**: authorization code + PKCE (S256), state e nonce de uso único, id_token conferido pela chave pública do provedor (emissor, audiência, validade). O navegador recebe só um código de 90 s trocado pela sessão. O 2FA fica com o provedor (o 2FA obrigatório do BastiON não vale para usuário criado pelo SSO); **cerca geográfica** e **login anômalo** continuam valendo, e o login aparece no histórico como `sso:<id>`.

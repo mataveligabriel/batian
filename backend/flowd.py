@@ -24,6 +24,8 @@ import botnet  # noqa: E402
 import flowagg  # noqa: E402
 import flowproto  # noqa: E402
 import flowstore  # noqa: E402
+import threatintel  # noqa: E402
+import certbr  # noqa: E402
 
 log = logging.getLogger("flowd")
 RCVBUF = 32 * 1024 * 1024
@@ -72,6 +74,10 @@ class Collector:
         self.bot_ids: dict = {}
         self.bot_feeds_at = 0.0
         self.bot_feed_sig = None
+        self.ti = threatintel.Tracker()
+        self.ti_sig = None
+        self.cert = certbr.FlowTracker()
+        self.cert_sig = None
         self.cache = flowproto.TemplateCache()
         self.cfg = dict(flowstore.DEFAULTS)
         self.exp: dict = {}
@@ -112,11 +118,18 @@ class Collector:
             st["rate"] = info["rate"]
         st["last"] = time.time()
         add = self.agg.add
-        if self.bot.on:
-            badd = self.bot.add
+        if self.bot.on or self.ti.on or self.cert.on:
+            badd = self.bot.add if self.bot.on else None
+            tadd = self.ti.add if self.ti.on else None
+            cadd = self.cert.add if self.cert.on else None
             for f in flows:
                 add(f)
-                badd(f)
+                if badd:
+                    badd(f)
+                if tadd:
+                    tadd(f)
+                if cadd:
+                    cadd(f)
         else:
             for f in flows:
                 add(f)
@@ -189,6 +202,12 @@ class Collector:
         if bcfg["enabled"] and bcfg["feeds"] and (time.time() - self.bot_feeds_at > 6 * 3600 or feeds.get("urls") != bcfg["feeds"]):
             self.bot_feeds_at = time.time()
             self._spawn(self._safe("feeds", self.refresh_feeds(bcfg["feeds"])))
+        await self.reload_ti(cfg)
+        ccfg = certbr.clean_settings(await db.config.find_one({"key": "certbr"}, {"_id": 0}) or {})
+        csig = (ccfg["enabled"], tuple(ccfg["ignore"]), tuple(cfg.get("own_prefixes") or []))
+        if csig != self.cert_sig:
+            self.cert.configure(ccfg["enabled"], cfg.get("own_prefixes") or [], ccfg["ignore"])
+            self.cert_sig = csig
         ret = (cfg.get("retention_days"), cfg.get("hourly_days"))
         if ret != self._ret:
             await flowstore.ensure_indexes(db, cfg)
@@ -241,6 +260,63 @@ class Collector:
             for d in docs:
                 d["ts"] = ts
             await self.db.flow_1m.insert_many(docs, ordered=False)
+
+    # ---------- threat intel ----------
+    async def reload_ti(self, cfg: dict):
+        tcfg = threatintel.clean_settings(await self.db.config.find_one({"key": "threatintel"}, {"_id": 0}) or {})
+        meta = await self.db.config.find_one({"key": "ti_meta"}, {"_id": 0}) or {}
+        sig = (str(sorted((k, str(v)) for k, v in tcfg.items())), meta.get("at"), tuple(cfg.get("own_prefixes") or []))
+        if sig == self.ti_sig:
+            return
+        self.ti_sig = sig
+        if not tcfg["enabled"]:
+            self.ti.configure(None, [])
+            return
+        feeds = threatintel.feed_list(tcfg)
+        lists = {}
+        for f in feeds:
+            doc = await self.db.ti_lists.find_one({"_id": f["id"]}, {"blob": 1})
+            if doc and doc.get("blob"):
+                lists[f["id"]] = threatintel.unpack(doc["blob"])
+        intel = await asyncio.to_thread(threatintel.Intel, lists, {f["id"]: f for f in feeds}, tcfg["manual"], tcfg["ignore"])
+        self.ti.configure(intel, cfg.get("own_prefixes") or [])
+        log.info(f"threat intel: {intel.count} redes de {len(lists)} lista(s)")
+
+    async def tick_ti(self, now: float):
+        if not self.ti.on:
+            return
+        hits = self.ti.flush()
+        if not hits:
+            return
+        from pymongo import UpdateOne
+        day = threatintel.day_key(now)
+        ts = datetime.fromtimestamp(now, timezone.utc)
+        ops = []
+        for h in hits:
+            key = f"{day}|{h['bad_ip']}|{h['local_ip']}|{h['dir']}"
+            ops.append(UpdateOne({"key": key}, {
+                "$inc": {"bytes": h["bytes"], "pkts": h["pkts"], "flows": h["flows"], "minutes": 1},
+                "$set": {"last": _iso(now), "ts": ts, "feeds": h["feeds"], "category": h["category"]},
+                "$addToSet": {"ports": {"$each": h["ports"]}},
+                "$setOnInsert": {"id": uuid.uuid4().hex[:16], "day": day, "bad_ip": h["bad_ip"], "local_ip": h["local_ip"],
+                                 "dir": h["dir"], "first": _iso(now), "alerted": False}}, upsert=True))
+        await self.db.ti_hits.bulk_write(ops, ordered=False)
+
+    async def tick_cert(self, now: float):
+        if not self.cert.on:
+            return
+        rows = self.cert.flush()
+        if not rows:
+            return
+        from pymongo import UpdateOne
+        day = threatintel.day_key(now)
+        ts = datetime.fromtimestamp(now, timezone.utc)
+        ops = [UpdateOne({"key": f"{day}|{r['ip']}|{r['service']}"}, {
+            "$inc": {"bytes": r["bytes"], "pkts": r["pkts"], "minutes": 1, "remotes_sum": r["n_remotes"]},
+            "$max": {"remotes_max": r["n_remotes"]},
+            "$set": {"last": _iso(now), "ts": ts, "sample": r["remotes"][:10]},
+            "$setOnInsert": {"day": day, "ip": r["ip"], "service": r["service"], "first": _iso(now)}}, upsert=True) for r in rows]
+        await self.db.cert_flow.bulk_write(ops, ordered=False)
 
     # ---------- botnet nos assinantes (flow dos BNGs) ----------
     async def refresh_feeds(self, urls):
@@ -412,6 +488,8 @@ class Collector:
             if t % 60 == 0:
                 await self._safe("1min", self.tick60(now))
                 await self._safe("botnet", self.tick_botnet(now))
+                await self._safe("threatintel", self.tick_ti(now))
+                await self._safe("certbr", self.tick_cert(now))
             if t % 300 == 0:
                 self._spawn(self._safe("5min", self.tick300(now)))
             if t % 30 == 0:

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { Navigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -6,12 +6,28 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
-import { formatApiError } from "@/lib/api";
-import { Loader2 } from "lucide-react";
+import { api, API_BASE, formatApiError } from "@/lib/api";
+import { Loader2, KeyRound } from "lucide-react";
 import { Wordmark, LogoMark } from "@/components/Brand";
 
 export default function Login() {
-  const { user, login, loading } = useAuth();
+  const { user, login, loading, applySession } = useAuth();
+  const [sso, setSso] = useState({ providers: [], password_login: "all" });
+  const [ssoBusy, setSsoBusy] = useState(false);
+
+  // volta do login único: ?sso=<código de uso único> ou ?sso_error=<motivo>
+  useEffect(() => {
+    api.get("/auth/sso/providers").then(r => setSso(r.data)).catch(() => {});
+    const q = new URLSearchParams(window.location.search);
+    const err = q.get("sso_error");
+    const code = q.get("sso");
+    if (err || code) { try { window.history.replaceState(null, "", "/login"); } catch { /* ok */ } }
+    if (err) toast.error(err);
+    if (code) {
+      setSsoBusy(true);
+      api.post("/auth/sso/exchange", { code }).then(r => applySession(r.data)).catch(e => toast.error(formatApiError(e))).finally(() => setSsoBusy(false));
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -71,6 +87,18 @@ export default function Login() {
           <Button type="submit" disabled={submitting} data-testid="login-submit-btn" className="w-full bg-brand hover:bg-brand-strong h-10 text-[14px]">
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Entrar"}
           </Button>
+          {sso.password_login === "admins" && step !== "totp" && <p className="text-[11px] text-slate-500 text-center -mt-1">Senha só para administradores — os demais entram pelo login único.</p>}
+          {sso.providers.length > 0 && step !== "totp" && (
+            <div className="space-y-2 pt-1" data-testid="login-sso">
+              <div className="flex items-center gap-2 text-[11px] text-slate-500"><span className="h-px flex-1 bg-line" />ou<span className="h-px flex-1 bg-line" /></div>
+              {sso.providers.map(p => (
+                <Button key={p.id} type="button" variant="outline" disabled={ssoBusy} onClick={() => { window.location.href = `${API_BASE}/auth/sso/${p.id}/start`; }}
+                  className="w-full h-10 border-line bg-transparent text-slate-200 hover:bg-white/[0.04]" data-testid={`login-sso-${p.id}`}>
+                  {ssoBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <><KeyRound className="w-4 h-4 mr-2 text-brand-soft" />Entrar com {p.name}</>}
+                </Button>
+              ))}
+            </div>
+          )}
         </form>
         <p className="mt-6 text-center text-xs text-slate-500" data-testid="login-credit">Powered by <span className="text-slate-300 font-medium">Gabriel Mataveli</span></p>
       </div>

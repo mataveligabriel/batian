@@ -36,6 +36,11 @@ import Gpon from "@/pages/Gpon";
 import Compliance from "@/pages/Compliance";
 import CmdPolicy from "@/pages/CmdPolicy";
 import Siem from "@/pages/Siem";
+import LoginAnom from "@/pages/LoginAnom";
+import ThreatIntel from "@/pages/ThreatIntel";
+import CertBr from "@/pages/CertBr";
+import Cves from "@/pages/Cves";
+import Sso from "@/pages/Sso";
 import Ipam from "@/pages/Ipam";
 import WebAccess from "@/pages/WebAccess";
 
@@ -77,6 +82,11 @@ function App() {
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/soc/commands" element={<CmdPolicy />} />
             <Route path="/soc/siem" element={<Siem />} />
+            <Route path="/soc/logins" element={<LoginAnom />} />
+            <Route path="/soc/threat" element={<ThreatIntel />} />
+            <Route path="/soc/certbr" element={<CertBr />} />
+            <Route path="/soc/cves" element={<Cves />} />
+            <Route path="/soc/sso" element={<Sso />} />
             <Route path="/ipam" element={<Ipam />} />
             <Route path="/devices" element={<Devices />} />
             <Route path="/terminal" element={<Terminal />} />

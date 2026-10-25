@@ -135,6 +135,8 @@ function SecurityCard({ onChanged }) {
   );
 }
 
+const LOGIN_MODE = { both: "senha + SSO", sso: "só SSO", password: "só senha" };
+
 export default function Users() {
   const [users, setUsers] = useState([]);
   const [open, setOpen] = useState(false);
@@ -145,12 +147,12 @@ export default function Users() {
 
   const load = async () => setUsers((await api.get("/users")).data);
   const [editing, setEditing] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", role: "operator", password: "", modules: null, incidents_scope: "own", nets: "" });
+  const [editForm, setEditForm] = useState({ name: "", role: "operator", password: "", modules: null, incidents_scope: "own", nets: "", login_mode: "default" });
   const openEdit = (u) => { setEditing(u); setEditForm({ name: u.name, role: u.role, password: "", modules: Array.isArray(u.modules) ? u.modules : null,
-    incidents_scope: u.incidents_scope || "own", nets: (u.incident_nets || []).join("\n") }); };
+    incidents_scope: u.incidents_scope || "own", nets: (u.incident_nets || []).join("\n"), login_mode: u.login_mode || "default" }); };
   const saveEdit = async () => {
     try {
-      const { data } = await api.put(`/users/${editing.id}`, { name: editForm.name, role: editForm.role, password: editForm.password || null,
+      const { data } = await api.put(`/users/${editing.id}`, { name: editForm.name, role: editForm.role, password: editForm.password || null, login_mode: editForm.login_mode,
         incidents_scope: editForm.incidents_scope, incident_nets: editForm.nets.split(/[\s,;]+/).map(x => x.trim()).filter(Boolean),
         ...(editForm.role === "operator" ? (editForm.modules ? { modules: editForm.modules } : { modules_all: true }) : {}) });
       toast.success(editForm.password ? "Usuário atualizado e senha redefinida" : "Usuário atualizado");
@@ -214,6 +216,7 @@ export default function Users() {
                   <Badge className={(ROLE[u.role] || ROLE.operator).cls}>{(ROLE[u.role] || ROLE.operator).label}</Badge>
                   {u.role === "viewer" && <span className="ml-2 text-[10px] font-mono text-slate-500">{(u.view_maps || []).length} mapa(s) · {(u.view_dashboards || []).length} dash</span>}
                   {modulesSummary(u) && <span className="ml-2 text-[11px] text-slate-400" data-testid={`user-modules-${u.id}`}>{modulesSummary(u)}</span>}
+                  {LOGIN_MODE[u.login_mode] && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded border border-brand/40 text-brand-soft" data-testid={`user-login-${u.id}`}>{LOGIN_MODE[u.login_mode]}</span>}
                 </td>
                 <td className="px-4 py-3" data-testid={`user-2fa-${u.id}`}>
                   {u.totp_enabled
@@ -283,6 +286,17 @@ export default function Users() {
                 )}
               </div>
             )}
+            <div>
+              <Label>Como ele entra</Label>
+              <select value={editForm.login_mode} onChange={e => setEditForm({ ...editForm, login_mode: e.target.value })} data-testid="edit-user-login"
+                className="mt-1 w-full h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100">
+                <option value="default">Padrão (segue a regra do login único)</option>
+                <option value="both">Senha e login único (SSO)</option>
+                <option value="sso" disabled={editing?.id === current?.id}>Só login único (SSO){editing?.id === current?.id ? " — não para você mesmo" : ""}</option>
+                <option value="password">Só senha (sem SSO)</option>
+              </select>
+              <div className="text-[11px] text-slate-500 mt-1">A regra geral fica em Painel SOC → Login único: SSO liberado para todos ou só para os marcados aqui.</div>
+            </div>
             <div>
               <Label>Nova senha (opcional — redefine sem excluir o usuário)</Label>
               <Input data-testid="edit-user-password" type="password" value={editForm.password} onChange={e => setEditForm({ ...editForm, password: e.target.value })} placeholder="deixe vazio para manter" className="bg-sunken border-line font-mono" />
