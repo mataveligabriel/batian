@@ -259,6 +259,21 @@ def from_cmd_event(doc: dict) -> dict:
                  approval_id=doc.get("approval_id"), decided_by=doc.get("decided_by"))
 
 
+def from_tacacs(doc: dict) -> dict:
+    t, res = doc.get("type", ""), doc.get("result", "")
+    ok = res not in ("fail", "error", "deny")
+    sev = {"authen": 3 if ok else 6, "author": 3 if ok else 6}.get(t, 2)
+    what = {"authen": "login", "author": "autorização", "acct": "contabilidade"}.get(t, t)
+    msg = f"TACACS+ {what} {res}: {doc.get('user', '')} em {doc.get('device_name') or doc.get('nas_ip', '')}"
+    if doc.get("cmd"):
+        msg += f" — {doc['cmd']}"
+    if doc.get("reason"):
+        msg += f" ({doc['reason']})"
+    return event("authentication" if t == "authen" else "command", f"tacacs_{t}", "success" if ok else "failure", sev,
+                 user=doc.get("user_email") or doc.get("user", ""), src_ip=doc.get("rem_addr", ""), device=doc.get("device_name", ""),
+                 device_ip=doc.get("nas_ip", ""), ts=doc.get("at", ""), message=msg, command=doc.get("cmd"), client=doc.get("client"))
+
+
 def from_ai(doc: dict) -> dict:
     return event("command", f"ai_{doc.get('kind', 'query')}", "success" if doc.get("ok") else "failure",
                  6 if doc.get("kind") == "change" else 3, user=doc.get("user_email", ""), device=doc.get("device_name", ""),

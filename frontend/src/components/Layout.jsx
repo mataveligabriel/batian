@@ -9,7 +9,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   ChevronDown, LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send, UserX, Radar, ShieldAlert, Bug,
+  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send, UserX, Radar, ShieldAlert, Bug, Fingerprint,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -66,6 +66,7 @@ const MENU = [
     { to: "/soc/cves", icon: Bug, label: "CVEs do firmware", adminOnly: true, testid: "nav-cves" },
     { to: "/soc/siem", icon: Send, label: "SIEM e auditoria", adminOnly: true, testid: "nav-siem" },
     { to: "/soc/sso", icon: KeyRound, label: "Login único (SSO)", adminOnly: true, testid: "nav-sso" },
+    { to: "/soc/tacacs", icon: Fingerprint, label: "TACACS+", testid: "nav-tacacs" },
   ] },
   { group: "system", icon: SettingsIcon, label: "Sistema", items: [
     { to: "/ssh-key", icon: KeyRound, label: "Chave SSH Global", testid: "nav-ssh-key", notAdmin: true },   // admin: Configurações

@@ -47,6 +47,18 @@ services:
       mongo:
         condition: service_healthy
 
+  # servidor TACACS+ (TCP 49) para login nos equipamentos com os usuários do BastiON — mesma imagem do backend.
+  # Só atende IPs cadastrados em Painel SOC → TACACS+ → Equipamentos; libere a porta 49 só para eles no firewall.
+  tacacs:
+    build: ../backend
+    command: ["python", "tacacsd.py"]
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    depends_on:
+      mongo:
+        condition: service_healthy
+
   # mitigação de DDoS: BGP do Bastion anuncia o /32 atacado para as bordas (blackhole). Fica parado até
   # ser ligado em Flow → Mitigação. Sai do ar = as bordas retiram o blackhole sozinhas (sessão cai).
   bgp:

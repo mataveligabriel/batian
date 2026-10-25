@@ -21,7 +21,7 @@ const EVT = { block: ["bloqueado", "text-red-300"], alert: ["alerta", "text-sky-
 const STATUS = { pending: ["aguardando", "text-amber-300"], approved: ["aprovado", "text-emerald-300"], denied: ["negado", "text-red-300"],
   cancelled: ["cancelado", "text-slate-400"], expired: ["expirou", "text-slate-500"] };
 const TYPES = ["huawei", "juniper", "cisco", "datacom", "zte", "fiberhome", "mikrotik", "linux", "ubiquiti", "other"];
-const CHANNELS = [["terminal", "Terminal"], ["batch", "Lote"], ["runbook", "Roteiros"], ["olt", "Script de OLT"], ["ai", "Assistente IA"]];
+const CHANNELS = [["terminal", "Terminal"], ["batch", "Lote"], ["runbook", "Roteiros"], ["olt", "Script de OLT"], ["ai", "Assistente IA"], ["tacacs", "Direto no equipamento (TACACS+)"]];
 const ROLES = [["admin", "Admin"], ["operator", "Operador"]];
 const fmt = (s) => (s ? new Date(s).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
 const Badge = ({ a }) => <span className={`text-[11px] px-1.5 py-0.5 rounded border whitespace-nowrap ${(ACT[a] || ACT.alert)[1]}`}>{(ACT[a] || ACT.alert)[0]}</span>;

@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import hashlib
 import hmac
 import httpx
 import asyncio
@@ -17,6 +18,7 @@ import uuid
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse, RedirectResponse
@@ -83,6 +85,7 @@ import threatintel
 import certbr
 import cves as cvemod
 import sso as ssomod
+import tacacs as tacmod
 import tcprelay
 import runbooks
 import teopt
@@ -165,6 +168,12 @@ async def startup():
     await db.sso_codes.create_index("ts", expireAfterSeconds=300)
     await db.cert_flow.create_index("key", unique=True)
     await db.cert_flow.create_index("ts", expireAfterSeconds=30 * 86400)
+    await db.tacacs_events.create_index([("at", -1)])
+    await db.tacacs_accounts.create_index("id")
+    try:
+        await flowstore.ensure_ttl(db, "tacacs_events", (await _tac_cfg())["retention_days"] * 86400)
+    except Exception as e:
+        logger.warning(f"TACACS TTL: {e}")
     try:
         await flowstore.ensure_ttl(db, "ti_hits", (await _ti_cfg())["retention_days"] * 86400)
     except Exception as e:
@@ -6584,7 +6593,7 @@ class _TermPolicy:
 
 # ---------- SOC: envio para SIEM ----------
 _siem_rt: dict = {"senders": {}, "sig": None, "http": None, "cfg": None}
-_AUDIT_SKIP = re.compile(r"^/api/(auth/(login|refresh|2fa)|ws/|push/|assistant(/.*)?/chat|.*/test$|cmdpolicy/test|soc/certbr/inbound/|"
+_AUDIT_SKIP = re.compile(r"^/api/(auth/(login|refresh|2fa)|ws/|push/|assistant(/.*)?/chat|.*/test$|cmdpolicy/test|soc/certbr/inbound/|tacacs/internal/|"
                          r"oltgen/(hw/|fh/)?(generate|onu|onu-remove|onu-add)$|incidents/webhook|logs/ingest|siem/preview)")
 
 
@@ -6637,6 +6646,7 @@ _SIEM_SRC = [
     ("cmd_events", "at", lambda d: siemmod.from_cmd_event(d)),
     ("ai_audit", "at", lambda d: siemmod.from_ai(d)),
     ("audit_events", "at", lambda d: siemmod.from_change(d)),
+    ("tacacs_events", "at", lambda d: siemmod.from_tacacs(d)),
     ("incidents", "created_at", lambda d: siemmod.from_incident(d, False)),
     ("incidents", "resolved_at", lambda d: siemmod.from_incident(d, True) if d.get("status") == "resolved" else None),
 ]
@@ -7909,6 +7919,491 @@ async def sso_test(pid: str, _: dict = Depends(require_admin)):
         raise HTTPException(status_code=400, detail=f"O provedor diz que o emissor é {disc.get('issuer')} — use exatamente esse valor")
     return {"ok": True, "issuer": disc.get("issuer"), "keys": len(jwks.get("keys") or []), "authorization_endpoint": disc["authorization_endpoint"],
             "pkce": "S256" in (disc.get("code_challenge_methods_supported") or ["S256"])}
+
+
+# ---------- TACACS+ (login nos equipamentos com os usuários do BastiON) ----------
+_tac_rt: dict = {"devs": {}, "devs_at": 0.0}
+
+
+def _tac_internal_key() -> str:
+    return hmac.new(os.environ["JWT_SECRET"].encode(), b"bastion-tacacs-internal", hashlib.sha256).hexdigest()
+
+
+def _tac_check(request: Request):
+    k = request.headers.get("x-bastion-internal", "")
+    host = (request.client.host if request.client else "") or ""
+    if not k or not hmac.compare_digest(k, _tac_internal_key()) or host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="Só o serviço TACACS+ do BastiON")
+
+
+async def _tac_cfg() -> dict:
+    doc = await db.config.find_one({"key": "tacacs"}, {"_id": 0}) or {}
+    return tacmod.clean_settings({}, doc)
+
+
+def _tac_public(cfg: dict) -> dict:
+    return {**cfg, "clients": [{**{k: v for k, v in c.items() if k != "secret"}, "has_secret": bool(c.get("secret"))} for c in cfg["clients"]]}
+
+
+async def _tac_device(ip: str) -> Optional[dict]:
+    if time.time() - _tac_rt["devs_at"] > 60:
+        _tac_rt["devs"] = {d.get("host"): d async for d in db.devices.find({}, {"_id": 0, "id": 1, "name": 1, "host": 1, "device_type": 1, "tags": 1})}
+        _tac_rt["devs_at"] = time.time()
+    return _tac_rt["devs"].get(ip)
+
+
+async def _tac_lookup(name: str) -> Optional[dict]:
+    """Conta TACACS pelo nome: usuário do BastiON com TACACS ligado (nome TACACS ou e-mail) ou conta de serviço."""
+    lc = (name or "").strip().lower()
+    if not lc:
+        return None
+    u = await db.users.find_one({"tacacs.username_lc": lc, "tacacs.enabled": True}, {"_id": 0}) or \
+        await db.users.find_one({"email": lc, "tacacs.enabled": True}, {"_id": 0})
+    if u:
+        return {"kind": "user", "id": u["id"], "email": u["email"], "name": u.get("name") or u["email"], "role": u.get("role", "operator"),
+                "tac": u.get("tacacs") or {}, "doc": u}
+    a = await db.tacacs_accounts.find_one({"username_lc": lc, "enabled": {"$ne": False}}, {"_id": 0})
+    if a:
+        return {"kind": "service", "id": f"svc:{a['id']}", "email": f"{a['username']} (conta de serviço)", "name": a["username"],
+                "role": a.get("role", "operator"), "tac": a, "doc": a}
+    return None
+
+
+async def _tac_event(kind: str, result: str, client: dict, ctx: dict, acct: Optional[dict] = None, **extra):
+    now = datetime.now(timezone.utc)
+    dev = await _tac_device(ctx.get("nas_ip", ""))
+    doc = {"id": os.urandom(8).hex(), "ts": now, "at": now.isoformat(), "type": kind, "result": result,
+           "user": ctx.get("user", ""), "user_id": (acct or {}).get("id"), "user_email": (acct or {}).get("email", ""),
+           "role": (acct or {}).get("role"), "nas_ip": ctx.get("nas_ip", ""), "client": client.get("name", ""), "client_id": client.get("id"),
+           "device_id": (dev or {}).get("id"), "device_name": (dev or {}).get("name", ""), "rem_addr": ctx.get("rem_addr", ""),
+           "port": ctx.get("port", ""), **{k: v for k, v in extra.items() if v not in (None, "")}}
+    await db.tacacs_events.insert_one(dict(doc))
+    return doc
+
+
+def _tac_src_ip(ctx: dict) -> str:
+    for v in (ctx.get("rem_addr"), ctx.get("nas_ip")):
+        try:
+            return str(ipaddress.ip_address(str(v or "").split("%")[0]))
+        except ValueError:
+            continue
+    return ctx.get("nas_ip", "") or "?"
+
+
+async def _tac_authen(client: dict, ctx: dict, name: str, password: str) -> dict:
+    cfg = await _tac_cfg()
+    ip = _tac_src_ip(ctx)
+    lkey = f"tacacs:{(name or '').strip().lower()}"
+    ua = f"TACACS+ {client.get('name', '')} {ctx.get('nas_ip', '')} {ctx.get('port', '')}".strip()
+    deny = {"ok": False, "msg": "Usuário ou senha inválidos"}
+    if not cfg["enabled"]:
+        return {"error": True, "msg": "TACACS+ desligado no BastiON"}
+    if await security.locked_for(db, lkey, ip):
+        await _tac_event("authen", "fail", client, ctx, None, reason="bloqueado por tentativas erradas")
+        return {"ok": False, "msg": "Muitas tentativas erradas; aguarde 15 minutos"}
+    a = await _tac_lookup(name)
+    reason = ""
+    if not a:
+        reason = "usuário não existe ou sem TACACS ligado"
+    elif a["tac"].get("clients") and client.get("id") != "__local__" and client.get("id") not in a["tac"]["clients"]:
+        reason = f"sem acesso ao grupo {client.get('name', '')}"
+    elif ctx.get("service") == "enable" and a["role"] == "viewer":
+        reason = "perfil visualização não entra em modo privilegiado"
+    else:
+        pw, code = password or "", ""
+        need_otp = cfg["otp"] == "if_enabled" and a["kind"] == "user" and a["doc"].get("totp_enabled")
+        if need_otp:
+            pw, code = tacmod.split_otp(pw)
+        src = cfg["password_source"]
+        good = False
+        if a["kind"] == "service":
+            good = bool(a["tac"].get("password_hash")) and verify_password(pw, a["tac"]["password_hash"])
+        else:
+            if src in ("tacacs", "both") and a["tac"].get("password_hash"):
+                good = verify_password(pw, a["tac"]["password_hash"])
+            if not good and src in ("bastion", "both") and a["doc"].get("password_hash"):
+                good = verify_password(pw, a["doc"]["password_hash"])
+        if not good:
+            reason = "senha errada" + (" (sem senha TACACS definida)" if a["kind"] == "user" and src == "tacacs" and not a["tac"].get("password_hash") else "")
+        elif need_otp:
+            if not code:
+                reason = "faltou o código do 2FA no fim da senha"
+            else:
+                step = security.verify_totp(vault.decrypt(a["doc"].get("totp_secret", "")), code, int(a["doc"].get("totp_last_step", -1)))
+                if step is None:
+                    reason = "código 2FA inválido"
+                else:
+                    await db.users.update_one({"id": a["id"]}, {"$set": {"totp_last_step": step}})
+    if reason:
+        await security.record_fail(db, lkey, ip)
+        await security.log_event(db, (a or {}).get("email") or name, ip, ua, False, f"tacacs: {reason}", (a or {}).get("id"))
+        await _tac_event("authen", "fail", client, ctx, a, reason=reason, method=ctx.get("authen_type"))
+        return deny
+    await security.clear_fails(db, lkey)
+    await security.log_event(db, a["email"], ip, ua, True, "tacacs", a["id"] if a["kind"] == "user" else None)
+    now = datetime.now(timezone.utc).isoformat()
+    if a["kind"] == "user":
+        await db.users.update_one({"id": a["id"]}, {"$set": {"tacacs.last_login": now, "tacacs.last_device": ctx.get("nas_ip", "")}})
+    else:
+        await db.tacacs_accounts.update_one({"id": a["tac"]["id"]}, {"$set": {"last_login": now, "last_device": ctx.get("nas_ip", "")}})
+    await _tac_event("authen", "pass", client, ctx, a, method=ctx.get("authen_type"), service=ctx.get("service"))
+    dev = await _tac_device(ctx.get("nas_ip", ""))
+    return {"ok": True, "msg": f"BastiON: olá, {a['name']}" + (f" — {dev['name']}" if dev else "")}
+
+
+async def _tac_author(client: dict, ctx: dict, args: List[str]) -> dict:
+    cfg = await _tac_cfg()
+    a = await _tac_lookup(ctx.get("user", ""))
+    if not a:
+        await _tac_event("author", "fail", client, ctx, None, reason="usuário não existe ou sem TACACS ligado")
+        return {"status": tacmod.AU_FAIL, "msg": "Usuário sem acesso"}
+    d = tacmod.args_dict(args)
+    service = ((d.get("service") or [""])[0] or "").lower()
+    cmd = tacmod.command_of(args)
+    prof = cfg["profiles"].get(a["role"]) or cfg["profiles"]["viewer"]
+    vendor = "juniper" if service == "junos-exec" else (client.get("vendor") or "generic")
+    if service in ("shell", "junos-exec", "exec", "") and not cmd:
+        attrs = tacmod.role_attrs(vendor, prof)
+        await _tac_event("author", "pass", client, ctx, a, reason=f"sessão ({a['role']}: {', '.join(attrs)})")
+        return {"status": tacmod.AU_PASS_ADD, "args": attrs}
+    if service not in ("shell", "exec", "junos-exec"):
+        await _tac_event("author", "fail", client, ctx, a, reason=f"serviço não liberado: {service}")
+        return {"status": tacmod.AU_FAIL, "msg": f"Serviço {service} não liberado"}
+    if a["role"] == "viewer" and cfg["readonly_viewer"] and not tacmod.READ_ONLY.match(cmd):
+        await _tac_event("author", "deny", client, ctx, a, cmd=cmd, reason="perfil visualização: só consulta")
+        return {"status": tacmod.AU_FAIL, "msg": "Perfil visualização: só comandos de consulta (show/display/ping)"}
+    if not cfg["cmd_author"]:
+        return {"status": tacmod.AU_PASS_ADD, "args": []}
+    dev = await _tac_device(ctx.get("nas_ip", ""))
+    who = {"id": a["id"], "email": a["email"], "name": a["name"], "role": a["role"]}
+    try:
+        dec = await cmd_policy(who, dev or {"id": "", "name": ctx.get("nas_ip", ""), "host": ctx.get("nas_ip", ""),
+                                            "device_type": client.get("vendor")}, [cmd], "tacacs")
+    except Exception as e:
+        logger.warning(f"TACACS política de comandos: {e}")
+        return {"status": tacmod.AU_PASS_ADD if cfg["fail_open_cmd"] else tacmod.AU_ERROR, "args": []}
+    if dec["action"] == "allow":
+        return {"status": tacmod.AU_PASS_ADD, "args": []}
+    await _tac_event("author", "deny", client, ctx, a, cmd=cmd, reason=dec.get("message", dec["action"]))
+    return {"status": tacmod.AU_FAIL, "msg": dec.get("message", "Comando não autorizado")[:240]}
+
+
+@api.post("/tacacs/internal/authen")
+async def tac_int_authen(body: dict, request: Request):
+    _tac_check(request)
+    return await _tac_authen(body.get("client") or {}, body.get("ctx") or {}, str(body.get("user") or ""), str(body.get("password") or ""))
+
+
+@api.post("/tacacs/internal/author")
+async def tac_int_author(body: dict, request: Request):
+    _tac_check(request)
+    return await _tac_author(body.get("client") or {}, body.get("ctx") or {}, [str(x) for x in body.get("args") or []][:255])
+
+
+@api.post("/tacacs/internal/acct")
+async def tac_int_acct(body: dict, request: Request):
+    _tac_check(request)
+    ctx, args = body.get("ctx") or {}, [str(x) for x in body.get("args") or []][:255]
+    fl = int(ctx.get("flags") or 0)
+    res = "start" if fl & tacmod.ACCT_START else "stop" if fl & tacmod.ACCT_STOP else "watchdog" if fl & tacmod.ACCT_WATCHDOG else "?"
+    d = tacmod.args_dict(args)
+    a = await _tac_lookup(ctx.get("user", ""))
+    await _tac_event("acct", res, body.get("client") or {}, ctx, a, cmd=tacmod.command_of(args) or (d.get("cmd") or [""])[0],
+                     task_id=(d.get("task_id") or [""])[0], elapsed=(d.get("elapsed_time") or [""])[0], service=(d.get("service") or [""])[0])
+    return {"ok": True}
+
+
+# --- telas (admin)
+@api.get("/tacacs/settings")
+async def tac_settings(_: dict = Depends(require_admin)):
+    cfg = await _tac_cfg()
+    return {**_tac_public(cfg), "vendors": tacmod.VENDORS, "notes": tacmod.TEMPLATE_NOTE, "default_templates": tacmod.TEMPLATES,
+            "server_ip_hint": urlparse(os.environ.get("PUBLIC_URL", "")).hostname or ""}
+
+
+@api.put("/tacacs/settings")
+async def tac_settings_put(body: dict, _: dict = Depends(require_admin)):
+    cur = await db.config.find_one({"key": "tacacs"}, {"_id": 0}) or {}
+    try:
+        cfg = tacmod.clean_settings(body or {}, cur)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    for c in cfg["clients"]:
+        if not c.get("secret"):
+            c["secret"] = vault.encrypt(tacmod.gen_secret())       # cliente novo já nasce com chave própria
+    await db.config.update_one({"key": "tacacs"}, {"$set": {"key": "tacacs", **cfg}}, upsert=True)
+    await flowstore.ensure_ttl(db, "tacacs_events", cfg["retention_days"] * 86400)
+    return _tac_public(cfg)
+
+
+class TacSecretIn(BaseModel):
+    secret: str = ""
+
+
+@api.get("/tacacs/clients/{cid}/secret")
+async def tac_client_secret(cid: str, _: dict = Depends(require_admin)):
+    cfg = await _tac_cfg()
+    c = next((x for x in cfg["clients"] if x["id"] == cid), None)
+    if not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    return {"secret": vault.decrypt(c.get("secret", ""))}
+
+
+@api.post("/tacacs/clients/{cid}/secret")
+async def tac_client_secret_set(cid: str, body: TacSecretIn, _: dict = Depends(require_admin)):
+    s = body.secret.strip() or tacmod.gen_secret()
+    if len(s) < 8 or len(s) > 64 or not re.fullmatch(r"[\x21-\x7e]+", s) or re.search(r"[\"'?\s]", s):
+        raise HTTPException(status_code=400, detail="Chave: 8 a 64 caracteres, sem espaço, aspas ou '?' (alguns equipamentos não aceitam)")
+    cur = await db.config.find_one({"key": "tacacs"}, {"_id": 0}) or {}
+    cl = cur.get("clients") or []
+    for c in cl:
+        if c.get("id") == cid:
+            c["secret"] = vault.encrypt(s)
+            break
+    else:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    await db.config.update_one({"key": "tacacs"}, {"$set": {"clients": cl}})
+    return {"secret": s}
+
+
+@api.get("/tacacs/status")
+async def tac_status(_: dict = Depends(require_admin)):
+    st = await db.config.find_one({"key": "tacacs_status"}, {"_id": 0}) or {}
+    alive = False
+    if st.get("at"):
+        try:
+            alive = (datetime.now(timezone.utc) - datetime.fromisoformat(st["at"])).total_seconds() < 30
+        except ValueError:
+            pass
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    cnt = {}
+    for e in await db.tacacs_events.find({"at": {"$gte": since}}, {"_id": 0, "type": 1, "result": 1}).to_list(100000):
+        k = f"{e.get('type')}:{e.get('result')}"
+        cnt[k] = cnt.get(k, 0) + 1
+    return {**{k: v for k, v in st.items() if k != "key"}, "alive": alive, "last24h": cnt}
+
+
+def _tac_user_row(u: dict) -> dict:
+    t = u.get("tacacs") or {}
+    return {"id": u["id"], "name": u.get("name", ""), "email": u["email"], "role": u.get("role", "operator"),
+            "totp_enabled": bool(u.get("totp_enabled")), "sso_only": (u.get("login_mode") == "sso"),
+            "tacacs": {"enabled": bool(t.get("enabled")), "username": t.get("username") or tacmod.default_username(u["email"]),
+                       "has_password": bool(t.get("password_hash")), "password_set_at": t.get("password_set_at"),
+                       "last_login": t.get("last_login"), "last_device": t.get("last_device"), "clients": t.get("clients") or []}}
+
+
+async def _tac_name_taken(lc: str, user_id: str = "", acc_id: str = "") -> bool:
+    u = await db.users.find_one({"tacacs.username_lc": lc}, {"_id": 0, "id": 1})
+    if u and u["id"] != user_id:
+        return True
+    a = await db.tacacs_accounts.find_one({"username_lc": lc}, {"_id": 0, "id": 1})
+    return bool(a and a["id"] != acc_id)
+
+
+@api.get("/tacacs/users")
+async def tac_users(_: dict = Depends(require_admin)):
+    users = await db.users.find({}, {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1, "tacacs": 1, "totp_enabled": 1, "login_mode": 1}).sort("email", 1).to_list(5000)
+    accs = await db.tacacs_accounts.find({}, {"_id": 0, "password_hash": 0}).sort("username", 1).to_list(1000)
+    return {"users": [_tac_user_row(u) for u in users], "accounts": accs}
+
+
+class TacUserIn(BaseModel):
+    enabled: bool = True
+    username: str = ""
+    password: str = ""
+    generate: bool = False
+    clients: List[str] = []
+
+
+def _tac_pw_ok(pw: str):
+    if len(pw) < 10 or len(pw) > 128:
+        raise HTTPException(status_code=400, detail="Senha TACACS: de 10 a 128 caracteres")
+    if pw.isdigit() or pw.isalpha():
+        raise HTTPException(status_code=400, detail="Senha TACACS: misture letras e números")
+
+
+@api.put("/tacacs/users/{uid}")
+async def tac_user_put(uid: str, body: TacUserIn, _: dict = Depends(require_admin)):
+    u = await db.users.find_one({"id": uid}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    try:
+        name = tacmod.clean_username(body.username or (u.get("tacacs") or {}).get("username") or tacmod.default_username(u["email"]))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if await _tac_name_taken(name.lower(), user_id=uid):
+        raise HTTPException(status_code=409, detail=f"O nome {name} já é de outro usuário ou conta de serviço")
+    upd = {"tacacs.enabled": body.enabled, "tacacs.username": name, "tacacs.username_lc": name.lower(),
+           "tacacs.clients": [c for c in body.clients if isinstance(c, str)][:100]}
+    new_pw = ""
+    if body.generate:
+        new_pw = tacmod.gen_secret(14)
+    elif body.password:
+        _tac_pw_ok(body.password)
+        new_pw = body.password
+    if new_pw:
+        upd["tacacs.password_hash"] = hash_password(new_pw)
+        upd["tacacs.password_set_at"] = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"id": uid}, {"$set": upd})
+    u = await db.users.find_one({"id": uid}, {"_id": 0})
+    return {**_tac_user_row(u), **({"password": new_pw} if body.generate else {})}
+
+
+class TacAccountIn(BaseModel):
+    username: str
+    role: str = "operator"
+    description: str = ""
+    enabled: bool = True
+    password: str = ""
+    generate: bool = False
+    clients: List[str] = []
+
+
+@api.post("/tacacs/accounts")
+async def tac_account_add(body: TacAccountIn, _: dict = Depends(require_admin)):
+    return await _tac_account_save(None, body)
+
+
+@api.put("/tacacs/accounts/{aid}")
+async def tac_account_put(aid: str, body: TacAccountIn, _: dict = Depends(require_admin)):
+    return await _tac_account_save(aid, body)
+
+
+async def _tac_account_save(aid: Optional[str], body: TacAccountIn) -> dict:
+    try:
+        name = tacmod.clean_username(body.username)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if body.role not in tacmod.ROLES:
+        raise HTTPException(status_code=400, detail="Perfil inválido")
+    if await _tac_name_taken(name.lower(), acc_id=aid or ""):
+        raise HTTPException(status_code=409, detail=f"O nome {name} já é de outro usuário ou conta de serviço")
+    cur = await db.tacacs_accounts.find_one({"id": aid}, {"_id": 0}) if aid else None
+    if aid and not cur:
+        raise HTTPException(status_code=404, detail="Conta não encontrada")
+    new_pw = tacmod.gen_secret(16) if body.generate or (not aid and not body.password) else body.password
+    if new_pw and not body.generate and (aid or body.password):
+        _tac_pw_ok(new_pw)
+    doc = {"username": name, "username_lc": name.lower(), "role": body.role, "description": body.description.strip()[:200],
+           "enabled": body.enabled, "clients": [c for c in body.clients if isinstance(c, str)][:100]}
+    if new_pw:
+        doc["password_hash"] = hash_password(new_pw)
+        doc["password_set_at"] = datetime.now(timezone.utc).isoformat()
+    if cur:
+        await db.tacacs_accounts.update_one({"id": aid}, {"$set": doc})
+    else:
+        aid = os.urandom(6).hex()
+        await db.tacacs_accounts.insert_one({"id": aid, "created_at": datetime.now(timezone.utc).isoformat(), **doc})
+    out = await db.tacacs_accounts.find_one({"id": aid}, {"_id": 0, "password_hash": 0})
+    return {**out, **({"password": new_pw} if new_pw and (body.generate or not body.password) else {})}
+
+
+@api.delete("/tacacs/accounts/{aid}")
+async def tac_account_del(aid: str, _: dict = Depends(require_admin)):
+    await db.tacacs_accounts.delete_one({"id": aid})
+    return {"ok": True}
+
+
+# --- a própria pessoa
+@api.get("/tacacs/me")
+async def tac_me(user: dict = Depends(get_current_user)):
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    cfg = await _tac_cfg()
+    row = _tac_user_row(u)
+    return {**row["tacacs"], "server_enabled": cfg["enabled"], "password_source": cfg["password_source"], "otp": cfg["otp"]}
+
+
+class TacMyPw(BaseModel):
+    password: str
+    current: str = ""
+
+
+@api.put("/tacacs/me/password")
+async def tac_me_password(body: TacMyPw, user: dict = Depends(get_current_user)):
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    if not (u.get("tacacs") or {}).get("enabled"):
+        raise HTTPException(status_code=403, detail="Seu acesso TACACS não está ligado; peça a um administrador")
+    if u.get("password_hash") and u.get("login_mode") != "sso" and not verify_password(body.current, u["password_hash"]):
+        raise HTTPException(status_code=401, detail="Senha atual do BastiON incorreta")
+    _tac_pw_ok(body.password)
+    await db.users.update_one({"id": user["id"]}, {"$set": {"tacacs.password_hash": hash_password(body.password),
+                                                            "tacacs.password_set_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
+
+# --- configuração dos equipamentos
+@api.get("/tacacs/config")
+async def tac_config(client_id: str = "", vendor: str = "", source: str = "", cmd: bool = True, acct: bool = True,
+                     _: dict = Depends(require_admin)):
+    cfg = await _tac_cfg()
+    c = next((x for x in cfg["clients"] if x["id"] == client_id), None)
+    if client_id and not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    v = vendor if vendor in tacmod.VENDORS else (c or {}).get("vendor") or "generic"
+    secret = vault.decrypt((c or {}).get("secret", "")) or "<CHAVE_DO_CLIENTE>"
+    if not re.fullmatch(r"[\w./:-]{0,64}", source.strip()):
+        raise HTTPException(status_code=400, detail="Interface/IP de origem inválido")
+    params = tacmod.config_params(cfg, c or {}, secret, source, cmd and cfg["cmd_author"], acct)
+    text = tacmod.render(v, params, cfg["templates"].get(v))
+    return {"vendor": v, "text": text, "note": tacmod.TEMPLATE_NOTE.get(v, ""), "custom_template": v in cfg["templates"],
+            "server_ip": cfg["server_ip"], "client": (c or {}).get("name")}
+
+
+class TacTemplateIn(BaseModel):
+    text: str = ""
+
+
+@api.put("/tacacs/templates/{vendor}")
+async def tac_template_put(vendor: str, body: TacTemplateIn, _: dict = Depends(require_admin)):
+    if vendor not in tacmod.TEMPLATES:
+        raise HTTPException(status_code=404, detail="Fabricante desconhecido")
+    cur = await db.config.find_one({"key": "tacacs"}, {"_id": 0}) or {}
+    tpl = dict(cur.get("templates") or {})
+    if body.text.strip() and body.text.strip() != tacmod.TEMPLATES[vendor].strip():
+        tpl[vendor] = body.text[:20000]
+    else:
+        tpl.pop(vendor, None)
+    await db.config.update_one({"key": "tacacs"}, {"$set": {"templates": tpl}}, upsert=True)
+    return {"custom": vendor in tpl}
+
+
+@api.get("/tacacs/events")
+async def tac_events(type: str = "", result: str = "", q: str = "", limit: int = 300, _: dict = Depends(require_admin)):
+    f: dict = {}
+    if type in ("authen", "author", "acct"):
+        f["type"] = type
+    if result:
+        f["result"] = result
+    if q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        f["$or"] = [{"user": rx}, {"nas_ip": rx}, {"device_name": rx}, {"cmd": rx}, {"rem_addr": rx}]
+    return await db.tacacs_events.find(f, {"_id": 0, "ts": 0}).sort("at", -1).to_list(max(1, min(2000, limit)))
+
+
+class TacTestIn(BaseModel):
+    username: str
+    password: str
+    command: str = ""
+
+
+@api.post("/tacacs/test")
+async def tac_test(body: TacTestIn, _: dict = Depends(require_admin)):
+    """Login de verdade no serviço TACACS+ (pela própria máquina): confere se está no ar, usuário, senha e perfil."""
+    cfg = await _tac_cfg()
+    c = tacmod.Client("127.0.0.1", cfg["port"], _tac_internal_key(), timeout=8)
+    try:
+        r = await c.pap(body.username.strip(), body.password)
+        out = {"reachable": True, "login": r["ok"], "message": r["msg"]}
+        if r["ok"]:
+            a = await c.author(body.username.strip(), ["service=shell", "cmd="])
+            out["profile"] = a["args"]
+            if body.command.strip():
+                parts = body.command.strip().split()
+                a = await c.author(body.username.strip(), ["service=shell", f"cmd={parts[0]}"] + [f"cmd-arg={x}" for x in parts[1:]] + ["cmd-arg=<cr>"])
+                out["command"] = {"allowed": a["status"] in (tacmod.AU_PASS_ADD, tacmod.AU_PASS_REPL), "message": a["msg"]}
+        return out
+    except Exception as e:
+        return {"reachable": False, "login": False, "message": f"O serviço TACACS+ não respondeu na porta {cfg['port']}: {str(e)[:160]}"}
 
 
 # ---------- WebSocket Terminal ----------

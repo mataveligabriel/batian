@@ -1,6 +1,7 @@
 """Política de comandos: regras que bloqueiam, pedem aprovação ou alertam antes de um comando chegar ao equipamento.
 
-Vale para o terminal web (tecla Enter), Execução em Lote, roteiros, script de OLT e alterações do assistente de IA.
+Vale para o terminal web (tecla Enter), Execução em Lote, roteiros, script de OLT, alterações do assistente de IA e
+comandos digitados direto no equipamento quando ele autoriza comando a comando pelo TACACS+ do BastiON.
 Regras em ordem; a mais restritiva entre as que casam vence (bloquear > aprovar > alertar > permitir). Uma regra
 "permitir" vale como exceção para as regras ABAIXO dela (ex.: admins podem reiniciar sem aprovação); as de cima continuam.
 """
@@ -12,7 +13,7 @@ ACTIONS = ("block", "approve", "alert", "allow")
 ACTION_LABEL = {"block": "Bloquear", "approve": "Pedir aprovação", "alert": "Alertar", "allow": "Permitir"}
 RANK = {"allow": 0, "alert": 1, "approve": 2, "block": 3}
 ROLES = ("admin", "operator", "viewer")
-CHANNELS = ("terminal", "batch", "runbook", "olt", "ai")
+CHANNELS = ("terminal", "batch", "runbook", "olt", "ai", "tacacs")
 DEFAULTS = {"enabled": True, "wait_min": 10, "grant_min": 30, "self_approve": False, "notify": True}
 RULE_FIELDS = ("name", "pattern", "action", "device_types", "tags", "device_ids", "roles", "user_ids", "channels",
                "severity", "enabled", "description", "preset")

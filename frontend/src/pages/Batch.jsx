@@ -68,6 +68,9 @@ export default function Batch() {
     const [d, s] = await Promise.all([api.get("/devices"), api.get("/scripts")]);
     setDevices(d.data); setScripts(s.data);
     // pré-seleção vinda de Equipamentos → "Executar em lote"
+    if (typeof location.state?.commands === "string" && location.state.commands.trim()) {   // vindo do TACACS+ → Script
+      setInline(location.state.commands); setMode("saved"); setScriptId("");
+    }
     const pre = location.state?.deviceIds;
     if (Array.isArray(pre) && pre.length) {
       const ids = new Set(d.data.map(x => x.id));
