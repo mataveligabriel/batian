@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { Radar, RefreshCw, Loader2, Search, Save, Plus, Trash2, ArrowUpRight, ArrowDownLeft, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Radar, RefreshCw, Loader2, Search, Save, Plus, Trash2, ArrowUpRight, ArrowDownLeft, AlertTriangle, CheckCircle2, ShieldBan, Copy, KeyRound } from "lucide-react";
 
 const CAT_CLS = { c2: "text-red-300 border-red-500/40", malware: "text-red-300 border-red-500/40", compromised: "text-orange-300 border-orange-500/40",
   hijacked: "text-orange-300 border-orange-500/40", attacker: "text-amber-300 border-amber-500/40", scanner: "text-sky-300 border-sky-500/40",
@@ -15,6 +15,13 @@ const fmt = (s) => (s ? new Date(s).toLocaleString("pt-BR", { day: "2-digit", mo
 const bytes = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(0)} kB` : `${b} B`);
 const lbl = "text-xs text-slate-400 mb-1 block";
 const sel = "h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200";
+const lines = (t) => t.split(/[\s,;]+/).filter(Boolean);
+// tudo que o PUT espera, a partir do que veio do GET
+const payload = (c, extra = {}) => ({ enabled: c.enabled, feeds: c.feeds, custom: c.custom.map(({ status, ...x }) => x), alert_out: c.alert_out,
+  alert_in_min_flows: Number(c.alert_in_min_flows) || 0, retention_days: Number(c.retention_days) || 30, manual: c.manual, ignore: c.ignore,
+  out_min_pkts: Number(c.out_min_pkts) || 1, auto_resolve_hours: Number(c.auto_resolve_hours) || 0, ignore_local: c.ignore_local,
+  block_categories: c.block_categories, ...extra });
+const copy = (t) => { try { navigator.clipboard.writeText(t); toast.success("Copiado"); } catch (e) { toast.error("Não consegui copiar"); } };
 
 function Cat({ c, cats }) {
   return <span className={`text-[11px] px-1.5 py-0.5 rounded border whitespace-nowrap ${CAT_CLS[c] || CAT_CLS.custom}`}>{cats?.[c] || c}</span>;
@@ -78,7 +85,7 @@ function Hits({ cats, onLookup }) {
               <td className="px-2"><button onClick={() => onLookup(h.local_ip)} className="font-mono text-slate-200 hover:underline">{h.local_ip}</button></td>
               <td className="px-2"><button onClick={() => onLookup(h.bad_ip)} className="font-mono text-red-200 hover:underline">{h.bad_ip}</button></td>
               <td className="px-2"><Cat c={h.category} cats={cats} /></td>
-              <td className="px-2 font-mono text-[11px] text-slate-400">{(h.ports || []).join(" ")}</td>
+              <td className="px-2 font-mono text-[11px] text-slate-400">{(h.ports || []).join(" ")}{h.replied ? <span className="ml-1.5 font-sans text-[10px] px-1 rounded border border-sky-500/40 text-sky-300" title="O seu host respondeu (SYN-ACK/RST/ICMP/DNS) — é varredura vinda de fora, não iniciativa dele">respondeu {h.replied}×</span> : null}</td>
               <td className="px-2 text-right font-mono text-slate-300">{h.flows}</td>
               <td className="px-2 text-right font-mono text-slate-400">{bytes(h.bytes)}</td>
               <td className="px-2 text-xs text-slate-500 whitespace-nowrap">{fmt(h.last)}</td>
@@ -130,16 +137,15 @@ function Lists() {
   const [busy, setBusy] = useState("");
   const [manual, setManual] = useState("");
   const [ignore, setIgnore] = useState("");
-  const load = useCallback(() => api.get("/soc/ti/settings").then(r => { setC(r.data); setManual(r.data.manual.join("\n")); setIgnore(r.data.ignore.join("\n")); }).catch(e => toast.error(formatApiError(e))), []);
+  const [ignLocal, setIgnLocal] = useState("");
+  const load = useCallback(() => api.get("/soc/ti/settings").then(r => { setC(r.data); setManual(r.data.manual.join("\n")); setIgnore(r.data.ignore.join("\n")); setIgnLocal((r.data.ignore_local || []).join("\n")); }).catch(e => toast.error(formatApiError(e))), []);
   useEffect(() => { load(); }, [load]);
   if (!c) return null;
   const toggle = (id) => setC({ ...c, feeds: c.feeds.includes(id) ? c.feeds.filter(x => x !== id) : [...c.feeds, id] });
   const save = async () => {
     setBusy("save");
     try {
-      await api.put("/soc/ti/settings", { enabled: c.enabled, feeds: c.feeds, custom: c.custom.map(({ status, ...x }) => x), alert_out: c.alert_out,
-        alert_in_min_flows: Number(c.alert_in_min_flows) || 0, retention_days: Number(c.retention_days) || 30,
-        manual: manual.split(/[\s,;]+/).filter(Boolean), ignore: ignore.split(/[\s,;]+/).filter(Boolean) });
+      await api.put("/soc/ti/settings", payload(c, { manual: lines(manual), ignore: lines(ignore), ignore_local: lines(ignLocal) }));
       toast.success("Salvo — baixando as listas novas"); setTimeout(load, 3000);
     } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(""); }
   };
@@ -182,13 +188,84 @@ function Lists() {
       <div className="grid gap-4 md:grid-cols-2">
         <Card className="bg-surface border-line p-4"><label className={lbl}>IPs/redes maliciosos (lista manual, um por linha)</label>
           <textarea value={manual} onChange={e => setManual(e.target.value)} rows={5} className="w-full rounded-md bg-sunken border border-line p-2 font-mono text-sm text-slate-200" data-testid="ti-manual" /></Card>
-        <Card className="bg-surface border-line p-4"><label className={lbl}>Nunca alertar (falso positivo: CDN, parceiro, scanner autorizado)</label>
+        <Card className="bg-surface border-line p-4"><label className={lbl}>IPs remotos que nunca alertam (falso positivo: CDN, parceiro, scanner autorizado)</label>
           <textarea value={ignore} onChange={e => setIgnore(e.target.value)} rows={5} className="w-full rounded-md bg-sunken border border-line p-2 font-mono text-sm text-slate-200" data-testid="ti-ignore" /></Card>
       </div>
+      <Card className="bg-surface border-line p-4 space-y-3" data-testid="ti-noise">
+        <div className="text-sm font-semibold text-slate-200">Reduzir falso positivo</div>
+        <p className="text-xs text-slate-400">Resposta do seu host a uma varredura (SYN-ACK, RST, ICMP, resposta de DNS) já não conta como saída. Além disso: um incidente por host e categoria (não por IP remoto), saída fraca só com volume, e o incidente fecha sozinho quando o tráfego para.</p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div><label className={lbl}>Saída para DROP/atacante/comprometido: alertar a partir de N pacotes no dia (C2 e malware: sempre)</label><Input type="number" value={c.out_min_pkts} onChange={e => setC({ ...c, out_min_pkts: e.target.value })} className="bg-sunken border-line h-9" data-testid="ti-minpkts" /></div>
+          <div><label className={lbl}>Fechar o incidente após N horas sem tráfego (0 = não fecha)</label><Input type="number" value={c.auto_resolve_hours} onChange={e => setC({ ...c, auto_resolve_hours: e.target.value })} className="bg-sunken border-line h-9" data-testid="ti-autoresolve" /></div>
+          <div><label className={lbl}>Seus hosts que nunca alertam (honeypot, scanner seu, servidor exposto de propósito)</label>
+            <textarea value={ignLocal} onChange={e => setIgnLocal(e.target.value)} rows={3} className="w-full rounded-md bg-sunken border border-line p-2 font-mono text-sm text-slate-200" data-testid="ti-ignore-local" /></div>
+        </div>
+      </Card>
       <Card className="bg-surface border-line p-4 grid gap-3 sm:grid-cols-3 items-end">
         <label className="flex items-center gap-2 text-sm text-slate-300"><Switch checked={c.alert_out} onCheckedChange={v => setC({ ...c, alert_out: v })} /> Incidente quando um host seu fala com C2/malware/comprometido</label>
         <div><label className={lbl}>Entrada: incidente a partir de N flows/dia (0 = nunca)</label><Input type="number" value={c.alert_in_min_flows} onChange={e => setC({ ...c, alert_in_min_flows: e.target.value })} className="bg-sunken border-line h-9" /></div>
         <div><label className={lbl}>Guardar ocorrências por (dias)</label><Input type="number" value={c.retention_days} onChange={e => setC({ ...c, retention_days: e.target.value })} className="bg-sunken border-line h-9" /></div>
+      </Card>
+    </div>
+  );
+}
+
+function Block() {
+  const [c, setC] = useState(null);
+  const [pv, setPv] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    api.get("/soc/ti/settings").then(r => setC(r.data)).catch(e => toast.error(formatApiError(e)));
+    api.get("/soc/ti/blocklist/preview").then(r => setPv(r.data)).catch(() => {});
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (!c) return null;
+  const toggle = (k) => setC({ ...c, block_categories: c.block_categories.includes(k) ? c.block_categories.filter(x => x !== k) : [...c.block_categories, k] });
+  const save = async () => {
+    setBusy(true);
+    try { await api.put("/soc/ti/settings", payload(c)); toast.success("Salvo"); load(); } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
+  };
+  const newToken = async () => { try { const r = await api.post("/soc/ti/block-token"); setC({ ...c, block_token: r.data.token }); toast.success("Token novo — atualize o script nos roteadores"); } catch (e) { toast.error(formatApiError(e)); } };
+  const base = `${window.location.origin}/api/soc/ti/blocklist/${c.block_token}`;
+  const ros = `/system script add name=bastion-ti policy=read,write,test source={
+  /tool fetch url="${base}?fmt=routeros" dst-path=bastion-ti.rsc
+  :delay 3s
+  /import file-name=bastion-ti.rsc
+}
+/system scheduler add name=bastion-ti interval=6h start-time=startup on-event="/system script run bastion-ti"
+/ip firewall raw add chain=prerouting in-interface-list=WAN src-address-list=bastion-ti action=drop comment="BastiON threat intel (entrada)"
+/ip firewall raw add chain=prerouting dst-address-list=bastion-ti action=drop comment="BastiON threat intel (saida)"`;
+  const SAFE = { hijacked: "sem falso positivo prático (Spamhaus pede para descartar)", c2: "servidores de C2 confirmados — baixo risco",
+    malware: "baixo risco", compromised: "risco médio: IP pode ser reciclado", attacker: "lista grande e volátil — risco de bloquear IP compartilhado",
+    scanner: "lista grande e volátil — não recomendado", tor: "bloqueia usuários legítimos do Tor", custom: "depende da sua lista" };
+  return (
+    <div className="space-y-4 max-w-4xl" data-testid="ti-block">
+      <Card className="bg-surface border-line p-4 space-y-3">
+        <div className="flex items-center gap-2 text-sm font-semibold text-slate-200"><ShieldBan className="w-4 h-4 text-brand-soft" />O que vai para a borda</div>
+        <p className="text-xs text-slate-400">O roteador baixa a lista sozinho e descarta o tráfego de/para essas redes. Os seus prefixos próprios e os protegidos da mitigação nunca entram, nem o que estiver em "nunca alertar".</p>
+        <div className="divide-y divide-line">{Object.entries(c.categories).map(([k, l]) => (
+          <label key={k} className="flex items-center gap-3 py-1.5 text-sm" data-testid={`ti-blk-${k}`}>
+            <Switch checked={c.block_categories.includes(k)} onCheckedChange={() => toggle(k)} /><Cat c={k} cats={c.categories} /><span className="text-xs text-slate-500">{SAFE[k]}</span>
+          </label>))}</div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-400 flex-1">{pv ? `${pv.count.toLocaleString("pt-BR")} redes hoje (${pv.v4} IPv4, ${pv.v6} IPv6) — salve para recalcular` : "…"}</span>
+          <Button size="sm" onClick={save} disabled={busy} className="bg-brand hover:bg-brand-strong text-onbrand" data-testid="ti-blk-save">{busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Save className="w-4 h-4 mr-1" />}Salvar</Button>
+        </div>
+      </Card>
+      <Card className="bg-surface border-line p-4 space-y-3">
+        <div className="flex items-center justify-between"><div className="text-sm font-semibold text-slate-200">Endereços da lista</div>
+          <Button size="sm" variant="ghost" onClick={newToken} className="text-slate-400" data-testid="ti-blk-token"><KeyRound className="w-4 h-4 mr-1" />Gerar token novo</Button></div>
+        {[["Texto (um CIDR por linha)", "txt"], ["MikroTik (.rsc)", "routeros"], ["Junos (prefix-list BASTION_TI)", "juniper"], ["Cisco (object-group, IPv4)", "cisco"]].map(([l, f]) => (
+          <div key={f} className="flex items-center gap-2"><span className="text-xs text-slate-400 w-52">{l}</span>
+            <code className="flex-1 truncate text-[11px] font-mono text-slate-300 bg-sunken border border-line rounded px-2 py-1">{base}?fmt={f}</code>
+            <button onClick={() => copy(`${base}?fmt=${f}`)} className="text-slate-500 hover:text-slate-200"><Copy className="w-4 h-4" /></button></div>))}
+        <p className="text-[11px] text-slate-500">Quem tem o endereço baixa a lista (não dá acesso a mais nada). Se vazar, gere um token novo.</p>
+      </Card>
+      <Card className="bg-surface border-line p-4 space-y-2">
+        <div className="flex items-center justify-between"><div className="text-sm font-semibold text-slate-200">MikroTik: colar uma vez no terminal</div>
+          <Button size="sm" variant="ghost" onClick={() => copy(ros)} className="text-slate-400" data-testid="ti-blk-copy"><Copy className="w-4 h-4 mr-1" />Copiar</Button></div>
+        <pre className="text-[11px] font-mono text-slate-300 bg-sunken border border-line rounded p-3 overflow-x-auto whitespace-pre">{ros}</pre>
+        <p className="text-[11px] text-slate-500">Ajuste <span className="font-mono">in-interface-list=WAN</span> para a lista das interfaces de trânsito/IX. As entradas expiram em 2 dias: se o BastiON ficar fora do ar, a lista some sozinha em vez de ficar velha. Em Junos use a prefix-list num firewall filter na entrada das interfaces de upstream.</p>
       </Card>
     </div>
   );
@@ -209,10 +286,10 @@ export default function ThreatIntel() {
           <p className="text-sm text-slate-400 mt-1 max-w-3xl">Cada flow é conferido contra listas públicas de IPs maliciosos (C2 de botnets, máquinas comprometidas, blocos sequestrados, atacantes e scanners).</p>
         </div>
         <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm">
-          {[["", "Ocorrências"], ["consulta", "Consultar IP"], ["listas", "Listas"]].map(([k, l]) => <button key={k} onClick={() => setSp(k ? { tab: k } : {})} className={`px-3 h-7 rounded ${tab === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`} data-testid={`ti-tab-${k || "hits"}`}>{l}</button>)}
+          {[["", "Ocorrências"], ["consulta", "Consultar IP"], ["listas", "Listas"], ["bloqueio", "Bloqueio na borda"]].map(([k, l]) => <button key={k} onClick={() => setSp(k ? { tab: k } : {})} className={`px-3 h-7 rounded ${tab === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`} data-testid={`ti-tab-${k || "hits"}`}>{l}</button>)}
         </div>
       </div>
-      {tab === "consulta" ? <Lookup ip0={look} cats={cats} /> : tab === "listas" ? <Lists /> : <Hits cats={cats} onLookup={lookup} />}
+      {tab === "consulta" ? <Lookup ip0={look} cats={cats} /> : tab === "listas" ? <Lists /> : tab === "bloqueio" ? <Block /> : <Hits cats={cats} onLookup={lookup} />}
     </div>
   );
 }

@@ -7049,28 +7049,97 @@ async def _ti_refresh(force: bool = False) -> dict:
     return done
 
 
+def _ti_in(ip: str, nets: List[str]) -> bool:
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for n in nets or []:
+        try:
+            if a in ipaddress.ip_network(n, strict=False):
+                return True
+        except ValueError:
+            pass
+    return False
+
+
 async def _ti_alerts():
-    """Host seu falando com IP malicioso (saída): incidente por dia, IP local e IP ruim. Entrada só acima do limite de flows."""
+    """Um incidente por host local + sentido + categoria (não um por IP ruim). Saída fraca (DROP, atacante…) só com volume;
+    respostas a varreduras já chegam do coletor como entrada. O incidente resolve sozinho quando o tráfego para."""
     cfg = await _ti_cfg()
-    rows = await db.ti_hits.find({"alerted": False, "dir": "out"}, {"_id": 0}).sort("first", 1).to_list(500)
+    q_out = {"alerted": False, "dir": "out", "$or": [{"category": {"$in": list(threatintel.STRONG)}}, {"pkts": {"$gte": cfg["out_min_pkts"]}}]}
+    rows = await db.ti_hits.find(q_out, {"_id": 0}).sort("first", 1).to_list(2000)
     if cfg["alert_in_min_flows"]:
-        rows += await db.ti_hits.find({"alerted": False, "dir": "in", "flows": {"$gte": cfg["alert_in_min_flows"]}}, {"_id": 0}).to_list(200)
+        rows += await db.ti_hits.find({"alerted": False, "dir": "in", "flows": {"$gte": cfg["alert_in_min_flows"]}}, {"_id": 0}).to_list(1000)
+    groups: Dict[tuple, list] = {}
     for h in rows:
         await db.ti_hits.update_one({"key": h["key"]}, {"$set": {"alerted": True}})
         sev = threatintel.OUT_SEVERITY.get(h.get("category"), "medium") if h["dir"] == "out" else "low"
         if h["dir"] == "out" and (not cfg["alert_out"] or sev == "info"):
             continue
-        feeds = ", ".join((threatintel.FEED_BY_ID.get(f) or {}).get("name", f) for f in h.get("feeds") or [])
-        cat = threatintel.CATEGORIES.get(h.get("category"), h.get("category"))
-        title = (f"Host {h['local_ip']} falando com {cat.lower()} {h['bad_ip']}" if h["dir"] == "out"
-                 else f"{cat} {h['bad_ip']} insistindo em {h['local_ip']} ({h.get('flows', 0)} flows)")
+        if _ti_in(h["local_ip"], cfg["ignore_local"]):
+            continue
+        groups.setdefault((h["local_ip"], h["dir"], h.get("category") or "custom"), []).append(h)
+    since = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    for (local, d, cat), hs in groups.items():
+        allh = await db.ti_hits.find({"local_ip": local, "dir": d, "category": cat, "day": {"$gte": since}},
+                                     {"_id": 0, "bad_ip": 1, "flows": 1, "pkts": 1, "bytes": 1, "ports": 1, "feeds": 1, "first": 1, "last": 1}).to_list(20000)
+        if d == "out":
+            allh = [a for a in allh if cat in threatintel.STRONG or (a.get("pkts") or 0) >= cfg["out_min_pkts"]] or hs
+        bad = {}
+        for a in allh:
+            b = bad.setdefault(a["bad_ip"], 0)
+            bad[a["bad_ip"]] = b + (a.get("flows") or 0)
+        top = sorted(bad.items(), key=lambda x: -x[1])[:10]
+        ports = sorted({p for a in allh for p in a.get("ports") or []})[:15]
+        feeds = ", ".join(sorted({(threatintel.FEED_BY_ID.get(f) or {}).get("name", f) for a in allh for f in a.get("feeds") or []}))
+        label = threatintel.CATEGORIES.get(cat, cat)
+        n = len(bad)
+        sev = threatintel.OUT_SEVERITY.get(cat, "medium") if d == "out" else "low"
+        who = f"{n} IPs" if n > 1 else top[0][0]
+        title = (f"Host {local} falando com {label[:1].lower() + label[1:]}: {who}" if d == "out" else f"{label}: {who} insistindo em {local}")
+        desc = (f"Listas: {feeds}.\nIPs remotos (24 h): {n} — mais ativos: " + ", ".join(f"{ip} ({fl} flows)" for ip, fl in top) +
+                f".\nPortas: {', '.join(ports)}.\nPrimeiro registro {min(a.get('first', '') for a in allh)[:16].replace('T', ' ')} UTC (flow)."
+                + ("\nSe for resposta a varredura ou serviço legítimo, ponha o host em 'hosts ignorados' no Threat intel."
+                   if d == "out" and cat not in threatintel.STRONG else ""))
+        key = f"soc:ti2:{d}:{cat}:{local}"
         try:
-            await inc_center.ingest("soc", {"key": f"soc:ti:{h['day']}:{h['local_ip']}:{h['bad_ip']}:{h['dir']}", "status": "problem",
-                                            "severity": sev, "host": h["local_ip"], "title": title,
-                                            "description": f"Listas: {feeds}.\nPortas: {', '.join(h.get('ports') or [])}. "
-                                                           f"Visto pela 1ª vez {h.get('first', '')[:16].replace('T', ' ')} UTC (flow)."})
+            r = await inc_center.ingest("soc", {"key": key, "status": "problem", "severity": sev, "host": local, "title": title,
+                                                "description": desc})
+            inc = r.get("incident") or {}
+            if inc.get("id"):
+                await db.incidents.update_one({"id": inc["id"]}, {"$set": {"title": title, "description": desc,
+                                                                           "ti": {"local": local, "dir": d, "category": cat, "remotes": n}}})
         except Exception as e:
             logger.warning(f"threat intel incidente: {e}")
+
+
+async def _ti_housekeep():
+    """Fecha sozinho o incidente cujo tráfego parou, e aposenta os incidentes antigos (um por IP ruim) sem disparar aviso."""
+    cfg = await _ti_cfg()
+    now = datetime.now(timezone.utc)
+    cur = await db.incidents.find({"source": "soc", "status": {"$in": ["open", "ack"]}}, {"_id": 0, "id": 1, "key": 1, "ti": 1}).to_list(20000)
+    old = [i["id"] for i in cur if str(i.get("key", "")).startswith("soc:ti:")]
+    if old:
+        at = now.isoformat()
+        await db.incidents.update_many({"id": {"$in": old}}, {
+            "$set": {"status": "resolved", "resolved_at": at, "resolved_by": "BastiON", "updated_at": at},
+            "$push": {"timeline": {"at": at, "by": "BastiON", "type": "resolved",
+                                   "text": "Substituído pelo agrupamento por host (o detector novo reabre se continuar)"}}})
+        logger.info(f"threat intel: {len(old)} incidente(s) do formato antigo encerrados")
+    if not cfg["auto_resolve_hours"]:
+        return
+    lim = (now - timedelta(hours=cfg["auto_resolve_hours"])).isoformat()
+    for i in cur:
+        t = i.get("ti")
+        if not t or not str(i.get("key", "")).startswith("soc:ti2:"):
+            continue
+        last = await db.ti_hits.find({"local_ip": t["local"], "dir": t["dir"], "category": t["category"]}, {"_id": 0, "last": 1}).sort("last", -1).to_list(1)
+        if not last or (last[0].get("last") or "") < lim:
+            try:
+                await inc_center.ingest("soc", {"key": i["key"], "status": "ok", "severity": "info", "title": ""})
+            except Exception as e:
+                logger.warning(f"threat intel resolve: {e}")
 
 
 async def _ti_loop():
@@ -7081,6 +7150,8 @@ async def _ti_loop():
             if n % 10 == 0:
                 await _ti_refresh()
             await _ti_alerts()
+            if n % 5 == 0:
+                await _ti_housekeep()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -7092,6 +7163,9 @@ async def _ti_loop():
 @api.get("/soc/ti/settings")
 async def ti_settings(_: dict = Depends(require_admin)):
     cfg = await _ti_cfg()
+    if not cfg["block_token"]:
+        cfg["block_token"] = os.urandom(16).hex()
+        await db.config.update_one({"key": "threatintel"}, {"$set": {"block_token": cfg["block_token"]}}, upsert=True)
     st = {d.get("fid") or d.get("_id"): {k: v for k, v in d.items() if k != "_id"} async for d in db.ti_lists.find({}, {"blob": 0})}
     feeds = [{**f, "on": f["id"] in cfg["feeds"], "status": st.get(f["id"])} for f in threatintel.FEEDS]
     custom = [{**c, "status": st.get(c["id"])} for c in cfg["custom"]]
@@ -7103,13 +7177,48 @@ async def ti_settings(_: dict = Depends(require_admin)):
 @api.put("/soc/ti/settings")
 async def ti_settings_put(body: dict, _: dict = Depends(require_admin)):
     try:
-        cfg = threatintel.clean_settings(body or {})
+        cfg = threatintel.clean_settings({**(body or {}), "block_token": (await _ti_cfg())["block_token"]})
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await db.config.update_one({"key": "threatintel"}, {"$set": cfg}, upsert=True)
     await flowstore.ensure_ttl(db, "ti_hits", cfg["retention_days"] * 86400)
     _bg(_ti_refresh())
     return cfg
+
+
+@api.post("/soc/ti/block-token")
+async def ti_block_token(_: dict = Depends(require_admin)):
+    t = os.urandom(16).hex()
+    await db.config.update_one({"key": "threatintel"}, {"$set": {"block_token": t}}, upsert=True)
+    return {"token": t}
+
+
+async def _ti_blocknets() -> List[str]:
+    cfg = await _ti_cfg()
+    intel = await _ti_intel()
+    if not intel or not cfg["block_categories"]:
+        return []
+    fs = await flowstore.get_settings(db)
+    mit = await mitigation.get_settings(db)
+    own = list(fs.get("own_prefixes") or []) + list(mit.get("protect") or [])
+    return await asyncio.to_thread(threatintel.blocklist, intel, cfg["block_categories"], own)
+
+
+@api.get("/soc/ti/blocklist/preview")
+async def ti_block_preview(_: dict = Depends(require_admin)):
+    nets = await _ti_blocknets()
+    return {"count": len(nets), "v4": sum(1 for n in nets if ":" not in n), "v6": sum(1 for n in nets if ":" in n), "sample": nets[:20]}
+
+
+@api.get("/soc/ti/blocklist/{token}")
+async def ti_blocklist(token: str, fmt: str = "txt", name: str = "bastion-ti"):
+    """Lista para o roteador baixar sozinho (MikroTik /tool fetch, script no Junos/Cisco…). Protegida pelo token."""
+    cfg = await _ti_cfg()
+    if not cfg["block_token"] or not hmac.compare_digest(token, cfg["block_token"]):
+        raise HTTPException(status_code=403, detail="Token inválido")
+    name = re.sub(r"[^A-Za-z0-9_-]", "", name)[:30] or "bastion-ti"
+    nets = await _ti_blocknets()
+    return PlainTextResponse(threatintel.render_blocklist(nets, fmt if fmt in ("txt", "routeros", "juniper", "cisco") else "txt", name))
 
 
 @api.post("/soc/ti/refresh")

@@ -1385,6 +1385,8 @@ Menu **Painel SOC → Threat intel** (só administradores). O coletor de flow co
 - **Ocorrências**: resumo por categoria, seus hosts com mais contatos maliciosos e a tabela (sentido, IP seu, IP malicioso, lista, portas, flows, volume). **Consultar IP** mostra em quais listas o IP está, país/operadora e todas as ocorrências dele no flow.
 - O **login anômalo** também usa as listas: login vindo de IP listado entra como sinal ("IP em lista de ameaças").
 - Ocorrências guardadas por 30 dias (configurável).
+- **Menos falso positivo**: resposta do seu host a uma varredura (RST, SYN-ACK sem dados, ICMP, resposta de DNS/serviço da porta baixa para a porta alta do scanner) conta como **entrada**, com a marca "respondeu N×". Um incidente por **host + categoria** (não um por IP remoto), com os IPs mais ativos na descrição; saída para DROP/atacante/comprometido só alerta a partir de N pacotes no dia (C2 e malware: sempre); **hosts locais ignorados** (honeypot, servidor exposto de propósito); o incidente **fecha sozinho** depois de N horas sem tráfego. Os incidentes do formato antigo (um por IP) são encerrados sem aviso no primeiro ciclo.
+- **Bloqueio na borda** (aba própria): escolha as categorias (padrão DROP + C2) e o roteador baixa a lista sozinho por um endereço com token — formatos texto, MikroTik (.rsc com address-list que expira em 2 dias), Junos (prefix-list) e Cisco (object-group). A tela traz o script do MikroTik (script + scheduler de 6 h + regras em `/ip firewall raw`). Prefixos próprios, protegidos da mitigação e "nunca alertar" nunca entram.
 
 ## 62. SOC — Auditoria CERT.br (passiva)
 

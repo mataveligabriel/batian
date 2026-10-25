@@ -3,6 +3,11 @@
 O backend baixa as listas (a cada 6 h) e guarda em ti_lists; o coletor de flow carrega o conjunto, confere a origem e o
 destino de cada flow e grava por minuto quem falou com quem (ti_hits). Saída de um host seu para C2/malware vira
 incidente; entrada de scanners e atacantes fica só registrada (é ruído de fundo da internet).
+
+Falso positivo clássico: o IP ruim faz varredura e o seu host RESPONDE (SYN-ACK, RST, ICMP, resposta de DNS). Pelo
+flow isso parece "saída para IP ruim". Resposta é reconhecida pela porta (o host responde de uma porta de serviço
+para a porta alta do scanner), pelos flags TCP (RST/SYN-ACK sem dados) e por ter vindo antes a entrada do mesmo par;
+fica registrada como entrada, com a marca "respondeu".
 """
 import ipaddress
 import re
@@ -38,7 +43,13 @@ FEEDS = [
 ]
 FEED_BY_ID = {f["id"]: f for f in FEEDS}
 DEFAULTS = {"enabled": True, "feeds": [f["id"] for f in FEEDS if f["enabled"]], "custom": [], "manual": [],
-            "alert_out": True, "alert_in_min_flows": 0, "ignore": [], "retention_days": 30}
+            "alert_out": True, "alert_in_min_flows": 0, "ignore": [], "retention_days": 30,
+            # ruído: saída para categorias que não são C2/malware só alerta com pelo menos N pacotes (soma do dia)
+            "out_min_pkts": 10, "ignore_local": [], "auto_resolve_hours": 6,
+            # bloqueio na borda: categorias exportadas na lista para o roteador (DROP e C2 não têm falso positivo prático)
+            "block_categories": ["hijacked", "c2"], "block_token": ""}
+STRONG = ("c2", "malware")                # 1 pacote já basta
+BLOCKABLE = ("hijacked", "c2", "malware", "compromised", "attacker", "scanner", "tor", "custom")
 MAX_PER_FEED = 300_000
 _IP_RX = re.compile(r"([0-9a-fA-F:.]*[0-9a-fA-F](?:/\d{1,3})?)")
 _DSHIELD = re.compile(r"^\s*(\d+\.\d+\.\d+\.\d+)\s+\d+\.\d+\.\d+\.\d+\s+(\d{1,2})\b")
@@ -127,7 +138,95 @@ def clean_settings(body: dict) -> dict:
     out["alert_out"] = bool(out["alert_out"])
     out["retention_days"] = max(3, min(365, int(out["retention_days"] or 30)))
     out["alert_in_min_flows"] = max(0, int(out["alert_in_min_flows"] or 0))
+    out["out_min_pkts"] = max(1, min(100000, int(out["out_min_pkts"] or 1)))
+    out["auto_resolve_hours"] = max(0, min(720, int(out["auto_resolve_hours"] or 0)))
+    il = []
+    for x in out["ignore_local"] or []:
+        x = str(x).strip()
+        if x:
+            try:
+                il.append(str(ipaddress.ip_network(x, strict=False)))
+            except ValueError:
+                raise ValueError(f"IP/rede inválido em hosts ignorados: {x}")
+    out["ignore_local"] = il[:2000]
+    out["block_categories"] = [c for c in out["block_categories"] or [] if c in BLOCKABLE]
+    out["block_token"] = re.sub(r"[^A-Za-z0-9_-]", "", str(out["block_token"] or ""))[:64]
     return out
+
+
+_SERVICE_PORTS = {20, 21, 22, 23, 25, 53, 80, 110, 123, 143, 161, 179, 389, 443, 445, 465, 500, 587, 993, 995, 1194, 1701, 1723,
+                  1812, 1813, 3306, 3389, 4500, 5060, 5432, 8080, 8291, 8443, 8728, 8729}
+
+
+def is_reply(proto: int, sport: int, dport: int, flags: int) -> bool:
+    """Flow do host local para o IP ruim que é RESPOSTA a algo que veio de lá (não iniciativa do host)."""
+    if proto in (1, 58):                          # ICMP/ICMPv6 saindo: echo reply, unreachable
+        return True
+    if proto == 6 and flags and dport >= 1024 and dport not in _SERVICE_PORTS:     # não é o seu host indo a um serviço
+        if flags & 0x04 and not flags & 0x02 and not flags & 0x08:
+            return True                           # RST sem SYN nem dados: porta fechada recusando
+        if flags & 0x12 == 0x12 and not flags & 0x08 and not flags & 0x01:
+            return True                           # SYN-ACK sem dados: porta aberta respondendo varredura
+    if proto in (6, 17) and dport >= 1024 and (sport in _SERVICE_PORTS or sport < 1024):
+        return True                               # de porta de serviço para porta alta
+    return False
+
+
+def out_alertable(h: dict, cfg: dict) -> bool:
+    return h.get("category") in STRONG or (h.get("pkts") or 0) >= cfg.get("out_min_pkts", 1)
+
+
+def blocklist(intel: "Intel", cats: List[str], own: List[str] = ()) -> List[str]:
+    """Redes das listas nas categorias escolhidas, sem nada que esteja dentro (ou contenha) os seus prefixos."""
+    ownn = []
+    for p in own or []:
+        try:
+            ownn.append(ipaddress.ip_network(p, strict=False))
+        except ValueError:
+            pass
+    out, seen = [], set()
+    for i, fid in enumerate(intel.ids):
+        if (intel.meta.get(fid) or {}).get("category", "custom") not in cats:
+            continue
+        for c in intel.src.get(fid) or []:
+            if c in seen:
+                continue
+            seen.add(c)
+            try:
+                n = ipaddress.ip_network(c, strict=False)
+            except ValueError:
+                continue
+            if any(n.version == o.version and (n.overlaps(o)) for o in ownn):
+                continue
+            if intel.ign and intel.ign.match(n.version, int(n.network_address)):
+                continue
+            out.append(str(n))
+    return sorted(out, key=lambda x: (":" in x, ipaddress.ip_network(x)))
+
+
+def render_blocklist(nets: List[str], fmt: str, name: str = "bastion-ti") -> str:
+    if fmt == "routeros":
+        lines = [f"# BastiON threat intel - {len(nets)} redes", "/ip firewall address-list"]
+        for n in nets:
+            if ":" in n:
+                continue
+            lines.append(f':do {{ add list={name} address={n} timeout=2d comment=bastion }} on-error={{ '
+                         f'set [find list={name} address={n}] timeout=2d }}')
+        v6 = [n for n in nets if ":" in n]
+        if v6:
+            lines.append("/ipv6 firewall address-list")
+            for n in v6:
+                lines.append(f':do {{ add list={name} address={n} timeout=2d comment=bastion }} on-error={{ '
+                             f'set [find list={name} address={n}] timeout=2d }}')
+        return "\n".join(lines) + "\n"
+    if fmt == "juniper":
+        pl = name.upper().replace("-", "_")
+        return "\n".join([f"delete policy-options prefix-list {pl}"] + [f"set policy-options prefix-list {pl} {n}" for n in nets]) + "\n"
+    if fmt == "cisco":
+        v4 = [n for n in nets if ":" not in n]
+        return "\n".join([f"no object-group network {name.upper()}", f"object-group network {name.upper()}"] +
+                          [f" {ipaddress.ip_network(n).network_address} {ipaddress.ip_network(n).netmask}" for n in v4]) + "\n"
+    return "\n".join(nets) + "\n"
 
 
 def feed_list(cfg: dict) -> List[dict]:
@@ -140,6 +239,7 @@ class Intel:
 
     def __init__(self, lists: Dict[str, List[str]], meta: Dict[str, dict], manual: List[str] = (), ignore: List[str] = ()):
         self.ids = list(lists) + (["manual"] if manual else [])
+        self.src = {**lists, **({"manual": list(manual)} if manual else {})}
         self.meta = {**meta, "manual": {"name": "Lista manual", "category": "custom"}}
         self.ps = PrefixSet()
         self.count = 0
@@ -189,6 +289,7 @@ class Tracker:
         self.intel: Optional[Intel] = None
         self.own: Optional[PrefixSet] = None
         self.cur: Dict[Tuple, list] = {}
+        self.inports: Dict[Tuple, set] = {}
         self.on = False
         self.stats = {"flows": 0, "hits": 0}
 
@@ -198,7 +299,7 @@ class Tracker:
         self.on = bool(self.intel)
 
     def add(self, f):
-        from flowproto import F_BYTES, F_DPORT, F_DST, F_PKTS, F_PROTO, F_SPORT, F_SRC, F_VER
+        from flowproto import F_BYTES, F_DPORT, F_DST, F_FLAGS, F_PKTS, F_PROTO, F_SPORT, F_SRC, F_VER
         intel = self.intel
         ver = f[F_VER]
         ms = intel.lookup_int(ver, f[F_SRC])
@@ -206,32 +307,45 @@ class Tracker:
         if not ms and not md:
             return
         self.stats["hits"] += 1
+        reply = 0
         if ms:          # IP ruim na origem -> entrando na sua rede
             bad, local, direction, mask, port = f[F_SRC], f[F_DST], "in", ms, f[F_DPORT]
         else:
             bad, local, direction, mask, port = f[F_DST], f[F_SRC], "out", md, f[F_DPORT]
         if self.own is not None and not self.own.match(ver, local):
             return                                  # trânsito que não é seu (ex.: cliente com IP próprio não listado)
+        pk = (ver, bad, local)
+        if direction == "in":
+            ip_ = self.inports.get(pk)
+            if ip_ is None and len(self.inports) < self.MAX_KEYS:
+                ip_ = self.inports[pk] = set()
+            if ip_ is not None and len(ip_) < 64:
+                ip_.add((f[F_PROTO], f[F_DPORT]))
+        elif is_reply(f[F_PROTO], f[F_SPORT], f[F_DPORT], f[F_FLAGS]) or (f[F_PROTO], f[F_SPORT]) in self.inports.get(pk, ()):
+            direction, reply, port = "in", 1, f[F_SPORT]      # resposta do seu host: conta como entrada
         k = (ver, bad, local, direction)
         v = self.cur.get(k)
         if v is None:
             if len(self.cur) >= self.MAX_KEYS:
                 return
-            v = self.cur[k] = [0, 0, 0, mask, set()]
+            v = self.cur[k] = [0, 0, 0, mask, set(), 0]
         v[0] += f[F_BYTES]
         v[1] += f[F_PKTS]
         v[2] += 1
         v[3] |= mask
+        v[5] += reply
         if len(v[4]) < 8:
             v[4].add(f"{f[F_PROTO]}/{port}")
 
     def flush(self) -> List[dict]:
         cur, self.cur = self.cur, {}
+        inports, self.inports = self.inports, {}
         out = []
-        for (ver, bad, local, direction), (b, p, n, mask, ports) in cur.items():
+        for (ver, bad, local, direction), (b, p, n, mask, ports, reply) in cur.items():
             feeds = self.intel.describe(mask) if self.intel else []
             out.append({"bad_ip": ip_str(ver, bad), "local_ip": ip_str(ver, local), "dir": direction, "bytes": b, "pkts": p,
-                        "flows": n, "feeds": [x["id"] for x in feeds], "category": worst_category(feeds), "ports": sorted(ports)})
+                        "flows": n, "feeds": [x["id"] for x in feeds], "category": worst_category(feeds), "ports": sorted(ports),
+                        "replied": reply})
         return out
 
 

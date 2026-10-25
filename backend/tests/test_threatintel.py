@@ -10,9 +10,9 @@ def ip(s):
     return int(ipaddress.ip_address(s))
 
 
-def flow(src, dst, dport=443, b=1000, p=2):
+def flow(src, dst, dport=443, b=1000, p=2, sport=50000, proto=6, flags=0):
     f = [None] * 15
-    f[0], f[3], f[4], f[5], f[6], f[7], f[8], f[10], f[11] = "r1", ip(src), ip(dst), 4, 6, 50000, dport, b, p
+    f[0], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11] = "r1", ip(src), ip(dst), 4, proto, sport, dport, flags, b, p
     return tuple(f)
 
 
@@ -45,6 +45,41 @@ def test_tracker():
     assert len(out) == 2
     inn, outb = out
     assert outb == {"bad_ip": "45.10.10.10", "local_ip": "177.10.1.5", "dir": "out", "bytes": 2000, "pkts": 4, "flows": 2,
-                    "feeds": ["feodo"], "category": "c2", "ports": ["6/443", "6/8080"]}
+                    "feeds": ["feodo"], "category": "c2", "ports": ["6/443", "6/8080"], "replied": 0}
     assert inn["category"] == "scanner" and inn["local_ip"] == "177.10.2.2"
     assert t.flush() == []
+
+
+def test_replies_are_not_outbound():
+    intel = ti.Intel({"spamhaus_drop": ["103.34.60.0/22"]}, {"spamhaus_drop": ti.FEED_BY_ID["spamhaus_drop"]})
+    t = ti.Tracker(); t.configure(intel, ["177.10.0.0/16"])
+    t.add(flow("103.34.60.244", "177.10.8.226", 23, sport=41000, flags=0x02))           # varredura entrando
+    t.add(flow("177.10.8.226", "103.34.60.244", 41000, sport=23, flags=0x14))           # RST de volta
+    t.add(flow("177.10.8.226", "103.34.61.172", 55000, sport=37215, flags=0x14))        # RST porta alta fechada
+    t.add(flow("177.10.8.226", "103.34.62.44", 52000, sport=8291, flags=0x12))          # SYN-ACK do Winbox
+    t.add(flow("177.10.8.226", "103.34.62.14", 0, sport=0, proto=1))                    # ICMP unreachable
+    t.add(flow("177.10.8.226", "103.34.62.186", 33000, sport=53, proto=17))             # resposta DNS
+    t.add(flow("177.10.8.5", "103.34.63.15", 443, sport=50123, flags=0x1a))             # iniciativa real (com dados)
+    out = t.flush()
+    outs = [h for h in out if h["dir"] == "out"]
+    assert [h["bad_ip"] for h in outs] == ["103.34.63.15"]
+    assert sum(h["replied"] for h in out) == 5
+    assert ti.is_reply(6, 50000, 443, 0x12) is False         # SYN-ACK indo a serviço remoto = conexão do seu host
+
+
+def test_out_threshold_and_blocklist():
+    cfg = ti.clean_settings({"out_min_pkts": 10})
+    assert ti.out_alertable({"category": "c2", "pkts": 1}, cfg)
+    assert not ti.out_alertable({"category": "hijacked", "pkts": 3}, cfg)
+    assert ti.out_alertable({"category": "hijacked", "pkts": 12}, cfg)
+    intel = ti.Intel({"spamhaus_drop": ["103.34.60.0/22", "177.10.0.0/24"], "cins": ["5.6.7.8/32"]},
+                     {"spamhaus_drop": ti.FEED_BY_ID["spamhaus_drop"], "cins": ti.FEED_BY_ID["cins"]}, ignore=["103.34.60.0/22"])
+    intel2 = ti.Intel({"spamhaus_drop": ["103.34.60.0/22", "177.10.0.0/24", "2001:db8:dead::/48"], "cins": ["5.6.7.8/32"]},
+                      {"spamhaus_drop": ti.FEED_BY_ID["spamhaus_drop"], "cins": ti.FEED_BY_ID["cins"]})
+    assert ti.blocklist(intel, ["hijacked"], ["177.10.0.0/16"]) == []
+    nets = ti.blocklist(intel2, ["hijacked"], ["177.10.0.0/16"])
+    assert nets == ["103.34.60.0/22", "2001:db8:dead::/48"]
+    ros = ti.render_blocklist(nets, "routeros")
+    assert "add list=bastion-ti address=103.34.60.0/22 timeout=2d" in ros and "/ipv6 firewall address-list" in ros
+    assert "set policy-options prefix-list BASTION_TI 103.34.60.0/22" in ti.render_blocklist(nets, "juniper")
+    assert " 103.34.60.0 255.255.252.0" in ti.render_blocklist(nets, "cisco")

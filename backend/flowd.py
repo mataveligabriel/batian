@@ -295,7 +295,7 @@ class Collector:
         for h in hits:
             key = f"{day}|{h['bad_ip']}|{h['local_ip']}|{h['dir']}"
             ops.append(UpdateOne({"key": key}, {
-                "$inc": {"bytes": h["bytes"], "pkts": h["pkts"], "flows": h["flows"], "minutes": 1},
+                "$inc": {"bytes": h["bytes"], "pkts": h["pkts"], "flows": h["flows"], "minutes": 1, "replied": h.get("replied", 0)},
                 "$set": {"last": _iso(now), "ts": ts, "feeds": h["feeds"], "category": h["category"]},
                 "$addToSet": {"ports": {"$each": h["ports"]}},
                 "$setOnInsert": {"id": uuid.uuid4().hex[:16], "day": day, "bad_ip": h["bad_ip"], "local_ip": h["local_ip"],
