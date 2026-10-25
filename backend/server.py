@@ -12076,7 +12076,7 @@ async def ipam_prefix_detail(prefix: str, vrf: str = "", want: int = 0, user: di
     n = ipaddress.ip_network(pfx)
     rows = [r for r in await _ipam_rows(user) if ipaddress.ip_address(r["ip"]).version == n.version and ipaddress.ip_address(r["ip"]) in n
             and (not vrf or (r.get("vrf") or "") == vrf)]
-    rows.sort(key=lambda r: ipaddress.ip_address(r["ip"]))
+    rows.sort(key=lambda r: int(ipaddress.ip_address(r["ip"])))
     allp = list(dict.fromkeys(p["prefix"] for p in await _ipam_pfx_docs(user)))
     kids = ipammod.children(pfx, allp)
     used_nets = kids + [r["network"] for r in rows if r["source"] == "config"] + [r["ip"] + ("/32" if n.version == 4 else "/128") for r in rows]
@@ -12116,7 +12116,7 @@ async def ipam_issues(user: dict = Depends(get_current_user)):
     _no_viewer(user)
     rows = [r for r in await _ipam_rows(user) if r["source"] == "config"]
     allp = list(dict.fromkeys(p["prefix"] for p in await _ipam_pfx_docs(user)))
-    return {"duplicates": [{"ip": k, "where": [{"device_name": x["device_name"], "interface": x["interface"]} for x in v]}
+    return {"duplicates": [{"ip": k, "where": [{"device_name": x.get("device_name") or "?", "interface": x.get("interface") or ""} for x in v]}
                            for k, v in ipammod.duplicates(rows).items()],
             "uncovered": ipammod.uncovered_networks(rows, allp)[:1000]}
 
@@ -12174,18 +12174,21 @@ async def ipam_manual_delete(mid: str, user: dict = Depends(get_current_user)):
 async def ipam_inventory(user: dict = Depends(get_current_user)):
     """Inventário dos equipamentos: fabricante, modelo, firmware, IP de gerência, agente, grupos, último backup e IPs."""
     _no_viewer(user)
-    devs = await db.devices.find(_scope(user), {"_id": 0, "password": 0, "snmp_community": 0}).sort("name", 1).to_list(20000)
-    comp = {c["device_id"]: c async for c in db.compliance_results.find({}, {"_id": 0, "device_id": 1, "firmware": 1})}
-    cnt = {s["device_id"]: s.get("count", 0) async for s in db.ipam_dev_state.find({}, {"_id": 0, "device_id": 1, "count": 1})}
-    ags = {a["id"]: a["name"] async for a in db.agents.find({}, {"_id": 0, "id": 1, "name": 1})}
+    devs = [d for d in await db.devices.find(_scope(user), {"_id": 0, "password": 0, "snmp_community": 0}).sort("name", 1).to_list(20000) if d.get("id")]
+    comp = {c.get("device_id"): c async for c in db.compliance_results.find({}, {"_id": 0, "device_id": 1, "firmware": 1})}
+    cnt = {s.get("device_id"): s.get("count", 0) async for s in db.ipam_dev_state.find({}, {"_id": 0, "device_id": 1, "count": 1})}
+    ags = {a.get("id"): a.get("name") async for a in db.agents.find({}, {"_id": 0, "id": 1, "name": 1})}
+
+    def fw(d):
+        f = (comp.get(d["id"]) or {}).get("firmware")
+        return f if isinstance(f, dict) else {}
     last = {}
     async for b in db.backups.aggregate([{"$match": {"device_id": {"$in": [d["id"] for d in devs]}, "ok": {"$ne": False}}},
                                          {"$group": {"_id": "$device_id", "at": {"$max": "$created_at"}}}]):
         last[b["_id"]] = b["at"]
-    return [{"id": d["id"], "name": d["name"], "host": d.get("host"), "device_type": d.get("device_type"), "tags": d.get("tags") or [],
+    return [{"id": d["id"], "name": d.get("name") or d.get("host") or "?", "host": d.get("host"), "device_type": d.get("device_type"), "tags": d.get("tags") or [],
              "agent": ags.get(d.get("agent_id")) if d.get("agent_id") else None, "status": d.get("status"),
-             "model": ((comp.get(d["id"]) or {}).get("firmware") or {}).get("model"),
-             "firmware": ((comp.get(d["id"]) or {}).get("firmware") or {}).get("version"),
+             "model": fw(d).get("model"), "firmware": fw(d).get("version"),
              "addresses": cnt.get(d["id"], 0), "last_backup": last.get(d["id"])} for d in devs]
 
 
@@ -12261,7 +12264,9 @@ async def netbox_sync(body: NetboxSyncIn, user: dict = Depends(require_admin)):
     """Compara o IPAM do BastiON com o NetBox; sem dry_run cria no NetBox o que falta (prefixos e IPs de interface)
     e, se pedido, traz para cá os prefixos que só existem lá. Nada é apagado em nenhum dos lados."""
     c = await _netbox_cfg()
-    local_p = await db.ipam_prefixes.find({}, {"_id": 0}).to_list(50000)
+    local_p = [p for p in await db.ipam_prefixes.find({}, {"_id": 0}).to_list(50000) if _ipam_net(p.get("prefix"))]
+    for p in local_p:
+        p["prefix"] = str(_ipam_net(p["prefix"]))
     local_i = [r for r in await _ipam_rows(user) if r["source"] == "config"]
     try:
         async with _netbox_client(c) as cl:

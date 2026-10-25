@@ -111,10 +111,29 @@ def clean_prefix(p: str) -> str:
         raise ValueError(f"Prefixo inválido: {p}")
 
 
+def net_key(n) -> tuple:
+    """Ordem estável misturando IPv4 e IPv6 (comparar IPv4Network com IPv6Network direto dá TypeError)."""
+    n = n if isinstance(n, (ipaddress.IPv4Network, ipaddress.IPv6Network)) else ipaddress.ip_network(n, strict=False)
+    return (n.version, int(n.network_address), n.prefixlen)
+
+
+def _safe_net(v):
+    try:
+        return ipaddress.ip_network(str(v).strip(), strict=False)
+    except (ValueError, TypeError):
+        return None
+
+
 def usage(prefix: str, ips: Iterable[str]) -> dict:
     net = ipaddress.ip_network(prefix)
-    used = {ipaddress.ip_address(i) for i in ips}
-    used = {i for i in used if i in net}
+    used = set()
+    for i in ips:
+        try:
+            a = ipaddress.ip_address(str(i).split("%")[0])
+        except ValueError:
+            continue
+        if a.version == net.version and a in net:
+            used.add(a)
     size = net.num_addresses
     usable = size - 2 if net.version == 4 and net.prefixlen <= 30 else size
     return {"size": size, "usable": usable, "used": len(used), "pct": round(100.0 * len(used) / usable, 1) if usable else 0.0}
@@ -122,7 +141,7 @@ def usage(prefix: str, ips: Iterable[str]) -> dict:
 
 def children(prefix: str, all_prefixes: List[str]) -> List[str]:
     net = ipaddress.ip_network(prefix)
-    sub = [ipaddress.ip_network(p) for p in all_prefixes if p != prefix and ipaddress.ip_network(p).version == net.version]
+    sub = [n for n in (_safe_net(p) for p in all_prefixes if p != prefix) if n is not None and n.version == net.version and n != net]
     sub = [s for s in sub if s.subnet_of(net)]
     # só os filhos diretos
     return [str(s) for s in sub if not any(s != o and s.subnet_of(o) for o in sub)]
@@ -131,8 +150,7 @@ def children(prefix: str, all_prefixes: List[str]) -> List[str]:
 def free_blocks(prefix: str, used_nets: List[str], want_len: Optional[int] = None, limit: int = 20) -> List[str]:
     """Blocos livres dentro do prefixo, descontando sub-prefixos e redes de interface. want_len: só desse tamanho."""
     net = ipaddress.ip_network(prefix)
-    taken = sorted({ipaddress.ip_network(u, strict=False) for u in used_nets
-                    if ipaddress.ip_network(u, strict=False).version == net.version and ipaddress.ip_network(u, strict=False).overlaps(net)})
+    taken = sorted({n for n in (_safe_net(u) for u in used_nets) if n is not None and n.version == net.version and n.overlaps(net)})
     free = [net]
     for t in taken:
         nxt = []
@@ -161,23 +179,26 @@ def duplicates(rows: List[dict]) -> Dict[str, list]:
     """Mesmo IP em dois equipamentos (na mesma VRF)."""
     seen: Dict[tuple, list] = {}
     for r in rows:
-        seen.setdefault((r["ip"], r.get("vrf") or ""), []).append(r)
-    return {f"{k[0]}{' @' + k[1] if k[1] else ''}": v for k, v in seen.items() if len({x["device_id"] for x in v}) > 1}
+        if r.get("ip"):
+            seen.setdefault((str(r["ip"]), r.get("vrf") or ""), []).append(r)
+    return {f"{k[0]}{' @' + k[1] if k[1] else ''}": v for k, v in seen.items() if len({str(x.get("device_id")) for x in v}) > 1}
 
 
 def uncovered_networks(rows: List[dict], prefixes: List[str]) -> List[dict]:
     """Redes de interface que não estão dentro de nenhum prefixo cadastrado (candidatas a importar)."""
-    nets = [ipaddress.ip_network(p) for p in prefixes]
+    nets = [n for n in (_safe_net(p) for p in prefixes) if n is not None]
     out: Dict[str, dict] = {}
     for r in rows:
-        n = ipaddress.ip_network(r["network"])
+        n = _safe_net(r.get("network"))
+        if n is None:
+            continue
         if n.prefixlen == n.max_prefixlen:
             continue
         if any(n.version == p.version and n.subnet_of(p) for p in nets):
             continue
         o = out.setdefault(str(n), {"network": str(n), "devices": set(), "vrf": r.get("vrf") or ""})
-        o["devices"].add(r["device_name"])
-    return [{**v, "devices": sorted(v["devices"])} for v in sorted(out.values(), key=lambda x: ipaddress.ip_network(x["network"]))]
+        o["devices"].add(str(r.get("device_name") or "?"))
+    return [{**v, "devices": sorted(v["devices"])} for v in sorted(out.values(), key=lambda x: net_key(x["network"]))]
 
 
 # ---------------------------------------------------------------- NetBox

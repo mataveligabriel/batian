@@ -34,3 +34,15 @@ def test_usage_free_and_plan():
                          [{"prefix": "198.51.100.0/24", "vrf": None}], [{"address": "10.10.0.1/30", "vrf": None}])
     assert [p["prefix"] for p in plan["new_prefixes"]] == ["10.10.0.0/24"] and [a["ip"] for a in plan["new_ips"]] == ["10.10.0.2"]
     assert plan["only_netbox"][0]["prefix"] == "198.51.100.0/24"
+
+
+def test_mixed_v4_v6_and_bad_rows():
+    import ipam as m
+    rows = [{"ip": "10.0.0.1", "network": "10.0.0.0/30", "device_name": "R1", "device_id": "a"},
+            {"ip": "2001:db8::1", "network": "2001:db8::/64", "device_name": None, "device_id": "b"},
+            {"ip": "x", "network": "lixo", "device_name": "R3", "device_id": "d"}]
+    unc = m.uncovered_networks(rows, ["192.0.2.0/24", "ruim"])          # IPv4 e IPv6 juntos não podem dar TypeError
+    assert [u["network"] for u in unc] == ["10.0.0.0/30", "2001:db8::/64"] and unc[1]["devices"] == ["?"]
+    assert m.free_blocks("10.0.0.0/29", ["10.0.0.0/30", "2001:db8::/64", "lixo"]) == ["10.0.0.4/30"]
+    assert m.children("10.0.0.0/8", ["10.1.0.0/16", "10.1.1.0/24", "2001:db8::/32", "bad"]) == ["10.1.0.0/16"]
+    assert m.usage("10.0.0.0/30", ["10.0.0.1", "2001:db8::1", "nada"])["used"] == 1
