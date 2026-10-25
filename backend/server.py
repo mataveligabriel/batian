@@ -11807,17 +11807,51 @@ async def _ipam_loop():
         await asyncio.sleep(1800)
 
 
+def _ipam_net(v):
+    try:
+        return ipaddress.ip_network(str(v).strip(), strict=False)
+    except (ValueError, TypeError):
+        return None
+
+
 def _ipam_scope(user: dict) -> dict:
     return {} if user.get("role") == "admin" else {"owner_id": user["id"]}
 
 
+def _ipam_ok_ip(v) -> bool:
+    try:
+        ipaddress.ip_address(str(v or ""))
+        return True
+    except ValueError:
+        return False
+
+
 async def _ipam_rows(user: dict) -> List[dict]:
-    rows = await db.ipam_addresses.find(_ipam_scope(user), {"_id": 0}).to_list(200000)
-    man = await db.ipam_manual.find(_ipam_scope(user), {"_id": 0}).to_list(50000)
-    for m in man:
-        rows.append({**m, "device_id": f"manual:{m['id']}", "device_name": "reservado", "interface": "", "source": "manual",
+    """IPs das configurações + reservados. Registro com IP/rede ilegível fica de fora (não derruba as telas)."""
+    rows = []
+    for r in await db.ipam_addresses.find(_ipam_scope(user), {"_id": 0}).to_list(200000):
+        if _ipam_ok_ip(r.get("ip")) and _ipam_net(r.get("network")):
+            r.setdefault("vrf", "")
+            r.setdefault("device_name", "?")
+            r.setdefault("device_id", "?")
+            r.setdefault("source", "config")
+            rows.append(r)
+    for m in await db.ipam_manual.find(_ipam_scope(user), {"_id": 0}).to_list(50000):
+        if not _ipam_ok_ip(m.get("ip")):
+            continue
+        rows.append({**m, "device_id": f"manual:{m.get('id')}", "device_name": "reservado", "interface": "", "source": "manual",
                      "network": m["ip"] + ("/32" if ":" not in m["ip"] else "/128"), "plen": 32 if ":" not in m["ip"] else 128})
     return rows
+
+
+async def _ipam_pfx_docs(user: dict) -> List[dict]:
+    out = []
+    for p in await db.ipam_prefixes.find(_ipam_scope(user), {"_id": 0}).to_list(20000):
+        n = _ipam_net(p.get("prefix"))
+        if n:
+            p["prefix"] = str(n)
+            out.append(p)
+    return out
 
 
 class IpamPrefixIn(BaseModel):
@@ -11843,23 +11877,56 @@ def _ipam_clean(body: IpamPrefixIn) -> dict:
 @api.get("/ipam/prefixes")
 async def ipam_prefixes(user: dict = Depends(get_current_user)):
     _no_viewer(user)
-    pfx = await db.ipam_prefixes.find(_ipam_scope(user), {"_id": 0}).to_list(20000)
+    raw = await db.ipam_prefixes.find(_ipam_scope(user), {"_id": 0}).to_list(20000)
     rows = await _ipam_rows(user)
-    allp = [p["prefix"] for p in pfx]
-    nets = {p["prefix"]: ipaddress.ip_network(p["prefix"]) for p in pfx}
-    ips_v = [(ipaddress.ip_address(r["ip"]), r.get("vrf") or "") for r in rows]
+    pfx, nets, bad, seen = [], {}, [], set()
+    for p in raw:                                  # registro com prefixo estragado não derruba a tela
+        n = _ipam_net(p.get("prefix"))
+        if not n:
+            bad.append(str(p.get("prefix"))[:60])
+            continue
+        p["prefix"] = str(n)
+        if (p["prefix"], p.get("vrf") or "") in seen:
+            continue
+        seen.add((p["prefix"], p.get("vrf") or ""))
+        nets[p["prefix"]] = n
+        pfx.append(p)
+    ips_v = []
+    for r in rows:
+        try:
+            ips_v.append((ipaddress.ip_address(str(r.get("ip") or "").split("%")[0]), r.get("vrf") or ""))
+        except ValueError:
+            bad.append(str(r.get("ip"))[:60])
+    if bad:
+        logger.warning(f"IPAM: {len(bad)} registro(s) com IP/prefixo inválido ignorados: {bad[:10]}")
+    allp = list(nets)                              # prefixo repetido em outra VRF entra uma vez só na hierarquia
+    by_ver = {4: sorted((i, v) for i, v in ips_v if i.version == 4), 6: sorted((i, v) for i, v in ips_v if i.version == 6)}
+    import bisect
+    keys = {ver: [i for i, _ in lst] for ver, lst in by_ver.items()}
     for p in pfx:
         n = nets[p["prefix"]]
-        inside = {str(i) for i, v in ips_v if i.version == n.version and i in n and (not p.get("vrf") or v == p["vrf"])}
-        p.update(ipammod.usage(p["prefix"], inside))
-        p["children"] = len(ipammod.children(p["prefix"], allp))
+        lst, ks = by_ver[n.version], keys[n.version]
+        lo = bisect.bisect_left(ks, n.network_address)
+        hi = bisect.bisect_right(ks, n.broadcast_address)
+        inside = {str(i) for i, v in lst[lo:hi] if not p.get("vrf") or v == p["vrf"]}
+        try:
+            p.update(ipammod.usage(p["prefix"], inside))
+        except Exception as e:
+            logger.warning(f"IPAM uso de {p['prefix']}: {e}")
+            p.update({"size": n.num_addresses, "usable": n.num_addresses, "used": len(inside), "pct": 0.0})
         parents = [q for q in allp if q != p["prefix"] and nets[q].version == n.version and n.subnet_of(nets[q])]
+        p["children"] = len(ipammod.children(p["prefix"], allp))
         p["parent"] = max(parents, key=lambda q: nets[q].prefixlen) if parents else None
         p["depth"] = len(parents)
-    pfx.sort(key=lambda p: (nets[p["prefix"]].version, nets[p["prefix"]].network_address, nets[p["prefix"]].prefixlen))
-    dups = ipammod.duplicates([r for r in rows if r["source"] == "config"])
-    return {"prefixes": pfx, "addresses": len(rows), "duplicates": len(dups),
-            "uncovered": len(ipammod.uncovered_networks([r for r in rows if r["source"] == "config"], allp))}
+    pfx.sort(key=lambda p: (nets[p["prefix"]].version, int(nets[p["prefix"]].network_address), nets[p["prefix"]].prefixlen))
+    cfg_rows = [r for r in rows if r.get("source") == "config" and _ipam_net(r.get("network")) and r.get("ip")]
+    try:
+        dups = len(ipammod.duplicates(cfg_rows))
+        unc = len(ipammod.uncovered_networks(cfg_rows, allp))
+    except Exception as e:
+        logger.warning(f"IPAM resumo: {e}")
+        dups, unc = 0, 0
+    return {"prefixes": pfx, "addresses": len(rows), "duplicates": dups, "uncovered": unc, "invalid": len(bad)}
 
 
 @api.post("/ipam/prefixes")
@@ -11901,7 +11968,7 @@ async def ipam_prefix_detail(prefix: str, vrf: str = "", want: int = 0, user: di
     rows = [r for r in await _ipam_rows(user) if ipaddress.ip_address(r["ip"]).version == n.version and ipaddress.ip_address(r["ip"]) in n
             and (not vrf or (r.get("vrf") or "") == vrf)]
     rows.sort(key=lambda r: ipaddress.ip_address(r["ip"]))
-    allp = [p["prefix"] async for p in db.ipam_prefixes.find(_ipam_scope(user), {"_id": 0, "prefix": 1})]
+    allp = list(dict.fromkeys(p["prefix"] for p in await _ipam_pfx_docs(user)))
     kids = ipammod.children(pfx, allp)
     used_nets = kids + [r["network"] for r in rows if r["source"] == "config"] + [r["ip"] + ("/32" if n.version == 4 else "/128") for r in rows]
     return {"prefix": pfx, "vrf": vrf, "addresses": rows, "children": kids, **ipammod.usage(pfx, [r["ip"] for r in rows]),
@@ -11918,7 +11985,7 @@ async def ipam_search(q: str, user: dict = Depends(get_current_user)):
     out = []
     try:
         addr = ipaddress.ip_address(q)
-        out = [r for r in rows if r["ip"] == str(addr) or (ipaddress.ip_address(r["ip"]).version == addr.version and addr in ipaddress.ip_network(r["network"]))]
+        out = [r for r in rows if r["ip"] == str(addr) or (ipaddress.ip_address(r["ip"]).version == addr.version and addr in _ipam_net(r["network"]))]
     except ValueError:
         try:
             net = ipaddress.ip_network(q, strict=False)
@@ -11927,11 +11994,11 @@ async def ipam_search(q: str, user: dict = Depends(get_current_user)):
             low = q.lower()
             out = [r for r in rows if r["ip"].startswith(low) or low in (r.get("device_name") or "").lower() or low in (r.get("interface") or "").lower()
                    or low in (r.get("description") or "").lower() or low in (r.get("vrf") or "").lower()]
-    pfx = await db.ipam_prefixes.find(_ipam_scope(user), {"_id": 0}).to_list(20000)
+    pfx = [(ipaddress.ip_network(p["prefix"]), p["prefix"]) for p in await _ipam_pfx_docs(user)]
     for r in out[:300]:
         a = ipaddress.ip_address(r["ip"])
-        inn = [p for p in pfx if ipaddress.ip_network(p["prefix"]).version == a.version and a in ipaddress.ip_network(p["prefix"])]
-        r["prefix"] = max(inn, key=lambda p: ipaddress.ip_network(p["prefix"]).prefixlen)["prefix"] if inn else None
+        inn = [(n, t) for n, t in pfx if n.version == a.version and a in n]
+        r["prefix"] = max(inn, key=lambda x: x[0].prefixlen)[1] if inn else None
     return out[:300]
 
 
@@ -11939,7 +12006,7 @@ async def ipam_search(q: str, user: dict = Depends(get_current_user)):
 async def ipam_issues(user: dict = Depends(get_current_user)):
     _no_viewer(user)
     rows = [r for r in await _ipam_rows(user) if r["source"] == "config"]
-    allp = [p["prefix"] async for p in db.ipam_prefixes.find(_ipam_scope(user), {"_id": 0, "prefix": 1})]
+    allp = list(dict.fromkeys(p["prefix"] for p in await _ipam_pfx_docs(user)))
     return {"duplicates": [{"ip": k, "where": [{"device_name": x["device_name"], "interface": x["interface"]} for x in v]}
                            for k, v in ipammod.duplicates(rows).items()],
             "uncovered": ipammod.uncovered_networks(rows, allp)[:1000]}

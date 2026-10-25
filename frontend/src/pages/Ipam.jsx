@@ -115,7 +115,7 @@ function Prefixes({ onOpen }) {
     <>
       <div className="flex flex-wrap gap-2 items-center mb-3">
         <Input value={q} onChange={e => setQ(e.target.value)} placeholder="filtrar prefixos…" className="bg-sunken border-line h-9 max-w-xs" />
-        {data && <span className="text-xs text-slate-400">{data.addresses} IPs em uso nas configurações{data.duplicates ? <span className="text-red-300"> · {data.duplicates} duplicado(s)</span> : ""}{data.uncovered ? <span className="text-amber-300"> · {data.uncovered} rede(s) sem prefixo</span> : ""}</span>}
+        {data && <span className="text-xs text-slate-400">{data.addresses} IPs em uso nas configurações{data.duplicates ? <span className="text-red-300"> · {data.duplicates} duplicado(s)</span> : ""}{data.uncovered ? <span className="text-amber-300"> · {data.uncovered} rede(s) sem prefixo</span> : ""}{data.invalid ? <span className="text-slate-500" title="Prefixos com valor ilegível no banco; ficaram fora da lista"> · {data.invalid} prefixo(s) inválido(s) ignorado(s)</span> : ""}</span>}
         <Button size="sm" onClick={() => setEdit({})} className="bg-brand hover:bg-brand-strong text-onbrand ml-auto" data-testid="ipam-new"><Plus className="w-4 h-4 mr-1" /> Prefixo</Button>
       </div>
       <Card className="bg-surface border-line overflow-x-auto">
