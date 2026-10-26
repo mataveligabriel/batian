@@ -267,26 +267,31 @@ export default function Layout() {
 }
 
 
-/** Grupo do menu. Menu aberto: clicar fixa aberto/fechado; passar o mouse abre por baixo enquanto o mouse estiver nele.
- *  Menu encolhido: passar o mouse (ou clicar) mostra os submenus ao lado. O grupo da tela atual fica sempre aberto. */
-function NavGroup({ g, mini, isMobile, pathname, open, setOpen, renderItem, badge }) {
-  const [hover, setHover] = useState(false);
+/** Grupo do menu: abre e fecha só no clique (passar o mouse não abre nada). O grupo da tela atual começa aberto.
+ *  Menu encolhido: o clique mostra os submenus ao lado; fecha ao clicar fora, no Esc ou ao trocar de tela. */
+function NavGroup({ g, mini, pathname, open, setOpen, renderItem, badge }) {
+  const [fly, setFly] = useState(false);
   const [pos, setPos] = useState(null);
-  const timer = React.useRef(null);
+  const box = React.useRef(null);
   const btn = React.useRef(null);
   const active = g.items.some(it => pathname === it.to || pathname.startsWith(it.to + "/"));
   const pinned = open[g.group];
   const base = pinned === undefined ? active : pinned;          // aberto "fixo" (clique) ou por ser a tela atual
-  const expanded = !mini && (base || hover);
+  const expanded = !mini && base;
   const place = () => { const r = btn.current?.getBoundingClientRect(); if (r) setPos({ left: r.right + 8, top: Math.min(r.top, window.innerHeight - 40 - g.items.length * 34) }); };
-  const enter = () => { if (isMobile) return; clearTimeout(timer.current); if (mini) place(); timer.current = setTimeout(() => setHover(true), mini ? 0 : 120); };
-  const leave = () => { clearTimeout(timer.current); timer.current = setTimeout(() => setHover(false), mini ? 200 : 250); };
-  useEffect(() => () => clearTimeout(timer.current), []);
-  useEffect(() => { setHover(false); }, [pathname]);
-  const toggle = () => { if (mini) { place(); setHover(h => !h); return; } setOpen(o => ({ ...o, [g.group]: !base })); setHover(false); };
+  useEffect(() => { setFly(false); }, [pathname, mini]);
+  useEffect(() => {
+    if (!fly) return undefined;
+    const out = (e) => { if (box.current && !box.current.contains(e.target)) setFly(false); };
+    const esc = (e) => { if (e.key === "Escape") setFly(false); };
+    document.addEventListener("mousedown", out);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", out); document.removeEventListener("keydown", esc); };
+  }, [fly]);
+  const toggle = () => { if (mini) { place(); setFly(f => !f); return; } setOpen(o => ({ ...o, [g.group]: !base })); };
   return (
-    <div onMouseEnter={enter} onMouseLeave={leave} className="relative" data-testid={`nav-group-${g.group}`}>
-      <button ref={btn} onClick={toggle} title={mini ? g.label : undefined} aria-expanded={expanded || (mini && hover)}
+    <div ref={box} className="relative" data-testid={`nav-group-${g.group}`}>
+      <button ref={btn} onClick={toggle} title={mini ? g.label : undefined} aria-expanded={expanded || (mini && fly)}
               className={`relative w-full flex items-center gap-2.5 ${mini ? "justify-center px-0" : "px-2.5"} py-2.5 md:py-[7px] rounded-md text-sm md:text-[13.5px] transition-colors ${
                 active ? "text-slate-100" : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.04]"}`}>
         <g.icon className="w-4 h-4 shrink-0 opacity-90" />
@@ -297,7 +302,7 @@ function NavGroup({ g, mini, isMobile, pathname, open, setOpen, renderItem, badg
         {mini && active && <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full bg-brand-soft" />}
       </button>
       {expanded && <div className="space-y-px pb-1" data-testid={`nav-sub-${g.group}`}>{g.items.map(it => renderItem(it, true))}</div>}
-      {mini && hover && pos && (
+      {mini && fly && pos && (
         <div className="fixed z-50 w-52 rounded-md border border-line2 bg-panel shadow-2xl p-1.5 space-y-px before:absolute before:-left-3 before:top-0 before:bottom-0 before:w-3"
              style={{ left: pos.left, top: Math.max(8, pos.top) }} data-testid={`nav-fly-${g.group}`}>
           <div className="px-2.5 pt-1 pb-1.5 text-[11px] uppercase tracking-wide text-slate-500">{g.label}</div>
