@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import os
+import posixpath
 import re
 import hashlib
 import hmac
@@ -8263,6 +8264,192 @@ async def ftp_file_delete(path: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Não existe")
     await _ftp_event({"action": "delete", "path": "/" + _ftp_folder(path), "ok": True, "user": user.get("email", ""), "peer": "", "via": "web", "scope": "web"})
     return {"ok": True}
+
+
+# --- arquivos direto com o equipamento (SFTP/SCP pelo mesmo caminho do SSH: BastiON → jump → equipamento)
+# Serve quando o equipamento não alcança o BastiON nem o jump (NAT no meio): quem abre a conexão é o BastiON.
+_xfer_jobs: Dict[str, dict] = {}
+
+
+def _xfer_public(j: dict) -> dict:
+    return {k: v for k, v in j.items() if not k.startswith("_")}
+
+
+async def _xfer_device(user: dict, device_id: str) -> dict:
+    _no_viewer(user)
+    dev = await _get_device_for(user, device_id)
+    if dev.get("protocol") == "telnet":
+        raise HTTPException(status_code=400, detail="Equipamento por Telnet: SFTP/SCP precisam de SSH")
+    return dev
+
+
+async def _xfer_connect(dev: dict):
+    hops, dtype = await _device_hops(dev)
+    w = SSHClientWrapper(hops, device_type=dtype)
+    await w.connect()
+    return w
+
+
+def _sftp_hint(dev: dict) -> str:
+    t = (dev.get("device_type") or "").lower()
+    return {"huawei": "No Huawei: 'sftp server enable' e o usuário com 'service-type ssh' + 'ssh user <nome> service-type all'.",
+            "cisco": "No Cisco: 'ip scp server enable' (o BastiON tenta SCP quando não há SFTP).",
+            "zte": "Na ZTE: confira se o servidor SFTP/SCP está ligado na versão (ssh server … sftp).",
+            "juniper": "No Junos SFTP já vem ligado; confira 'set system services ssh sftp-server'.",
+            "mikrotik": "No MikroTik o SFTP vem com o SSH (/ip service ssh)."}.get(t, "Ligue o servidor SFTP (ou SCP) no equipamento.")
+
+
+@api.get("/ftp/device/ls")
+async def xfer_ls(device_id: str, path: str = ".", user: dict = Depends(get_current_user)):
+    dev = await _xfer_device(user, device_id)
+    try:
+        w = await _xfer_connect(dev)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não conectou no equipamento: {str(e)[:200]}")
+    try:
+        async with w.conn.start_sftp_client() as sftp:
+            base = await sftp.realpath(path or ".")
+            items = []
+            for n in await sftp.readdir(base):
+                name = n.filename if isinstance(n.filename, str) else n.filename.decode("utf-8", "replace")
+                if name in (".", ".."):
+                    continue
+                a = n.attrs
+                isdir = bool(a.permissions is not None and (a.permissions & 0o170000) == 0o040000) or (a.type == 2)
+                items.append({"name": name, "dir": isdir, "size": a.size or 0,
+                              "mtime": datetime.fromtimestamp(a.mtime, timezone.utc).isoformat() if a.mtime else None})
+            base = base if isinstance(base, str) else base.decode("utf-8", "replace")
+            return {"path": base, "items": sorted(items, key=lambda x: (not x["dir"], x["name"].lower())), "method": "sftp"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"O equipamento não abriu SFTP para listar ({type(e).__name__}: {str(e)[:120]}). "
+                                                    f"{_sftp_hint(dev)} Sem listar, ainda dá para trazer/enviar informando o caminho (tenta SCP).")
+    finally:
+        await w.close()
+
+
+class XferIn(BaseModel):
+    device_id: str
+    direction: str                     # pull = equipamento → BastiON; push = BastiON → equipamento
+    remote_path: str
+    local_path: str = ""               # pull: pasta de destino na área de arquivos; push: arquivo da área
+
+
+async def _xfer_run(job: dict, dev: dict, local_abs: str, remote: str):
+    import asyncssh
+    t0 = time.monotonic()
+
+    def prog(_s, _d, done, total):
+        job["bytes"], job["total"] = int(done), int(total or 0)
+    tmp = local_abs + ".parcial"
+    errors = []
+    w = None
+    try:
+        job["state"] = "conectando"
+        w = await _xfer_connect(dev)
+        job["state"] = "copiando"
+        for method in ("sftp", "scp"):
+            try:
+                if method == "sftp":
+                    async with w.conn.start_sftp_client() as sftp:
+                        if job["direction"] == "pull":
+                            await sftp.get(remote, tmp, progress_handler=prog)
+                        else:
+                            await sftp.put(local_abs, remote, progress_handler=prog)
+                else:
+                    if job["direction"] == "pull":
+                        await asyncssh.scp((w.conn, remote), tmp, progress_handler=prog)
+                    else:
+                        await asyncssh.scp(local_abs, (w.conn, remote), progress_handler=prog)
+                job["method"] = method
+                break
+            except Exception as e:
+                errors.append(f"{method.upper()}: {type(e).__name__} {str(e)[:150]}")
+        else:
+            raise RuntimeError(" · ".join(errors) + f". {_sftp_hint(dev)}")
+        if job["direction"] == "pull":
+            os.replace(tmp, local_abs)
+            job["bytes"] = job["total"] = os.path.getsize(local_abs)
+        job["state"], job["ok"] = "pronto", True
+    except Exception as e:
+        job["state"], job["ok"], job["error"] = "erro", False, str(e)[:600]
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    finally:
+        if w:
+            try:
+                await w.close()
+            except Exception:
+                pass
+        job["secs"] = round(time.monotonic() - t0, 1)
+        job["ended_at"] = datetime.now(timezone.utc).isoformat()
+        await _ftp_event({"action": "download" if job["direction"] == "push" else "upload", "path": job["local"], "ok": job.get("ok", False),
+                          "bytes": job.get("bytes", 0), "secs": job["secs"], "error": job.get("error", "")[:120],
+                          "user": job["user"], "peer": dev.get("host", ""), "via": f"{job['method'] or 'ssh'} {dev.get('name', '')}",
+                          "scope": "device", "remote": remote})
+
+
+@api.post("/ftp/device/transfer")
+async def xfer_start(body: XferIn, user: dict = Depends(get_current_user)):
+    dev = await _xfer_device(user, body.device_id)
+    remote = body.remote_path.strip()
+    if not remote or len(remote) > 500 or "\n" in remote:
+        raise HTTPException(status_code=400, detail="Informe o caminho no equipamento (ex.: /datadisk0/DATA0/startrun.dat)")
+    if body.direction == "pull":
+        folder = _ftp_folder(body.local_path) or f"equipamentos/{_ftp_folder(dev['name'])}"
+        d = _ftp_abs(folder)
+        os.makedirs(d, exist_ok=True)
+        name = re.sub(r"[^\w.\- ]", "_", posixpath.basename(remote.rstrip("/")))[:120] or "arquivo"
+        dst = os.path.join(d, name)
+        if os.path.exists(dst):
+            stem, ext = os.path.splitext(name)
+            name = f"{stem}-{datetime.now().strftime('%Y%m%d-%H%M%S')}{ext}"
+            dst = os.path.join(d, name)
+        local_abs, local_rel = dst, f"{folder}/{name}"
+    elif body.direction == "push":
+        local_abs = _ftp_abs(body.local_path)
+        if not os.path.isfile(local_abs):
+            raise HTTPException(status_code=404, detail="Escolha um arquivo da área de arquivos")
+        local_rel = _ftp_folder(body.local_path)
+        if remote.endswith("/"):
+            remote += os.path.basename(local_abs)
+    else:
+        raise HTTPException(status_code=400, detail="direction: pull ou push")
+    running = [j for j in _xfer_jobs.values() if j["state"] in ("conectando", "copiando") and j["device_id"] == dev["id"]]
+    if len(running) >= 2:
+        raise HTTPException(status_code=409, detail="Já há transferências em andamento nesse equipamento")
+    jid = os.urandom(6).hex()
+    job = {"id": jid, "device_id": dev["id"], "device_name": dev["name"], "direction": body.direction, "remote": remote, "local": local_rel,
+           "state": "na fila", "bytes": 0, "total": 0, "method": "", "ok": None, "error": "", "user": user.get("email", ""),
+           "owner_id": user["id"], "started_at": datetime.now(timezone.utc).isoformat()}
+    _xfer_jobs[jid] = job
+    for k in sorted(_xfer_jobs, key=lambda k: _xfer_jobs[k]["started_at"])[:-100]:
+        _xfer_jobs.pop(k, None)
+    _bg(_xfer_run(job, dev, local_abs, remote))
+    return _xfer_public(job)
+
+
+@api.get("/ftp/device/jobs")
+async def xfer_jobs(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    rows = [j for j in _xfer_jobs.values() if user.get("role") == "admin" or j["owner_id"] == user["id"]]
+    return [_xfer_public(j) for j in sorted(rows, key=lambda j: j["started_at"], reverse=True)[:30]]
+
+
+@api.get("/ftp/files/all")
+async def ftp_files_all(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    root = Path(_ftp_root())
+    out = []
+    for f in root.rglob("*"):
+        if f.is_file() and not f.name.endswith(".parcial") and not any(p.startswith(".") for p in f.relative_to(root).parts):
+            out.append({"path": str(f.relative_to(root)).replace(os.sep, "/"), "size": f.stat().st_size})
+            if len(out) >= 3000:
+                break
+    return sorted(out, key=lambda x: x["path"].lower())
 
 
 # ---------- TACACS+ (login nos equipamentos com os usuários do BastiON) ----------

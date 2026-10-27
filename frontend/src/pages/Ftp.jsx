@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { FolderUp, Plus, Trash2, Copy, Download, Upload, Folder, FileText, RefreshCw, Loader2, Save, CheckCircle2, XCircle, AlertTriangle, Eye, EyeOff, Clock, ChevronRight, Pencil } from "lucide-react";
+import { FolderUp, Plus, Trash2, Copy, Download, Upload, Folder, FileText, RefreshCw, Loader2, Save, CheckCircle2, XCircle, AlertTriangle, Eye, EyeOff, Clock, ChevronRight, Pencil, ArrowUp } from "lucide-react";
 
 const lbl = "text-xs text-slate-400 mb-1 block";
 const sel = "h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200";
@@ -218,6 +218,115 @@ function Files() {
   );
 }
 
+const PATH_HINT = { zte: "/datadisk0/DATA0/startrun.dat", huawei: "vrpcfg.zip", cisco: "flash:/", juniper: "/config/juniper.conf.gz", mikrotik: "/", datacom: "/" };
+
+function DeviceXfer() {
+  const [devs, setDevs] = useState([]);
+  const [dev, setDev] = useState("");
+  const [path, setPath] = useState("");
+  const [ls, setLs] = useState(null);
+  const [lsErr, setLsErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [dest, setDest] = useState("");
+  const [files, setFiles] = useState([]);
+  const [local, setLocal] = useState("");
+  const [rpush, setRpush] = useState("");
+  const [jobs, setJobs] = useState([]);
+  const d = devs.find(x => x.id === dev);
+  useEffect(() => {
+    api.get("/devices").then(r => setDevs((r.data || []).filter(x => x.protocol !== "telnet"))).catch(() => {});
+    api.get("/ftp/files/all").then(r => setFiles(r.data)).catch(() => {});
+  }, []);
+  const loadJobs = useCallback(() => api.get("/ftp/device/jobs").then(r => setJobs(r.data)).catch(() => {}), []);
+  useEffect(() => { loadJobs(); }, [loadJobs]);
+  const running = jobs.some(j => ["na fila", "conectando", "copiando"].includes(j.state));
+  useEffect(() => {
+    if (!running) return undefined;
+    const i = setInterval(() => { loadJobs(); }, 1500);
+    return () => clearInterval(i);
+  }, [running, loadJobs]);
+  useEffect(() => { if (!running) api.get("/ftp/files/all").then(r => setFiles(r.data)).catch(() => {}); }, [running]);
+  const pick = (id) => { setDev(id); setLs(null); setLsErr(""); const t = devs.find(x => x.id === id)?.device_type; setPath(PATH_HINT[t] || ""); };
+  const list = async (p) => {
+    setBusy(true); setLsErr("");
+    try { const r = await api.get("/ftp/device/ls", { params: { device_id: dev, path: p || "." } }); setLs(r.data); setPath(r.data.path); }
+    catch (e) { setLs(null); setLsErr(formatApiError(e)); } finally { setBusy(false); }
+  };
+  const start = async (body) => {
+    try { await api.post("/ftp/device/transfer", { device_id: dev, ...body }); toast.success("Transferência iniciada"); loadJobs(); }
+    catch (e) { toast.error(formatApiError(e)); }
+  };
+  const up = () => { const p = (ls?.path || path).replace(/\/+$/, ""); const i = p.lastIndexOf("/"); list(i > 0 ? p.slice(0, i) : "/"); };
+  return (
+    <div className="space-y-3" data-testid="ftp-dev">
+      <Card className="bg-surface border-line p-3 text-xs text-slate-400">
+        Para equipamento que não alcança o BastiON nem o jump (NAT no meio): o BastiON entra nele pelo mesmo caminho do SSH e copia o arquivo por <b className="text-slate-200">SFTP</b> (ou SCP, se não houver SFTP). O arquivo trazido cai na aba Arquivos.
+      </Card>
+      <Card className="bg-surface border-line p-4 space-y-3">
+        <div className="grid gap-2 sm:grid-cols-[16rem_1fr_auto] items-end">
+          <div><label className={lbl}>Equipamento</label>
+            <select value={dev} onChange={e => pick(e.target.value)} className={`${sel} w-full`} data-testid="ftp-dev-sel">
+              <option value="">— escolha —</option>{devs.map(x => <option key={x.id} value={x.id}>{x.name} ({x.host})</option>)}</select></div>
+          <div><label className={lbl}>Caminho no equipamento (arquivo ou pasta)</label>
+            <Input value={path} onChange={e => setPath(e.target.value)} onKeyDown={e => e.key === "Enter" && dev && list(path)} placeholder="/datadisk0/DATA0/startrun.dat" className="bg-sunken border-line h-9 font-mono" data-testid="ftp-dev-path" /></div>
+          <div className="flex gap-1">
+            <Button variant="outline" onClick={() => list(path)} disabled={!dev || busy} className="h-9 border-line bg-transparent" data-testid="ftp-dev-ls">{busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Folder className="w-4 h-4 mr-1" />}Listar</Button>
+            <Button onClick={() => start({ direction: "pull", remote_path: path, local_path: dest })} disabled={!dev || !path.trim()} className="h-9 bg-brand hover:bg-brand-strong text-onbrand" data-testid="ftp-dev-pull"><Download className="w-4 h-4 mr-1" />Trazer</Button>
+          </div>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-[16rem_1fr]"><span className="text-xs text-slate-500 self-center">Salvar na pasta (vazio = equipamentos/{d?.name || "<nome>"})</span>
+          <Input value={dest} onChange={e => setDest(e.target.value)} className="bg-sunken border-line h-8 font-mono text-xs" data-testid="ftp-dev-dest" /></div>
+        {lsErr && <div className="text-xs text-amber-300" data-testid="ftp-dev-lserr"><AlertTriangle className="w-3.5 h-3.5 inline mr-1" />{lsErr}</div>}
+        {ls && (
+          <div className="rounded border border-line divide-y divide-line" data-testid="ftp-dev-list">
+            <button onClick={up} className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-slate-400 hover:bg-white/[0.03]"><ArrowUp className="w-4 h-4" /><span className="font-mono">{ls.path}</span></button>
+            {ls.items.length === 0 && <div className="px-3 py-2 text-xs text-slate-500">Pasta vazia</div>}
+            {ls.items.map(it => {
+              const full = `${ls.path.replace(/\/+$/, "")}/${it.name}`;
+              return (
+                <div key={it.name} className="flex items-center gap-3 px-3 py-1.5 text-sm">
+                  {it.dir ? <Folder className="w-4 h-4 text-brand-soft" /> : <FileText className="w-4 h-4 text-slate-500" />}
+                  {it.dir ? <button onClick={() => list(full)} className="flex-1 text-left text-slate-100 hover:underline truncate">{it.name}</button> : <span className="flex-1 font-mono text-[13px] text-slate-100 truncate">{it.name}</span>}
+                  <span className="text-xs text-slate-500 w-20 text-right">{it.dir ? "" : size(it.size)}</span>
+                  {!it.dir && <Button size="sm" variant="ghost" onClick={() => start({ direction: "pull", remote_path: full, local_path: dest })} className="h-7 text-slate-300" data-testid={`ftp-dev-get-${it.name}`}><Download className="w-3.5 h-3.5 mr-1" />Trazer</Button>}
+                </div>);
+            })}
+          </div>
+        )}
+      </Card>
+      <Card className="bg-surface border-line p-4 space-y-2">
+        <div className="text-sm font-semibold text-slate-200">Enviar arquivo do BastiON para o equipamento</div>
+        <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto] items-end">
+          <div><label className={lbl}>Arquivo (aba Arquivos)</label>
+            <select value={local} onChange={e => setLocal(e.target.value)} className={`${sel} w-full`} data-testid="ftp-dev-local">
+              <option value="">— escolha —</option>{files.map(f => <option key={f.path} value={f.path}>{f.path} ({size(f.size)})</option>)}</select></div>
+          <div><label className={lbl}>Destino no equipamento (termine com / para manter o nome)</label>
+            <Input value={rpush} onChange={e => setRpush(e.target.value)} placeholder={ls?.path ? `${ls.path.replace(/\/+$/, "")}/` : "/datadisk0/"} className="bg-sunken border-line h-9 font-mono" data-testid="ftp-dev-rpush" /></div>
+          <Button onClick={() => start({ direction: "push", local_path: local, remote_path: rpush || `${(ls?.path || "").replace(/\/+$/, "")}/` })} disabled={!dev || !local || !(rpush || ls?.path)} className="h-9 bg-brand hover:bg-brand-strong text-onbrand" data-testid="ftp-dev-push"><Upload className="w-4 h-4 mr-1" />Enviar</Button>
+        </div>
+      </Card>
+      {jobs.length > 0 && (
+        <Card className="bg-surface border-line divide-y divide-line" data-testid="ftp-dev-jobs">
+          {jobs.map(j => {
+            const pct = j.total ? Math.min(100, Math.round(100 * j.bytes / j.total)) : 0;
+            return (
+              <div key={j.id} className="px-4 py-2 text-sm space-y-1" data-testid={`ftp-job-${j.id}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  {j.state === "pronto" ? <CheckCircle2 className="w-4 h-4 text-emerald-300" /> : j.state === "erro" ? <XCircle className="w-4 h-4 text-red-300" /> : <Loader2 className="w-4 h-4 animate-spin text-slate-400" />}
+                  <span className="text-slate-200">{j.direction === "pull" ? `${j.device_name} → BastiON` : `BastiON → ${j.device_name}`}</span>
+                  <span className="font-mono text-xs text-slate-400 truncate">{j.direction === "pull" ? `${j.remote} → ${j.local}` : `${j.local} → ${j.remote}`}</span>
+                  <span className="ml-auto text-xs text-slate-500">{j.state}{j.method ? ` · ${j.method.toUpperCase()}` : ""}{j.bytes ? ` · ${size(j.bytes)}` : ""}{j.secs ? ` · ${j.secs}s` : ""}</span>
+                </div>
+                {["copiando"].includes(j.state) && j.total > 0 && <div className="h-1.5 rounded bg-sunken overflow-hidden"><div className="h-full bg-brand" style={{ width: `${pct}%` }} /></div>}
+                {j.error && <div className="text-xs text-red-300">{j.error}</div>}
+              </div>);
+          })}
+        </Card>
+      )}
+    </div>
+  );
+}
+
 function Events() {
   const [rows, setRows] = useState(null);
   const load = useCallback(() => api.get("/ftp/events").then(r => setRows(r.data)).catch(e => toast.error(formatApiError(e))), []);
@@ -291,21 +400,21 @@ export default function Ftp() {
   const [agents, setAgents] = useState([]);
   const reloadSt = useCallback(() => api.get("/ftp/status").then(r => setSt(r.data)).catch(() => {}), []);
   useEffect(() => { reloadSt(); api.get("/agents").then(r => setAgents(r.data)).catch(() => {}); const i = setInterval(reloadSt, 15000); return () => clearInterval(i); }, [reloadSt]);
-  const tabs = useMemo(() => [["", "Acessos"], ["arquivos", "Arquivos"], ["eventos", "Transferências"], ...(admin ? [["ajustes", "Ajustes"]] : [])], [admin]);
+  const tabs = useMemo(() => [["", "Acessos (FTP)"], ["equipamento", "Direto no equipamento"], ["arquivos", "Arquivos"], ["eventos", "Transferências"], ...(admin ? [["ajustes", "Ajustes"]] : [])], [admin]);
   return (
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="ftp-page">
       <div className="flex items-start justify-between flex-wrap gap-3 mb-4">
         <div>
           <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 flex items-center gap-2"><FolderUp className="w-6 h-6 text-brand-soft" /> Arquivos (FTP)</h1>
-          <p className="text-sm text-slate-400 mt-1 max-w-3xl">Os equipamentos baixam e enviam arquivos (firmware, backup de configuração) no BastiON — direto ou pela porta que o BastiON abre no jump, sem precisar de outro servidor.</p>
+          <p className="text-sm text-slate-400 mt-1 max-w-3xl">Firmware e backups de configuração entre os equipamentos e o BastiON: o equipamento busca por FTP (direto ou pela porta que o BastiON abre no jump) ou o BastiON entra no equipamento e copia por SFTP/SCP.</p>
         </div>
         <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm">
           {tabs.map(([k, l]) => <button key={k} onClick={() => setSp(k ? { tab: k } : {})} className={`px-3 h-7 rounded ${tab === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`} data-testid={`ftp-tab-${k || "acc"}`}>{l}</button>)}
         </div>
       </div>
       <div className="space-y-3">
-        {tab !== "ajustes" && <StatusBar st={st} agents={agents} />}
-        {tab === "arquivos" ? <Files /> : tab === "eventos" ? <Events /> : tab === "ajustes" && admin ? <Settings agents={agents} reloadSt={reloadSt} /> : <Accesses st={st} agents={agents} reloadSt={reloadSt} />}
+        {(tab === "" || tab === "arquivos") && <StatusBar st={st} agents={agents} />}
+        {tab === "equipamento" ? <DeviceXfer /> : tab === "arquivos" ? <Files /> : tab === "eventos" ? <Events /> : tab === "ajustes" && admin ? <Settings agents={agents} reloadSt={reloadSt} /> : <Accesses st={st} agents={agents} reloadSt={reloadSt} />}
       </div>
     </div>
   );
