@@ -115,7 +115,7 @@ function Prefixes({ onOpen }) {
     <>
       <div className="flex flex-wrap gap-2 items-center mb-3">
         <Input value={q} onChange={e => setQ(e.target.value)} placeholder="filtrar prefixos…" className="bg-sunken border-line h-9 max-w-xs" />
-        {data && <span className="text-xs text-slate-400">{data.addresses} IPs em uso nas configurações{data.duplicates ? <span className="text-red-300"> · {data.duplicates} duplicado(s)</span> : ""}{data.uncovered ? <span className="text-amber-300"> · {data.uncovered} rede(s) sem prefixo</span> : ""}{data.invalid ? <span className="text-slate-500" title="Prefixos com valor ilegível no banco; ficaram fora da lista"> · {data.invalid} prefixo(s) inválido(s) ignorado(s)</span> : ""}</span>}
+        {data && <span className="text-xs text-slate-400">{data.addresses} IPs em uso nas configurações{data.uncovered ? <span className="text-amber-300"> · {data.uncovered} rede(s) sem prefixo</span> : ""}{data.invalid ? <span className="text-slate-500" title="Prefixos com valor ilegível no banco; ficaram fora da lista"> · {data.invalid} prefixo(s) inválido(s) ignorado(s)</span> : ""}</span>}
         <Button size="sm" onClick={() => setEdit({})} className="bg-brand hover:bg-brand-strong text-onbrand ml-auto" data-testid="ipam-new"><Plus className="w-4 h-4 mr-1" /> Prefixo</Button>
       </div>
       <Card className="bg-surface border-line overflow-x-auto">
@@ -179,11 +179,8 @@ function Issues() {
   if (!d) return <Loader2 className="w-5 h-5 animate-spin text-slate-500" />;
   return (
     <div className="grid gap-3">
-      <Card className="bg-surface border-line p-4" data-testid="ipam-dups">
-        <div className="text-slate-100 font-medium mb-2 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4 text-red-300" /> IP duplicado ({d.duplicates.length})</div>
-        {d.duplicates.length === 0 ? <div className="text-sm text-slate-500">Nenhum IP configurado em dois equipamentos.</div> : d.duplicates.map(x => (
-          <div key={x.ip} className="text-sm py-1 border-b border-line last:border-0"><span className="font-mono text-red-300">{x.ip}</span> <span className="text-slate-400">em</span> {x.where.map(w => `${w.device_name} (${w.interface})`).join(", ")}</div>
-        ))}
+      <Card className="bg-surface border-line p-3 text-sm text-slate-400" data-testid="ipam-dups-moved">
+        IP duplicado agora tem aba própria, separada por grupo de equipamentos: <b className="text-slate-200">IP duplicado</b>. Aqui ficam as redes das configurações que ainda não têm prefixo cadastrado.
       </Card>
       <Card className="bg-surface border-line p-4" data-testid="ipam-uncovered">
         <div className="flex items-center gap-2 mb-2"><span className="text-slate-100 font-medium">Redes nas configurações sem prefixo cadastrado ({d.uncovered.length})</span>
@@ -196,6 +193,91 @@ function Issues() {
             </label>
           ))}
         </div>
+      </Card>
+    </div>
+  );
+}
+
+const NONE = "__none__";
+const gname = (t) => (t === NONE ? "sem grupo" : t);
+const LS = "ipam_dup_prefs";
+
+function Duplicates() {
+  const saved = (() => { try { return JSON.parse(localStorage.getItem(LS) || "{}"); } catch { return {}; } })();
+  const [tags, setTags] = useState(saved.tags || []);
+  const [mode, setMode] = useState(saved.mode || "per_group");
+  const [mgmt, setMgmt] = useState(saved.mgmt ?? true);
+  const [same, setSame] = useState(saved.same ?? true);
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState("");
+  const [closed, setClosed] = useState({});
+  const load = useCallback(() => {
+    setBusy(true);
+    api.get("/ipam/duplicates", { params: { tags: tags.join(","), mode, ignore_mgmt: mgmt, same_name: same } })
+      .then(r => setD(r.data)).catch(e => toast.error(formatApiError(e))).finally(() => setBusy(false));
+  }, [tags, mode, mgmt, same]);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { try { localStorage.setItem(LS, JSON.stringify({ tags, mode, mgmt, same })); } catch { /* sem storage */ } }, [tags, mode, mgmt, same]);
+  const toggle = (t) => setTags(tags.includes(t) ? tags.filter(x => x !== t) : [...tags, t]);
+  const list = useMemo(() => {
+    const ql = q.trim().toLowerCase();
+    return (d?.duplicates || []).filter(x => !ql || x.ip.includes(ql) || x.where.some(w => `${w.device_name} ${w.interface}`.toLowerCase().includes(ql)));
+  }, [d, q]);
+  const grouped = useMemo(() => {
+    const m = new Map();
+    for (const x of list) { const k = x.group || "__all__"; if (!m.has(k)) m.set(k, []); m.get(k).push(x); }
+    return [...m.entries()];
+  }, [list]);
+  const csv = () => csvDl("ip-duplicado.csv", [["grupo", "ip", "vrf", "equipamentos", "onde"],
+    ...list.map(x => [x.group ? gname(x.group) : "(grupos juntos)", x.ip, x.vrf, x.devices, x.where.map(w => `${w.device_name} (${w.interface})`).join("; ")])]);
+  return (
+    <div className="grid gap-3" data-testid="ipam-dup">
+      <Card className="bg-surface border-line p-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm text-slate-200 font-medium">Grupos de equipamentos</span>
+          <span className="text-xs text-slate-500">{tags.length ? `${tags.length} marcado(s)` : "nenhum marcado = todos"}</span>
+          {tags.length > 0 && <button onClick={() => setTags([])} className="text-xs text-brand-soft hover:underline">limpar</button>}
+        </div>
+        <div className="flex flex-wrap gap-1.5" data-testid="ipam-dup-groups">
+          {(d?.groups || []).map(g => {
+            const on = tags.includes(g.tag), n = d?.by_group?.[g.tag];
+            return (
+              <button key={g.tag} onClick={() => toggle(g.tag)} data-testid={`ipam-dup-g-${g.tag}`}
+                className={`text-xs px-2 py-1 rounded border ${on ? "border-brand/60 bg-brand/10 text-brand-soft" : "border-line text-slate-400 hover:text-slate-200"}`}>
+                {gname(g.tag)} <span className="text-slate-500">· {g.devices}</span>{mode === "per_group" && n ? <span className="text-red-300"> · {n} dup</span> : null}
+              </button>);
+          })}
+        </div>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-xs">
+            {[["per_group", "Comparar dentro de cada grupo"], ["together", "Juntar os grupos marcados"]].map(([k, l]) => (
+              <button key={k} onClick={() => setMode(k)} className={`px-2.5 h-7 rounded ${mode === k ? "bg-brand/20 text-brand-soft" : "text-slate-400"}`} data-testid={`ipam-dup-mode-${k}`}>{l}</button>))}
+          </div>
+          <label className="flex items-center gap-2 text-xs text-slate-300"><Switch checked={mgmt} onCheckedChange={setMgmt} data-testid="ipam-dup-mgmt" />Ignorar portas de gerência (MEth, mgmt, fxp0…)</label>
+          <label className="flex items-center gap-2 text-xs text-slate-300"><Switch checked={same} onCheckedChange={setSame} data-testid="ipam-dup-same" />Mesmo nome = mesmo equipamento</label>
+        </div>
+        <p className="text-[11px] text-slate-500">"Dentro de cada grupo": um IP só conta como duplicado se aparecer em dois equipamentos do mesmo grupo — redes separadas (outra VRF/cliente/cidade) não se misturam. A VRF também separa.</p>
+      </Card>
+      <Card className="bg-surface border-line">
+        <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-line">
+          <AlertTriangle className="w-4 h-4 text-red-300" /><span className="text-slate-100 font-medium" data-testid="ipam-dup-total">IP duplicado ({d ? d.total : "…"})</span>
+          {busy && <Loader2 className="w-4 h-4 animate-spin text-slate-500" />}
+          <Input value={q} onChange={e => setQ(e.target.value)} placeholder="filtrar IP ou equipamento" className="bg-sunken border-line h-8 w-60 ml-auto" />
+          <Button size="sm" variant="ghost" onClick={csv} disabled={!list.length} className="text-slate-300 h-8"><Download className="w-4 h-4 mr-1" />CSV</Button>
+        </div>
+        {d && list.length === 0 && <div className="p-6 text-sm text-slate-500 text-center">Nenhum IP duplicado com esse filtro.</div>}
+        {grouped.map(([g, xs]) => (
+          <div key={g} data-testid={`ipam-dup-sec-${g}`}>
+            <button onClick={() => setClosed({ ...closed, [g]: !closed[g] })} className="w-full flex items-center gap-2 px-4 py-1.5 bg-white/[0.02] border-b border-line text-xs text-slate-300">
+              <span>{closed[g] ? "▸" : "▾"}</span><span className="font-medium">{g === "__all__" ? "Grupos juntos" : gname(g)}</span><span className="text-slate-500">{xs.length}</span>
+            </button>
+            {!closed[g] && xs.map(x => (
+              <div key={`${g}-${x.ip}-${x.vrf}`} className="text-sm px-4 py-1.5 border-b border-line last:border-0">
+                <span className="font-mono text-red-300">{x.ip}</span>{x.vrf && <span className="text-xs text-amber-300"> @{x.vrf}</span>} <span className="text-slate-400">em</span>{" "}
+                {x.where.map((w, i) => <span key={i} className="text-slate-200">{i ? ", " : ""}{w.device_name} <span className="text-slate-500">({w.interface})</span></span>)}
+              </div>))}
+          </div>))}
       </Card>
     </div>
   );
@@ -281,7 +363,7 @@ export default function Ipam() {
   const [sp, setSp] = useSearchParams();
   const tab = sp.get("tab") || "";
   const [open, setOpen] = useState(null);
-  const tabs = [["", "Prefixos"], ["buscar", "Buscar IP"], ["problemas", "Problemas"], ["inventario", "Inventário"], ...(isAdmin ? [["netbox", "NetBox"]] : [])];
+  const tabs = [["", "Prefixos"], ["buscar", "Buscar IP"], ["duplicados", "IP duplicado"], ["problemas", "Sem prefixo"], ["inventario", "Inventário"], ...(isAdmin ? [["netbox", "NetBox"]] : [])];
   const refresh = async () => { try { await api.post("/ipam/refresh"); toast.success("Relendo os backups"); } catch (e) { toast.error(formatApiError(e)); } };
   return (
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="ipam-page">
@@ -299,6 +381,7 @@ export default function Ipam() {
       </div>
       {tab === "" && (open ? <PrefixDetail prefix={open.prefix} vrf={open.vrf || ""} onBack={() => setOpen(null)} /> : <Prefixes onOpen={setOpen} />)}
       {tab === "buscar" && <SearchTab />}
+      {tab === "duplicados" && <Duplicates />}
       {tab === "problemas" && <Issues />}
       {tab === "inventario" && <Inventory />}
       {tab === "netbox" && isAdmin && <NetboxTab />}

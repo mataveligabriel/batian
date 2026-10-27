@@ -13182,6 +13182,60 @@ async def ipam_issues(user: dict = Depends(get_current_user)):
             "uncovered": ipammod.uncovered_networks(rows, allp)[:1000]}
 
 
+_IPAM_MGMT_IF = re.compile(r"^(meth|mgmt|management|fxp0|em0|me0|mgmt_eth|ma\d|oob|bmc|ilo)", re.I)
+
+
+@api.get("/ipam/duplicates")
+async def ipam_duplicates(tags: str = "", mode: str = "per_group", ignore_mgmt: bool = True, same_name: bool = True,
+                          user: dict = Depends(get_current_user)):
+    """IP duplicado por grupo de equipamentos (tags): redes separadas não se misturam.
+    mode=per_group: só compara equipamentos do mesmo grupo; together: junta os grupos escolhidos num conjunto só."""
+    _no_viewer(user)
+    devs = {d["id"]: d async for d in db.devices.find(_ipam_scope(user), {"_id": 0, "id": 1, "name": 1, "tags": 1})}
+    counts: Dict[str, int] = {}
+    for d in devs.values():
+        for t in (d.get("tags") or ["__none__"]):
+            counts[t] = counts.get(t, 0) + 1
+    want = [t for t in (x.strip() for x in tags.split(",")) if t]
+    rows = [r for r in await _ipam_rows(user) if r["source"] == "config" and r.get("device_id") in devs]
+    if ignore_mgmt:
+        rows = [r for r in rows if not _IPAM_MGMT_IF.match(str(r.get("interface") or "").strip())]
+
+    def groups_of(r) -> List[str]:
+        tg = devs[r["device_id"]].get("tags") or ["__none__"]
+        return [t for t in tg if not want or t in want]
+    pools: Dict[str, list] = {}
+    for r in rows:
+        gs = groups_of(r)
+        if not gs:
+            continue
+        if mode == "together":
+            pools.setdefault("__all__", []).append(r)
+        else:
+            for g in gs:
+                pools.setdefault(g, []).append(r)
+    out = []
+    for g, rs in pools.items():
+        seen: Dict[tuple, dict] = {}
+        for r in rs:
+            k = (str(r["ip"]), r.get("vrf") or "")
+            who = (devs[r["device_id"]].get("name") or "").strip().lower() if same_name else r["device_id"]
+            e = seen.setdefault(k, {"devices": set(), "where": {}})
+            e["devices"].add(who)
+            e["where"][(r["device_id"], r.get("interface") or "")] = {"device_id": r["device_id"], "device_name": r.get("device_name") or "?",
+                                                                        "interface": r.get("interface") or "", "tags": devs[r["device_id"]].get("tags") or []}
+        for (ip, vrf), e in seen.items():
+            if len(e["devices"]) > 1:
+                out.append({"ip": ip, "vrf": vrf, "group": None if g == "__all__" else g, "where": list(e["where"].values()),
+                            "devices": len(e["devices"])})
+    out.sort(key=lambda x: (x["group"] or "", ipammod.net_key(x["ip"] + ("/32" if ":" not in x["ip"] else "/128")), x["vrf"]))
+    by_group: Dict[str, int] = {}
+    for x in out:
+        by_group[x["group"] or "__all__"] = by_group.get(x["group"] or "__all__", 0) + 1
+    return {"groups": [{"tag": t, "devices": n} for t, n in sorted(counts.items(), key=lambda x: (x[0] == "__none__", x[0].lower()))],
+            "duplicates": out[:5000], "total": len(out), "by_group": by_group, "mode": mode}
+
+
 class IpamImportIn(BaseModel):
     networks: List[str]
     description: str = ""
