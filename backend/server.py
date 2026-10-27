@@ -13037,6 +13037,31 @@ class IpamPrefixIn(BaseModel):
     vlan: Optional[int] = None
     status: str = "active"
     tags: List[str] = []
+    doc_groups: List[str] = []          # grupos de documentação em que o prefixo também entra
+
+
+async def _ipam_doc_groups_ok(ids: List[str], user: dict) -> List[str]:
+    out = []
+    for g in dict.fromkeys(x for x in ids if isinstance(x, str) and x):
+        if not await db.ipam_docgroups.find_one({"id": g, **_ipam_scope(user)}, {"_id": 0, "id": 1}):
+            raise HTTPException(404, "Grupo de documentação não encontrado")
+        out.append(g)
+    return out[:50]
+
+
+async def _ipam_doc_sync(p: dict):
+    """Prefixo marcado num grupo: garante o mesmo prefixo na documentação do grupo (sem apagar o que já existe lá)."""
+    for gid in p.get("doc_groups") or []:
+        cur = await db.ipam_docsubnets.find_one({"group_id": gid, "prefix": p["prefix"], "vrf": p.get("vrf") or ""}, {"_id": 0, "id": 1, "description": 1, "vlan": 1})
+        if cur:
+            fill = {k: v for k, v in (("description", p.get("description")), ("vlan", p.get("vlan"))) if v and not cur.get(k)}
+            if fill:
+                await db.ipam_docsubnets.update_one({"id": cur["id"]}, {"$set": fill})
+            continue
+        await db.ipam_docsubnets.insert_one({"id": os.urandom(8).hex(), "group_id": gid, "prefix": p["prefix"], "vrf": p.get("vrf") or "",
+                                             "vlan": p.get("vlan"), "description": p.get("description") or "", "location": "", "gateway": "",
+                                             "notes": "", "created_at": datetime.now(timezone.utc).isoformat(), "from_prefix": True})
+        await _doc_relink(gid)
 
 
 def _ipam_clean(body: IpamPrefixIn) -> dict:
@@ -13109,10 +13134,12 @@ async def ipam_prefixes(user: dict = Depends(get_current_user)):
 async def ipam_prefix_create(body: IpamPrefixIn, user: dict = Depends(get_current_user)):
     _no_viewer(user)
     p = _ipam_clean(body)
+    p["doc_groups"] = await _ipam_doc_groups_ok(body.doc_groups, user)
     if await db.ipam_prefixes.find_one({"prefix": p["prefix"], "vrf": p["vrf"], **_ipam_scope(user)}):
-        raise HTTPException(409, "Esse prefixo já está cadastrado")
+        raise HTTPException(409, "Esse prefixo já está cadastrado (edite e marque mais grupos nele)")
     p.update(id=uuid.uuid4().hex[:16], owner_id=user["id"], created_at=datetime.now(timezone.utc).isoformat())
     await db.ipam_prefixes.insert_one(dict(p))
+    await _ipam_doc_sync(p)
     return p
 
 
@@ -13120,9 +13147,11 @@ async def ipam_prefix_create(body: IpamPrefixIn, user: dict = Depends(get_curren
 async def ipam_prefix_update(pid: str, body: IpamPrefixIn, user: dict = Depends(get_current_user)):
     _no_viewer(user)
     p = _ipam_clean(body)
+    p["doc_groups"] = await _ipam_doc_groups_ok(body.doc_groups, user)
     r = await db.ipam_prefixes.update_one({"id": pid, **_ipam_scope(user)}, {"$set": p})
     if not r.matched_count:
         raise HTTPException(404, "Prefixo não encontrado")
+    await _ipam_doc_sync(p)
     return {**p, "id": pid}
 
 

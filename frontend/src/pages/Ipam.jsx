@@ -19,8 +19,14 @@ const csvDl = (name, rows) => {
   const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" })); a.download = name; a.click();
 };
 
-function PrefixDialog({ p, onClose, onSaved }) {
-  const [f, setF] = useState({ prefix: "", description: "", vrf: "", vlan: "", status: "active", tags: [], ...(p || {}) });
+function PrefixDialog({ p, onClose, onSaved, groups = [], onGroups }) {
+  const [f, setF] = useState({ prefix: "", description: "", vrf: "", vlan: "", status: "active", tags: [], doc_groups: [], ...(p || {}) });
+  const [ng, setNg] = useState("");
+  const togGroup = (id) => setF({ ...f, doc_groups: (f.doc_groups || []).includes(id) ? f.doc_groups.filter(x => x !== id) : [...(f.doc_groups || []), id] });
+  const addGroup = async () => {
+    try { const r = await api.post("/ipam/doc/groups", { name: ng }); setNg(""); onGroups && await onGroups(); setF(x => ({ ...x, doc_groups: [...(x.doc_groups || []), r.data.id] })); }
+    catch (e) { toast.error(formatApiError(e)); }
+  };
   const save = async () => {
     try {
       const body = { ...f, vlan: f.vlan ? Number(f.vlan) : null, tags: typeof f.tags === "string" ? f.tags.split(",") : f.tags };
@@ -39,6 +45,19 @@ function PrefixDialog({ p, onClose, onSaved }) {
           <div><label className={lbl}>VRF (opcional)</label><Input value={f.vrf} onChange={e => setF({ ...f, vrf: e.target.value })} className="bg-sunken border-line" /></div>
           <div><label className={lbl}>VLAN (opcional)</label><Input type="number" value={f.vlan || ""} onChange={e => setF({ ...f, vlan: e.target.value })} className="bg-sunken border-line" /></div>
           <div><label className={lbl}>Situação</label><select value={f.status} onChange={e => setF({ ...f, status: e.target.value })} className={`${sel} w-full`}>{Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
+          <div className="col-span-2" data-testid="ipam-prefix-groups"><label className={lbl}>Grupos de documentação (o prefixo também entra na Documentação de cada grupo marcado)</label>
+            <div className="flex flex-wrap gap-1.5">
+              {groups.map(g => {
+                const on = (f.doc_groups || []).includes(g.id);
+                return <button key={g.id} type="button" onClick={() => togGroup(g.id)} data-testid={`ipam-prefix-g-${g.name}`}
+                  className={`text-xs px-2 py-1 rounded border flex items-center gap-1.5 ${on ? "border-brand/60 bg-brand/10 text-brand-soft" : "border-line text-slate-400 hover:text-slate-200"}`}>
+                  <span className="w-2 h-2 rounded-full" style={{ background: g.color }} />{g.name}</button>;
+              })}
+              {groups.length === 0 && <span className="text-xs text-slate-500">Nenhum grupo ainda.</span>}
+            </div>
+            <div className="flex gap-2 mt-2"><Input value={ng} onChange={e => setNg(e.target.value)} onKeyDown={e => e.key === "Enter" && ng.trim() && addGroup()} placeholder="criar grupo novo…" className="bg-sunken border-line h-8 text-xs" data-testid="ipam-prefix-newgroup" />
+              <Button size="sm" variant="outline" type="button" onClick={addGroup} disabled={!ng.trim()} className="h-8 border-line bg-transparent"><Plus className="w-3.5 h-3.5" /></Button></div>
+          </div>
         </div>
         <DialogFooter><Button variant="ghost" onClick={onClose} className="text-slate-300">Cancelar</Button><Button onClick={save} disabled={!f.prefix} className="bg-brand hover:bg-brand-strong text-onbrand" data-testid="ipam-prefix-save">Salvar</Button></DialogFooter>
       </DialogContent>
@@ -108,14 +127,21 @@ function Prefixes({ onOpen }) {
   const [data, setData] = useState(null);
   const [edit, setEdit] = useState(null);
   const [q, setQ] = useState("");
+  const [groups, setGroups] = useState([]);
+  const [gf, setGf] = useState("");
   const load = useCallback(() => api.get("/ipam/prefixes").then(r => setData(r.data)).catch(e => toast.error(formatApiError(e))), []);
-  useEffect(() => { load(); }, [load]);
+  const loadGroups = useCallback(() => api.get("/ipam/doc/groups").then(r => setGroups(r.data)).catch(() => {}), []);
+  useEffect(() => { load(); loadGroups(); }, [load, loadGroups]);
+  const gmap = useMemo(() => Object.fromEntries(groups.map(g => [g.id, g])), [groups]);
   const del = async (p) => { if (!window.confirm(`Apagar o prefixo ${p.prefix}?`)) return; try { await api.delete(`/ipam/prefixes/${p.id}`); load(); } catch (e) { toast.error(formatApiError(e)); } };
-  const list = (data?.prefixes || []).filter(p => !q || `${p.prefix} ${p.description} ${p.vrf}`.toLowerCase().includes(q.toLowerCase()));
+  const list = (data?.prefixes || []).filter(p => (!q || `${p.prefix} ${p.description} ${p.vrf}`.toLowerCase().includes(q.toLowerCase()))
+    && (!gf || (gf === "__none__" ? !(p.doc_groups || []).length : (p.doc_groups || []).includes(gf))));
   return (
     <>
       <div className="flex flex-wrap gap-2 items-center mb-3">
         <Input value={q} onChange={e => setQ(e.target.value)} placeholder="filtrar prefixos…" className="bg-sunken border-line h-9 max-w-xs" />
+        {groups.length > 0 && <select value={gf} onChange={e => setGf(e.target.value)} className={sel} data-testid="ipam-group-filter">
+          <option value="">todos os grupos</option>{groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}<option value="__none__">sem grupo</option></select>}
         {data && <span className="text-xs text-slate-400">{data.addresses} IPs em uso nas configurações{data.uncovered ? <span className="text-amber-300"> · {data.uncovered} rede(s) sem prefixo</span> : ""}{data.invalid ? <span className="text-slate-500" title="Prefixos com valor ilegível no banco; ficaram fora da lista"> · {data.invalid} prefixo(s) inválido(s) ignorado(s)</span> : ""}</span>}
         <Button size="sm" onClick={() => setEdit({})} className="bg-brand hover:bg-brand-strong text-onbrand ml-auto" data-testid="ipam-new"><Plus className="w-4 h-4 mr-1" /> Prefixo</Button>
       </div>
@@ -128,7 +154,8 @@ function Prefixes({ onOpen }) {
               {list.map(p => (
                 <tr key={p.id} className="hover:bg-white/[0.03] cursor-pointer" onClick={() => onOpen(p)} data-testid={`ipam-row-${p.prefix}`}>
                   <td className="px-3 py-1.5 font-mono text-slate-100" style={{ paddingLeft: `${0.75 + Math.min(p.depth, 6) * 1.1}rem` }}>{p.prefix}{p.vrf && <span className="text-[10px] text-slate-500 ml-1">{p.vrf}</span>}</td>
-                  <td className="px-2 text-slate-300 truncate max-w-[20rem]">{p.description}{p.vlan ? <span className="text-xs text-slate-500"> · VLAN {p.vlan}</span> : ""}</td>
+                  <td className="px-2 text-slate-300 max-w-[24rem]"><span className="truncate">{p.description}</span>{p.vlan ? <span className="text-xs text-slate-500"> · VLAN {p.vlan}</span> : ""}
+                    {(p.doc_groups || []).filter(id => gmap[id]).map(id => <span key={id} className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded border border-line text-slate-300 inline-flex items-center gap-1 whitespace-nowrap"><span className="w-1.5 h-1.5 rounded-full" style={{ background: gmap[id].color }} />{gmap[id].name}</span>)}</td>
                   <td className="px-2"><div className="flex items-center gap-2"><div className="w-24 h-1.5 rounded bg-white/5 overflow-hidden"><div className={`h-full ${usageCls(p.pct)}`} style={{ width: `${Math.min(100, p.pct)}%` }} /></div><span className="text-xs text-slate-400">{p.used}/{p.usable > 100000 ? "∞" : p.usable}</span></div></td>
                   <td className="px-2 text-xs text-slate-400">{STATUS[p.status] || p.status}</td>
                   <td className="px-2 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
@@ -141,7 +168,7 @@ function Prefixes({ onOpen }) {
           </table>
         )}
       </Card>
-      {edit && <PrefixDialog p={edit.id ? edit : null} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
+      {edit && <PrefixDialog p={edit.id ? edit : null} groups={groups} onGroups={loadGroups} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); loadGroups(); }} />}
     </>
   );
 }
