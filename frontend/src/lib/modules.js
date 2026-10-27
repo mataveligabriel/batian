@@ -1,7 +1,7 @@
 // Módulos que o administrador libera por usuário (o servidor aplica a mesma regra em cada chamada).
 // Sem lista no usuário = todos os módulos. Administrador sempre tem tudo; o perfil View tem regra própria.
 export const MODULES = [
-  { key: "incidents", label: "Incidentes", path: "/incidents", desc: "alarmes do Zabbix, LibreNMS e BastiON; reconhecer e resolver" },
+  { key: "incidents", label: "Incidentes", path: "/incidents", desc: "alarmes da rede (Zabbix, LibreNMS, BastiON) e incidentes de segurança do SOC; reconhecer e resolver" },
   { key: "ipam", label: "Inventário e IPAM", path: "/ipam", desc: "prefixos, IPs em uso, blocos livres, inventário e NetBox" },
   { key: "compliance", label: "Conformidade", path: "/compliance", desc: "regras de configuração e inventário de firmware" },
   { key: "gpon", label: "GPON", path: "/gpon", desc: "sinal e estado das ONUs, queda em massa, busca do cliente" },
@@ -30,7 +30,7 @@ export const MODULES = [
   { key: "assistant", label: "Assistente IA", path: null, desc: "chat e voz (consulta e propõe comandos)" },
 ];
 export const ALL_KEYS = MODULES.map(m => m.key);
-export const PATH_MODULE = Object.fromEntries(MODULES.filter(m => m.path).map(m => [m.path, m.key]));
+export const PATH_MODULE = { ...Object.fromEntries(MODULES.filter(m => m.path).map(m => [m.path, m.key])), "/soc/incidents": "incidents" };
 
 // combinações prontas para começar
 export const PRESETS = [

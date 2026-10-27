@@ -5032,9 +5032,24 @@ net_monitor.incident_hook = _inc_internal
 secrets_compare = hmac.compare_digest
 
 
+# Duas áreas: rede/backbone (Incidentes) e segurança (Painel SOC → Incidentes de segurança, origem "soc")
+SOC_KINDS = {"ti": "^soc:ti", "certbr": "^soc:certbr:", "cmd": "^soc:cmd:", "login": "^soc:login", "cve": "^soc:cve:"}
+
+
+def _inc_kind(key: str) -> str:
+    k = str(key or "")
+    return next((n for n, rx in SOC_KINDS.items() if re.match(rx, k)), "outro") if k.startswith("soc:") else ""
+
+
+def _inc_area(area: str) -> dict:
+    return {"source": "soc"} if area == "soc" else {"source": {"$ne": "soc"}} if area == "net" else {}
+
+
 def _inc_public(i: dict, full: bool = False) -> dict:
     out = {k: v for k, v in i.items() if k not in ("_id", "key") and (full or k != "timeline")}
     out["duration_s"] = int(incmod.duration(i))
+    if i.get("source") == "soc":
+        out["kind"] = _inc_kind(i.get("key", ""))
     return out
 
 
@@ -5047,9 +5062,11 @@ async def _inc_get(inc_id: str, scope: Optional[dict] = None) -> dict:
 
 @api.get("/incidents")
 async def incidents_list(status: str = "active", severity: str = "", source: str = "", q: str = "", limit: int = 200,
-                         user: dict = Depends(get_current_user)):
+                         area: str = "", kind: str = "", user: dict = Depends(get_current_user)):
     _no_viewer(user)
-    f: dict = dict(await _inc_scope(user))
+    f: dict = {**(await _inc_scope(user)), **_inc_area(area)}
+    if area == "soc" and kind in SOC_KINDS:
+        f["key"] = {"$regex": SOC_KINDS[kind]}
     if status == "active":
         f["status"] = {"$in": ["open", "ack"]}
     elif status in incmod.STATUSES:
@@ -5062,6 +5079,8 @@ async def incidents_list(status: str = "active", severity: str = "", source: str
         rx = {"$regex": re.escape(q.strip()[:80]), "$options": "i"}
         f.setdefault("$and", []).append({"$or": [{"title": rx}, {"host": rx}, {"device_name": rx}, {"description": rx}] + \
                    ([{"number": int(q.strip().lstrip("#"))}] if q.strip().lstrip("#").isdigit() else [])})
+    if source in incmod.SOURCES and area:
+        f["source"] = source if (source == "soc") == (area == "soc") else "__nenhum__"
     rows = await db.incidents.find(f, {"_id": 0, "timeline": 0}).sort("created_at", -1).to_list(min(1000, max(1, limit)))
     if status == "active":   # ativos: mais graves e mais antigos primeiro
         rows.sort(key=lambda r: (-incmod.sev_rank(r["severity"]), r["status"] != "open", r["created_at"]))
@@ -5110,14 +5129,30 @@ async def incidents_bulk(body: IncidentBulk, user: dict = Depends(get_current_us
 
 
 @api.get("/incidents-summary")
-async def incidents_summary(user: dict = Depends(get_current_user)):
-    """Contadores para o menu e o Painel NOC."""
-    out = {"open": 0, "ack": 0, "by_severity": {s: 0 for s in incmod.SEVERITIES}}
-    async for r in db.incidents.find({"status": {"$in": ["open", "ack"]}, **(await _inc_scope(user))}, {"_id": 0, "status": 1, "severity": 1}):
-        out[r["status"]] += 1
-        out["by_severity"][r["severity"]] = out["by_severity"].get(r["severity"], 0) + 1
-    out["active"] = out["open"] + out["ack"]
-    out["worst"] = next((s for s in reversed(incmod.SEVERITIES) if out["by_severity"].get(s)), None)
+async def incidents_summary(area: str = "", user: dict = Depends(get_current_user)):
+    """Contadores para o menu e o Painel NOC. area=net|soc filtra; 'areas' traz as duas para os contadores do menu."""
+    def blank():
+        return {"open": 0, "ack": 0, "by_severity": {s: 0 for s in incmod.SEVERITIES}, "kinds": {}}
+    areas = {"net": blank(), "soc": blank()}
+    async for r in db.incidents.find({"status": {"$in": ["open", "ack"]}, **(await _inc_scope(user))},
+                                     {"_id": 0, "status": 1, "severity": 1, "source": 1, "key": 1}):
+        a = areas["soc" if r.get("source") == "soc" else "net"]
+        a[r["status"]] += 1
+        a["by_severity"][r["severity"]] = a["by_severity"].get(r["severity"], 0) + 1
+        if r.get("source") == "soc":
+            k = _inc_kind(r.get("key", ""))
+            a["kinds"][k] = a["kinds"].get(k, 0) + 1
+    for a in areas.values():
+        a["active"] = a["open"] + a["ack"]
+        a["worst"] = next((s for s in reversed(incmod.SEVERITIES) if a["by_severity"].get(s)), None)
+    if area in areas:
+        out = dict(areas[area])
+    else:
+        out = {"open": areas["net"]["open"] + areas["soc"]["open"], "ack": areas["net"]["ack"] + areas["soc"]["ack"],
+               "by_severity": {s: areas["net"]["by_severity"][s] + areas["soc"]["by_severity"][s] for s in incmod.SEVERITIES}}
+        out["active"] = out["open"] + out["ack"]
+        out["worst"] = next((s for s in reversed(incmod.SEVERITIES) if out["by_severity"].get(s)), None)
+    out["areas"] = {k: {x: v[x] for x in ("active", "open", "ack", "worst")} for k, v in areas.items()}
     return out
 
 

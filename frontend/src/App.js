@@ -75,6 +75,7 @@ function App() {
           <Route element={<ProtectedShell />}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/incidents" element={<Incidents />} />
+            <Route path="/soc/incidents" element={<Incidents key="soc" area="soc" />} />
             <Route path="/logs" element={<Logs />} />
             <Route path="/probes" element={<Probes />} />
             <Route path="/sla" element={<Sla />} />

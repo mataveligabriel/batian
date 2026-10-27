@@ -221,7 +221,7 @@ class Incidents:
             return
         where = inc.get("device_name") or inc.get("host") or ""
         if kind == "open":
-            title = f"{SEV_ICON[inc['severity']]} #{inc['number']} {SEV_LABEL[inc['severity']].upper()} — {inc['title']}"
+            title = f"{SEV_ICON[inc['severity']]} {'🛡 SOC · ' if inc['source'] == 'soc' else ''}#{inc['number']} {SEV_LABEL[inc['severity']].upper()} — {inc['title']}"
             text = "\n".join(x for x in [where and f"📍 {where}", f"Origem: {SOURCES.get(inc['source'], inc['source'])}",
                                          (inc.get("description") or "")[:600]] if x)
             buttons = [[{"text": "👀 Reconhecer", "callback_data": f"inc:ack:{inc['id']}"},
@@ -236,7 +236,7 @@ class Incidents:
             except Exception:
                 pass
         try:
-            await self.alert(self.db, title, text, push_url=f"/incidents?id={inc['id']}", push_tag=f"inc-{inc['id']}",
+            await self.alert(self.db, title, text, push_url=f"{'/soc/incidents' if inc.get('source') == 'soc' else '/incidents'}?id={inc['id']}", push_tag=f"inc-{inc['id']}",
                              buttons=buttons)
             if kind == "open":
                 await self.db.incidents.update_one({"id": inc["id"]}, {"$set": {"notified": True}})

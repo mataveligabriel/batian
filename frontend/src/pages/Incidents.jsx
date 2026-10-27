@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
-  Siren, Search, Plus, Eye, CheckCircle2, RotateCcw, UserCheck, MessageSquare, TerminalSquare, ExternalLink, X, Loader2,
+  Siren, ShieldAlert, Search, Plus, Eye, CheckCircle2, RotateCcw, UserCheck, MessageSquare, TerminalSquare, ExternalLink, X, Loader2,
   Clock, Repeat, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { TagOptions } from "@/components/TagSelect";
@@ -24,6 +24,9 @@ export const SEV = {
 };
 const ST = { open: ["Aberto", "text-red-300"], ack: ["Reconhecido", "text-amber-300"], resolved: ["Resolvido", "text-emerald-300"] };
 const SRC = { zabbix: "Zabbix", librenms: "LibreNMS", generic: "Webhook", bastion: "BastiON", manual: "Manual", syslog: "Syslog", trap: "Trap SNMP", probe: "Sonda", bgp: "Monitor BGP", gpon: "GPON", compliance: "Conformidade" };
+export const KIND = { ti: "Threat intel", certbr: "Serviço exposto (CERT.br)", cmd: "Política de comandos", login: "Login suspeito", cve: "CVE de firmware", outro: "SOC" };
+const srcLabel = (r) => (r.source === "soc" ? KIND[r.kind] || "SOC" : SRC[r.source] || r.source);
+const GROUPS_SOC = [["", "sem agrupar"], ["device", "por equipamento/IP"], ["kind", "por tipo"], ["severity", "por severidade"], ["assignee", "por responsável"]];
 const GROUPS = [["", "sem agrupar"], ["tag", "por grupo do equipamento"], ["device", "por equipamento"], ["source", "por origem"], ["severity", "por severidade"], ["assignee", "por responsável"]];
 const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 export function groupIncidents(rows, by) {
@@ -34,6 +37,7 @@ export function groupIncidents(rows, by) {
     if (by === "tag") { const t = r.tags?.length ? r.tags : ["Sem grupo"]; t.forEach(x => add(`t:${x}`, x, r)); }
     else if (by === "device") add(`d:${r.device_id || r.device_name || r.host || "-"}`, r.device_name || r.host || "Sem equipamento", r);
     else if (by === "source") add(`s:${r.source}`, SRC[r.source] || r.source, r);
+    else if (by === "kind") add(`k:${r.kind || "outro"}`, KIND[r.kind] || "SOC", r);
     else if (by === "severity") add(`v:${r.severity}`, SEV[r.severity]?.label || r.severity, r);
     else add(`a:${r.assignee?.id || "-"}`, r.assignee?.name || "Sem responsável", r);
   }
@@ -123,7 +127,7 @@ function Detail({ id, onClose, onChanged }) {
       <div className="p-4 border-b border-line">
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
-            <div className="text-xs text-slate-500 font-mono">#{inc.number} · {SRC[inc.source] || inc.source}</div>
+            <div className="text-xs text-slate-500 font-mono">#{inc.number} · {srcLabel(inc)}</div>
             <div className="text-base font-semibold text-slate-100 mt-0.5 break-words">{inc.title}</div>
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-200" aria-label="Fechar" data-testid="inc-detail-close"><X className="w-5 h-5" /></button>
@@ -173,30 +177,34 @@ function Detail({ id, onClose, onChanged }) {
   );
 }
 
-export default function Incidents() {
+export default function Incidents({ area = "net" }) {
   const { user } = useAuth();
+  const soc = area === "soc";
   const [sp, setSp] = useSearchParams();
   const [view, setView] = useState("active");
   const [q, setQ] = useState("");
   const [sev, setSev] = useState("");
   const [src, setSrc] = useState("");
+  const [kind, setKind] = useState("");
   const [rows, setRows] = useState(null);
   const [sum, setSum] = useState(null);
   const [newOpen, setNewOpen] = useState(false);
   const [picked, setPicked] = useState(() => new Set());
-  const [groupBy, setGroupBy] = useState(() => { try { return localStorage.getItem("inc_group") || ""; } catch { return ""; } });
+  const gkey = soc ? "inc_group_soc" : "inc_group";
+  const [groupBy, setGroupBy] = useState(() => { try { return localStorage.getItem(gkey) || (soc ? "kind" : ""); } catch { return soc ? "kind" : ""; } });
   const [closed, setClosed] = useState({});
   const [bulkNote, setBulkNote] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
   const sel = sp.get("id");
-  const tab = sp.get("tab") === "plantao" ? "plantao" : "";
+  const tab = !soc && sp.get("tab") === "plantao" ? "plantao" : "";
   const timer = useRef(null);
   const load = useCallback(async () => {
     try {
-      const [a, b] = await Promise.all([api.get("/incidents", { params: { status: view, q, severity: sev, source: src } }), api.get("/incidents-summary")]);
+      const [a, b] = await Promise.all([api.get("/incidents", { params: { status: view, q, severity: sev, source: soc ? "" : src, area, kind: soc ? kind : "" } }),
+        api.get("/incidents-summary", { params: { area } })]);
       setRows(a.data); setSum(b.data);
     } catch (e) { toast.error(formatApiError(e)); }
-  }, [view, q, sev, src]);
+  }, [view, q, sev, src, kind, area, soc]);
   useEffect(() => {
     const t = setTimeout(load, q ? 300 : 0);
     clearInterval(timer.current);
@@ -205,8 +213,8 @@ export default function Incidents() {
   }, [load, q]);
   const open = (id) => setSp(id ? { id } : {});
   const counts = useMemo(() => sum?.by_severity || {}, [sum]);
-  useEffect(() => { try { localStorage.setItem("inc_group", groupBy); } catch { /* sem storage */ } }, [groupBy]);
-  useEffect(() => { setPicked(new Set()); }, [view, q, sev, src]);
+  useEffect(() => { try { localStorage.setItem(gkey, groupBy); } catch { /* sem storage */ } }, [groupBy, gkey]);
+  useEffect(() => { setPicked(new Set()); }, [view, q, sev, src, kind]);
   // seleção só do que ainda está na lista
   useEffect(() => {
     if (!rows) return;
@@ -232,18 +240,20 @@ export default function Incidents() {
       <div className={`flex-1 min-w-0 overflow-y-auto p-4 md:p-6 ${sel ? "hidden lg:block" : ""}`}>
         <div className="flex items-start justify-between flex-wrap gap-3 mb-4">
           <div>
-            <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 flex items-center gap-2"><Siren className="w-6 h-6 text-red-400" /> Incidentes</h1>
-            <p className="text-sm text-slate-400 mt-1">Alarmes do Zabbix, LibreNMS e BastiON num lugar só. Reconheça, assuma e resolva — também pelo Telegram.
+            <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 flex items-center gap-2">
+              {soc ? <><ShieldAlert className="w-6 h-6 text-red-400" /> Incidentes de segurança</> : <><Siren className="w-6 h-6 text-red-400" /> Incidentes</>}</h1>
+            <p className="text-sm text-slate-400 mt-1">{soc ? "Ataques e ameaças: threat intel no flow, serviços expostos (CERT.br), logins suspeitos, política de comandos e CVEs. Os alarmes da rede ficam em Incidentes."
+              : "Alarmes da rede e do backbone: Zabbix, LibreNMS, sondas, syslog, BGP e GPON. Os de segurança ficam em Painel SOC → Incidentes de segurança."}
               {user?.role !== "admin" && user?.incidents_scope !== "all" && <span className="block text-xs text-slate-500">Você vê os incidentes dos seus equipamentos e da sua rede.</span>}</p>
           </div>
           <div className="flex gap-2 items-center">
             <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm">
-              {[["", "Incidentes"], ["plantao", "Plantão"]].map(([k, l]) => (
+              {(soc ? [["", "Incidentes"]] : [["", "Incidentes"], ["plantao", "Plantão"]]).map(([k, l]) => (
                 <button key={k} onClick={() => setSp(k ? { tab: k } : {})} data-testid={`inc-tab-${k || "list"}`}
                         className={`px-3 h-7 rounded ${tab === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}>{l}</button>
               ))}
             </div>
-            {tab === "" && <Button onClick={() => setNewOpen(true)} className="bg-brand hover:bg-brand-strong text-onbrand" data-testid="inc-new"><Plus className="w-4 h-4 mr-1.5" /> Novo incidente</Button>}
+            {tab === "" && !soc && <Button onClick={() => setNewOpen(true)} className="bg-brand hover:bg-brand-strong text-onbrand" data-testid="inc-new"><Plus className="w-4 h-4 mr-1.5" /> Novo incidente</Button>}
           </div>
         </div>
         {tab === "plantao" ? <OncallPanel isAdmin={user?.role === "admin"} /> : (<>
@@ -265,12 +275,19 @@ export default function Incidents() {
               </button>
             ))}
           </div>
-          <select value={src} onChange={e => setSrc(e.target.value)} className="h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200" data-testid="inc-src">
-            <option value="">todas as origens</option>
-            {Object.entries(SRC).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
+          {soc ? (
+            <select value={kind} onChange={e => setKind(e.target.value)} className="h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200" data-testid="inc-kind">
+              <option value="">todos os tipos</option>
+              {Object.entries(KIND).filter(([k]) => k !== "outro").map(([k, v]) => <option key={k} value={k}>{v}{sum?.kinds?.[k] ? ` (${sum.kinds[k]})` : ""}</option>)}
+            </select>
+          ) : (
+            <select value={src} onChange={e => setSrc(e.target.value)} className="h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200" data-testid="inc-src">
+              <option value="">todas as origens</option>
+              {Object.entries(SRC).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          )}
           <select value={groupBy} onChange={e => setGroupBy(e.target.value)} className="h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200" data-testid="inc-group">
-            {GROUPS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            {(soc ? GROUPS_SOC : GROUPS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
           </select>
           <div className="relative flex-1 min-w-[12rem]">
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -319,7 +336,7 @@ export default function Incidents() {
                                 <span className="text-xs font-mono text-slate-500">#{r.number}</span>
                                 <span className="min-w-0">
                                   <span className="block text-sm text-slate-100 truncate">{r.title}</span>
-                                  <span className="block text-xs text-slate-500 truncate">{r.maintenance && <span className="text-amber-300">🛠 em manutenção · </span>}{r.device_name || r.host || "—"} · {SRC[r.source] || r.source}{r.count > 1 ? ` · ${r.count}×` : ""}{r.assignee ? ` · ${r.assignee.name}` : ""}</span>
+                                  <span className="block text-xs text-slate-500 truncate">{r.maintenance && <span className="text-amber-300">🛠 em manutenção · </span>}{r.device_name || r.host || "—"} · {srcLabel(r)}{r.count > 1 ? ` · ${r.count}×` : ""}{r.assignee ? ` · ${r.assignee.name}` : ""}</span>
                                 </span>
                                 <span className="text-xs text-slate-400">{when(r.created_at)}</span>
                                 <span className={`text-xs ${stc}`}>{stl}</span>

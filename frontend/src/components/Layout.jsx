@@ -60,6 +60,7 @@ const MENU = [
     { to: "/compliance", icon: ClipboardCheck, label: "Conformidade", testid: "nav-compliance" },
   ] },
   { group: "soc", icon: ShieldCheck, label: "Painel SOC", items: [
+    { to: "/soc/incidents", icon: ShieldAlert, label: "Incidentes de segurança", testid: "nav-soc-incidents" },
     { to: "/soc/commands", icon: ShieldCheck, label: "Política de comandos", testid: "nav-cmdpolicy" },
     { to: "/soc/logins", icon: UserX, label: "Logins suspeitos", adminOnly: true, testid: "nav-logins" },
     { to: "/soc/threat", icon: Radar, label: "Threat intel", adminOnly: true, testid: "nav-ti" },
@@ -147,12 +148,15 @@ export default function Layout() {
     >
       <item.icon className={`${sub ? "w-3.5 h-3.5" : "w-4 h-4"} shrink-0 opacity-90`} />
       {(!mini || sub) && <span className="truncate">{item.label}</span>}
-      {item.to === "/incidents" && incSum?.active > 0 && (
-        <span data-testid="nav-incidents-badge" title={`${incSum.open} aberto(s), ${incSum.ack} reconhecido(s)`}
-              className={`${mini ? "absolute -top-1 -right-1 text-[9px] px-1" : "ml-auto text-[10px] px-1.5 py-0.5"} font-mono rounded border ${
-                incSum.open ? (incSum.worst === "critical" || incSum.worst === "high" ? "bg-red-500/20 text-red-300 border-red-500/40 animate-pulse" : "bg-amber-500/15 text-amber-300 border-amber-500/30")
-                  : "bg-white/5 text-slate-300 border-line"}`}>{incSum.active}</span>
-      )}
+      {(item.to === "/incidents" || item.to === "/soc/incidents") && (() => {
+        const a = incSum?.areas?.[item.to === "/incidents" ? "net" : "soc"] || (item.to === "/incidents" ? incSum : null);
+        if (!a?.active) return null;
+        return (
+          <span data-testid={item.to === "/incidents" ? "nav-incidents-badge" : "nav-soc-incidents-badge"} title={`${a.open} aberto(s), ${a.ack} reconhecido(s)`}
+                className={`${mini && !sub ? "absolute -top-1 -right-1 text-[9px] px-1" : "ml-auto text-[10px] px-1.5 py-0.5"} font-mono rounded border ${
+                  a.open ? (a.worst === "critical" || a.worst === "high" ? "bg-red-500/20 text-red-300 border-red-500/40 animate-pulse" : "bg-amber-500/15 text-amber-300 border-amber-500/30")
+                    : "bg-white/5 text-slate-300 border-line"}`}>{a.active}</span>);
+      })()}
       {item.to === "/terminal" && tabs.length > 0 && (
         <span data-testid="nav-terminal-badge" className="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">{tabs.length}</span>
       )}
