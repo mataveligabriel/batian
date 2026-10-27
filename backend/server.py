@@ -86,6 +86,7 @@ import certbr
 import cves as cvemod
 import sso as ssomod
 import tacacs as tacmod
+import ftpserver as ftpmod
 import tcprelay
 import runbooks
 import teopt
@@ -169,6 +170,9 @@ async def startup():
     await db.cert_flow.create_index("key", unique=True)
     await db.cert_flow.create_index("ts", expireAfterSeconds=30 * 86400)
     await db.tacacs_events.create_index([("at", -1)])
+    await db.ftp_accesses.create_index("id")
+    await db.ftp_events.create_index([("at", -1)])
+    await db.ftp_events.create_index("ts", expireAfterSeconds=180 * 86400)
     await db.tacacs_accounts.create_index("id")
     try:
         await flowstore.ensure_ttl(db, "tacacs_events", (await _tac_cfg())["retention_days"] * 86400)
@@ -206,6 +210,7 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(_sla_monthly_loop()))
     _bg_tasks.append(asyncio.create_task(_maint_loop()))
     _bg_tasks.append(asyncio.create_task(_bgp_loop()))
+    _bg_tasks.append(asyncio.create_task(_ftp_loop()))
     _bg_tasks.append(asyncio.create_task(_gpon_loop()))
     _bg_tasks.append(asyncio.create_task(_siem_loop()))
     _bg_tasks.append(asyncio.create_task(_ti_loop()))
@@ -6647,6 +6652,7 @@ _SIEM_SRC = [
     ("ai_audit", "at", lambda d: siemmod.from_ai(d)),
     ("audit_events", "at", lambda d: siemmod.from_change(d)),
     ("tacacs_events", "at", lambda d: siemmod.from_tacacs(d)),
+    ("ftp_events", "at", lambda d: siemmod.from_ftp(d)),
     ("incidents", "created_at", lambda d: siemmod.from_incident(d, False)),
     ("incidents", "resolved_at", lambda d: siemmod.from_incident(d, True) if d.get("status") == "resolved" else None),
 ]
@@ -7919,6 +7925,344 @@ async def sso_test(pid: str, _: dict = Depends(require_admin)):
         raise HTTPException(status_code=400, detail=f"O provedor diz que o emissor é {disc.get('issuer')} — use exatamente esse valor")
     return {"ok": True, "issuer": disc.get("issuer"), "keys": len(jwks.get("keys") or []), "authorization_endpoint": disc["authorization_endpoint"],
             "pkce": "S256" in (disc.get("code_challenge_methods_supported") or ["S256"])}
+
+
+# ---------- FTP (arquivos dos equipamentos, direto ou pelos jumps) ----------
+def _ftp_root() -> str:
+    root = os.environ.get("FTP_ROOT") or ("/data/ftp" if os.path.isdir("/data") else str(ROOT_DIR / "ftp_data"))
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+async def _ftp_cfg() -> dict:
+    doc = await db.config.find_one({"key": "ftp"}, {"_id": 0}) or {}
+    try:
+        return ftpmod.clean_settings({}, doc)
+    except ValueError:
+        return dict(ftpmod.DEFAULTS)
+
+
+def _ftp_folder(v: str) -> str:
+    parts = [p for p in re.split(r"[\\/]+", str(v or "").strip()) if p not in ("", ".", "..")]
+    clean = "/".join(re.sub(r"[^\w.\- ]", "_", p)[:80] for p in parts)[:300]
+    return clean
+
+
+def _ftp_abs(rel: str) -> str:
+    root = os.path.realpath(_ftp_root())
+    p = os.path.realpath(os.path.join(root, _ftp_folder(rel)))
+    if p != root and not p.startswith(root + os.sep):
+        raise HTTPException(status_code=400, detail="Caminho fora da área de arquivos")
+    return p
+
+
+def _ftp_active(a: dict, now: Optional[str] = None) -> bool:
+    now = now or datetime.now(timezone.utc).isoformat()
+    return a.get("enabled", True) is not False and (not a.get("expires_at") or a["expires_at"] > now)
+
+
+async def _ftp_auth(scope: str, user: str, password: str, ip: str):
+    cfg = await _ftp_cfg()
+    a = await db.ftp_accesses.find_one({"username_lc": (user or "").lower(), "via": scope}, {"_id": 0})
+    if not a or not _ftp_active(a) or not hmac.compare_digest(vault.decrypt(a.get("password", "")).encode(), (password or "").encode()):
+        return None
+    if a.get("allow_ips"):
+        try:
+            ipa = ipaddress.ip_address(ip)
+            if not any(ipa in ipaddress.ip_network(n, strict=False) for n in a["allow_ips"]):
+                return None
+        except ValueError:
+            return None
+    await db.ftp_accesses.update_one({"id": a["id"]}, {"$set": {"last_used": datetime.now(timezone.utc).isoformat(), "last_ip": ip}})
+    return ftpmod.Account(a["id"], a["name"], _ftp_abs(a.get("folder") or ""), bool(a.get("write")), cfg["max_mb"] * 1024 * 1024)
+
+
+async def _ftp_event(e: dict):
+    now = datetime.now(timezone.utc)
+    acc = await db.ftp_accesses.find_one({"id": e.get("access_id")}, {"_id": 0, "name": 1, "folder": 1}) if e.get("access_id") else None
+    await db.ftp_events.insert_one({"id": os.urandom(8).hex(), "ts": now, "at": now.isoformat(), **e,
+                                    "access_name": (acc or {}).get("name", ""), "folder": (acc or {}).get("folder", "")})
+
+
+async def _ftp_connect_jump(agent_id: str):
+    priv, _, _ = await _get_ssh_key()
+    chain = await _agent_chain(agent_id)
+    w = SSHClientWrapper([_agent_hop(a, priv) for a in chain])
+    await w.connect()
+    return w.conn, w.close, " → ".join(a["name"] for a in chain)
+
+
+ftp_mgr = ftpmod.Manager(_ftp_auth, _ftp_event, _ftp_connect_jump, "")
+
+
+async def _ftp_reconcile():
+    cfg = await _ftp_cfg()
+    now = datetime.now(timezone.utc).isoformat()
+    acc = [a for a in await db.ftp_accesses.find({}, {"_id": 0, "via": 1, "enabled": 1, "expires_at": 1}).to_list(5000) if _ftp_active(a, now)]
+    await ftp_mgr.reconcile(cfg, any(a["via"] == "local" for a in acc), sorted({a["via"] for a in acc if a["via"] != "local"}))
+
+
+async def _ftp_loop():
+    await asyncio.sleep(15)
+    while True:
+        try:
+            await _ftp_reconcile()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"FTP: {e}")
+        await asyncio.sleep(20)
+
+
+def _ftp_public(a: dict, show_pw: bool = True) -> dict:
+    out = {k: v for k, v in a.items() if k not in ("password", "username_lc")}
+    if show_pw:
+        out["password"] = vault.decrypt(a.get("password", ""))
+    out["active"] = _ftp_active(a)
+    return out
+
+
+def _ftp_scope(user: dict) -> dict:
+    return {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+
+
+@api.get("/ftp/settings")
+async def ftp_settings(_: dict = Depends(require_admin)):
+    return {**await _ftp_cfg(), "root": _ftp_root(), "public_host": urlparse(os.environ.get("PUBLIC_URL", "")).hostname or ""}
+
+
+@api.put("/ftp/settings")
+async def ftp_settings_put(body: dict, _: dict = Depends(require_admin)):
+    cur = await db.config.find_one({"key": "ftp"}, {"_id": 0}) or {}
+    try:
+        cfg = ftpmod.clean_settings(body or {}, cur)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.config.update_one({"key": "ftp"}, {"$set": {"key": "ftp", **cfg}}, upsert=True)
+    for b in list(ftp_mgr.jumps.values()):
+        await b.stop()                       # portas/IP novos: reabre tudo
+    _bg(_ftp_reconcile())
+    return cfg
+
+
+@api.get("/ftp/status")
+async def ftp_status(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cfg = await _ftp_cfg()
+    st = ftp_mgr.status()
+    names = {a["id"]: a["name"] async for a in db.agents.find({}, {"_id": 0, "id": 1, "name": 1})}
+    for aid, j in st["jumps"].items():
+        j["name"] = names.get(aid, aid)
+        j["port"] = cfg["jump_port"]
+    st["local"]["host"] = cfg["local_ip"] or urlparse(os.environ.get("PUBLIC_URL", "")).hostname or ""
+    st["enabled"] = cfg["enabled"]
+    st["local_enabled"] = cfg["local_enabled"]
+    return st
+
+
+class FtpAccessIn(BaseModel):
+    name: str
+    via: str = "local"                 # "local" ou id do agente (jump)
+    folder: str = ""
+    write: bool = True
+    hours: int = 24                    # 0 = sem prazo (backup automático do equipamento)
+    allow_ips: List[str] = []
+    username: str = ""
+    password: str = ""
+
+
+@api.get("/ftp/accesses")
+async def ftp_accesses(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    rows = await db.ftp_accesses.find(_ftp_scope(user), {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return [_ftp_public(a) for a in rows]
+
+
+@api.post("/ftp/accesses")
+async def ftp_access_add(body: FtpAccessIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    name = body.name.strip()[:60]
+    if not name:
+        raise HTTPException(status_code=400, detail="Dê um nome (ex.: Backup OLT Guaçuí)")
+    if body.via != "local":
+        await _get_agent_for(user, body.via) if user.get("role") != "admin" else None
+        if not await db.agents.find_one({"id": body.via}, {"_id": 0, "id": 1}):
+            raise HTTPException(status_code=404, detail="Jump não encontrado")
+    nets = []
+    for x in body.allow_ips:
+        x = x.strip()
+        if x:
+            try:
+                nets.append(str(ipaddress.ip_network(x, strict=False)))
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"IP/rede inválido: {x}")
+    uname = (body.username.strip() or ("ftp" + os.urandom(3).hex()))[:32]
+    if not re.fullmatch(r"[A-Za-z0-9._-]{3,32}", uname):
+        raise HTTPException(status_code=400, detail="Usuário: 3 a 32 caracteres (letras, números, . _ -)")
+    if await db.ftp_accesses.find_one({"username_lc": uname.lower(), "via": body.via}):
+        raise HTTPException(status_code=409, detail=f"Já existe o usuário {uname} nesse caminho")
+    pw = body.password.strip() or tacmod.gen_secret(12)
+    if len(pw) < 8 or not re.fullmatch(r"[A-Za-z0-9._-]+", pw):
+        raise HTTPException(status_code=400, detail="Senha: 8+ caracteres só com letras, números, . _ - (os equipamentos se perdem com @ : / na URL)")
+    folder = _ftp_folder(body.folder) or _ftp_folder(name)
+    os.makedirs(_ftp_abs(folder), exist_ok=True)
+    now = datetime.now(timezone.utc)
+    doc = {"id": os.urandom(8).hex(), "name": name, "username": uname, "username_lc": uname.lower(), "password": vault.encrypt(pw),
+           "via": body.via, "folder": folder, "write": body.write, "allow_ips": nets[:50], "enabled": True,
+           "expires_at": (now + timedelta(hours=max(1, min(24 * 90, body.hours)))).isoformat() if body.hours else None,
+           "owner_id": user["id"], "created_by": user.get("email", ""), "created_at": now.isoformat(), "last_used": None}
+    await db.ftp_accesses.insert_one(dict(doc))
+    _bg(_ftp_reconcile())
+    return _ftp_public(doc)
+
+
+async def _ftp_get(aid: str, user: dict) -> dict:
+    a = await db.ftp_accesses.find_one({"id": aid, **_ftp_scope(user)}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Acesso não encontrado")
+    return a
+
+
+class FtpRenewIn(BaseModel):
+    hours: int = 24
+    enabled: bool = True
+
+
+@api.post("/ftp/accesses/{aid}/renew")
+async def ftp_access_renew(aid: str, body: FtpRenewIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _ftp_get(aid, user)
+    exp = (datetime.now(timezone.utc) + timedelta(hours=max(1, min(24 * 90, body.hours)))).isoformat() if body.hours else None
+    await db.ftp_accesses.update_one({"id": aid}, {"$set": {"expires_at": exp, "enabled": body.enabled}})
+    _bg(_ftp_reconcile())
+    return _ftp_public(await _ftp_get(aid, user))
+
+
+@api.delete("/ftp/accesses/{aid}")
+async def ftp_access_del(aid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _ftp_get(aid, user)
+    await db.ftp_accesses.delete_one({"id": aid})
+    _bg(_ftp_reconcile())
+    return {"ok": True}
+
+
+@api.get("/ftp/events")
+async def ftp_events(access_id: str = "", limit: int = 300, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    f: dict = {}
+    if access_id:
+        await _ftp_get(access_id, user)
+        f["access_id"] = access_id
+    elif user.get("role") != "admin":
+        ids = [a["id"] async for a in db.ftp_accesses.find({"owner_id": user["id"]}, {"_id": 0, "id": 1})]
+        f["access_id"] = {"$in": ids}
+    return await db.ftp_events.find(f, {"_id": 0, "ts": 0}).sort("at", -1).to_list(max(1, min(2000, limit)))
+
+
+# --- arquivos pela web (a mesma pasta que o FTP usa)
+@api.get("/ftp/files")
+async def ftp_files(path: str = "", user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    p = _ftp_abs(path)
+    if not os.path.isdir(p):
+        raise HTTPException(status_code=404, detail="Pasta não existe")
+    out = []
+    for n in sorted(os.listdir(p), key=str.lower):
+        if n.startswith(".") or n.endswith(".parcial"):
+            continue
+        st = os.stat(os.path.join(p, n))
+        out.append({"name": n, "dir": os.path.isdir(os.path.join(p, n)), "size": st.st_size,
+                    "mtime": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()})
+    du = sum(f.stat().st_size for f in Path(_ftp_root()).rglob("*") if f.is_file())
+    return {"path": _ftp_folder(path), "items": sorted(out, key=lambda x: (not x["dir"], x["name"].lower())), "total_bytes": du}
+
+
+@api.get("/ftp/files/download")
+async def ftp_file_download(path: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    p = _ftp_abs(path)
+    if not os.path.isfile(p):
+        raise HTTPException(status_code=404, detail="Arquivo não existe")
+    await _ftp_event({"action": "download", "path": "/" + _ftp_folder(path), "ok": True, "bytes": os.path.getsize(p), "user": user.get("email", ""),
+                      "peer": "", "via": "web", "scope": "web"})
+    return FileResponse(p, media_type="application/octet-stream", filename=os.path.basename(p))
+
+
+@api.post("/ftp/files/upload")
+async def ftp_file_upload(path: str = Form(""), file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cfg = await _ftp_cfg()
+    d = _ftp_abs(path)
+    os.makedirs(d, exist_ok=True)
+    name = re.sub(r"[^\w.\- ]", "_", os.path.basename(file.filename or "arquivo"))[:120] or "arquivo"
+    dst = os.path.join(d, name)
+    tmp = dst + ".parcial"
+    size, lim = 0, cfg["max_mb"] * 1024 * 1024
+    try:
+        with open(tmp, "wb") as out:
+            while True:
+                chunk = await file.read(1 << 20)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > lim:
+                    raise HTTPException(status_code=413, detail=f"Arquivo maior que {cfg['max_mb']} MB (ajuste em Ajustes)")
+                out.write(chunk)
+        os.replace(tmp, dst)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    await _ftp_event({"action": "upload", "path": "/" + _ftp_folder(os.path.join(path, name)), "ok": True, "bytes": size,
+                      "user": user.get("email", ""), "peer": "", "via": "web", "scope": "web"})
+    return {"name": name, "size": size}
+
+
+class FtpPathIn(BaseModel):
+    path: str
+    to: str = ""
+
+
+@api.post("/ftp/files/mkdir")
+async def ftp_file_mkdir(body: FtpPathIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    if not _ftp_folder(body.path):
+        raise HTTPException(status_code=400, detail="Nome de pasta inválido")
+    os.makedirs(_ftp_abs(body.path), exist_ok=True)
+    return {"ok": True}
+
+
+@api.post("/ftp/files/rename")
+async def ftp_file_rename(body: FtpPathIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    src, dst = _ftp_abs(body.path), _ftp_abs(body.to)
+    if not os.path.exists(src) or not _ftp_folder(body.to):
+        raise HTTPException(status_code=400, detail="Origem ou destino inválido")
+    if os.path.exists(dst):
+        raise HTTPException(status_code=409, detail="Já existe um item com esse nome")
+    os.replace(src, dst)
+    return {"ok": True}
+
+
+@api.delete("/ftp/files")
+async def ftp_file_delete(path: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    p = _ftp_abs(path)
+    if p == os.path.realpath(_ftp_root()):
+        raise HTTPException(status_code=400, detail="Não dá para apagar a raiz")
+    if os.path.isdir(p):
+        if os.listdir(p):
+            raise HTTPException(status_code=409, detail="A pasta não está vazia")
+        os.rmdir(p)
+    elif os.path.isfile(p):
+        os.remove(p)
+    else:
+        raise HTTPException(status_code=404, detail="Não existe")
+    await _ftp_event({"action": "delete", "path": "/" + _ftp_folder(path), "ok": True, "user": user.get("email", ""), "peer": "", "via": "web", "scope": "web"})
+    return {"ok": True}
 
 
 # ---------- TACACS+ (login nos equipamentos com os usuários do BastiON) ----------
@@ -12830,6 +13174,10 @@ app.add_middleware(
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    try:
+        await ftp_mgr.stop_all()
+    except Exception:
+        pass
     scheduler.stop()
     for t in _bg_tasks:
         t.cancel()

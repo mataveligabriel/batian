@@ -42,6 +42,7 @@ import CertBr from "@/pages/CertBr";
 import Cves from "@/pages/Cves";
 import Sso from "@/pages/Sso";
 import Tacacs from "@/pages/Tacacs";
+import Ftp from "@/pages/Ftp";
 import Ipam from "@/pages/Ipam";
 import WebAccess from "@/pages/WebAccess";
 
@@ -89,6 +90,7 @@ function App() {
             <Route path="/soc/cves" element={<Cves />} />
             <Route path="/soc/sso" element={<Sso />} />
             <Route path="/soc/tacacs" element={<Tacacs />} />
+            <Route path="/ftp" element={<Ftp />} />
             <Route path="/ipam" element={<Ipam />} />
             <Route path="/devices" element={<Devices />} />
             <Route path="/terminal" element={<Terminal />} />

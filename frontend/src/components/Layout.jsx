@@ -9,7 +9,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   ChevronDown, LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send, UserX, Radar, ShieldAlert, Bug, Fingerprint,
+  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send, UserX, Radar, ShieldAlert, Bug, Fingerprint, FolderUp,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -46,6 +46,7 @@ const MENU = [
     { to: "/batch", icon: Play, label: "Execução em Lote", testid: "nav-batch" },
     { to: "/olt-script", icon: Cpu, label: "Script de OLT", testid: "nav-oltgen" },
     { to: "/backups", icon: Archive, label: "Backups", testid: "nav-backups" },
+    { to: "/ftp", icon: FolderUp, label: "Arquivos (FTP)", testid: "nav-ftp" },
     { to: "/sessions", icon: History, label: "Histórico", testid: "nav-sessions" },
   ] },
   { group: "routing", icon: Waves, label: "Tráfego e rotas", items: [

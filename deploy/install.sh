@@ -29,6 +29,8 @@ ufw --force enable >/dev/null
 #   ufw allow from IP_DO_ROTEADOR to any port 2055 proto udp
 # TACACS+ (TCP 49): libere só para a rede de gerência dos equipamentos:
 #   ufw allow from REDE_DE_GERENCIA to any port 49 proto tcp
+# FTP dos equipamentos (direto no servidor): porta 2121 e passivas 30000-30009, também só para a gerência:
+#   ufw allow from REDE_DE_GERENCIA to any port 2121,30000:30009 proto tcp
 echo "net.core.rmem_max=33554432" > /etc/sysctl.d/90-bastion-flow.conf; sysctl -q -p /etc/sysctl.d/90-bastion-flow.conf || true
 
 echo ">> Baixando o código…"

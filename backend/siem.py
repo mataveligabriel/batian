@@ -259,6 +259,14 @@ def from_cmd_event(doc: dict) -> dict:
                  approval_id=doc.get("approval_id"), decided_by=doc.get("decided_by"))
 
 
+def from_ftp(doc: dict) -> dict:
+    ok = doc.get("ok", True)
+    act = doc.get("action", "")
+    return event("file", f"ftp_{act}", "success" if ok else "failure", 3 if ok else 5, user=doc.get("user", ""), src_ip=doc.get("peer", ""),
+                 ts=doc.get("at", ""), message=f"FTP {act} {doc.get('path', '')} ({doc.get('bytes', 0)} bytes) via {doc.get('via', '')}"
+                 + (f" — {doc.get('error')}" if doc.get("error") else ""), path=doc.get("path"), bytes=doc.get("bytes"), access=doc.get("access_name"))
+
+
 def from_tacacs(doc: dict) -> dict:
     t, res = doc.get("type", ""), doc.get("result", "")
     ok = res not in ("fail", "error", "deny")
