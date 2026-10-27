@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import { Network, Plus, Pencil, Trash2, Loader2, Search, ArrowLeft, RefreshCw, AlertTriangle, Download, Database, Lock } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { DocTab, PhpIpamTab } from "@/components/IpamDoc";
 
 const sel = "h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200";
 const STATUS = { active: "ativo", reserved: "reservado", container: "agregado", deprecated: "desativado" };
@@ -363,7 +364,7 @@ export default function Ipam() {
   const [sp, setSp] = useSearchParams();
   const tab = sp.get("tab") || "";
   const [open, setOpen] = useState(null);
-  const tabs = [["", "Prefixos"], ["buscar", "Buscar IP"], ["duplicados", "IP duplicado"], ["problemas", "Sem prefixo"], ["inventario", "Inventário"], ...(isAdmin ? [["netbox", "NetBox"]] : [])];
+  const tabs = [["", "Prefixos"], ["buscar", "Buscar IP"], ["documentacao", "Documentação"], ["duplicados", "IP duplicado"], ["problemas", "Sem prefixo"], ["inventario", "Inventário"], ["phpipam", "phpIPAM"], ...(isAdmin ? [["netbox", "NetBox"]] : [])];
   const refresh = async () => { try { await api.post("/ipam/refresh"); toast.success("Relendo os backups"); } catch (e) { toast.error(formatApiError(e)); } };
   return (
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="ipam-page">
@@ -381,6 +382,8 @@ export default function Ipam() {
       </div>
       {tab === "" && (open ? <PrefixDetail prefix={open.prefix} vrf={open.vrf || ""} onBack={() => setOpen(null)} /> : <Prefixes onOpen={setOpen} />)}
       {tab === "buscar" && <SearchTab />}
+      {tab === "documentacao" && <DocTab />}
+      {tab === "phpipam" && <PhpIpamTab isAdmin={isAdmin} />}
       {tab === "duplicados" && <Duplicates />}
       {tab === "problemas" && <Issues />}
       {tab === "inventario" && <Inventory />}

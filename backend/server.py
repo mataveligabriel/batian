@@ -88,6 +88,7 @@ import cves as cvemod
 import sso as ssomod
 import tacacs as tacmod
 import ftpserver as ftpmod
+import ipamdoc
 import tcprelay
 import runbooks
 import teopt
@@ -172,6 +173,11 @@ async def startup():
     await db.cert_flow.create_index("ts", expireAfterSeconds=30 * 86400)
     await db.tacacs_events.create_index([("at", -1)])
     await db.ftp_accesses.create_index("id")
+    await db.ipam_docgroups.create_index("id")
+    await db.ipam_docsubnets.create_index([("group_id", 1), ("prefix", 1)])
+    await db.ipam_docips.create_index([("group_id", 1), ("ip", 1), ("vrf", 1)])
+    await db.ipam_docips.create_index("subnet_id")
+    await db.ipam_docips.create_index("ip")
     await db.ftp_events.create_index([("at", -1)])
     await db.ftp_events.create_index("ts", expireAfterSeconds=180 * 86400)
     await db.tacacs_accounts.create_index("id")
@@ -13234,6 +13240,475 @@ async def ipam_duplicates(tags: str = "", mode: str = "per_group", ignore_mgmt: 
         by_group[x["group"] or "__all__"] = by_group.get(x["group"] or "__all__", 0) + 1
     return {"groups": [{"tag": t, "devices": n} for t, n in sorted(counts.items(), key=lambda x: (x[0] == "__none__", x[0].lower()))],
             "duplicates": out[:5000], "total": len(out), "by_group": by_group, "mode": mode}
+
+
+# ---------- IPAM: documentação de IP por grupo + importação do phpIPAM ----------
+async def _doc_group(gid: str, user: dict) -> dict:
+    g = await db.ipam_docgroups.find_one({"id": gid, **_ipam_scope(user)}, {"_id": 0})
+    if not g:
+        raise HTTPException(status_code=404, detail="Grupo de documentação não encontrado")
+    return g
+
+
+def _doc_err(e: Exception):
+    raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.get("/ipam/doc/groups")
+async def doc_groups(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    gs = await db.ipam_docgroups.find(_ipam_scope(user), {"_id": 0}).sort("name", 1).to_list(1000)
+    for g in gs:
+        g["subnets"] = await db.ipam_docsubnets.count_documents({"group_id": g["id"]})
+        g["ips"] = await db.ipam_docips.count_documents({"group_id": g["id"]})
+    return gs
+
+
+@api.post("/ipam/doc/groups")
+async def doc_group_add(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    try:
+        g = ipamdoc.clean_group(body or {})
+    except ipamdoc.DocError as e:
+        _doc_err(e)
+    if await db.ipam_docgroups.find_one({"name": g["name"], **_ipam_scope(user)}):
+        raise HTTPException(status_code=409, detail="Já existe um grupo com esse nome")
+    g.update(id=os.urandom(8).hex(), owner_id=user["id"], created_at=datetime.now(timezone.utc).isoformat(), created_by=user.get("email", ""))
+    await db.ipam_docgroups.insert_one(dict(g))
+    return {**g, "subnets": 0, "ips": 0}
+
+
+@api.put("/ipam/doc/groups/{gid}")
+async def doc_group_put(gid: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _doc_group(gid, user)
+    try:
+        g = ipamdoc.clean_group(body or {})
+    except ipamdoc.DocError as e:
+        _doc_err(e)
+    await db.ipam_docgroups.update_one({"id": gid}, {"$set": g})
+    return await _doc_group(gid, user)
+
+
+@api.delete("/ipam/doc/groups/{gid}")
+async def doc_group_del(gid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _doc_group(gid, user)
+    await db.ipam_docips.delete_many({"group_id": gid})
+    await db.ipam_docsubnets.delete_many({"group_id": gid})
+    await db.ipam_docgroups.delete_one({"id": gid})
+    return {"ok": True}
+
+
+@api.get("/ipam/doc/groups/{gid}/subnets")
+async def doc_subnets(gid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _doc_group(gid, user)
+    subs = await db.ipam_docsubnets.find({"group_id": gid}, {"_id": 0}).to_list(20000)
+    ips = await db.ipam_docips.find({"group_id": gid}, {"_id": 0, "ip": 1, "vrf": 1, "subnet_id": 1}).to_list(500000)
+    by_sub: Dict[str, List[str]] = {}
+    loose = 0
+    for i in ips:
+        if i.get("subnet_id"):
+            by_sub.setdefault(i["subnet_id"], []).append(i["ip"])
+        else:
+            loose += 1
+    for s in subs:
+        s.update(ipamdoc.usage(s["prefix"], by_sub.get(s["id"], [])))
+    subs.sort(key=lambda s: (ipaddress.ip_network(s["prefix"]).version, int(ipaddress.ip_network(s["prefix"]).network_address),
+                             ipaddress.ip_network(s["prefix"]).prefixlen, s.get("vrf") or ""))
+    return {"subnets": subs, "loose": loose}
+
+
+async def _doc_relink(gid: str):
+    """Liga cada IP do grupo ao prefixo mais específico (depois de criar/apagar prefixo)."""
+    subs = await db.ipam_docsubnets.find({"group_id": gid}, {"_id": 0, "id": 1, "prefix": 1, "vrf": 1}).to_list(20000)
+    async for i in db.ipam_docips.find({"group_id": gid}, {"_id": 0, "id": 1, "ip": 1, "vrf": 1, "subnet_id": 1}):
+        cand = [s for s in subs if (s.get("vrf") or "") == (i.get("vrf") or "")] or subs
+        s = ipamdoc.subnet_of(i["ip"], cand)
+        sid = s["id"] if s else None
+        if sid != i.get("subnet_id"):
+            await db.ipam_docips.update_one({"id": i["id"]}, {"$set": {"subnet_id": sid}})
+
+
+@api.post("/ipam/doc/groups/{gid}/subnets")
+async def doc_subnet_add(gid: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _doc_group(gid, user)
+    try:
+        s = ipamdoc.clean_subnet(body or {})
+    except ipamdoc.DocError as e:
+        _doc_err(e)
+    if await db.ipam_docsubnets.find_one({"group_id": gid, "prefix": s["prefix"], "vrf": s["vrf"]}):
+        raise HTTPException(status_code=409, detail="Esse prefixo já está neste grupo")
+    s.update(id=os.urandom(8).hex(), group_id=gid, created_at=datetime.now(timezone.utc).isoformat())
+    await db.ipam_docsubnets.insert_one(dict(s))
+    await _doc_relink(gid)
+    return s
+
+
+@api.put("/ipam/doc/subnets/{sid}")
+async def doc_subnet_put(sid: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await db.ipam_docsubnets.find_one({"id": sid}, {"_id": 0})
+    if not cur:
+        raise HTTPException(status_code=404, detail="Prefixo não encontrado")
+    await _doc_group(cur["group_id"], user)
+    try:
+        s = ipamdoc.clean_subnet(body or {})
+    except ipamdoc.DocError as e:
+        _doc_err(e)
+    await db.ipam_docsubnets.update_one({"id": sid}, {"$set": s})
+    await _doc_relink(cur["group_id"])
+    return {**cur, **s}
+
+
+@api.delete("/ipam/doc/subnets/{sid}")
+async def doc_subnet_del(sid: str, ips: bool = False, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await db.ipam_docsubnets.find_one({"id": sid}, {"_id": 0})
+    if not cur:
+        raise HTTPException(status_code=404, detail="Prefixo não encontrado")
+    await _doc_group(cur["group_id"], user)
+    if ips:
+        await db.ipam_docips.delete_many({"subnet_id": sid})
+    await db.ipam_docsubnets.delete_one({"id": sid})
+    await _doc_relink(cur["group_id"])
+    return {"ok": True}
+
+
+@api.get("/ipam/doc/groups/{gid}/ips")
+async def doc_ips(gid: str, subnet_id: str = "", q: str = "", loose: bool = False, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _doc_group(gid, user)
+    f: dict = {"group_id": gid}
+    sub = None
+    if subnet_id:
+        sub = await db.ipam_docsubnets.find_one({"id": subnet_id, "group_id": gid}, {"_id": 0})
+        if not sub:
+            raise HTTPException(status_code=404, detail="Prefixo não encontrado")
+        f["subnet_id"] = subnet_id
+    elif loose:
+        f["subnet_id"] = None
+    rows = await db.ipam_docips.find(f, {"_id": 0}).to_list(100000)
+    if q.strip():
+        ql = q.strip().lower()
+        rows = [r for r in rows if any(ql in str(r.get(k) or "").lower() for k in ("ip", "hostname", "description", "mac", "owner", "notes"))]
+    rows.sort(key=lambda r: ipamdoc.ip_key(r["ip"]))
+    # onde o IP aparece nas configurações dos equipamentos (backups)
+    seen: Dict[str, list] = {}
+    want = {r["ip"] for r in rows[:5000]}
+    if want:
+        async for a in db.ipam_addresses.find({"ip": {"$in": list(want)}, **_ipam_scope(user)}, {"_id": 0, "ip": 1, "device_name": 1, "interface": 1}):
+            seen.setdefault(a["ip"], []).append(f"{a.get('device_name', '?')} ({a.get('interface', '')})")
+    for r in rows:
+        if r["ip"] in seen:
+            r["seen"] = seen[r["ip"]][:5]
+    # outros grupos que também documentam o mesmo IP
+    others = {}
+    if want:
+        names = {g["id"]: g["name"] async for g in db.ipam_docgroups.find(_ipam_scope(user), {"_id": 0, "id": 1, "name": 1})}
+        async for o in db.ipam_docips.find({"ip": {"$in": list(want)}, "group_id": {"$ne": gid}}, {"_id": 0, "ip": 1, "group_id": 1}):
+            if o["group_id"] in names:
+                others.setdefault(o["ip"], set()).add(names[o["group_id"]])
+    for r in rows:
+        if r["ip"] in others:
+            r["also_in"] = sorted(others[r["ip"]])
+    out = {"ips": rows}
+    if sub:
+        out["subnet"] = {**sub, **ipamdoc.usage(sub["prefix"], [r["ip"] for r in rows])}
+        out["free"] = ipamdoc.free_ips(sub["prefix"], [r["ip"] for r in rows], 64) if ipaddress.ip_network(sub["prefix"]).num_addresses <= 65536 else []
+    return out
+
+
+async def _doc_ip_save(gid: str, data: dict, user: dict, iid: Optional[str] = None, overwrite: bool = True) -> tuple:
+    subs = await db.ipam_docsubnets.find({"group_id": gid}, {"_id": 0, "id": 1, "prefix": 1, "vrf": 1}).to_list(20000)
+    cand = [s for s in subs if (s.get("vrf") or "") == (data.get("vrf") or "")] or subs
+    s = ipamdoc.subnet_of(data["ip"], cand)
+    data["subnet_id"] = s["id"] if s else None
+    now = datetime.now(timezone.utc).isoformat()
+    data.update(updated_at=now, updated_by=user.get("email", ""))
+    cur = await db.ipam_docips.find_one({"group_id": gid, "ip": data["ip"], "vrf": data.get("vrf") or ""}, {"_id": 0})
+    if cur and iid and cur["id"] != iid:
+        raise HTTPException(status_code=409, detail=f"{data['ip']} já está documentado neste grupo")
+    if iid and not cur:
+        cur = await db.ipam_docips.find_one({"id": iid, "group_id": gid}, {"_id": 0})
+        if not cur:
+            raise HTTPException(status_code=404, detail="IP não encontrado")
+    if cur:
+        if not overwrite:
+            return cur, "kept"
+        await db.ipam_docips.update_one({"id": cur["id"]}, {"$set": data})
+        return {**cur, **data}, "updated"
+    doc = {"id": os.urandom(8).hex(), "group_id": gid, "created_at": now, **data}
+    await db.ipam_docips.insert_one(dict(doc))
+    return doc, "created"
+
+
+@api.post("/ipam/doc/groups/{gid}/ips")
+async def doc_ip_add(gid: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _doc_group(gid, user)
+    try:
+        d = ipamdoc.clean_ip(body or {})
+    except ipamdoc.DocError as e:
+        _doc_err(e)
+    if await db.ipam_docips.find_one({"group_id": gid, "ip": d["ip"], "vrf": d["vrf"]}):
+        raise HTTPException(status_code=409, detail=f"{d['ip']} já está documentado neste grupo (edite o existente)")
+    doc, _ = await _doc_ip_save(gid, d, user)
+    return doc
+
+
+@api.put("/ipam/doc/ips/{iid}")
+async def doc_ip_put(iid: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await db.ipam_docips.find_one({"id": iid}, {"_id": 0})
+    if not cur:
+        raise HTTPException(status_code=404, detail="IP não encontrado")
+    await _doc_group(cur["group_id"], user)
+    try:
+        d = ipamdoc.clean_ip(body or {})
+    except ipamdoc.DocError as e:
+        _doc_err(e)
+    doc, _ = await _doc_ip_save(cur["group_id"], d, user, iid=iid)
+    return doc
+
+
+@api.delete("/ipam/doc/ips/{iid}")
+async def doc_ip_del(iid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await db.ipam_docips.find_one({"id": iid}, {"_id": 0})
+    if not cur:
+        raise HTTPException(status_code=404, detail="IP não encontrado")
+    await _doc_group(cur["group_id"], user)
+    await db.ipam_docips.delete_one({"id": iid})
+    return {"ok": True}
+
+
+@api.get("/ipam/doc/groups/{gid}/export")
+async def doc_export(gid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    g = await _doc_group(gid, user)
+    subs = {s["id"]: s for s in await db.ipam_docsubnets.find({"group_id": gid}, {"_id": 0}).to_list(20000)}
+    rows = await db.ipam_docips.find({"group_id": gid}, {"_id": 0}).to_list(500000)
+    rows.sort(key=lambda r: ipamdoc.ip_key(r["ip"]))
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(["prefixo", "vlan"] + ipamdoc.CSV_COLS)
+    for r in rows:
+        s = subs.get(r.get("subnet_id")) or {}
+        w.writerow([s.get("prefix", ""), s.get("vlan") or ""] + [r.get(k) or "" for k in ipamdoc.CSV_COLS])
+    return PlainTextResponse("﻿" + buf.getvalue(), media_type="text/csv",
+                             headers={"Content-Disposition": f'attachment; filename="ipam-{_ftp_folder(g["name"]) or "grupo"}.csv"'})
+
+
+class DocCsvIn(BaseModel):
+    text: str
+    overwrite: bool = False
+
+
+@api.post("/ipam/doc/groups/{gid}/import-csv")
+async def doc_import_csv(gid: str, body: DocCsvIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _doc_group(gid, user)
+    res = {"created": 0, "updated": 0, "kept": 0, "errors": []}
+    for r in ipamdoc.parse_csv_rows(body.text[:5_000_000])[:50000]:
+        try:
+            d = ipamdoc.clean_ip(r)
+        except ipamdoc.DocError as e:
+            res["errors"].append(str(e))
+            continue
+        _, act = await _doc_ip_save(gid, d, user, overwrite=body.overwrite)
+        res[act] += 1
+    res["errors"] = res["errors"][:30]
+    return res
+
+
+# --- phpIPAM
+_php_jobs: Dict[str, dict] = {}
+
+
+async def _php_cfg(raw: bool = False) -> dict:
+    d = await db.config.find_one({"key": "phpipam"}, {"_id": 0}) or {}
+    if raw:
+        return d
+    return {"url": d.get("url", ""), "app_id": d.get("app_id", ""), "auth": d.get("auth", "token"), "user": d.get("user", ""),
+            "verify_tls": d.get("verify_tls", True), "has_secret": bool(d.get("secret")), "last_import": d.get("last_import")}
+
+
+async def _php_client() -> "ipamdoc.PhpIpam":
+    d = await _php_cfg(raw=True)
+    if not d.get("url") or not d.get("app_id"):
+        raise HTTPException(status_code=400, detail="Configure a URL e o App ID do phpIPAM")
+    secret = vault.decrypt(d.get("secret", ""))
+    cl = httpx.AsyncClient(timeout=30, verify=d.get("verify_tls", True), follow_redirects=True)
+
+    async def request(method, url, headers, auth):
+        r = await cl.request(method, url, headers=headers, auth=auth)
+        try:
+            j = r.json()
+        except ValueError:
+            j = None
+        return r.status_code, j
+    p = ipamdoc.PhpIpam(d["url"], d["app_id"], request, token=secret if d.get("auth") == "token" else "",
+                        user=d.get("user", ""), password=secret if d.get("auth") == "user" else "")
+    p._http = cl
+    return p
+
+
+class PhpCfgIn(BaseModel):
+    url: str
+    app_id: str
+    auth: str = "token"                 # token (App code / token estático) ou user (usuário e senha)
+    user: str = ""
+    secret: Optional[str] = None
+    verify_tls: bool = True
+
+
+@api.get("/ipam/phpipam")
+async def php_get(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return await _php_cfg()
+
+
+@api.put("/ipam/phpipam")
+async def php_put(body: PhpCfgIn, _: dict = Depends(require_admin)):
+    url = body.url.strip().rstrip("/")
+    if url.endswith("/api"):
+        url = url[:-4]
+    if not re.match(r"^https?://", url):
+        raise HTTPException(status_code=400, detail="URL do phpIPAM deve começar com http:// ou https://")
+    if not re.fullmatch(r"[\w.-]{1,40}", body.app_id.strip()):
+        raise HTTPException(status_code=400, detail="App ID inválido (o nome do app em Administração → API)")
+    upd = {"key": "phpipam", "url": url, "app_id": body.app_id.strip(), "auth": "user" if body.auth == "user" else "token",
+           "user": body.user.strip()[:80], "verify_tls": body.verify_tls}
+    if body.secret is not None:
+        upd["secret"] = vault.encrypt(body.secret.strip()) if body.secret.strip() else ""
+    await db.config.update_one({"key": "phpipam"}, {"$set": upd}, upsert=True)
+    return await _php_cfg()
+
+
+async def _php_sections(p) -> list:
+    secs = await p.get("sections")
+    out = []
+    for s in secs:
+        subs = await p.get(f"sections/{s['id']}/subnets")
+        nets = [x for x in subs if str(x.get("isFolder") or "0") != "1" and x.get("subnet")]
+        out.append({"id": str(s["id"]), "name": s.get("name") or f"Seção {s['id']}", "description": s.get("description") or "",
+                    "subnets": len(nets), "sample": [f"{x['subnet']}/{x['mask']}" for x in nets[:5]]})
+    return out
+
+
+@api.post("/ipam/phpipam/test")
+async def php_test(_: dict = Depends(require_admin)):
+    p = await _php_client()
+    try:
+        await p.login()
+        return {"ok": True, "sections": await _php_sections(p)}
+    except ipamdoc.DocError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+    finally:
+        await p._http.aclose()
+
+
+class PhpImportIn(BaseModel):
+    mapping: List[dict]                  # [{section_id, target: "new"|"skip"|<group_id>, name}]
+    addresses: bool = True
+    overwrite: bool = False
+
+
+async def _php_import_run(job: dict, body: PhpImportIn, user: dict):
+    p = await _php_client()
+    try:
+        await p.login()
+        tags = await p.tag_map()
+        vlans = {str(v.get("vlanId") or v.get("id")): v for v in await p.get("vlan")}
+        try:
+            vrfs = {str(v.get("vrfId") or v.get("id")): v for v in await p.get("vrf")}
+        except ipamdoc.DocError:
+            vrfs = {}
+        maps = [m for m in body.mapping if m.get("target") and m.get("target") != "skip"]
+        for m in maps:
+            job["section"] = m.get("name") or m.get("section_id")
+            if m["target"] == "new":
+                nm = ipamdoc._s(m.get("name") or f"phpIPAM {m['section_id']}", 80)
+                g = await db.ipam_docgroups.find_one({"name": nm, **_ipam_scope(user)}, {"_id": 0})
+                if not g:
+                    g = {"id": os.urandom(8).hex(), "name": nm, "description": "importado do phpIPAM", "color": ipamdoc.COLORS[len(job["groups"]) % 8],
+                         "owner_id": user["id"], "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user.get("email", "")}
+                    await db.ipam_docgroups.insert_one(dict(g))
+            else:
+                g = await _doc_group(m["target"], user)
+            job["groups"].append(g["name"])
+            subs = await p.get(f"sections/{m['section_id']}/subnets")
+            job["subnets_total"] += len(subs)
+            for s in subs:
+                job["subnets_done"] += 1
+                sd = ipamdoc.php_subnet(s, vlans, vrfs)
+                if not sd:
+                    continue
+                php_id = sd.pop("php_id")
+                cur = await db.ipam_docsubnets.find_one({"group_id": g["id"], "prefix": sd["prefix"], "vrf": sd["vrf"]}, {"_id": 0})
+                if cur:
+                    if body.overwrite:
+                        await db.ipam_docsubnets.update_one({"id": cur["id"]}, {"$set": {k: v for k, v in sd.items() if v not in ("", None)}})
+                    job["subnets_kept"] += 1
+                else:
+                    await db.ipam_docsubnets.insert_one({**sd, "id": os.urandom(8).hex(), "group_id": g["id"], "php_id": php_id,
+                                                        "created_at": datetime.now(timezone.utc).isoformat()})
+                    job["subnets_created"] += 1
+                if not body.addresses:
+                    continue
+                for a in await p.get(f"subnets/{s['id']}/addresses"):
+                    ad = ipamdoc.php_address(a, tags, sd["vrf"])
+                    if not ad:
+                        continue
+                    ad.pop("php_id", None)
+                    try:
+                        d = ipamdoc.clean_ip(ad)
+                    except ipamdoc.DocError:
+                        ad["mac"] = ""
+                        try:
+                            d = ipamdoc.clean_ip(ad)
+                        except ipamdoc.DocError as e:
+                            job["errors"].append(str(e))
+                            continue
+                    _, act = await _doc_ip_save(g["id"], d, user, overwrite=body.overwrite)
+                    job[f"ips_{act}"] += 1
+            await _doc_relink(g["id"])
+        job["state"] = "pronto"
+        await db.config.update_one({"key": "phpipam"}, {"$set": {"last_import": {"at": datetime.now(timezone.utc).isoformat(), "by": user.get("email", ""),
+                                   **{k: job[k] for k in ("subnets_created", "ips_created", "ips_updated")}}}})
+    except Exception as e:
+        job["state"], job["error"] = "erro", (str(e) if isinstance(e, ipamdoc.DocError) else f"{type(e).__name__}: {str(e)[:300]}")
+    finally:
+        job["errors"] = job["errors"][:30]
+        job["ended_at"] = datetime.now(timezone.utc).isoformat()
+        await p._http.aclose()
+
+
+@api.post("/ipam/phpipam/import")
+async def php_import(body: PhpImportIn, user: dict = Depends(require_admin)):
+    if any(j["state"] == "importando" for j in _php_jobs.values()):
+        raise HTTPException(status_code=409, detail="Já há uma importação em andamento")
+    jid = os.urandom(6).hex()
+    job = {"id": jid, "state": "importando", "section": "", "groups": [], "subnets_total": 0, "subnets_done": 0, "subnets_created": 0,
+           "subnets_kept": 0, "ips_created": 0, "ips_updated": 0, "ips_kept": 0, "errors": [], "error": "",
+           "started_at": datetime.now(timezone.utc).isoformat()}
+    _php_jobs.clear()
+    _php_jobs[jid] = job
+    _bg(_php_import_run(job, body, user))
+    return job
+
+
+@api.get("/ipam/phpipam/import/{jid}")
+async def php_import_status(jid: str, _: dict = Depends(require_admin)):
+    j = _php_jobs.get(jid)
+    if not j:
+        raise HTTPException(status_code=404, detail="Importação não encontrada")
+    return j
 
 
 class IpamImportIn(BaseModel):
