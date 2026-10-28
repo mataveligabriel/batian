@@ -13602,10 +13602,8 @@ async def php_get(user: dict = Depends(get_current_user)):
 
 @api.put("/ipam/phpipam")
 async def php_put(body: PhpCfgIn, _: dict = Depends(require_admin)):
-    url = body.url.strip().rstrip("/")
-    if url.endswith("/api"):
-        url = url[:-4]
-    if not re.match(r"^https?://", url):
+    url = ipamdoc.php_base_url(body.url)
+    if not re.match(r"^https?://[^/]+", url):
         raise HTTPException(status_code=400, detail="URL do phpIPAM deve começar com http:// ou https://")
     if not re.fullmatch(r"[\w.-]{1,40}", body.app_id.strip()):
         raise HTTPException(status_code=400, detail="App ID inválido (o nome do app em Administração → API)")

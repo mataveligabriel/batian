@@ -147,11 +147,35 @@ def parse_csv_rows(text: str) -> List[dict]:
 
 
 # ---------------------------------------------------------------- phpIPAM
+def php_base_url(url: str) -> str:
+    """Aceita o endereço como a pessoa copia do navegador (…/phpipam/index.php?page=login) e devolve a raiz (…/phpipam)."""
+    from urllib.parse import urlsplit, urlunsplit
+    u = urlsplit((url or "").strip())
+    path = re.sub(r"/index\.php$", "", u.path.rstrip("/"))
+    path = re.sub(r"/api$", "", path.rstrip("/")).rstrip("/")
+    return urlunsplit((u.scheme, u.netloc, path, "", ""))
+
+
+def _why(st: int, j) -> str:
+    if j is None:
+        return (f"HTTP {st}, e a resposta não é da API (página HTML). Confira a URL — deve ser a raiz do phpIPAM, ex.: "
+                "http://servidor/phpipam — e se o Apache tem o mod_rewrite ligado (AllowOverride All) para o /api/ funcionar")
+    msg = str(j.get("message") or "")
+    hint = ""
+    if "ssl" in msg.lower() or "https" in msg.lower():
+        hint = " — o app está como 'SSL with …': use https ou mude a segurança do app para 'User token' (Administração → API)"
+    elif st == 401 and not msg:
+        hint = " — usuário ou senha do phpIPAM"
+    elif "app" in msg.lower() and ("invalid" in msg.lower() or "not" in msg.lower()):
+        hint = " — confira o App ID (exatamente o nome do app em Administração → API)"
+    return f"HTTP {st}: {msg or 'sem mensagem'}{hint}"
+
+
 class PhpIpam:
     """Cliente mínimo. request(method, url, headers, auth) -> (status, json) é injetado (httpx no servidor, falso nos testes)."""
 
     def __init__(self, url: str, app_id: str, request: Callable[..., Awaitable[tuple]], token: str = "", user: str = "", password: str = ""):
-        self.base = f"{url.rstrip('/')}/api/{app_id.strip('/')}"
+        self.base = f"{php_base_url(url)}/api/{app_id.strip('/')}"
         self.request, self.static, self.user, self.password = request, token, user, password
         self.token = ""
 
@@ -161,7 +185,7 @@ class PhpIpam:
             return
         st, j = await self.request("POST", f"{self.base}/user/", {}, (self.user, self.password))
         if st >= 400 or not (j or {}).get("success"):
-            raise DocError(f"phpIPAM recusou o login: {(j or {}).get('message') or st}")
+            raise DocError(f"phpIPAM recusou o login ({_why(st, j)})")
         self.token = ((j or {}).get("data") or {}).get("token") or ""
         if not self.token:
             raise DocError("phpIPAM não devolveu token")
@@ -171,9 +195,9 @@ class PhpIpam:
         if st == 404 or (j and j.get("code") == 404):
             return []                                    # "No subnets found" etc.
         if st in (401, 403):
-            raise DocError(f"phpIPAM: sem permissão em /{path} ({(j or {}).get('message') or st})")
+            raise DocError(f"phpIPAM: sem permissão em /{path} ({_why(st, j)}; o app precisa de permissão de leitura)")
         if st >= 400 or not j or not j.get("success", True):
-            raise DocError(f"phpIPAM /{path}: {(j or {}).get('message') or st}")
+            raise DocError(f"phpIPAM /{path}: {_why(st, j)}")
         d = j.get("data")
         return d if isinstance(d, list) else ([d] if isinstance(d, dict) else [])
 

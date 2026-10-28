@@ -278,7 +278,7 @@ export function PhpIpamTab({ isAdmin, onImported }) {
         <div className="text-sm font-semibold text-slate-200 flex items-center gap-2"><BookOpen className="w-4 h-4 text-brand-soft" />Conexão com o phpIPAM</div>
         <p className="text-xs text-slate-500">No phpIPAM: Administração → API → criar app (permissão de leitura). Com "App code token", use o código do app como token; senão, usuário e senha.</p>
         <div className="grid gap-2 sm:grid-cols-[1fr_10rem_12rem] items-end">
-          <div><label className={lbl}>URL</label><Input value={c.url} onChange={e => setC({ ...c, url: e.target.value })} placeholder="https://ipam.exemplo.net" disabled={!isAdmin} className="bg-sunken border-line h-9 font-mono" data-testid="php-url" /></div>
+          <div><label className={lbl}>URL</label><Input value={c.url} onChange={e => setC({ ...c, url: e.target.value })} placeholder="http://servidor/phpipam (a raiz, sem index.php)" disabled={!isAdmin} className="bg-sunken border-line h-9 font-mono" data-testid="php-url" /></div>
           <div><label className={lbl}>App ID</label><Input value={c.app_id} onChange={e => setC({ ...c, app_id: e.target.value })} placeholder="bastion" disabled={!isAdmin} className="bg-sunken border-line h-9 font-mono" data-testid="php-app" /></div>
           <div><label className={lbl}>Autenticação</label><select value={c.auth} onChange={e => setC({ ...c, auth: e.target.value })} disabled={!isAdmin} className={`${sel} w-full`} data-testid="php-auth">
             <option value="token">Token do app</option><option value="user">Usuário e senha</option></select></div>
