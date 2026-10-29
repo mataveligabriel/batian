@@ -1635,6 +1635,33 @@ async def session_recording(sid: str, user: dict = Depends(get_current_user)):
     return PlainTextResponse(text, media_type="application/x-asciicast")
 
 
+@api.get("/terminal/history")
+async def terminal_history(device_id: str, before: str = "", hours: int = 24, max_kb: int = 3072, user: dict = Depends(get_current_user)):
+    """O que apareceu na última sessão desta pessoa neste equipamento (da gravação), para o terminal mostrar de novo
+    ao reabrir/reconectar a aba. before = ignora a sessão atual."""
+    since = (datetime.now(timezone.utc) - timedelta(hours=max(1, min(168, hours)))).isoformat()
+    f = {"user_id": user["id"], "device_id": device_id, "started_at": {"$gte": since}, "recording.file": {"$exists": True}}
+    rows = await db.sessions.find(f, {"_id": 0, "id": 1, "started_at": 1, "ended_at": 1, "recording": 1, "kind": 1}).sort("started_at", -1).to_list(5)
+    rows = [r for r in rows if r.get("kind") not in ("batch", "replay") and r["id"] != before]
+    if not rows:
+        return {"found": False}
+    r = rows[0]
+    text = recording.read_text(r["recording"].get("file", "")) or ""
+    out, total, lim = [], 0, max(64, min(16384, max_kb)) * 1024
+    for ln in reversed(text.splitlines()[1:]):         # de trás para frente: guarda só o final
+        try:
+            ev = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(ev, list) and len(ev) == 3 and ev[1] == "o":
+            out.append(ev[2])
+            total += len(ev[2])
+            if total >= lim:
+                break
+    return {"found": bool(out), "session_id": r["id"], "started_at": r.get("started_at"), "ended_at": r.get("ended_at"),
+            "output": "".join(reversed(out)), "truncated": total >= lim}
+
+
 @api.get("/sessions/{sid}")
 async def session_get(sid: str, user: dict = Depends(get_current_user)):
     return await _session_for(user, sid)

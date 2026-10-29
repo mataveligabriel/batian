@@ -50,6 +50,8 @@ export const DEFAULT_PREFS = {
   focusMode: false,            // terminal sem menu lateral nem cabeçalho
   sidebarCollapsed: false,     // menu lateral só com ícones
   dashFocus: false,            // dashboards sem menu lateral, cabeçalho nem lista
+  scrollback: 100000,          // linhas guardadas na tela (o "Copiar tudo"/"Salvar" usam a sessão inteira, sem esse limite)
+  restoreHistory: true,        // ao abrir a aba: mostra o final da sessão anterior neste equipamento
   mobileFont: 0,               // celular: 0 = automático (cabe MOBILE_COLS colunas na largura); senão o tamanho escolhido
 };
 

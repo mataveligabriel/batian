@@ -8,13 +8,14 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import {
   Plus, X, Wifi, WifiOff, Server, TerminalSquare, RotateCw, Zap, Highlighter, Minus, Palette, Copy,
-  ClipboardPaste, Eraser, Maximize, Minimize, PanelLeftClose, PanelLeftOpen, Check, CopyCheck, ZoomIn, ZoomOut, Search, Minimize2,
+  ClipboardPaste, Eraser, Download, Maximize, Minimize, PanelLeftClose, PanelLeftOpen, Check, CopyCheck, ZoomIn, ZoomOut, Search, Minimize2,
 } from "lucide-react";
 import { useTerminal } from "@/context/TerminalContext";
 import { createHighlighter, HL_COLORS } from "@/lib/termHighlight";
 import { TERM_THEMES, useTermPrefs, setTermPrefs, getTermPrefs, MOBILE_COLS } from "@/lib/termPrefs";
 import { copyText, readText } from "@/lib/clipboard";
 import { useFileSessions, FileButtons, FilePanel } from "@/components/FilePanel";
+import { toPlain, downloadText } from "@/lib/termText";
 
 // Celular: teclas que o teclado do iPhone/Android não tem (enviadas direto para a sessão ativa)
 const MOBILE_KEYS = [
@@ -142,7 +143,8 @@ function ContextMenu({ menu, onClose, actions }) {
          className="fixed z-[100] w-72 py-1 bg-surface border border-line2 rounded-md shadow-2xl select-none"
          onContextMenu={(e) => e.preventDefault()}>
       <Item icon={Copy} label="Copiar" hint="Ctrl+Shift+C" disabled={!menu.hasSelection} onClick={actions.copy} testid="ctx-copy" />
-      <Item icon={CopyCheck} label="Copiar tudo" onClick={actions.copyAll} testid="ctx-copy-all" />
+      <Item icon={CopyCheck} label="Copiar tudo (sessão inteira)" onClick={actions.copyAll} testid="ctx-copy-all" />
+      <Item icon={Download} label="Salvar saída em arquivo" hint="S (sessão caída)" onClick={actions.saveAll} testid="ctx-save" />
       <Item icon={ClipboardPaste} label="Colar" hint="Shift+Insert" onClick={actions.paste} testid="ctx-paste" />
       <Sep />
       <Item icon={Eraser} label="Limpar tela" onClick={actions.clear} testid="ctx-clear" />
@@ -153,6 +155,12 @@ function ContextMenu({ menu, onClose, actions }) {
             onClick={() => setTermPrefs({ focusMode: !prefs.focusMode })} testid="ctx-focus" />
       <Item icon={document.fullscreenElement ? Minimize : Maximize} label={document.fullscreenElement ? "Sair da tela cheia" : "Tela cheia"} onClick={actions.fullscreen} />
       <Sep />
+      <Title>Linhas guardadas na tela (rolagem)</Title>
+      {[[10000, "10 mil"], [100000, "100 mil"], [500000, "500 mil (muita memória)"]].map(([v, l]) => (
+        <Radio key={v} checked={(Number(prefs.scrollback) || 100000) === v} label={l} onClick={() => setTermPrefs({ scrollback: v })} />))}
+      <Title>Ao abrir a aba</Title>
+      <Radio checked={prefs.restoreHistory !== false} label="Mostrar o final da sessão anterior" onClick={() => setTermPrefs({ restoreHistory: true })} />
+      <Radio checked={prefs.restoreHistory === false} label="Começar em branco" onClick={() => setTermPrefs({ restoreHistory: false })} />
       <Title>Selecionar texto</Title>
       <Radio checked={prefs.copyOnSelect} label="Copia automaticamente" onClick={() => setTermPrefs({ copyOnSelect: true })} />
       <Radio checked={!prefs.copyOnSelect} label="Não copia (use Copiar)" onClick={() => setTermPrefs({ copyOnSelect: false })} />
@@ -221,7 +229,11 @@ function PasteDialog({ dlg, deviceName, onCancel, onConfirm }) {
   );
 }
 
-function TerminalPane({ device, active, visible, registerWs, registerPane, onContextMenu, onPasteRequest }) {
+const MAX_TRANSCRIPT = 64 * 1024 * 1024;   // saída guardada para "Copiar tudo"/"Salvar" (64 MB; acima disso descarta o começo)
+const hhmm = (d) => (d ? new Date(d) : new Date()).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+const stamp = () => new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "").replace(/^(\d{8})/, "$1-");
+
+function TerminalPane({ device, active, visible, registerWs, registerPane, onContextMenu, onPasteRequest, onCloseTab }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
@@ -233,8 +245,18 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
   const [prefs] = useTermPrefs();
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
-  const cbRef = useRef({ onContextMenu, onPasteRequest });
-  cbRef.current = { onContextMenu, onPasteRequest };
+  const cbRef = useRef({ onContextMenu, onPasteRequest, onCloseTab });
+  cbRef.current = { onContextMenu, onPasteRequest, onCloseTab };
+  const statusRef = useRef("connecting");
+  statusRef.current = status;
+  const transcript = useRef({ chunks: [], size: 0 });
+  const hlRef = useRef(null);
+  const addOut = (d) => {
+    const t = transcript.current;
+    t.chunks.push(d);
+    t.size += d.length;
+    while (t.size > MAX_TRANSCRIPT && t.chunks.length > 1) t.size -= t.chunks.shift().length;
+  };
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -244,12 +266,13 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
       fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, Menlo, monospace',
       fontSize: effectiveFont(p0, containerRef.current),
       lineHeight: 1.15,
-      scrollback: 10000,
+      scrollback: Math.max(1000, Number(p0.scrollback) || 100000),
       drawBoldTextInBrightColors: true,
       rightClickSelectsWord: false,
       theme: themeOf(p0),
     });
     const hl = createHighlighter((rest) => { try { term.write(rest); } catch { /* noop */ } });
+    hlRef.current = hl;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
@@ -258,34 +281,17 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
     termRef.current = term;
     fitRef.current = fit;
 
-    const token = localStorage.getItem("bastion_token");
-    const url = `${wsUrl(`/ws/terminal/${device.id}`)}?token=${encodeURIComponent(token)}`;
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
-    registerWs?.(device.id, ws);
-    setStatus("connecting");
-
-    ws.onopen = () => ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data);
-        if (msg.type === "data") term.write(prefsRef.current.highlight ? hl.process(msg.data) : hl.flush() + msg.data);
-        else if (msg.type === "status") {
-          term.writeln(`\x1b[36m>> ${msg.message}\x1b[0m`);
-          if (msg.message?.toLowerCase().includes("conectado")) setStatus("connected");
-        } else if (msg.type === "error") {
-          term.writeln(`\x1b[31m>> ${msg.message}\x1b[0m`);
-          setStatus("error");
-        }
-      } catch { /* ignore malformed */ }
+    const sendInput = (data) => {
+      const st = statusRef.current;
+      if (st === "closed" || st === "error") {          // sessão caiu: R reconecta, S salva a saída, Enter fecha a aba (como no MobaXterm)
+        if (data === "r" || data === "R") setGeneration(g => g + 1);
+        else if (data === "s" || data === "S") saveAll();
+        else if (data === "\r") cbRef.current.onCloseTab?.();
+        return;
+      }
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data }));
     };
-    ws.onclose = () => {
-      setStatus(s => (s === "error" ? s : "closed"));
-      try { term.writeln("\r\n\x1b[33m>> Sessão encerrada. Clique em reconectar.\x1b[0m"); } catch { /* noop */ }
-    };
-    ws.onerror = () => setStatus("error");
-
-    const sendInput = (data) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data })); };
     term.onData(sendInput);
 
     const flashCopied = () => { setCopied(true); setTimeout(() => setCopied(false), 1200); };
@@ -294,15 +300,28 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
       if (sel && await copyText(sel)) flashCopied();
       term.focus();
     };
-    const copyAll = async () => {
+    const allText = () => {
+      const t = transcript.current;
+      if (t.chunks.length) return toPlain(t.chunks.join(""));
       const b = term.buffer.active, out = [];
       for (let i = 0; i < b.length; i++) out.push(b.getLine(i)?.translateToString(true) ?? "");
       while (out.length && !out[out.length - 1]) out.pop();
-      if (await copyText(out.join("\n"))) { flashCopied(); toast.success(`${out.length} linha(s) copiadas`); }
+      return out.join("\n");
+    };
+    const copyAll = async () => {
+      const txt = allText();
+      const n = txt ? txt.split("\n").length : 0;
+      if (await copyText(txt)) { flashCopied(); toast.success(`${n.toLocaleString("pt-BR")} linha(s) copiadas`); }
+      else toast.error("O navegador não deixou copiar tanto texto — use Salvar saída");
       term.focus();
     };
+    const saveAll = () => {
+      const name = `${(device.name || "terminal").replace(/[^\w.-]+/g, "_")}-${stamp()}.txt`;
+      downloadText(name, allText() + "\n");
+      toast.success(`Saída salva em ${name}`);
+    };
     registerPane?.(device.id, {
-      copySelection, copyAll,
+      copySelection, copyAll, saveAll,
       hasSelection: () => term.hasSelection(),
       paste: (text) => { term.paste(text); term.focus(); },
       clear: () => { term.clear(); term.focus(); },
@@ -353,7 +372,8 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
       const fs = term.options.fontSize;
       pinch = null;
       setTermPrefs({ mobileFont: fs });
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
     };
     const noGesture = (e) => e.preventDefault();   // Safari: não deixa a pinça dar zoom na página inteira
     el.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -375,7 +395,8 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
             if (term.options.fontSize !== fs) term.options.fontSize = fs;
           }
           fit.fit();
-          if (`${term.cols}x${term.rows}` !== before && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+          const ws = wsRef.current;
+          if (`${term.cols}x${term.rows}` !== before && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
         } catch { /* noop */ }
       });
     };
@@ -394,8 +415,70 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
       el.removeEventListener("touchcancel", onTouchEnd);
       el.removeEventListener("gesturestart", noGesture);
       registerPane?.(device.id, null);
-      try { ws.close(); } catch { /* noop */ }
       try { term.dispose(); } catch { /* noop */ }
+      termRef.current = null;
+    };
+  }, [device.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // conexão: a cada "Reconectar"/R o terminal continua com o que já estava na tela (só a sessão é nova).
+  // Na 1ª vez, mostra o final da sessão anterior neste equipamento (gravação), se houver.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return undefined;
+    let ws = null, dead = false;
+    const hl = hlRef.current;
+    const write = (d) => { addOut(d); term.write(d); };
+    const start = async () => {
+      if (generation === 0 && prefsRef.current.restoreHistory !== false && !transcript.current.chunks.length) {
+        try {
+          const r = await Promise.race([api.get("/terminal/history", { params: { device_id: device.id } }), new Promise((_, rej) => setTimeout(rej, 4000))]);
+          if (!dead && r?.data?.found) {
+            write(`\x1b[2m──── sessão anterior · ${hhmm(r.data.started_at)}${r.data.truncated ? " (só o final)" : ""} ────\x1b[0m\r\n`);
+            write(r.data.output);
+            write(`\r\n\x1b[2m──── fim da sessão anterior ────\x1b[0m\r\n`);
+          }
+        } catch { /* sem histórico: segue */ }
+      } else if (generation > 0) {
+        write(`\r\n\x1b[2m──── reconectando · ${hhmm()} ────\x1b[0m\r\n`);
+      }
+      if (dead) return;
+      const token = localStorage.getItem("bastion_token");
+      ws = new WebSocket(`${wsUrl(`/ws/terminal/${device.id}`)}?token=${encodeURIComponent(token)}`);
+      wsRef.current = ws;
+      registerWs?.(device.id, ws);
+      setStatus("connecting");
+      ws.onopen = () => ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === "data") {
+            addOut(msg.data);
+            term.write(prefsRef.current.highlight ? hl.process(msg.data) : hl.flush() + msg.data);
+          } else if (msg.type === "status") {
+            term.writeln(`\x1b[36m>> ${msg.message}\x1b[0m`);
+            if (msg.message?.toLowerCase().includes("conectado")) setStatus("connected");
+          } else if (msg.type === "error") {
+            term.writeln(`\x1b[31m>> ${msg.message}\x1b[0m`);
+            setStatus("error");
+          }
+        } catch { /* ignore malformed */ }
+      };
+      ws.onclose = () => {
+        if (dead) return;
+        setStatus(s => (s === "error" ? s : "closed"));
+        try {
+          term.write("\r\n\x1b[31mSessão encerrada\x1b[0m\r\n"
+            + "    - Tecle \x1b[35mR\x1b[0m para reconectar\r\n"
+            + "    - Tecle \x1b[35mS\x1b[0m para salvar a saída em arquivo\r\n"
+            + "    - Tecle \x1b[35mEnter\x1b[0m para fechar a aba\r\n");
+        } catch { /* noop */ }
+      };
+      ws.onerror = () => setStatus("error");
+    };
+    start();
+    return () => {
+      dead = true;
+      try { ws?.close(); } catch { /* noop */ }
     };
   }, [device.id, generation]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -404,6 +487,8 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
     const term = termRef.current;
     if (!term) return;
     term.options.theme = themeOf(prefs);
+    const sb = Math.max(1000, Number(prefs.scrollback) || 100000);
+    if (term.options.scrollback !== sb) term.options.scrollback = sb;
     const fs = effectiveFont(prefs, containerRef.current);
     if (term.options.fontSize !== fs) {
       term.options.fontSize = fs;
@@ -413,7 +498,7 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
         if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       } catch { /* noop */ }
     }
-  }, [prefs.theme, prefs.fontSize, prefs.mobileFont]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [prefs.theme, prefs.fontSize, prefs.mobileFont, prefs.scrollback]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (active && visible && fitRef.current) {
@@ -605,7 +690,7 @@ export function TerminalWorkspace({ visible }) {
           tabs.map(t => (
             <TerminalPane key={t.id} device={t} active={active === t.id} visible={visible}
                           registerWs={registerWs} registerPane={registerPane}
-                          onContextMenu={setMenu} onPasteRequest={requestPaste} />
+                          onContextMenu={setMenu} onPasteRequest={requestPaste} onCloseTab={() => closeTab(t.id)} />
           ))
         )}
       </div>
@@ -643,6 +728,7 @@ export function TerminalWorkspace({ visible }) {
         <ContextMenu menu={menu} onClose={closeMenu} actions={{
           copy: () => menuPane.copySelection(),
           copyAll: () => menuPane.copyAll(),
+          saveAll: () => menuPane.saveAll(),
           paste: () => requestPaste(menu.deviceId),
           clear: () => menuPane.clear(),
           fullscreen: toggleFs,
