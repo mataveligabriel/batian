@@ -9,6 +9,8 @@ import io
 import json
 import os
 import posixpath
+import shutil
+import tempfile
 import re
 import hashlib
 import hmac
@@ -24,6 +26,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse, RedirectResponse
 from starlette.middleware.cors import CORSMiddleware
+from starlette.background import BackgroundTask
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from auth import (
@@ -218,6 +221,7 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(_maint_loop()))
     _bg_tasks.append(asyncio.create_task(_bgp_loop()))
     _bg_tasks.append(asyncio.create_task(_ftp_loop()))
+    _bg_tasks.append(asyncio.create_task(_sftp_loop()))
     _bg_tasks.append(asyncio.create_task(_gpon_loop()))
     _bg_tasks.append(asyncio.create_task(_siem_loop()))
     _bg_tasks.append(asyncio.create_task(_ti_loop()))
@@ -8491,6 +8495,237 @@ async def ftp_files_all(user: dict = Depends(get_current_user)):
             if len(out) >= 3000:
                 break
     return sorted(out, key=lambda x: x["path"].lower())
+
+
+# --- SFTP/SCP junto da sessão do terminal (painel lateral escondido; o botão mostra se está conectado)
+_sftp_sess: Dict[str, dict] = {}
+SFTP_IDLE = 15 * 60
+
+
+def _sftp_alive(s: dict) -> bool:
+    w = s.get("w")
+    return bool(w and w.conn is not None and getattr(w.conn, "_transport", None) is not None)
+
+
+async def _sftp_close(s: dict):
+    _sftp_sess.pop(s["id"], None)
+    try:
+        if s.get("sftp"):
+            s["sftp"].exit()
+    except Exception:
+        pass
+    try:
+        if s.get("w"):
+            await s["w"].close()
+    except Exception:
+        pass
+
+
+async def _sftp_get(sid: str, user: dict) -> dict:
+    s = _sftp_sess.get(sid)
+    if not s or s["user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Sessão de arquivos encerrada — abra de novo")
+    s["last"] = time.time()
+    if not _sftp_alive(s):
+        raise HTTPException(status_code=410, detail="A conexão com o equipamento caiu — clique no botão para reconectar")
+    return s
+
+
+def _sftp_name(n) -> str:
+    return n if isinstance(n, str) else n.decode("utf-8", "replace")
+
+
+async def _sftp_loop():
+    while True:
+        await asyncio.sleep(60)
+        for s in list(_sftp_sess.values()):
+            if time.time() - s.get("last", 0) > SFTP_IDLE:
+                await _sftp_close(s)
+
+
+class SftpOpenIn(BaseModel):
+    device_id: str
+    mode: str = "sftp"            # sftp (navegar pelas pastas) ou scp (só baixar/enviar por caminho)
+
+
+@api.post("/sftp/open")
+async def sftp_open(body: SftpOpenIn, user: dict = Depends(get_current_user)):
+    dev = await _xfer_device(user, body.device_id)
+    mode = "scp" if body.mode == "scp" else "sftp"
+    for s in list(_sftp_sess.values()):              # uma sessão por pessoa/equipamento/modo: reabre do zero
+        if s["user_id"] == user["id"] and s["device_id"] == dev["id"] and s["mode"] == mode:
+            await _sftp_close(s)
+    try:
+        w = await _xfer_connect(dev)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Não conectou no equipamento: {str(e)[:200]}")
+    s = {"id": os.urandom(8).hex(), "user_id": user["id"], "user": user.get("email", ""), "device_id": dev["id"], "device_name": dev["name"],
+         "host": dev.get("host", ""), "mode": mode, "w": w, "sftp": None, "cwd": "", "last": time.time(),
+         "opened_at": datetime.now(timezone.utc).isoformat()}
+    if mode == "sftp":
+        try:
+            s["sftp"] = await w.conn.start_sftp_client()
+            s["cwd"] = _sftp_name(await s["sftp"].realpath("."))
+        except Exception as e:
+            await w.close()
+            raise HTTPException(status_code=400, detail=f"O equipamento não abriu SFTP ({type(e).__name__}: {str(e)[:120]}). {_sftp_hint(dev)} "
+                                                        "Se ele só tiver SCP, use o botão SCP.")
+    _sftp_sess[s["id"]] = s
+    return {"id": s["id"], "mode": mode, "cwd": s["cwd"], "state": "on"}
+
+
+@api.get("/sftp/{sid}/status")
+async def sftp_status(sid: str, user: dict = Depends(get_current_user)):
+    s = _sftp_sess.get(sid)
+    if not s or s["user_id"] != user["id"]:
+        return {"state": "off"}
+    s["last"] = time.time()
+    return {"state": "on" if _sftp_alive(s) else "lost", "mode": s["mode"], "cwd": s["cwd"]}
+
+
+@api.delete("/sftp/{sid}")
+async def sftp_close(sid: str, user: dict = Depends(get_current_user)):
+    s = _sftp_sess.get(sid)
+    if s and s["user_id"] == user["id"]:
+        await _sftp_close(s)
+    return {"ok": True}
+
+
+def _sftp_need(s: dict):
+    if not s.get("sftp"):
+        raise HTTPException(status_code=400, detail="Modo SCP não lista pastas: informe o caminho do arquivo")
+
+
+@api.get("/sftp/{sid}/ls")
+async def sftp_ls(sid: str, path: str = "", user: dict = Depends(get_current_user)):
+    s = await _sftp_get(sid, user)
+    _sftp_need(s)
+    try:
+        base = _sftp_name(await s["sftp"].realpath(path or s["cwd"] or "."))
+        items = []
+        for n in await s["sftp"].readdir(base):
+            name = _sftp_name(n.filename)
+            if name in (".", ".."):
+                continue
+            a = n.attrs
+            isdir = (a.type == 2) or bool(a.permissions is not None and (a.permissions & 0o170000) == 0o040000)
+            items.append({"name": name, "dir": isdir, "size": a.size or 0,
+                          "mtime": datetime.fromtimestamp(a.mtime, timezone.utc).isoformat() if a.mtime else None})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Não consegui listar {path or s['cwd']}: {type(e).__name__} {str(e)[:150]}")
+    s["cwd"] = base
+    return {"path": base, "items": sorted(items, key=lambda x: (not x["dir"], x["name"].lower()))}
+
+
+async def _sftp_event(s: dict, action: str, path: str, ok: bool = True, size: int = 0, error: str = ""):
+    await _ftp_event({"action": action, "path": path, "ok": ok, "bytes": size, "error": error[:120], "user": s["user"], "peer": s["host"],
+                      "via": f"{s['mode']} {s['device_name']}", "scope": "terminal"})
+
+
+@api.get("/sftp/{sid}/download")
+async def sftp_download(sid: str, path: str, user: dict = Depends(get_current_user)):
+    import asyncssh
+    s = await _sftp_get(sid, user)
+    if not path.strip():
+        raise HTTPException(status_code=400, detail="Informe o arquivo")
+    d = tempfile.mkdtemp(prefix="bastion-sftp-")
+    name = re.sub(r"[^\w.\- ]", "_", posixpath.basename(path.rstrip("/")))[:120] or "arquivo"
+    tmp = os.path.join(d, name)
+    try:
+        if s.get("sftp"):
+            await s["sftp"].get(path, tmp)
+        else:
+            await asyncssh.scp((s["w"].conn, path), tmp)
+    except Exception as e:
+        shutil.rmtree(d, ignore_errors=True)
+        await _sftp_event(s, "download", path, False, error=str(e))
+        raise HTTPException(status_code=400, detail=f"Não consegui baixar {path}: {type(e).__name__} {str(e)[:150]}")
+    size = os.path.getsize(tmp)
+    await _sftp_event(s, "download", path, True, size)
+    return FileResponse(tmp, media_type="application/octet-stream", filename=name, background=BackgroundTask(shutil.rmtree, d, True))
+
+
+@api.post("/sftp/{sid}/upload")
+async def sftp_upload(sid: str, path: str = Form(...), file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """path: pasta de destino (termina com /) ou caminho completo do arquivo no equipamento."""
+    import asyncssh
+    s = await _sftp_get(sid, user)
+    name = os.path.basename(file.filename or "arquivo") or "arquivo"
+    dst = path.strip() or s["cwd"] or "."
+    if dst.endswith("/") or (s.get("sftp") and await _sftp_isdir(s, dst)):
+        dst = posixpath.join(dst, name)
+    d = tempfile.mkdtemp(prefix="bastion-sftp-")
+    tmp = os.path.join(d, "up")
+    size = 0
+    try:
+        with open(tmp, "wb") as out:
+            while True:
+                chunk = await file.read(1 << 20)
+                if not chunk:
+                    break
+                size += len(chunk)
+                out.write(chunk)
+        if s.get("sftp"):
+            await s["sftp"].put(tmp, dst)
+        else:
+            await asyncssh.scp(tmp, (s["w"].conn, dst))
+    except Exception as e:
+        await _sftp_event(s, "upload", dst, False, size, str(e))
+        raise HTTPException(status_code=400, detail=f"Não consegui enviar para {dst}: {type(e).__name__} {str(e)[:150]}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    await _sftp_event(s, "upload", dst, True, size)
+    return {"path": dst, "size": size}
+
+
+async def _sftp_isdir(s: dict, p: str) -> bool:
+    try:
+        return await s["sftp"].isdir(p)
+    except Exception:
+        return False
+
+
+class SftpPathIn(BaseModel):
+    path: str
+    to: str = ""
+
+
+@api.post("/sftp/{sid}/mkdir")
+async def sftp_mkdir(sid: str, body: SftpPathIn, user: dict = Depends(get_current_user)):
+    s = await _sftp_get(sid, user)
+    _sftp_need(s)
+    try:
+        await s["sftp"].mkdir(body.path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Não consegui criar {body.path}: {str(e)[:150]}")
+    return {"ok": True}
+
+
+@api.post("/sftp/{sid}/rename")
+async def sftp_rename(sid: str, body: SftpPathIn, user: dict = Depends(get_current_user)):
+    s = await _sftp_get(sid, user)
+    _sftp_need(s)
+    try:
+        await s["sftp"].rename(body.path, body.to)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Não consegui renomear: {str(e)[:150]}")
+    await _sftp_event(s, "rename", f"{body.path} → {body.to}")
+    return {"ok": True}
+
+
+@api.delete("/sftp/{sid}/file")
+async def sftp_delete(sid: str, path: str, user: dict = Depends(get_current_user)):
+    s = await _sftp_get(sid, user)
+    _sftp_need(s)
+    try:
+        if await _sftp_isdir(s, path):
+            await s["sftp"].rmdir(path)
+        else:
+            await s["sftp"].remove(path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Não consegui apagar {path} (pasta precisa estar vazia): {str(e)[:150]}")
+    await _sftp_event(s, "delete", path)
+    return {"ok": True}
 
 
 # ---------- TACACS+ (login nos equipamentos com os usuários do BastiON) ----------

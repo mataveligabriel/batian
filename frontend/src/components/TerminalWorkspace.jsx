@@ -14,6 +14,7 @@ import { useTerminal } from "@/context/TerminalContext";
 import { createHighlighter, HL_COLORS } from "@/lib/termHighlight";
 import { TERM_THEMES, useTermPrefs, setTermPrefs, getTermPrefs, MOBILE_COLS } from "@/lib/termPrefs";
 import { copyText, readText } from "@/lib/clipboard";
+import { useFileSessions, FileButtons, FilePanel } from "@/components/FilePanel";
 
 // Celular: teclas que o teclado do iPhone/Android não tem (enviadas direto para a sessão ativa)
 const MOBILE_KEYS = [
@@ -228,6 +229,7 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
   const [status, setStatus] = useState("connecting");
   const [generation, setGeneration] = useState(0);
   const [copied, setCopied] = useState(false);
+  const files = useFileSessions(device);
   const [prefs] = useTermPrefs();
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
@@ -437,6 +439,7 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
             <div className="text-sm font-medium text-slate-100 truncate">{device.name}</div>
             <div className="text-[11px] font-mono text-slate-500 truncate">{(device.protocol || "ssh").toUpperCase()} · {device.host}:{device.port} · {device.username || "padrão"}</div>
           </div>
+          <FileButtons f={files} />
         </div>
         <div className="flex items-center gap-3 shrink-0">
           {copied && <span className="text-[11px] font-mono text-emerald-400 flex items-center gap-1" data-testid={`copied-${device.id}`}><Check className="w-3 h-3" /> copiado</span>}
@@ -450,7 +453,10 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
           }`}>{label}</span>
         </div>
       </div>
-      <div ref={containerRef} className="xterm-container flex-1 min-h-0" data-testid={`xterm-${device.id}`} style={{ background: themeOf(prefs).background }} />
+      <div className="flex-1 min-h-0 flex">
+        <div ref={containerRef} className="xterm-container flex-1 min-w-0 min-h-0" data-testid={`xterm-${device.id}`} style={{ background: themeOf(prefs).background }} />
+        {files.open && <FilePanel key={files.open} f={files} />}
+      </div>
     </div>
   );
 }
