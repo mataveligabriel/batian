@@ -9,6 +9,7 @@ export const MODULES = [
   { key: "maint", label: "Janelas de manutenção", path: "/maint", desc: "manutenção programada com pré/pós-check" },
   { key: "sla", label: "SLA e disponibilidade", path: "/sla", desc: "disponibilidade por enlace/POP/cliente e relatório mensal" },
   { key: "probes", label: "Sondas ativas", path: "/probes", desc: "ping, DNS, HTTP e TCP do servidor e dos jumps" },
+  { key: "virt", label: "Virtualização", path: "/virt", desc: "Proxmox e VMware ESXi/vCenter: hosts, VMs, storage, alarmes e ações" },
   { key: "logs", label: "Syslog e Traps", path: "/logs", desc: "logs e traps SNMP; regras que abrem incidentes" },
   { key: "devices", label: "Equipamentos", path: "/devices", desc: "cadastrar, editar, importar e testar" },
   { key: "terminal", label: "Terminal SSH", path: "/terminal", desc: "abrir sessão SSH/Telnet" },

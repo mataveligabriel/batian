@@ -20,7 +20,7 @@ import time
 import uuid
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Form, Request
@@ -92,6 +92,7 @@ import sso as ssomod
 import tacacs as tacmod
 import ftpserver as ftpmod
 import ipamdoc
+import virt as virtmod
 import tcprelay
 import runbooks
 import teopt
@@ -184,6 +185,12 @@ async def startup():
     await db.ftp_events.create_index([("at", -1)])
     await db.ftp_events.create_index("ts", expireAfterSeconds=180 * 86400)
     await db.tacacs_accounts.create_index("id")
+    await db.virt_hosts.create_index("id")
+    await db.virt_watch.create_index([("hv_id", 1), ("vm_id", 1)])
+    await db.virt_samples.create_index([("hv_id", 1), ("at", 1)])
+    await db.virt_samples.create_index("ts", expireAfterSeconds=30 * 86400)
+    await db.virt_events.create_index([("hv_id", 1), ("at", -1)])
+    await db.virt_events.create_index("ts", expireAfterSeconds=365 * 86400)
     try:
         await flowstore.ensure_ttl(db, "tacacs_events", (await _tac_cfg())["retention_days"] * 86400)
     except Exception as e:
@@ -229,6 +236,7 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(_cve_loop()))
     _bg_tasks.append(asyncio.create_task(_comp_loop()))
     _bg_tasks.append(asyncio.create_task(_ipam_loop()))
+    _bg_tasks.append(asyncio.create_task(_virt_loop()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
@@ -14193,6 +14201,477 @@ async def netbox_sync(body: NetboxSyncIn, user: dict = Depends(require_admin)):
         raise HTTPException(400, f"NetBox respondeu {e.response.status_code}: {e.response.text[:200]}")
     except Exception as e:
         raise HTTPException(400, f"NetBox: {str(e)[:200]}")
+
+
+# ---------- Virtualização (Proxmox VE / VMware ESXi e vCenter) ----------
+VIRT_POLL = 60
+_virt_tun: Dict[str, dict] = {}          # hypervisor -> túnel pelo jump (porta local no BastiON)
+_virt_pve: Dict[str, tuple] = {}         # hypervisor -> (cliente Proxmox já logado, quando)
+_virt_lock: Dict[str, asyncio.Lock] = {}
+
+
+def _virt_scope(user: dict) -> dict:
+    return {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+
+
+def _virt_public(h: dict) -> dict:
+    out = {k: v for k, v in h.items() if k not in ("password", "secret")}
+    out["has_password"] = bool(h.get("password"))
+    out["has_secret"] = bool(h.get("secret"))
+    return out
+
+
+async def _virt_get(user: dict, hid: str) -> dict:
+    h = await db.virt_hosts.find_one({"id": hid, **_virt_scope(user)}, {"_id": 0})
+    if not h:
+        raise HTTPException(status_code=404, detail="Hypervisor não encontrado")
+    return h
+
+
+async def _virt_tunnel_close(hid: str):
+    t = _virt_tun.pop(hid, None)
+    if t:
+        try:
+            t["listener"].close()
+        except Exception:
+            pass
+        try:
+            await t["w"].close()
+        except Exception:
+            pass
+
+
+async def _virt_endpoint(h: dict) -> Tuple[str, int]:
+    """Endereço que o BastiON usa para falar com a API: direto, ou uma porta local encaminhada pelo jump (SSH -L)."""
+    port = int(h.get("port") or (8006 if h["kind"] == "proxmox" else 443))
+    if not h.get("agent_id"):
+        return h["host"], port
+    sig = f"{h['agent_id']}|{h['host']}|{port}"
+    t = _virt_tun.get(h["id"])
+    if t and t["sig"] == sig and t["w"].conn is not None and getattr(t["w"].conn, "_transport", None) is not None:
+        return "127.0.0.1", t["port"]
+    await _virt_tunnel_close(h["id"])
+    priv, _, _ = await _get_ssh_key()
+    w = SSHClientWrapper([_agent_hop(a, priv) for a in await _agent_chain(h["agent_id"])])
+    await w.connect()
+    try:
+        lst = await w.conn.forward_local_port("127.0.0.1", 0, h["host"], port)
+    except Exception:
+        await w.close()
+        raise
+    _virt_tun[h["id"]] = {"w": w, "listener": lst, "port": lst.get_port(), "sig": sig}
+    return "127.0.0.1", lst.get_port()
+
+
+async def _virt_pve_client(h: dict, fresh: bool = False) -> virtmod.Proxmox:
+    cached = _virt_pve.get(h["id"])
+    host, port = await _virt_endpoint(h)
+    base = f"https://{host}:{port}"
+    if cached and not fresh and cached[0].base.startswith(base) and time.time() - cached[1] < 3600:
+        return cached[0]
+    # pelo túnel o certificado não confere com 127.0.0.1: aí só dá para validar direto
+    verify = bool(h.get("verify_tls")) and not h.get("agent_id")
+
+    async def req(method, url, headers, data):
+        async with httpx.AsyncClient(verify=verify, timeout=25) as c:
+            r = await c.request(method, url, headers=headers, data=data if method != "GET" and data is not None else None)
+            try:
+                j = r.json()
+            except Exception:
+                j = {"message": r.text[:200]}
+            return r.status_code, j
+
+    tok = h.get("auth") == "token"
+    p = virtmod.Proxmox(base, req, user=h.get("user", ""), password=vault.decrypt(h.get("password", "")),
+                        token_id=h.get("token_id", "") if tok else "", secret=vault.decrypt(h.get("secret", "")) if tok else "")
+    await p.login()
+    _virt_pve[h["id"]] = (p, time.time())
+    return p
+
+
+async def _virt_call(h: dict, op: str, *args):
+    """Uma operação no hypervisor (inventory, action, snapshots…), com o cliente certo para cada tipo."""
+    try:
+        if h["kind"] == "proxmox":
+            p = await _virt_pve_client(h)
+            try:
+                return await getattr(p, op)(*args)
+            except virtmod.VirtError as e:
+                if "autenticação" not in str(e):
+                    raise
+                p = await _virt_pve_client(h, fresh=True)       # ticket venceu: loga de novo uma vez
+                return await getattr(p, op)(*args)
+        host, port = await _virt_endpoint(h)
+        pw = vault.decrypt(h.get("password", ""))
+        verify = bool(h.get("verify_tls")) and not h.get("agent_id")
+
+        def run():
+            v = virtmod.VMware(host, port, h.get("user", ""), pw, verify).connect()
+            try:
+                return getattr(v, op)(*args)
+            finally:
+                v.close()
+        return await asyncio.wait_for(asyncio.to_thread(run), 900)
+    except virtmod.VirtError as e:
+        if re.search(r"SSLEOF|UNEXPECTED_EOF|ConnectionReset|ConnectionRefused|Errno 111|timed out", str(e)):
+            await _virt_tunnel_close(h["id"])
+            where = " visto do jump" if h.get("agent_id") else ""
+            raise virtmod.VirtError(f"não conectou em {h['host']}:{h.get('port')}{where} (porta fechada, filtrada ou endereço errado)")
+        raise
+    except VpnDown:
+        raise
+    except asyncio.TimeoutError:
+        raise virtmod.VirtError("o hypervisor não respondeu a tempo")
+    except httpx.ConnectError as e:
+        await _virt_tunnel_close(h["id"])
+        raise virtmod.VirtError(f"não conectou em {h['host']}:{h.get('port')} ({str(e)[:120] or 'conexão recusada'})")
+    except Exception as e:
+        await _virt_tunnel_close(h["id"])
+        _virt_pve.pop(h["id"], None)
+        txt = f"{type(e).__name__} {e}"
+        if h.get("agent_id") and re.search(r"EOF|Reset|ChannelOpen|refused|Connection lost|closed", txt, re.I):
+            raise virtmod.VirtError(f"o jump não alcançou {h['host']}:{h.get('port')} (porta fechada, filtrada ou endereço errado visto do jump)")
+        if re.search(r"SSL|certificate", txt, re.I):
+            raise virtmod.VirtError(f"falha de TLS com {h['host']} — desmarque 'conferir certificado' se ele usa certificado próprio ({txt[:150]})")
+        raise virtmod.VirtError(f"{type(e).__name__}: {str(e)[:200]}")
+
+
+async def _virt_poll(h: dict) -> dict:
+    lock = _virt_lock.setdefault(h["id"], asyncio.Lock())
+    async with lock:
+        now = datetime.now(timezone.utc)
+        prev = await db.virt_status.find_one({"_id": h["id"]}) or {}
+        try:
+            inv = await _virt_call(h, "inventory")
+            ok, err = True, ""
+        except Exception as e:
+            inv, ok, err = None, False, str(e)[:300]
+        watched = [w["vm_id"] for w in await db.virt_watch.find({"hv_id": h["id"]}, {"_id": 0, "vm_id": 1}).to_list(5000)]
+        active = set(prev.get("alarms") or [])
+        if ok:
+            found = virtmod.alarms(inv, h.get("thresholds") or {}, watched)
+            found.append(None)                              # API voltou: resolve o "sem resposta"
+        else:
+            found = [{"key": "api", "severity": "critical", "title": f"{h['name']}: API do hypervisor sem resposta",
+                      "description": err}]
+        new_keys = set()
+        for a in found:
+            if a is None:
+                continue
+            new_keys.add(a["key"])
+            await _virt_incident(h, a, "problem")
+        gone = (active - new_keys) if ok else set()       # sem resposta não dá para saber o resto: mantém
+        for k in gone:
+            await _virt_incident(h, {"key": k, "severity": "info", "title": ""}, "ok")
+        keep = new_keys | (active if not ok else set())
+        doc = {"hv_id": h["id"], "ok": ok, "error": err, "at": now.isoformat(), "alarms": sorted(keep)}
+        if ok:
+            doc.update({"inv": inv, "summary": virtmod.summary(inv), "last_ok": now.isoformat(),
+                        "product": inv.get("product", ""), "version": inv.get("version", "")})
+            s = doc["summary"]
+            await db.virt_samples.insert_one({"hv_id": h["id"], "ts": now, "at": now.isoformat(), "cpu": s["cpu_pct"],
+                                              "mem": virtmod._pct(s["mem_used"], s["mem_total"]),
+                                              "storage": virtmod._pct(s["storage_used"], s["storage_total"]),
+                                              "vms_running": s["vms_running"],
+                                              "hosts": {x["id"].replace(".", "_"): [x["cpu_pct"], virtmod._pct(x["mem_used"], x["mem_total"])]
+                                                        for x in inv["hosts"]}})
+        await db.virt_status.update_one({"_id": h["id"]}, {"$set": doc}, upsert=True)
+        return doc
+
+
+async def _virt_incident(h: dict, a: dict, status: str):
+    try:
+        await inc_center.ingest("virt", {"key": f"virt:{h['id']}:{a['key']}", "status": status, "severity": a["severity"],
+                                         "title": a["title"] or h["name"], "description": a.get("description", ""),
+                                         "host": h["host"], "host_name": h["name"], "owner_ids": [h["owner_id"]] if h.get("owner_id") else []})
+    except Exception as e:
+        logger.warning(f"virt incidente: {e}")
+
+
+async def _virt_loop():
+    await asyncio.sleep(20)
+    sem = asyncio.Semaphore(8)
+
+    async def one(h):
+        async with sem:
+            try:
+                await _virt_poll(h)
+            except Exception as e:
+                logger.warning(f"virt {h.get('name')}: {e}")
+    while True:
+        try:
+            hs = await db.virt_hosts.find({"enabled": {"$ne": False}}, {"_id": 0}).to_list(500)
+            await asyncio.gather(*(one(h) for h in hs))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"virt: {e}")
+        await asyncio.sleep(VIRT_POLL)
+
+
+class VirtHostIn(BaseModel):
+    name: str
+    kind: str = "proxmox"            # proxmox | vmware
+    host: str
+    port: Optional[int] = None
+    auth: str = "token"              # proxmox: token | password; vmware: sempre password
+    user: str = ""
+    password: str = ""               # vazio na edição = mantém
+    token_id: str = ""
+    secret: str = ""                 # vazio na edição = mantém
+    verify_tls: bool = False
+    agent_id: Optional[str] = None   # jump que alcança a API
+    tags: List[str] = []
+    thresholds: Dict[str, float] = {}
+    enabled: bool = True
+
+
+async def _virt_clean(body: VirtHostIn, user: dict, cur: Optional[dict] = None) -> dict:
+    if body.kind not in virtmod.KINDS:
+        raise HTTPException(status_code=400, detail="Tipo inválido")
+    name = re.sub(r"[\r\n<>]", " ", body.name or "").strip()[:60]
+    host = (body.host or "").strip()
+    host = re.sub(r"^https?://", "", host).split("/")[0]
+    if ":" in host and host.count(":") == 1:            # "pve.exemplo:8006"
+        host, p = host.split(":")
+        body.port = body.port or int(p) if p.isdigit() else body.port
+    host = host.strip("[]")
+    if not name or not re.fullmatch(r"[\w.:-]+", host or ""):
+        raise HTTPException(status_code=400, detail="Informe nome e endereço (IP ou nome) do hypervisor")
+    if body.agent_id:
+        await _get_agent_for(user, body.agent_id)
+    auth = "password" if body.kind == "vmware" else ("password" if body.auth == "password" else "token")
+    d = {"name": name, "kind": body.kind, "host": host, "port": int(body.port or (8006 if body.kind == "proxmox" else 443)),
+         "auth": auth, "user": body.user.strip()[:120], "token_id": body.token_id.strip()[:200] if auth == "token" else "",
+         "verify_tls": bool(body.verify_tls), "agent_id": body.agent_id or None,
+         "tags": [t.strip()[:40] for t in body.tags if t.strip()][:20], "enabled": bool(body.enabled),
+         "thresholds": {k: max(1.0, min(100.0, float(v))) for k, v in (body.thresholds or {}).items() if k in virtmod.DEFAULTS}}
+    if not (1 <= d["port"] <= 65535):
+        raise HTTPException(status_code=400, detail="Porta inválida")
+    if auth == "token":
+        if not re.fullmatch(r"[^\s!=]+@[^\s!=]+![\w.-]+", d["token_id"]):
+            raise HTTPException(status_code=400, detail="ID do token no formato usuario@realm!nome (ex.: monitor@pve!bastion)")
+        d["user"] = d["token_id"].split("!")[0]
+    elif not d["user"]:
+        raise HTTPException(status_code=400, detail="Informe o usuário" + (" (ex.: root@pam)" if body.kind == "proxmox" else " (ex.: root)"))
+    d["password"] = vault.encrypt(body.password) if body.password else (cur or {}).get("password", "")
+    d["secret"] = vault.encrypt(body.secret) if body.secret else (cur or {}).get("secret", "")
+    if auth == "password":
+        d["secret"] = ""
+        if not d["password"]:
+            raise HTTPException(status_code=400, detail="Informe a senha")
+    else:
+        d["password"] = ""
+        if not d["secret"]:
+            raise HTTPException(status_code=400, detail="Informe o segredo do token")
+    return d
+
+
+async def _virt_log(user: dict, h: dict, action: str, target: str = "", ok: bool = True, error: str = ""):
+    now = datetime.now(timezone.utc)
+    await db.virt_events.insert_one({"id": os.urandom(8).hex(), "ts": now, "at": now.isoformat(), "hv_id": h["id"], "hv_name": h["name"],
+                                     "user": user.get("email", ""), "action": action, "target": target[:200], "ok": ok, "error": error[:300]})
+
+
+@api.get("/virt/hypervisors")
+async def virt_list(user: dict = Depends(get_current_user)):
+    hs = await db.virt_hosts.find(_virt_scope(user), {"_id": 0}).sort("name", 1).to_list(500)
+    st = {s.get("hv_id"): s for s in await db.virt_status.find({"_id": {"$in": [h["id"] for h in hs]}}, {"inv": 0}).to_list(500)}
+    agents = {a["id"]: a["name"] for a in await db.agents.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(5000)}
+    out = []
+    for h in hs:
+        s = st.get(h["id"]) or {}
+        out.append({**_virt_public(h), "agent_name": agents.get(h.get("agent_id") or "", ""),
+                    "status": {k: v for k, v in s.items() if k != "_id"} or None})
+    return out
+
+
+@api.post("/virt/hypervisors")
+async def virt_create(body: VirtHostIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    d = await _virt_clean(body, user)
+    d.update({"id": os.urandom(8).hex(), "owner_id": user["id"], "created_at": datetime.now(timezone.utc).isoformat()})
+    await db.virt_hosts.insert_one(dict(d))
+    asyncio.create_task(_virt_poll(d))
+    return _virt_public(d)
+
+
+@api.put("/virt/hypervisors/{hid}")
+async def virt_update(hid: str, body: VirtHostIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await _virt_get(user, hid)
+    d = await _virt_clean(body, user, cur)
+    await db.virt_hosts.update_one({"id": hid}, {"$set": d})
+    await _virt_tunnel_close(hid)
+    _virt_pve.pop(hid, None)
+    h = {**cur, **d}
+    asyncio.create_task(_virt_poll(h))
+    return _virt_public(h)
+
+
+@api.delete("/virt/hypervisors/{hid}")
+async def virt_delete(hid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    h = await _virt_get(user, hid)
+    st = await db.virt_status.find_one({"_id": hid}) or {}
+    for k in st.get("alarms") or []:
+        await _virt_incident(h, {"key": k, "severity": "info", "title": ""}, "ok")
+    await db.virt_hosts.delete_one({"id": hid})
+    await db.virt_status.delete_one({"_id": hid})
+    await db.virt_samples.delete_many({"hv_id": hid})
+    await db.virt_watch.delete_many({"hv_id": hid})
+    await _virt_tunnel_close(hid)
+    _virt_pve.pop(hid, None)
+    return {"ok": True}
+
+
+@api.post("/virt/test")
+async def virt_test(body: VirtHostIn, hid: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Testa com os dados do formulário (na edição, senha/segredo vazios usam os salvos)."""
+    _no_viewer(user)
+    cur = await _virt_get(user, hid) if hid else None
+    d = await _virt_clean(body, user, cur)
+    d["id"] = f"test-{user['id']}"
+    try:
+        inv = await _virt_call(d, "inventory")
+    except VpnDown as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        await _virt_tunnel_close(d["id"])
+        _virt_pve.pop(d["id"], None)
+    s = virtmod.summary(inv)
+    return {"ok": True, "product": inv.get("product", ""), "hosts": s["hosts"], "vms": s["vms"], "storages": len(inv.get("storages") or [])}
+
+
+@api.post("/virt/hypervisors/{hid}/refresh")
+async def virt_refresh(hid: str, user: dict = Depends(get_current_user)):
+    h = await _virt_get(user, hid)
+    doc = await _virt_poll(h)
+    return {k: v for k, v in doc.items() if k != "inv"}
+
+
+@api.get("/virt/hypervisors/{hid}")
+async def virt_detail(hid: str, user: dict = Depends(get_current_user)):
+    h = await _virt_get(user, hid)
+    st = await db.virt_status.find_one({"_id": hid}, {"_id": 0}) or {}
+    watched = [w["vm_id"] for w in await db.virt_watch.find({"hv_id": hid}, {"_id": 0, "vm_id": 1}).to_list(5000)]
+    ev = await db.virt_events.find({"hv_id": hid}, {"_id": 0, "ts": 0}).sort("at", -1).to_list(30)
+    return {"hypervisor": _virt_public(h), "status": st, "watched": watched, "events": ev}
+
+
+class VirtActionIn(BaseModel):
+    vm_id: str
+    action: str
+
+
+@api.post("/virt/hypervisors/{hid}/action")
+async def virt_action(hid: str, body: VirtActionIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    h = await _virt_get(user, hid)
+    if body.action not in virtmod.ACTIONS:
+        raise HTTPException(status_code=400, detail="Ação inválida")
+    name = _virt_vm_name(await db.virt_status.find_one({"_id": hid}) or {}, body.vm_id)
+    try:
+        await _virt_call(h, "action", body.vm_id, body.action)
+    except Exception as e:
+        await _virt_log(user, h, virtmod.ACTIONS[body.action], name, False, str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    await _virt_log(user, h, virtmod.ACTIONS[body.action], name)
+    asyncio.create_task(_virt_refresh_soon(h))
+    return {"ok": True}
+
+
+def _virt_vm_name(st: dict, vm_id: str) -> str:
+    v = next((x for x in ((st.get("inv") or {}).get("vms") or []) if x["id"] == vm_id), None)
+    return f"{v['name']} ({vm_id})" if v else vm_id
+
+
+async def _virt_refresh_soon(h: dict):
+    for wait in (4, 15):
+        await asyncio.sleep(wait)
+        try:
+            await _virt_poll(h)
+        except Exception:
+            pass
+
+
+@api.get("/virt/hypervisors/{hid}/snapshots")
+async def virt_snaps(hid: str, vm_id: str, user: dict = Depends(get_current_user)):
+    h = await _virt_get(user, hid)
+    try:
+        return await _virt_call(h, "snapshots", vm_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class VirtSnapIn(BaseModel):
+    vm_id: str
+    name: str = ""
+    description: str = ""
+    memory: bool = False
+    snap: str = ""                  # id do snapshot (reverter/apagar)
+    op: str = "create"              # create | revert | delete
+
+
+@api.post("/virt/hypervisors/{hid}/snapshots")
+async def virt_snap_op(hid: str, body: VirtSnapIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    h = await _virt_get(user, hid)
+    vm = _virt_vm_name(await db.virt_status.find_one({"_id": hid}) or {}, body.vm_id)
+    try:
+        if body.op == "create":
+            name = body.name.strip()
+            if h["kind"] == "proxmox":
+                name = re.sub(r"[^A-Za-z0-9_-]", "_", name)       # Proxmox: letra no início, só [A-Za-z0-9_-]
+                if name and not name[0].isalpha():
+                    name = "s" + name
+            if not name:
+                raise HTTPException(status_code=400, detail="Dê um nome ao snapshot")
+            await _virt_call(h, "snapshot_create", body.vm_id, name[:40], body.description[:500], bool(body.memory))
+            label, tgt = "Criar snapshot", f"{vm} · {name[:40]}"
+        elif body.op in ("revert", "delete"):
+            if not body.snap:
+                raise HTTPException(status_code=400, detail="Escolha o snapshot")
+            await _virt_call(h, "snapshot_revert" if body.op == "revert" else "snapshot_delete", body.vm_id, body.snap)
+            label, tgt = ("Voltar snapshot" if body.op == "revert" else "Apagar snapshot"), f"{vm} · {body.snap}"
+        else:
+            raise HTTPException(status_code=400, detail="Operação inválida")
+    except HTTPException:
+        raise
+    except Exception as e:
+        await _virt_log(user, h, f"snapshot {body.op}", vm, False, str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    await _virt_log(user, h, label, tgt)
+    return {"ok": True}
+
+
+class VirtWatchIn(BaseModel):
+    vm_id: str
+    watch: bool = True
+
+
+@api.post("/virt/hypervisors/{hid}/watch")
+async def virt_watch(hid: str, body: VirtWatchIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    h = await _virt_get(user, hid)
+    if body.watch:
+        await db.virt_watch.update_one({"hv_id": hid, "vm_id": body.vm_id}, {"$set": {"hv_id": hid, "vm_id": body.vm_id, "by": user.get("email", "")}},
+                                       upsert=True)
+    else:
+        await db.virt_watch.delete_one({"hv_id": hid, "vm_id": body.vm_id})
+    asyncio.create_task(_virt_poll(h))
+    return {"ok": True}
+
+
+@api.get("/virt/hypervisors/{hid}/history")
+async def virt_history(hid: str, hours: int = 24, user: dict = Depends(get_current_user)):
+    await _virt_get(user, hid)
+    since = datetime.now(timezone.utc) - timedelta(hours=max(1, min(hours, 24 * 30)))
+    rows = await db.virt_samples.find({"hv_id": hid, "ts": {"$gte": since}}, {"_id": 0, "ts": 0, "hv_id": 0}).sort("at", 1).to_list(50000)
+    step = max(1, len(rows) // 400)                      # no máximo ~400 pontos por gráfico
+    return rows[::step]
 
 
 # ---------- Health ----------

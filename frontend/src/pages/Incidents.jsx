@@ -23,7 +23,7 @@ export const SEV = {
   info: { label: "Info", bar: "bg-slate-500", chip: "text-slate-300 border-line bg-white/5" },
 };
 const ST = { open: ["Aberto", "text-red-300"], ack: ["Reconhecido", "text-amber-300"], resolved: ["Resolvido", "text-emerald-300"] };
-const SRC = { zabbix: "Zabbix", librenms: "LibreNMS", generic: "Webhook", bastion: "BastiON", manual: "Manual", syslog: "Syslog", trap: "Trap SNMP", probe: "Sonda", bgp: "Monitor BGP", gpon: "GPON", compliance: "Conformidade" };
+const SRC = { zabbix: "Zabbix", librenms: "LibreNMS", generic: "Webhook", bastion: "BastiON", manual: "Manual", syslog: "Syslog", trap: "Trap SNMP", probe: "Sonda", bgp: "Monitor BGP", gpon: "GPON", compliance: "Conformidade", virt: "Virtualização" };
 export const KIND = { ti: "Threat intel", certbr: "Serviço exposto (CERT.br)", cmd: "Política de comandos", login: "Login suspeito", cve: "CVE de firmware", outro: "SOC" };
 const srcLabel = (r) => (r.source === "soc" ? KIND[r.kind] || "SOC" : SRC[r.source] || r.source);
 const GROUPS_SOC = [["", "sem agrupar"], ["device", "por equipamento/IP"], ["kind", "por tipo"], ["severity", "por severidade"], ["assignee", "por responsável"]];

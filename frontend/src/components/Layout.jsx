@@ -9,7 +9,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   ChevronDown, LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send, UserX, Radar, ShieldAlert, Bug, Fingerprint, FolderUp,
+  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send, UserX, Radar, ShieldAlert, Bug, Fingerprint, FolderUp, Boxes,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -31,6 +31,7 @@ const MENU = [
     { to: "/logs", icon: ScrollText, label: "Syslog e Traps", testid: "nav-logs" },
     { to: "/bgp-monitor", icon: Share2, label: "Monitor BGP", testid: "nav-bgp" },
     { to: "/gpon", icon: Cable, label: "GPON", testid: "nav-gpon" },
+    { to: "/virt", icon: Boxes, label: "Virtualização", testid: "nav-virt" },
     { to: "/sla", icon: BadgeCheck, label: "SLA", testid: "nav-sla" },
   ] },
   { group: "access", icon: TerminalSquare, label: "Acesso", items: [
