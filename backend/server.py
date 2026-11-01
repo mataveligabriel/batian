@@ -14222,7 +14222,7 @@ def _virt_scope(user: dict) -> dict:
 
 def _virt_public(h: dict) -> dict:
     out = {k: v for k, v in h.items() if k not in ("password", "secret", "ssh_password")}
-    out["has_ssh_password"] = bool(h.get("ssh_password"))
+    out["has_ssh_password"] = bool(h.get("ssh_password")) or bool(_vb_ssh_password(h))
     out["has_password"] = bool(h.get("password"))
     out["has_secret"] = bool(h.get("secret"))
     return out
@@ -14969,9 +14969,10 @@ async def _vb_start(job: dict, by: str, only: Optional[List[str]] = None, slot: 
 async def _vb_ssh(h: dict, address: str):
     priv, _, _ = await _get_ssh_key()
     hops = [_agent_hop(a, priv) for a in await _agent_chain(h["agent_id"])] if h.get("agent_id") else []
-    pw = vault.decrypt(h.get("ssh_password", ""))
+    pw = _vb_ssh_password(h)
     if not pw and not (h.get("ssh_key") and priv):
-        raise vbackup.BackupError("cadastre a senha SSH (root) do hypervisor em Editar → Backup")
+        raise vbackup.BackupError("sem senha SSH: em Editar hypervisor → 'Backup das VMs — acesso SSH' informe a senha do root "
+                                  "(ou cadastre o hypervisor com o próprio root, que a senha é reaproveitada)")
     hops.append(Hop(address, int(h.get("ssh_port") or 22), h.get("ssh_user") or "root",
                     private_key=priv if h.get("ssh_key") else None, password=pw or None, label=address))
     w = SSHClientWrapper(hops)
@@ -14981,6 +14982,18 @@ async def _vb_ssh(h: dict, address: str):
         await w.close()
         raise vbackup.BackupError(f"SSH em {address}:{h.get('ssh_port') or 22} falhou ({type(e).__name__}: {str(e)[:150]})")
     return w
+
+
+def _vb_ssh_password(h: dict) -> str:
+    """Senha SSH própria; sem ela, a senha da API quando o login da API é o mesmo usuário (root do ESXi, root@pam do Proxmox)."""
+    pw = vault.decrypt(h.get("ssh_password", ""))
+    if pw:
+        return pw
+    api_user = (h.get("user") or "").split("@")[0].lower()
+    realm = (h.get("user") or "").partition("@")[2].lower()
+    if h.get("auth") == "password" and api_user == (h.get("ssh_user") or "root").lower() and realm in ("", "pam"):
+        return vault.decrypt(h.get("password", ""))
+    return ""
 
 
 async def _vb_address(h: dict, inv: dict, vm: dict, cache: dict) -> str:
