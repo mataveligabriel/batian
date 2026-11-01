@@ -186,7 +186,7 @@ function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
         <label className="flex items-center gap-2 text-sm text-slate-300"><Switch checked={!!f.enabled} onCheckedChange={s("enabled")} /> Rotina ativa</label>
         <div className="text-xs text-slate-400 bg-sunken border border-line rounded-md p-2">
           {pve ? "Cada VM vira um arquivo vzdump (.vma.zst / .tar.zst). Para restaurar: copie para a pasta dump de um storage do Proxmox e use Restaurar na própria VM/storage."
-            : "Cada VM vira uma pasta com o .vmx e os discos. Se a VM estiver ligada, o BastiON tira um snapshot temporário e apaga no fim. VMs que já tenham snapshots são puladas (consolide antes). Para restaurar: envie a pasta ao datastore, descompacte (gunzip) e registre o .vmx."}
+            : "Cada VM vira uma pasta com o .vmx e os discos. Se a VM estiver ligada, o BastiON tira um snapshot temporário e apaga no fim. VM que já tem snapshots (ex.: réplica do Veeam) vai com a cadeia inteira de discos e os snapshots dela continuam intactos. Para restaurar: envie a pasta ao datastore, descompacte (gunzip) e registre o .vmx."}
           {" "}Backups com erro abrem incidente e não apagam as cópias antigas.
         </div>
         <DialogFooter><Button onClick={save} disabled={busy} className="bg-brand hover:bg-brand-strong" data-testid="vb-job-save">{busy && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Salvar</Button></DialogFooter>

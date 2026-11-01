@@ -14,7 +14,7 @@ import ssl
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Awaitable, Callable, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 
 CHUNK = 1 << 20
 IDLE_TIMEOUT = 1800             # 30 min sem chegar nada do hypervisor = travou
@@ -363,8 +363,22 @@ def parse_getallvms(out: str) -> List[dict]:
     return vms
 
 
+def snapshot_ids(out: str) -> List[tuple]:
+    """[(nome, id)] da saída do `vim-cmd vmsvc/snapshot.get`."""
+    return [(n.strip(), i) for n, i in re.findall(r"Snapshot Name\s*:\s*(.*?)\s*\n[-\s|]*Snapshot Id\s*:\s*(\d+)", out)]
+
+
+def _parent_hint(desc: str) -> str:
+    m = re.search(r'^\s*parentFileNameHint\s*=\s*"(.+?)"', desc, re.M)
+    return m.group(1) if m else ""
+
+
 async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, quiesce: bool, progress) -> dict:
-    """vm: {name, vmx: "[datastore] pasta/vm.vmx"} (o vmid local é achado pelo caminho do .vmx)."""
+    """vm: {name, vmx: "[datastore] pasta/vm.vmx"} (o vmid local é achado pelo caminho do .vmx).
+
+    Copia o estado atual da VM. Se ela já tiver snapshots (ex.: réplicas do Veeam), vai a cadeia inteira de discos
+    (base + deltas) e o .vmsd/.vmsn, então a cópia restaura com os mesmos snapshots. Tudo vai para uma pasta só, com
+    os caminhos dos descritores e do .vmx reescritos para o nome do arquivo."""
     code, out, err = await run(conn, "vim-cmd vmsvc/getallvms")
     if code:
         raise BackupError(f"vim-cmd não respondeu: é um ESXi com SSH? ({(err or out)[:150]})")
@@ -380,23 +394,81 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
     vid = target["vmid"]
     vdir = posixpath.join("/vmfs/volumes", target["ds"], posixpath.dirname(target["rel"]))
     vmx_path = posixpath.join("/vmfs/volumes", target["ds"], target["rel"])
+
+    def absolute(p, base=vdir):
+        return p if p.startswith("/") else posixpath.normpath(posixpath.join(base, p))
+
+    # sobrou snapshot nosso de um backup interrompido: remove antes (consolida no disco atual)
+    code, sg, _ = await run(conn, f"vim-cmd vmsvc/snapshot.get {vid}")
+    for name, sid in snapshot_ids(sg):
+        if name == SNAP_NAME:
+            await run(conn, f"vim-cmd vmsvc/snapshot.remove {vid} {sid}", 7200)
+    code, sg, _ = await run(conn, f"vim-cmd vmsvc/snapshot.get {vid}")
+    had_snaps = bool(snapshot_ids(sg))
+
     code, vmx, err = await run(conn, f"cat {shlex.quote(vmx_path)}")
     if code:
         raise BackupError(f"não li o .vmx ({err[:150]})")
+    top = [absolute(d) for d in vmx_disks(vmx)]
+    chain: Dict[str, str] = {}                       # descritor -> conteúdo (atual + pais até o disco base)
+    for d in top:
+        cur = d
+        while cur and cur not in chain:
+            code, desc, err = await run(conn, f"cat {shlex.quote(cur)}")
+            if code:
+                raise BackupError(f"não li o disco {cur} ({err[:120]})")
+            if "\x00" in desc[:2000]:
+                raise BackupError(f"{posixpath.basename(cur)} não é um descritor de disco (disco antigo monolítico): converta com vmkfstools")
+            chain[cur] = desc
+            hint = _parent_hint(desc)
+            cur = absolute(hint, posixpath.dirname(cur)) if hint else None
+    # nomes na pasta do backup (sem colisão entre datastores)
+    used, newname = set(), {}
 
-    def absolute(p):
-        return p if p.startswith("/") else posixpath.join(vdir, p)
-    disks = [absolute(d) for d in vmx_disks(vmx)]
-    if any(re.search(r"-\d{6}\.vmdk$", d) for d in disks):
-        raise BackupError("a VM já tem snapshots: apague ou consolide os snapshots antes (o backup copia só o disco base)")
-    descs = {}
-    for d in disks:
-        code, desc, err = await run(conn, f"cat {shlex.quote(d)}")
-        if code:
-            raise BackupError(f"não li o disco {d} ({err[:120]})")
-        if "\x00" in desc[:2000]:
-            raise BackupError(f"{posixpath.basename(d)} não é um descritor de disco (disco antigo monolítico): converta com vmkfstools")
-        descs[d] = desc
+    def name_for(path):
+        if path in newname:
+            return newname[path]
+        b = posixpath.basename(path)
+        n = b if b not in used else f"{len(used)}_{b}"
+        used.add(n)
+        newname[path] = n
+        return n
+    vmx_name = name_for(vmx_path)
+    for d in chain:
+        name_for(d)
+    extents = {}                                     # caminho do extent -> nome
+    for d, desc in chain.items():
+        for e in vmdk_extents(desc):
+            extents[absolute(e, posixpath.dirname(d))] = name_for(absolute(e, posixpath.dirname(d)))
+
+    def fix_desc(d, desc):
+        for e in vmdk_extents(desc):
+            desc = desc.replace(f'"{e}"', f'"{extents[absolute(e, posixpath.dirname(d))]}"')
+        hint = _parent_hint(desc)
+        if hint:
+            desc = re.sub(r'^(\s*parentFileNameHint\s*=\s*)".+?"', lambda mm: f'{mm.group(1)}"{newname[absolute(hint, posixpath.dirname(d))]}"', desc, flags=re.M)
+        return desc
+
+    def fix_vmx(text):
+        def rep(mm):
+            v = mm.group(2)
+            if v.lower().endswith(".vmdk") and absolute(v) in newname:
+                return f'{mm.group(1)}"{newname[absolute(v)]}"'
+            return mm.group(0)
+        return re.sub(r'^(\s*(?:scsi|sata|ide|nvme)\d+:\d+\.fileName\s*=\s*)"(.*)"', rep, text, flags=re.M | re.I)
+
+    # arquivos dos snapshots existentes (.vmsd muda com o nosso snapshot: guarda o conteúdo de agora)
+    snap_files, vmsd = [], None
+    if had_snaps:
+        code, ls, _ = await run(conn, f"ls -1 {shlex.quote(vdir)}")
+        for n in ls.splitlines():
+            n = n.strip()
+            if n.endswith(".vmsd"):
+                code, txt, _ = await run(conn, f"cat {shlex.quote(posixpath.join(vdir, n))}")
+                if code == 0:
+                    vmsd = (name_for(posixpath.join(vdir, n)), txt)
+            elif re.search(r"-Snapshot\d+\.(vmsn|vmem)$", n):
+                snap_files.append(posixpath.join(vdir, n))
     code, st, _ = await run(conn, f"vim-cmd vmsvc/power.getstate {vid}")
     on = "Powered on" in st
     files, total = [], 0
@@ -431,23 +503,24 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
             if code or "failed" in (out + err).lower() or "fault" in (out + err).lower():
                 raise BackupError(f"o ESXi não criou o snapshot ({(err or out).strip()[:200]})")
             snap = True
-        await put_bytes(posixpath.basename(vmx_path), vmx.encode())             # o .vmx de antes do snapshot
+        await put_bytes(vmx_name, fix_vmx(vmx).encode())                      # o .vmx de antes do snapshot
         nv = vmx_get(vmx, "nvram")
         if nv:
             code, _, _ = await run(conn, f"test -f {shlex.quote(absolute(nv))}")
             if code == 0:
                 await put_remote(absolute(nv), posixpath.basename(nv))
-        names = set()
-        for d, desc in descs.items():
-            base = posixpath.basename(d)
-            if base in names:                                                       # discos com mesmo nome em datastores diferentes
-                base = f"{len(names)}_{base}"
-            names.add(base)
-            await put_bytes(base, desc.encode())
-            for ext in vmdk_extents(desc):
-                await put_remote(posixpath.join(posixpath.dirname(d), ext), posixpath.basename(ext))
+        if vmsd:
+            await put_bytes(vmsd[0], vmsd[1].encode())
+        for p in snap_files:
+            await put_remote(p, name_for(p))
+        for d, desc in chain.items():
+            await put_bytes(newname[d], fix_desc(d, desc).encode())
+        for path, name in extents.items():
+            await put_remote(path, name)
         info = (f"Backup da VM {target['name']} feito pelo BastiON em {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-                f"Origem: [{target['ds']}] {target['rel']}\n\nPara restaurar:\n"
+                f"Origem: [{target['ds']}] {target['rel']}\n"
+                + (f"A VM tinha snapshots: a cadeia inteira de discos veio junto ({len(chain)} descritores).\n" if had_snaps else "")
+                + "\nPara restaurar:\n"
                 "1. Crie uma pasta no datastore e envie estes arquivos para ela (navegador de datastore ou scp).\n"
                 + ("2. No ESXi (SSH), descompacte: gunzip *.gz\n" if compress else "")
                 + "3. Clique com o botão direito no .vmx -> Registrar VM (ou: vim-cmd solo/registervm /vmfs/volumes/<ds>/<pasta>/<vm>.vmx).\n"
@@ -455,12 +528,18 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
         await put_bytes("RESTAURAR.txt", info.encode())
     finally:
         if snap:
-            # sem snapshots antes do backup (conferido acima): remover todos = remover o nosso e consolidar
             try:
-                await run(conn, f"vim-cmd vmsvc/snapshot.removeall {vid}", 7200)
+                if not had_snaps:
+                    await run(conn, f"vim-cmd vmsvc/snapshot.removeall {vid}", 7200)
+                else:                                                         # só o nosso; os da VM ficam
+                    code, sg, _ = await run(conn, f"vim-cmd vmsvc/snapshot.get {vid}")
+                    for name, sid in snapshot_ids(sg):
+                        if name == SNAP_NAME:
+                            await run(conn, f"vim-cmd vmsvc/snapshot.remove {vid} {sid}", 7200)
             except Exception:
                 pass
-    return {"bytes": total, "files": files, "format": "vmx + vmdk" + (" (gzip)" if compress else ""), "was_on": on}
+    return {"bytes": total, "files": files, "format": "vmx + vmdk" + (" (gzip)" if compress else "") + (" + cadeia de snapshots" if had_snaps else ""),
+            "was_on": on}
 
 
 # ------------------------------------------------------------------ retenção
