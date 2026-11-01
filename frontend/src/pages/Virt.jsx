@@ -468,7 +468,7 @@ export default function Virt() {
     run: async () => { try { await api.delete(`/virt/hypervisors/${h.id}`); toast.success("Removido"); setSp({}, { replace: true }); load(); } catch (e) { toast.error(formatApiError(e)); } } });
 
   return (
-    <div className="p-4 md:p-6 space-y-4" data-testid="virt-page">
+    <div className="p-4 md:p-6 space-y-4 flex-1 min-h-0 overflow-y-auto" data-testid="virt-page">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 flex items-center gap-2"><Boxes className="w-6 h-6 text-brand-soft" />Virtualização</h1>
