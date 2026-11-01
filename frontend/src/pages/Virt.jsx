@@ -8,9 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { VirtBackup } from "@/components/VirtBackup";
 import {
   Boxes, Plus, RefreshCw, Loader2, Pencil, Trash2, Play, Power, PowerOff, RotateCw, Pause, Camera,
-  Globe, Server, HardDrive, AlertTriangle, CheckCircle2, XCircle, Search, Undo2, Bell, BellOff, Zap,
+  Globe, Server, HardDrive, AlertTriangle, CheckCircle2, XCircle, Search, Undo2, Bell, BellOff, Zap, Archive,
 } from "lucide-react";
 
 const lbl = "text-xs text-slate-400 mb-1 block";
@@ -69,19 +70,22 @@ function Confirm({ ask, onClose }) {
 
 // ------------------------------------------------------------------ cadastro
 const EMPTY = { name: "", kind: "proxmox", host: "", port: "", auth: "token", user: "", password: "", token_id: "", secret: "", verify_tls: false,
-  agent_id: "", tags: [], thresholds: {}, enabled: true };
+  agent_id: "", tags: [], thresholds: {}, enabled: true, ssh_user: "root", ssh_password: "", ssh_port: 22, ssh_key: false, ssh_hosts: "" };
+const hostsText = (o) => Object.entries(o || {}).map(([k, v]) => `${k} = ${v}`).join("\n");
+const hostsObj = (t) => Object.fromEntries(String(t || "").split(/\n+/).map((l) => l.split("=").map((x) => x.trim())).filter((x) => x.length === 2 && x[0] && x[1]));
 
-function HostDialog({ open, cur, agents, onClose, onSaved }) {
+function HostDialog({ open, cur, agents, onClose, onSaved, sshOpen }) {
   const [f, setF] = useState(EMPTY);
   const [busy, setBusy] = useState("");
   const [test, setTest] = useState(null);
   useEffect(() => {
     if (!open) return;
     setTest(null);
-    setF(cur ? { ...EMPTY, ...cur, port: cur.port || "", agent_id: cur.agent_id || "", password: "", secret: "", thresholds: cur.thresholds || {} } : EMPTY);
+    setF(cur ? { ...EMPTY, ...cur, port: cur.port || "", agent_id: cur.agent_id || "", password: "", secret: "", ssh_password: "", thresholds: cur.thresholds || {},
+      ssh_hosts: hostsText(cur.ssh_hosts), ssh_user: cur.ssh_user || "root", ssh_port: cur.ssh_port || 22 } : EMPTY);
   }, [open, cur]);
   const s = (k) => (e) => setF((p) => ({ ...p, [k]: e?.target ? e.target.value : e }));
-  const body = () => ({ ...f, port: f.port ? Number(f.port) : null, agent_id: f.agent_id || null,
+  const body = () => ({ ...f, port: f.port ? Number(f.port) : null, agent_id: f.agent_id || null, ssh_port: Number(f.ssh_port) || 22, ssh_hosts: hostsObj(f.ssh_hosts),
     tags: typeof f.tags === "string" ? f.tags.split(",").map((x) => x.trim()).filter(Boolean) : f.tags,
     thresholds: Object.fromEntries(Object.entries(f.thresholds || {}).filter(([, v]) => v !== "" && v != null).map(([k, v]) => [k, Number(v)])) });
   const doTest = async () => {
@@ -153,6 +157,23 @@ function HostDialog({ open, cur, agents, onClose, onSaved }) {
           <label className="flex items-center gap-2"><Switch checked={!!f.verify_tls} onCheckedChange={s("verify_tls")} /> Conferir certificado TLS {f.agent_id && <span className="text-xs text-slate-500">(só vale direto)</span>}</label>
           <label className="flex items-center gap-2"><Switch checked={!!f.enabled} onCheckedChange={s("enabled")} /> Monitorar</label>
         </div>
+        <details className="border border-line rounded-md" open={!!(cur?.has_ssh_password || sshOpen)} data-testid="virt-ssh">
+          <summary className="px-3 py-2 text-sm text-slate-300 cursor-pointer">Backup das VMs — acesso SSH aos {pve ? "nós" : "hosts ESXi"} {cur?.has_ssh_password && <span className="text-xs text-emerald-300 ml-1">configurado</span>}</summary>
+          <div className="p-3 pt-0 space-y-3">
+            <div className="text-xs text-slate-400">{pve ? "O backup roda o vzdump no nó onde a VM está, por SSH (usuário root ou com sudo para vzdump)."
+              : "O backup usa o SSH do ESXi (ligue em Host → Ações → Serviços → Ativar SSH). Funciona inclusive no ESXi gratuito."}</div>
+            <div className="grid sm:grid-cols-[1fr_1fr_80px] gap-2">
+              <div><label className={lbl}>Usuário SSH</label><Input value={f.ssh_user} onChange={s("ssh_user")} className="bg-sunken border-line font-mono" data-testid="virt-ssh-user" /></div>
+              <div><label className={lbl}>Senha SSH {cur?.has_ssh_password && <span className="text-slate-500">(vazio = mantém)</span>}</label>
+                <Input type="password" value={f.ssh_password} onChange={s("ssh_password")} className="bg-sunken border-line font-mono" data-testid="virt-ssh-password" /></div>
+              <div><label className={lbl}>Porta</label><Input value={f.ssh_port} onChange={s("ssh_port")} className="bg-sunken border-line font-mono" /></div>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-300"><Switch checked={!!f.ssh_key} onCheckedChange={s("ssh_key")} /> Usar a chave SSH global do BastiON</label>
+            <div><label className={lbl}>Endereço SSH de cada {pve ? "nó" : "host"} (só se o nome não resolver; uma linha por {pve ? "nó" : "host"})</label>
+              <textarea value={f.ssh_hosts} onChange={s("ssh_hosts")} rows={2} placeholder={pve ? "pve1 = 192.0.2.11\npve2 = 192.0.2.12" : "esx01.exemplo.net = 192.0.2.21"}
+                className="w-full rounded-md bg-sunken border border-line px-2 py-1 text-sm font-mono text-slate-200" data-testid="virt-ssh-hosts" /></div>
+          </div>
+        </details>
         <div className="text-xs text-slate-400 bg-sunken border border-line rounded-md p-3 space-y-1">
           {pve ? (<>
             <div className="text-slate-300">Usuário só para o BastiON (no shell de um nó):</div>
@@ -434,6 +455,7 @@ export default function Virt() {
   const [dlg, setDlg] = useState(null);           // {cur} ao editar, {} ao criar
   const [ask, setAsk] = useState(null);
   const selId = sp.get("hv");
+  const tab = sp.get("tab") || "";
   const load = useCallback(() => api.get("/virt/hypervisors").then((r) => setList(r.data)).catch((e) => { setList([]); toast.error(formatApiError(e)); }), []);
   useEffect(() => {
     load(); api.get("/agents").then((r) => setAgents(r.data)).catch(() => {});
@@ -441,6 +463,7 @@ export default function Virt() {
   }, [load]);
   const cur = (list || []).find((h) => h.id === selId) || (list || [])[0];
   const pick = (h) => setSp({ hv: h.id }, { replace: true });
+  const goTab = (t) => setSp(t ? { tab: t } : (cur ? { hv: cur.id } : {}), { replace: true });
   const del = (h) => setAsk({ title: "Remover hypervisor?", danger: true, ok: "Remover", text: `${h.name} sai do BastiON (nada muda no ${KIND[h.kind]}). Histórico e alarmes dele são apagados.`,
     run: async () => { try { await api.delete(`/virt/hypervisors/${h.id}`); toast.success("Removido"); setSp({}, { replace: true }); load(); } catch (e) { toast.error(formatApiError(e)); } } });
 
@@ -451,8 +474,15 @@ export default function Virt() {
           <h1 className="font-heading text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-slate-100 flex items-center gap-2"><Boxes className="w-6 h-6 text-brand-soft" />Virtualização</h1>
           <p className="text-sm text-slate-400">Proxmox VE e VMware ESXi / vCenter: hosts, VMs, storage, alarmes e ações — direto ou pelos jumps.</p>
         </div>
-        {!readOnly && <Button onClick={() => setDlg({})} className="bg-brand hover:bg-brand-strong" data-testid="virt-add"><Plus className="w-4 h-4 mr-1" />Adicionar</Button>}
+        {!readOnly && tab !== "backup" && <Button onClick={() => setDlg({})} className="bg-brand hover:bg-brand-strong" data-testid="virt-add"><Plus className="w-4 h-4 mr-1" />Adicionar</Button>}
       </div>
+      <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm w-fit">
+        {[["", "Hypervisors", Server], ["backup", "Backups", Archive]].map(([k, l, I]) => (
+          <button key={k} onClick={() => goTab(k)} data-testid={`virt-page-${k || "hv"}`}
+            className={`px-3 py-1 rounded flex items-center gap-1.5 ${tab === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}><I className="w-4 h-4" />{l}</button>
+        ))}
+      </div>
+      {tab === "backup" ? <VirtBackup hvs={list || []} agents={agents} readOnly={readOnly} setAsk={setAsk} onEditHv={(h) => setDlg({ cur: h, ssh: true })} /> : <>
 
       {list === null ? <Loader2 className="w-6 h-6 animate-spin text-slate-500" /> : !list.length ? (
         <Card className="bg-surface border-line p-6 text-center text-slate-400 text-sm">Nenhum hypervisor cadastrado. Adicione um Proxmox (nó ou cluster) ou um ESXi / vCenter.</Card>
@@ -488,7 +518,8 @@ export default function Virt() {
       )}
 
       {cur && <Detail key={cur.id} hv={cur} readOnly={readOnly} onEdit={() => setDlg({ cur })} reloadList={load} setAsk={setAsk} />}
-      <HostDialog open={!!dlg} cur={dlg?.cur} agents={agents} onClose={() => setDlg(null)} onSaved={(h) => { load(); pick(h); }} />
+      </>}
+      <HostDialog open={!!dlg} cur={dlg?.cur} sshOpen={!!dlg?.ssh} agents={agents} onClose={() => setDlg(null)} onSaved={(h) => { load(); pick(h); }} />
       <Confirm ask={ask} onClose={() => setAsk(null)} />
     </div>
   );

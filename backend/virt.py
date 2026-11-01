@@ -101,6 +101,14 @@ class Proxmox:
             uniq.append(s)
         return {"product": f"Proxmox VE {ver.get('version', '')}".strip(), "version": ver.get("version", ""), "hosts": hosts, "vms": vms, "storages": uniq}
 
+    async def node_ips(self) -> Dict[str, str]:
+        """Nome do nó -> IP (do /cluster/status; nó sozinho sem cluster não aparece com IP em versões antigas)."""
+        try:
+            st = await self.call("GET", "cluster/status") or []
+        except VirtError:
+            return {}
+        return {x["name"]: x["ip"] for x in st if x.get("type") == "node" and x.get("ip")}
+
     @staticmethod
     def _vm(vm_id: str) -> Tuple[str, str, str]:
         m = re.fullmatch(r"([\w.-]+)/(qemu|lxc)/(\d+)", vm_id or "")
@@ -237,7 +245,7 @@ class VMware:
         for obj, p in self._collect(vim.VirtualMachine, ["name", "runtime.powerState", "runtime.host", "runtime.maxCpuUsage", "summary.quickStats",
                                                          "config.hardware.numCPU", "config.hardware.memoryMB", "config.template",
                                                          "summary.storage.committed", "summary.storage.uncommitted", "guest.ipAddress",
-                                                         "guest.toolsRunningStatus"]):
+                                                         "guest.toolsRunningStatus", "config.files.vmPathName"]):
             qs = p.get("summary.quickStats")
             ps = str(p.get("runtime.powerState") or "")
             h = p.get("runtime.host")
@@ -247,7 +255,8 @@ class VMware:
                         "mem_used": int((qs.hostMemoryUsage or 0) * 1048576) if qs else 0, "mem_total": int((p.get("config.hardware.memoryMB") or 0) * 1048576),
                         "disk_total": int((p.get("summary.storage.committed") or 0) + (p.get("summary.storage.uncommitted") or 0)),
                         "uptime": int(qs.uptimeSeconds or 0) if qs else 0, "template": bool(p.get("config.template")),
-                        "ip": p.get("guest.ipAddress") or "", "tools": str(p.get("guest.toolsRunningStatus") or ""), "tags": ""})
+                        "ip": p.get("guest.ipAddress") or "", "tools": str(p.get("guest.toolsRunningStatus") or ""), "tags": "",
+                        "vmx": p.get("config.files.vmPathName") or ""})
         stores = []
         for obj, p in self._collect(vim.Datastore, ["summary.name", "summary.capacity", "summary.freeSpace", "summary.accessible",
                                                     "summary.type", "summary.multipleHostAccess"]):

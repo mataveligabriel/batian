@@ -20,7 +20,7 @@ import time
 import uuid
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Form, Request
@@ -93,6 +93,7 @@ import tacacs as tacmod
 import ftpserver as ftpmod
 import ipamdoc
 import virt as virtmod
+import vbackup
 import tcprelay
 import runbooks
 import teopt
@@ -191,6 +192,10 @@ async def startup():
     await db.virt_samples.create_index("ts", expireAfterSeconds=30 * 86400)
     await db.virt_events.create_index([("hv_id", 1), ("at", -1)])
     await db.virt_events.create_index("ts", expireAfterSeconds=365 * 86400)
+    await db.vbackup_jobs.create_index("id")
+    await db.vbackup_dests.create_index("id")
+    await db.vbackup_runs.create_index([("job_id", 1), ("started_at", -1)])
+    await db.vbackup_runs.create_index("ts", expireAfterSeconds=365 * 86400)
     try:
         await flowstore.ensure_ttl(db, "tacacs_events", (await _tac_cfg())["retention_days"] * 86400)
     except Exception as e:
@@ -237,6 +242,7 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(_comp_loop()))
     _bg_tasks.append(asyncio.create_task(_ipam_loop()))
     _bg_tasks.append(asyncio.create_task(_virt_loop()))
+    _bg_tasks.append(asyncio.create_task(_vb_loop()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
@@ -14215,7 +14221,8 @@ def _virt_scope(user: dict) -> dict:
 
 
 def _virt_public(h: dict) -> dict:
-    out = {k: v for k, v in h.items() if k not in ("password", "secret")}
+    out = {k: v for k, v in h.items() if k not in ("password", "secret", "ssh_password")}
+    out["has_ssh_password"] = bool(h.get("ssh_password"))
     out["has_password"] = bool(h.get("password"))
     out["has_secret"] = bool(h.get("secret"))
     return out
@@ -14424,6 +14431,12 @@ class VirtHostIn(BaseModel):
     tags: List[str] = []
     thresholds: Dict[str, float] = {}
     enabled: bool = True
+    # SSH nos nós/hosts (backup): usuário root do Proxmox/ESXi
+    ssh_user: str = "root"
+    ssh_password: str = ""           # vazio na edição = mantém
+    ssh_port: int = 22
+    ssh_key: bool = False            # usar a chave SSH global do BastiON
+    ssh_hosts: Dict[str, str] = {}   # nome do nó/host -> endereço SSH (quando o nome não resolve)
 
 
 async def _virt_clean(body: VirtHostIn, user: dict, cur: Optional[dict] = None) -> dict:
@@ -14454,6 +14467,12 @@ async def _virt_clean(body: VirtHostIn, user: dict, cur: Optional[dict] = None) 
         d["user"] = d["token_id"].split("!")[0]
     elif not d["user"]:
         raise HTTPException(status_code=400, detail="Informe o usuário" + (" (ex.: root@pam)" if body.kind == "proxmox" else " (ex.: root)"))
+    d["ssh_user"] = (body.ssh_user or "root").strip()[:60]
+    d["ssh_port"] = int(body.ssh_port or 22) if 1 <= int(body.ssh_port or 22) <= 65535 else 22
+    d["ssh_key"] = bool(body.ssh_key)
+    d["ssh_password"] = vault.encrypt(body.ssh_password) if body.ssh_password else (cur or {}).get("ssh_password", "")
+    d["ssh_hosts"] = {str(k).strip()[:120]: str(v).strip()[:120] for k, v in (body.ssh_hosts or {}).items()
+                      if str(k).strip() and re.fullmatch(r"[\w.:-]+", str(v).strip())}
     d["password"] = vault.encrypt(body.password) if body.password else (cur or {}).get("password", "")
     d["secret"] = vault.encrypt(body.secret) if body.secret else (cur or {}).get("secret", "")
     if auth == "password":
@@ -14520,6 +14539,7 @@ async def virt_delete(hid: str, user: dict = Depends(get_current_user)):
     await db.virt_status.delete_one({"_id": hid})
     await db.virt_samples.delete_many({"hv_id": hid})
     await db.virt_watch.delete_many({"hv_id": hid})
+    await db.vbackup_jobs.delete_many({"hv_id": hid})
     await _virt_tunnel_close(hid)
     _virt_pve.pop(hid, None)
     return {"ok": True}
@@ -14672,6 +14692,449 @@ async def virt_history(hid: str, hours: int = 24, user: dict = Depends(get_curre
     rows = await db.virt_samples.find({"hv_id": hid, "ts": {"$gte": since}}, {"_id": 0, "ts": 0, "hv_id": 0}).sort("at", 1).to_list(50000)
     step = max(1, len(rows) // 400)                      # no máximo ~400 pontos por gráfico
     return rows[::step]
+
+
+# ---------- Backup de VMs (Proxmox / ESXi) para NAS por SFTP, FTP ou FTPS ----------
+_vb_running: Dict[str, dict] = {}        # run_id -> {"task", "progress", "current", "job_id", "hv_id"}
+_vb_hv_lock: Dict[str, asyncio.Lock] = {}
+
+
+def _vb_tz():
+    from zoneinfo import ZoneInfo
+    try:
+        return ZoneInfo(os.environ.get("BASTION_TZ") or "America/Sao_Paulo")
+    except Exception:
+        return timezone.utc
+
+
+def _vb_dest_public(d: dict) -> dict:
+    out = {k: v for k, v in d.items() if k != "password"}
+    out["has_password"] = bool(d.get("password"))
+    return out
+
+
+class VbDestIn(BaseModel):
+    name: str
+    kind: str = "sftp"              # sftp | ftp | ftps
+    host: str
+    port: Optional[int] = None
+    user: str = ""
+    password: str = ""              # vazio na edição = mantém
+    path: str = "/backup/vms"
+    passive: bool = True            # FTP
+    verify_tls: bool = False        # FTPS
+    agent_id: Optional[str] = None  # SFTP pelo jump
+
+
+async def _vb_dest_clean(body: VbDestIn, user: dict, cur: Optional[dict] = None) -> dict:
+    if body.kind not in ("sftp", "ftp", "ftps"):
+        raise HTTPException(status_code=400, detail="Tipo inválido")
+    host = re.sub(r"^(s?ftps?|https?)://", "", (body.host or "").strip()).split("/")[0].strip("[]")
+    name = re.sub(r"[\r\n<>]", " ", body.name or "").strip()[:60]
+    if not name or not re.fullmatch(r"[\w.:-]+", host or ""):
+        raise HTTPException(status_code=400, detail="Informe nome e endereço do NAS")
+    path = "/" + "/".join(p for p in (body.path or "").replace("\\", "/").split("/") if p and p not in (".", ".."))
+    if body.agent_id:
+        if body.kind != "sftp":
+            raise HTTPException(status_code=400, detail="Pelo jump só SFTP (FTP abre conexões de dados extras que o túnel não leva)")
+        await _get_agent_for(user, body.agent_id)
+    d = {"name": name, "kind": body.kind, "host": host, "port": int(body.port or (22 if body.kind == "sftp" else 21)),
+         "user": (body.user or "").strip()[:120], "path": path, "passive": bool(body.passive), "verify_tls": bool(body.verify_tls),
+         "agent_id": body.agent_id or None}
+    if not d["user"]:
+        raise HTTPException(status_code=400, detail="Informe o usuário do NAS")
+    d["password"] = vault.encrypt(body.password) if body.password else (cur or {}).get("password", "")
+    return d
+
+
+async def _vb_sink(dest: dict):
+    pw = vault.decrypt(dest.get("password", ""))
+    if dest["kind"] == "sftp":
+        hops = []
+        if dest.get("agent_id"):
+            priv, _, _ = await _get_ssh_key()
+            hops = [_agent_hop(a, priv) for a in await _agent_chain(dest["agent_id"])]
+        hops.append(Hop(dest["host"], int(dest["port"]), dest["user"], password=pw or None, label=dest["name"]))
+        w = SSHClientWrapper(hops)
+        try:
+            await w.connect()
+            sftp = await w.conn.start_sftp_client()
+        except Exception as e:
+            await w.close()
+            raise vbackup.BackupError(f"não conectou no SFTP do NAS {dest['host']}:{dest['port']} ({type(e).__name__}: {str(e)[:150]})")
+        return vbackup.SftpSink(sftp, w.close)
+    return await vbackup.FtpSink(dest["host"], int(dest["port"]), dest["user"], pw, tls=dest["kind"] == "ftps",
+                                 verify=dest.get("verify_tls", False), passive=dest.get("passive", True)).connect()
+
+
+@api.get("/virt/backup/dests")
+async def vb_dests(user: dict = Depends(get_current_user)):
+    return [_vb_dest_public(d) for d in await db.vbackup_dests.find(_virt_scope(user), {"_id": 0}).sort("name", 1).to_list(200)]
+
+
+@api.post("/virt/backup/dests")
+async def vb_dest_create(body: VbDestIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    d = await _vb_dest_clean(body, user)
+    d.update({"id": os.urandom(8).hex(), "owner_id": user["id"]})
+    await db.vbackup_dests.insert_one(dict(d))
+    return _vb_dest_public(d)
+
+
+async def _vb_dest_get(user: dict, did: str) -> dict:
+    d = await db.vbackup_dests.find_one({"id": did, **_virt_scope(user)}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Destino não encontrado")
+    return d
+
+
+@api.put("/virt/backup/dests/{did}")
+async def vb_dest_update(did: str, body: VbDestIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await _vb_dest_get(user, did)
+    d = await _vb_dest_clean(body, user, cur)
+    await db.vbackup_dests.update_one({"id": did}, {"$set": d})
+    return _vb_dest_public({**cur, **d})
+
+
+@api.delete("/virt/backup/dests/{did}")
+async def vb_dest_delete(did: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _vb_dest_get(user, did)
+    if await db.vbackup_jobs.find_one({"dest_id": did}):
+        raise HTTPException(status_code=409, detail="Há rotinas usando este destino: troque ou apague as rotinas antes")
+    await db.vbackup_dests.delete_one({"id": did})
+    return {"ok": True}
+
+
+@api.post("/virt/backup/dests/test")
+async def vb_dest_test(body: VbDestIn, did: Optional[str] = None, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await _vb_dest_get(user, did) if did else None
+    d = await _vb_dest_clean(body, user, cur)
+    try:
+        sink = await _vb_sink(d)
+    except vbackup.BackupError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except VpnDown as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    try:
+        await sink.check(d["path"])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Conectou, mas não consegui gravar em {d['path']}: {type(e).__name__} {str(e)[:150]}")
+    finally:
+        await sink.close()
+    return {"ok": True, "detail": f"{sink.label} ok: criei e apaguei um arquivo de teste em {d['path']}"}
+
+
+class VbJobIn(BaseModel):
+    name: str
+    hv_id: str
+    dest_id: str
+    vms: List[str] = []             # ids das VMs; vazio + all=True = todas
+    all: bool = False
+    exclude: List[str] = []
+    days: List[int] = [0, 1, 2, 3, 4, 5, 6]
+    time: str = "01:00"
+    keep: int = 7
+    mode: str = "snapshot"          # Proxmox: snapshot | suspend | stop
+    compress: bool = True           # ESXi: gzip dos discos
+    quiesce: bool = False           # ESXi: snapshot com VMware Tools (sistema de arquivos consistente)
+    enabled: bool = True
+
+
+async def _vb_job_clean(body: VbJobIn, user: dict) -> dict:
+    name = re.sub(r"[\r\n<>]", " ", body.name or "").strip()[:60]
+    if not name:
+        raise HTTPException(status_code=400, detail="Dê um nome à rotina")
+    await _virt_get(user, body.hv_id)
+    await _vb_dest_get(user, body.dest_id)
+    if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", body.time or ""):
+        raise HTTPException(status_code=400, detail="Horário no formato HH:MM")
+    days = sorted({int(x) for x in body.days if 0 <= int(x) <= 6})
+    if not days:
+        raise HTTPException(status_code=400, detail="Escolha pelo menos um dia")
+    if not body.all and not body.vms:
+        raise HTTPException(status_code=400, detail="Escolha as VMs (ou marque todas)")
+    return {"name": name, "hv_id": body.hv_id, "dest_id": body.dest_id, "vms": [str(v)[:200] for v in body.vms][:500],
+            "all": bool(body.all), "exclude": [str(v)[:200] for v in body.exclude][:500], "days": days, "time": body.time,
+            "keep": max(1, min(int(body.keep or 7), 365)), "mode": body.mode if body.mode in ("snapshot", "suspend", "stop") else "snapshot",
+            "compress": bool(body.compress), "quiesce": bool(body.quiesce), "enabled": bool(body.enabled)}
+
+
+async def _vb_job_get(user: dict, jid: str) -> dict:
+    j = await db.vbackup_jobs.find_one({"id": jid, **_virt_scope(user)}, {"_id": 0})
+    if not j:
+        raise HTTPException(status_code=404, detail="Rotina não encontrada")
+    return j
+
+
+def _vb_run_public(r: dict) -> dict:
+    out = {k: v for k, v in r.items() if k not in ("_id", "ts")}
+    live = _vb_running.get(r["id"])
+    if live:
+        p = live["progress"]
+        out["live"] = {"current": live.get("current", ""), "bytes": p.bytes, "rate": round(p.rate())}
+    return out
+
+
+@api.get("/virt/backup/jobs")
+async def vb_jobs(user: dict = Depends(get_current_user)):
+    jobs = await db.vbackup_jobs.find(_virt_scope(user), {"_id": 0}).sort("name", 1).to_list(500)
+    for j in jobs:
+        last = await db.vbackup_runs.find({"job_id": j["id"]}, {"_id": 0, "ts": 0}).sort("started_at", -1).to_list(1)
+        j["last_run"] = _vb_run_public(last[0]) if last else None
+        j["running"] = any(x["job_id"] == j["id"] for x in _vb_running.values())
+    return jobs
+
+
+@api.post("/virt/backup/jobs")
+async def vb_job_create(body: VbJobIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    d = await _vb_job_clean(body, user)
+    d.update({"id": os.urandom(8).hex(), "owner_id": user["id"], "created_at": datetime.now(timezone.utc).isoformat(), "last_slot": None})
+    await db.vbackup_jobs.insert_one(dict(d))
+    return {k: v for k, v in d.items() if k != "_id"}
+
+
+@api.put("/virt/backup/jobs/{jid}")
+async def vb_job_update(jid: str, body: VbJobIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    cur = await _vb_job_get(user, jid)
+    d = await _vb_job_clean(body, user)
+    await db.vbackup_jobs.update_one({"id": jid}, {"$set": d})
+    return {**cur, **d}
+
+
+@api.delete("/virt/backup/jobs/{jid}")
+async def vb_job_delete(jid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _vb_job_get(user, jid)
+    for r in list(_vb_running.values()):
+        if r["job_id"] == jid:
+            r["task"].cancel()
+    await db.vbackup_jobs.delete_one({"id": jid})
+    return {"ok": True}
+
+
+@api.post("/virt/backup/jobs/{jid}/run")
+async def vb_job_run(jid: str, body: Optional[Dict[str, Any]] = None, user: dict = Depends(get_current_user)):
+    """Roda agora (body opcional {"vms": [...]} para só algumas VMs)."""
+    _no_viewer(user)
+    j = await _vb_job_get(user, jid)
+    if any(x["job_id"] == jid for x in _vb_running.values()):
+        raise HTTPException(status_code=409, detail="Esta rotina já está rodando")
+    only = [str(v) for v in ((body or {}).get("vms") or [])]
+    rid = await _vb_start(j, by=user.get("email", ""), only=only)
+    return {"run_id": rid}
+
+
+@api.get("/virt/backup/runs")
+async def vb_runs(job_id: Optional[str] = None, hv_id: Optional[str] = None, limit: int = 50, user: dict = Depends(get_current_user)):
+    f: dict = {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+    if job_id:
+        f["job_id"] = job_id
+    if hv_id:
+        f["hv_id"] = hv_id
+    rows = await db.vbackup_runs.find(f, {"_id": 0, "ts": 0}).sort("started_at", -1).to_list(min(max(limit, 1), 300))
+    return [_vb_run_public(r) for r in rows]
+
+
+@api.post("/virt/backup/runs/{rid}/cancel")
+async def vb_run_cancel(rid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    r = await db.vbackup_runs.find_one({"id": rid, **({} if user.get("role") == "admin" else {"owner_id": user["id"]})})
+    live = _vb_running.get(rid)
+    if not r or not live:
+        raise HTTPException(status_code=404, detail="Execução não está rodando")
+    live["task"].cancel()
+    return {"ok": True}
+
+
+async def _vb_start(job: dict, by: str, only: Optional[List[str]] = None, slot: Optional[str] = None) -> str:
+    rid = os.urandom(8).hex()
+    now = datetime.now(timezone.utc)
+    h = await db.virt_hosts.find_one({"id": job["hv_id"]}, {"_id": 0}) or {}
+    run = {"id": rid, "job_id": job["id"], "job_name": job["name"], "hv_id": job["hv_id"], "hv_name": h.get("name", "?"),
+           "owner_id": job.get("owner_id"), "by": by or "agendado", "slot": slot, "ts": now, "started_at": now.isoformat(),
+           "finished_at": None, "state": "running", "items": [], "bytes": 0, "error": ""}
+    await db.vbackup_runs.insert_one(dict(run))
+    prog = vbackup.Progress()
+    t = asyncio.create_task(_vb_execute(job, run, only or [], prog))
+    _vb_running[rid] = {"task": t, "progress": prog, "job_id": job["id"], "hv_id": job["hv_id"], "current": ""}
+    t.add_done_callback(lambda _: _vb_running.pop(rid, None))
+    return rid
+
+
+async def _vb_ssh(h: dict, address: str):
+    priv, _, _ = await _get_ssh_key()
+    hops = [_agent_hop(a, priv) for a in await _agent_chain(h["agent_id"])] if h.get("agent_id") else []
+    pw = vault.decrypt(h.get("ssh_password", ""))
+    if not pw and not (h.get("ssh_key") and priv):
+        raise vbackup.BackupError("cadastre a senha SSH (root) do hypervisor em Editar → Backup")
+    hops.append(Hop(address, int(h.get("ssh_port") or 22), h.get("ssh_user") or "root",
+                    private_key=priv if h.get("ssh_key") else None, password=pw or None, label=address))
+    w = SSHClientWrapper(hops)
+    try:
+        await w.connect()
+    except Exception as e:
+        await w.close()
+        raise vbackup.BackupError(f"SSH em {address}:{h.get('ssh_port') or 22} falhou ({type(e).__name__}: {str(e)[:150]})")
+    return w
+
+
+async def _vb_address(h: dict, inv: dict, vm: dict, cache: dict) -> str:
+    """Endereço SSH do nó (Proxmox) ou host ESXi onde a VM está."""
+    node = vm.get("host") or ""
+    over = h.get("ssh_hosts") or {}
+    if over.get(node):
+        return over[node]
+    if h["kind"] == "proxmox":
+        if "ips" not in cache:
+            try:
+                cache["ips"] = await _virt_call(h, "node_ips")
+            except Exception:
+                cache["ips"] = {}
+        if cache["ips"].get(node):
+            return cache["ips"][node]
+        return h["host"] if len(inv.get("hosts") or []) <= 1 else node
+    if inv.get("api_type") == "HostAgent" or len(inv.get("hosts") or []) <= 1:
+        return h["host"]                         # ESXi cadastrado direto
+    return node                                  # vCenter: o nome do host costuma ser o IP/FQDN
+
+
+async def _vb_execute(job: dict, run: dict, only: List[str], prog):
+    rid = run["id"]
+    lock = _vb_hv_lock.setdefault(job["hv_id"], asyncio.Lock())
+    state, err = "error", ""
+    items: List[dict] = []
+    sink = None
+    try:
+        async with lock:                         # uma rotina por hypervisor de cada vez
+            h = await db.virt_hosts.find_one({"id": job["hv_id"]}, {"_id": 0})
+            dest = await db.vbackup_dests.find_one({"id": job["dest_id"]}, {"_id": 0})
+            if not h or not dest:
+                raise vbackup.BackupError("hypervisor ou destino foi removido")
+            await _virt_poll(h)
+            st = await db.virt_status.find_one({"_id": h["id"]}) or {}
+            if not st.get("ok"):
+                raise vbackup.BackupError(f"o hypervisor não respondeu: {st.get('error', '')}")
+            inv = st["inv"]
+            vms = [v for v in inv["vms"] if not v.get("template")]
+            sel = only or ([] if job.get("all") else job.get("vms") or [])
+            vms = [v for v in vms if (v["id"] in sel if sel else True) and v["id"] not in (job.get("exclude") or [])]
+            missing = [x for x in sel if x not in {v["id"] for v in inv["vms"]}]
+            items = [{"vm_id": v["id"], "name": v["name"], "state": "waiting", "bytes": 0, "secs": 0, "error": "", "path": ""} for v in vms]
+            items += [{"vm_id": x, "name": x, "state": "error", "bytes": 0, "secs": 0, "error": "VM não existe mais no hypervisor", "path": ""} for x in missing]
+            if not items:
+                raise vbackup.BackupError("nenhuma VM selecionada existe no hypervisor")
+            await db.vbackup_runs.update_one({"id": rid}, {"$set": {"items": items}})
+            sink = await _vb_sink(dest)
+            when = datetime.now(_vb_tz())
+            folder_stamp = vbackup.stamp(when)
+            cache: dict = {}
+            conns: Dict[str, Any] = {}
+            try:
+                for it, vm in zip(items, vms):
+                    it["state"] = "running"
+                    _vb_running[rid]["current"] = vm["name"]
+                    await db.vbackup_runs.update_one({"id": rid}, {"$set": {"items": items}})
+                    vm_folder = posixpath.join(dest["path"], vbackup.safe(h["name"]), f"{vbackup.safe(vm['name'])}_{vbackup.safe(vm.get('vmid') or vm['id'], 30)}")
+                    folder = posixpath.join(vm_folder, folder_stamp)
+                    t0, addr = time.time(), None
+                    try:
+                        addr = await _vb_address(h, inv, vm, cache)
+                        if addr not in conns:
+                            conns[addr] = await _vb_ssh(h, addr)
+                        conn = conns[addr].conn
+                        if h["kind"] == "proxmox":
+                            res = await vbackup.backup_proxmox(conn, vm, sink, folder, job.get("mode", "snapshot"), prog, when)
+                        else:
+                            res = await vbackup.backup_esxi(conn, vm, sink, folder, job.get("compress", True), job.get("quiesce", False), prog)
+                        removed = await vbackup.prune(sink, vm_folder, int(job.get("keep") or 7))
+                        it.update({"state": "ok", "bytes": res["bytes"], "path": folder, "files": res["files"], "format": res["format"],
+                                   "pruned": removed})
+                        await _vb_incident(h, job, vm, None)
+                    except asyncio.CancelledError:
+                        it.update({"state": "cancelled", "error": "cancelado"})
+                        await _vb_cleanup(sink, folder)
+                        raise
+                    except Exception as e:
+                        msg = str(e) if isinstance(e, (vbackup.BackupError, VpnDown)) else f"{type(e).__name__}: {str(e)[:200]}"
+                        it.update({"state": "error", "error": msg[:400]})
+                        await _vb_cleanup(sink, folder)
+                        await _vb_incident(h, job, vm, msg)
+                        if addr in conns and (isinstance(e, (OSError, EOFError)) or conns[addr].conn is None
+                                              or getattr(conns[addr].conn, "_transport", None) is None):
+                            try:
+                                await conns.pop(addr).close()     # conexão caiu: a próxima VM abre outra
+                            except Exception:
+                                pass
+                    it["secs"] = round(time.time() - t0)
+                    await db.vbackup_runs.update_one({"id": rid}, {"$set": {"items": items, "bytes": prog.bytes}})
+            finally:
+                for w in conns.values():
+                    try:
+                        await w.close()
+                    except Exception:
+                        pass
+        oks = sum(1 for i in items if i["state"] == "ok")
+        state = "ok" if oks == len(items) else "partial" if oks else "error"
+        err = "" if state == "ok" else f"{len(items) - oks} de {len(items)} VM(s) com erro"
+    except asyncio.CancelledError:
+        state, err = "cancelled", "cancelado por um usuário"
+    except Exception as e:
+        state, err = "error", str(e)[:400] if isinstance(e, (vbackup.BackupError, VpnDown)) else f"{type(e).__name__}: {str(e)[:300]}"
+    finally:
+        if sink:
+            try:
+                await sink.close()
+            except Exception:
+                pass
+        await db.vbackup_runs.update_one({"id": rid}, {"$set": {"state": state, "error": err, "items": items, "bytes": prog.bytes,
+                                                               "finished_at": datetime.now(timezone.utc).isoformat()}})
+        if state in ("error", "partial") and not items:
+            await _vb_incident(await db.virt_hosts.find_one({"id": job["hv_id"]}, {"_id": 0}) or {"id": job["hv_id"], "name": run["hv_name"], "host": ""},
+                               job, None, err)
+
+
+async def _vb_cleanup(sink, folder: str):
+    try:
+        await sink.rmtree(folder)               # cópia pela metade não fica parecendo backup bom
+    except Exception:
+        pass
+
+
+async def _vb_incident(h: dict, job: dict, vm: Optional[dict], error: Optional[str]):
+    key = f"virt:backup:{job['id']}:{vm['id'] if vm else '*'}"
+    try:
+        await inc_center.ingest("virt", {"key": key, "status": "problem" if error else "ok", "severity": "high",
+                                         "title": f"Backup falhou: {vm['name'] if vm else job['name']} ({h.get('name', '')})",
+                                         "description": error or "", "host": h.get("host", ""), "host_name": h.get("name", ""),
+                                         "owner_ids": [job["owner_id"]] if job.get("owner_id") else []})
+    except Exception as e:
+        logger.warning(f"backup incidente: {e}")
+
+
+async def _vb_loop():
+    await asyncio.sleep(40)
+    # execução que estava rodando quando o BastiON reiniciou
+    await db.vbackup_runs.update_many({"state": "running"}, {"$set": {"state": "error", "error": "o BastiON reiniciou durante o backup",
+                                                                     "finished_at": datetime.now(timezone.utc).isoformat()}})
+    while True:
+        try:
+            now = datetime.now(_vb_tz())
+            for j in await db.vbackup_jobs.find({"enabled": {"$ne": False}}, {"_id": 0}).to_list(500):
+                slot = vbackup.due(j, now)
+                if not slot or any(x["job_id"] == j["id"] for x in _vb_running.values()):
+                    continue
+                await db.vbackup_jobs.update_one({"id": j["id"]}, {"$set": {"last_slot": slot}})
+                await _vb_start(j, by="", slot=slot)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"backup de VMs: {e}")
+        await asyncio.sleep(30)
 
 
 # ---------- Health ----------
