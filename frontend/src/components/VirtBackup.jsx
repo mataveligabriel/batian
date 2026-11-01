@@ -20,6 +20,8 @@ const STATE = {
   ok: ["text-emerald-300", "concluído", CheckCircle2], partial: ["text-amber-300", "parcial", AlertTriangle], error: ["text-red-300", "erro", XCircle],
   running: ["text-sky-300", "rodando", Loader2], cancelled: ["text-slate-400", "cancelado", Square], waiting: ["text-slate-500", "na fila", Clock],
 };
+// "r620.exemplo.net.br" -> "r620" (IP fica inteiro)
+const shortHost = (h) => (!h || /^[\d.:]+$/.test(h) ? h || "" : h.split(".")[0]);
 const daysText = (d) => (!d || d.length === 7 ? "todo dia" : d.length === 5 && [0, 1, 2, 3, 4].every((x) => d.includes(x)) ? "seg a sex" : d.map((x) => DAYS[x]).join(", "));
 
 function St({ s, spin = true }) {
@@ -112,6 +114,7 @@ function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
     api.get(`/virt/hypervisors/${f.hv_id}`).then((r) => setVms(((r.data.status?.inv?.vms) || []).filter((v) => !v.template))).catch(() => setVms([]));
   }, [f.hv_id]);
   const list = useMemo(() => (vms || []).filter((v) => !q || `${v.name} ${v.vmid} ${v.host}`.toLowerCase().includes(q.toLowerCase())).sort((a, b) => a.name.localeCompare(b.name)), [vms, q]);
+  const multiHost = new Set((vms || []).map((v) => v.host)).size > 1;      // ESXi sozinho: o host é sempre o mesmo, não mostra
   const key = f.all ? "exclude" : "vms";
   const toggle = (id) => setF((p) => ({ ...p, [key]: p[key].includes(id) ? p[key].filter((x) => x !== id) : [...p[key], id] }));
   const save = async () => {
@@ -153,8 +156,8 @@ function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
               : list.map((v) => (
                 <label key={v.id} className="flex items-center gap-2 text-sm px-1 py-0.5 rounded hover:bg-slate-800/50 cursor-pointer" data-testid={`vb-vm-${v.vmid}`}>
                   <input type="checkbox" checked={f[key].includes(v.id)} onChange={() => toggle(v.id)} />
-                  <span className={`truncate ${f.all && f.exclude.includes(v.id) ? "line-through text-slate-500" : "text-slate-200"}`}>{v.name}</span>
-                  <span className="text-[11px] text-slate-500 font-mono ml-auto">{pve ? v.vmid : ""} {v.host}</span>
+                  <span className={`flex-1 min-w-0 truncate ${f.all && f.exclude.includes(v.id) ? "line-through text-slate-500" : "text-slate-200"}`} title={v.name}>{v.name}</span>
+                  {(pve || multiHost) && <span className="text-[11px] text-slate-500 font-mono shrink-0 max-w-[40%] truncate" title={v.host}>{pve ? `${v.vmid} · ` : ""}{shortHost(v.host)}</span>}
                 </label>
               ))}
           </div>

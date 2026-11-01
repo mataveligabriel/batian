@@ -365,7 +365,7 @@ function Detail({ hv, readOnly, onEdit, reloadList, setAsk }) {
                         {v.template && <span className="text-[10px] px-1 rounded bg-slate-700 text-slate-300">template</span>}
                         {v.type === "lxc" && <span className="text-[10px] px-1 rounded bg-indigo-900/60 text-indigo-200">CT</span>}</div>
                         <div className="text-[11px] text-slate-500 font-mono">{hv.kind === "proxmox" ? `ID ${v.vmid}` : v.id} · {v.cpus} vCPU{v.tags ? ` · ${v.tags}` : ""}</div></td>
-                      <td className="px-2 text-xs text-slate-400">{v.host}</td>
+                      <td className="px-2 text-xs text-slate-400 max-w-[140px] truncate" title={v.host}>{/^[\d.:]+$/.test(v.host || "") ? v.host : (v.host || "").split(".")[0]}</td>
                       <td className="px-2"><span className={`flex items-center gap-1.5 text-xs ${tc}`}><span className={`w-2 h-2 rounded-full ${dot}`} />{sl}</span></td>
                       <td className="px-2">{v.state === "running" ? <Bar v={v.cpu_pct} /> : <span className="text-slate-600">—</span>}</td>
                       <td className="px-2 text-xs font-mono text-slate-400">{v.state === "running" && v.mem_used ? `${bytes(v.mem_used)} / ` : ""}{bytes(v.mem_total)}</td>
