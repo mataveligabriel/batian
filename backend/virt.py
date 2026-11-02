@@ -306,7 +306,7 @@ class VMware:
                 return task.info.result
             if st == "error":
                 raise VirtError(f"VMware: {_fault(task.info.error)}")
-            time.sleep(0.5)
+            time.sleep(min(5.0, 0.5 + (time.time() - t0) / 60))      # tarefa longa: consulta com menos frequência
         return None                                  # segue rodando no VMware; a tela atualiza na próxima coleta
 
     def action(self, vm_id: str, action: str):
@@ -392,7 +392,7 @@ class VMware:
     def remove_all_snapshots(self, vm_id: str):
         vm = self._vm(vm_id)
         try:
-            return self._wait(vm.RemoveAllSnapshots_Task(), 4 * 3600)
+            return self._wait(vm.RemoveAllSnapshots_Task(), 48 * 3600)
         except VirtError:
             raise
         except Exception as e:

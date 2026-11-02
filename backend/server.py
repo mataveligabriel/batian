@@ -14655,12 +14655,14 @@ async def virt_snap_op(hid: str, body: VirtSnapIn, user: dict = Depends(get_curr
             await _virt_call(h, "snapshot_create", body.vm_id, name[:40], body.description[:500], bool(body.memory))
             label, tgt = "Criar snapshot", f"{vm} · {name[:40]}"
         elif body.op == "delete_all":
-            if h["kind"] == "vmware":
-                await _virt_call(h, "remove_all_snapshots", body.vm_id)
-            else:
-                for sn in sorted(await _virt_call(h, "snapshots", body.vm_id), key=lambda x: x.get("created") or "", reverse=True):
-                    await _virt_call(h, "snapshot_delete", body.vm_id, sn["id"])
-            label, tgt = "Apagar todos os snapshots (consolidar)", vm
+            # consolidar disco grande leva de minutos a horas: roda em segundo plano (a tela não fica esperando)
+            key = f"{hid}:{body.vm_id}"
+            if key in _virt_consolidating:
+                raise HTTPException(status_code=409, detail="Já está consolidando os snapshots desta VM — acompanhe em Ações")
+            _virt_consolidating.add(key)
+            asyncio.create_task(_virt_delete_all_snaps(h, user, body.vm_id, vm, key))
+            await _virt_log(user, h, "Apagar todos os snapshots: iniciado", vm)
+            return {"ok": True, "background": True}
         elif body.op in ("revert", "delete"):
             if not body.snap:
                 raise HTTPException(status_code=400, detail="Escolha o snapshot")
@@ -14675,6 +14677,33 @@ async def virt_snap_op(hid: str, body: VirtSnapIn, user: dict = Depends(get_curr
         raise HTTPException(status_code=400, detail=str(e))
     await _virt_log(user, h, label, tgt)
     return {"ok": True}
+
+
+_virt_consolidating: set = set()
+
+
+async def _virt_delete_all_snaps(h: dict, user: dict, vm_id: str, vm: str, key: str):
+    t0 = time.time()
+    try:
+        if h["kind"] == "vmware":
+            api = await _vb_api(h)
+            try:
+                await asyncio.to_thread(api.remove_all_snapshots, vm_id)      # sem limite de 15 min: consolidar demora
+            finally:
+                await asyncio.to_thread(api.close)
+        else:
+            for sn in sorted(await _virt_call(h, "snapshots", vm_id), key=lambda x: x.get("created") or "", reverse=True):
+                await _virt_call(h, "snapshot_delete", vm_id, sn["id"])
+        mins = max(1, round((time.time() - t0) / 60))
+        await _virt_log(user, h, f"Apagar todos os snapshots: concluído em {mins} min", vm)
+    except Exception as e:
+        await _virt_log(user, h, "Apagar todos os snapshots", vm, False, str(e))
+    finally:
+        _virt_consolidating.discard(key)
+        try:
+            await _virt_poll(h)
+        except Exception:
+            pass
 
 
 class VirtWatchIn(BaseModel):

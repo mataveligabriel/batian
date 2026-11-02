@@ -254,7 +254,7 @@ function SnapDialog({ hv, vm, readOnly, onClose, setAsk }) {
             <span className="flex-1">Snapshots antigos atrasam o backup (o disco fica travado) e impedem o incremental.</span>
             <Button size="sm" variant="outline" onClick={() => setAsk({ title: "Apagar todos os snapshots?", danger: true, ok: "Apagar e consolidar",
               text: `Todos os snapshots de ${vm.name} são apagados e o conteúdo é consolidado no disco (a VM fica como está agora). Pode demorar e deixar a VM mais lenta durante a consolidação.`,
-              run: async () => { try { await op({ op: "delete_all" }); toast.success("Snapshots apagados"); } catch (e) { toast.error(formatApiError(e)); } } })}
+              run: async () => { try { await api.post(`/virt/hypervisors/${hv.id}/snapshots`, { vm_id: vm.id, op: "delete_all" }); toast.success("Consolidação iniciada em segundo plano — pode levar de minutos a horas; o resultado aparece em Ações"); onClose(); } catch (e) { toast.error(formatApiError(e)); } } })}
               className="border-line text-red-300 h-8" data-testid="virt-snap-delall">Apagar todos (consolidar)</Button>
           </div>
         )}
