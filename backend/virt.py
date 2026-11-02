@@ -179,7 +179,10 @@ def _fault(e: Exception) -> str:
         return "usuário ou senha recusados pelo VMware"
     if "ToolsUnavailable" in name or "Tools" in msg:
         return "o VMware Tools não está rodando nessa VM — use 'Desligar à força' / 'Reset à força'"
+    if "TaskInProgress" in name:
+        return "o ESXi ainda está executando outra tarefa nesta VM (por exemplo, a consolidação de snapshots pedida antes) — aguarde ela terminar (Tarefas recentes no ESXi)"
     if "InvalidPowerState" in name or "InvalidState" in name:
+
         return "a VM não está no estado certo para essa ação"
     return f"{name}: {msg}"[:300]
 
@@ -396,6 +399,15 @@ class VMware:
         except VirtError:
             raise
         except Exception as e:
+            if "TaskInProgress" in type(e).__name__:
+                # já tem uma remoção/consolidação rodando (pedida antes): acompanha ela em vez de falhar
+                for t in getattr(vm, "recentTask", None) or []:
+                    try:
+                        did = (t.info.descriptionId or "").lower()
+                        if str(t.info.state) in ("running", "queued") and ("snapshot" in did or "consolidat" in did):
+                            return self._wait(t, 48 * 3600)
+                    except Exception:
+                        continue
             raise VirtError(f"VMware: {_fault(e)}")
 
     def _tree(self, vm) -> list:
