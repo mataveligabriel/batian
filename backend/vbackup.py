@@ -791,9 +791,9 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
             out_vmdk = posixpath.join(tmp, f"d{i}.vmdk")
             await run(conn, f"rm -rf {shlex.quote(tmp)}; mkdir -p {shlex.quote(tmp)}")
             _stage(f"consolidando {posixpath.basename(t)} com vmkfstools (disco travado pelos snapshots da VM)")
-            from vnfs import run_progress
+            from vnfs import run_progress, disk_size
             code, out = await run_progress(conn, f"vmkfstools -i {shlex.quote(t)} -d thin {shlex.quote(out_vmdk)}", progress,
-                                           f"consolidando {posixpath.basename(t)} (snapshots antigos da VM; apague-os para pular esta fase)")
+                                           f"consolidando {posixpath.basename(t)} (disco travado pela VM ligada)", total=await disk_size(conn, t))
             err = ""
             if code:
                 msg = (err or out).strip().splitlines()

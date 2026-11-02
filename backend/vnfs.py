@@ -115,13 +115,22 @@ class HostFs(Sink):
             await self.on_close()
 
 
-async def run_progress(conn, cmd: str, progress, label: str, timeout_idle: int = 3600) -> tuple:
-    """Roda e transforma o "Clone: 37% done." do vmkfstools (ou qualquer NN%) em andamento na tela."""
+async def disk_size(conn, desc_path: str) -> int:
+    """Tamanho do disco virtual pelo descritor (soma dos extents: setores x 512)."""
+    code, out, _ = await run(conn, f"cat {shlex.quote(desc_path)}")
+    return sum(int(x) for x in re.findall(r"^\s*RW\s+(\d+)\s", out, re.M)) * 512 if code == 0 else 0
+
+
+async def run_progress(conn, cmd: str, progress, label: str, timeout_idle: int = 3600, total: int = 0, sent: bool = False) -> tuple:
+    """Roda e transforma o "Clone: 37% done." do vmkfstools (ou qualquer NN%) em andamento na tela.
+    total = tamanho do disco: aí mostra GB e MB/s e soma no "lido" (e no "enviado", com sent=True: o host grava
+    direto no NAS, os bytes não passam pelo BastiON)."""
     import asyncio
     import time
     proc = await conn.create_process(cmd + " 2>&1", encoding=None)
     buf, tail = b"", b""
     t0 = time.time()
+    counted = 0
     try:
         while True:
             b = await asyncio.wait_for(proc.stdout.read(4096), timeout_idle)
@@ -137,7 +146,17 @@ async def run_progress(conn, cmd: str, progress, label: str, timeout_idle: int =
                 el = time.time() - t0
                 left = el * (100 - pct) / pct if pct >= 2 else 0
                 eta = (f", faltam ~{int(left // 3600)}h{int(left % 3600 // 60):02d}" if left >= 3600 else f", faltam ~{max(1, int(left // 60))} min") if left else ""
-                progress.set_stage(f"{label}: {pct}%{eta}")
+                extra = ""
+                if total:
+                    done = total * pct // 100
+                    if done > counted:
+                        if hasattr(progress, "add_raw"):
+                            progress.add_raw(done - counted)
+                        if sent:
+                            progress(done - counted)
+                        counted = done
+                    extra = f" ({done / 1e9:.1f} de {total / 1e9:.1f} GB, {done / max(el, 0.001) / 1e6:.0f} MB/s)"
+                progress.set_stage(f"{label}: {pct}%{extra}{eta}")
         await proc.wait_closed()
     finally:
         proc.close()
@@ -183,7 +202,9 @@ async def backup_esxi_nfs(conn, vm: dict, fs: HostFs, folder: str, quiesce: bool
             if base in used:
                 base = f"{len(used)}_{base}"
             used.add(base)
-            code, txt = await run_progress(conn, f"vmkfstools -i {q(src)} -d thin {q(posixpath.join(dst, base))}", progress, f"copiando {base} para o NFS")
+            size = await disk_size(conn, src)
+            code, txt = await run_progress(conn, f"vmkfstools -i {q(src)} -d thin {q(posixpath.join(dst, base))}", progress, f"copiando {base} para o NFS",
+                                           total=size, sent=True)
             if code:
                 raise BackupError(f"o vmkfstools não copiou {base} para o NFS: {' '.join(txt.strip().splitlines()[-2:])[:200]}")
             new_vmx = new_vmx.replace(f'"{d}"', f'"{base}"')

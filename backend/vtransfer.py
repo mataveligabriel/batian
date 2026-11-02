@@ -441,7 +441,8 @@ async def restore_vmware_esxi_nfs(conn, fs, src_folder: str, folder: str, progre
         elif n.endswith(".gz"):
             code, out, err = await run(conn, f"gunzip -c {q(p)} > {q(posixpath.join(folder, n[:-3]))}", 12 * 3600)
         elif n.endswith(".vmdk"):
-            code, out = await vnfs.run_progress(conn, f"vmkfstools -i {q(p)} -d thin {q(posixpath.join(folder, n))}", progress, f"copiando {n} do NFS")
+            code, out = await vnfs.run_progress(conn, f"vmkfstools -i {q(p)} -d thin {q(posixpath.join(folder, n))}", progress, f"copiando {n} do NFS",
+                                                total=await vnfs.disk_size(conn, p), sent=True)
             err = ""
         else:
             code, out, err = await run(conn, f"cp {q(p)} {q(folder)}/", 3600)
