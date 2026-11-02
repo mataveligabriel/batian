@@ -155,7 +155,8 @@ async def run_progress(conn, cmd: str, progress, label: str, timeout_idle: int =
                         if sent:
                             progress(done - counted)
                         counted = done
-                    extra = f" ({done / 1e9:.1f} de {total / 1e9:.1f} GB, {done / max(el, 0.001) / 1e6:.0f} MB/s)"
+                    mbs = done / max(el, 0.001) / 1e6
+                    extra = f" ({done / 1e9:.1f} de {total / 1e9:.1f} GB, " + ("pulando espaço vazio do disco)" if mbs > 2000 else f"{mbs:.0f} MB/s)")
                 progress.set_stage(f"{label}: {pct}%{extra}{eta}")
         await proc.wait_closed()
     finally:

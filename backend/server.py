@@ -15110,7 +15110,10 @@ async def _vb_execute(job: dict, run: dict, only: List[str], prog):
     items: List[dict] = []
     sink = None
     try:
+        if lock.locked():
+            prog.set_stage("na fila: esperando terminar a outra rotina que está rodando neste hypervisor (uma por vez, para não disputar o disco do host)")
         async with lock:                         # uma rotina por hypervisor de cada vez
+            prog.set_stage("")
             h = await db.virt_hosts.find_one({"id": job["hv_id"]}, {"_id": 0})
             dest = await db.vbackup_dests.find_one({"id": job["dest_id"]}, {"_id": 0})
             if not h or not dest:
