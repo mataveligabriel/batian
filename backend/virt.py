@@ -107,7 +107,11 @@ class Proxmox:
             st = await self.call("GET", "cluster/status") or []
         except VirtError:
             return {}
-        return {x["name"]: x["ip"] for x in st if x.get("type") == "node" and x.get("ip")}
+        out = {x["name"]: x["ip"] for x in st if x.get("type") == "node" and x.get("ip")}
+        local = next((x["name"] for x in st if x.get("type") == "node" and x.get("local")), "")
+        if local:
+            out["__local__"] = local                 # o nó que respondeu a API (= o endereço cadastrado)
+        return out
 
     @staticmethod
     def _vm(vm_id: str) -> Tuple[str, str, str]:

@@ -15028,7 +15028,9 @@ async def _vb_ssh(h: dict, address: str):
         await w.connect()
     except Exception as e:
         await w.close()
-        raise vbackup.BackupError(f"SSH em {address}:{h.get('ssh_port') or 22} falhou ({type(e).__name__}: {str(e)[:150]})")
+        hint = (" — esse é o endereço que o hypervisor informa para o nó; se o BastiON não alcança, informe o endereço certo em "
+                "Editar hypervisor → Backup das VMs → 'Endereço SSH de cada nó'") if address != h.get("host") else ""
+        raise vbackup.BackupError(f"SSH em {address}:{h.get('ssh_port') or 22} falhou ({type(e).__name__}: {str(e)[:150]}){hint}")
     return w
 
 
@@ -15051,14 +15053,20 @@ async def _vb_address(h: dict, inv: dict, vm: dict, cache: dict) -> str:
     if over.get(node):
         return over[node]
     if h["kind"] == "proxmox":
+        # nó sozinho, ou o nó que responde a API: o endereço cadastrado (o IP do /cluster/status costuma ser o da
+        # rede interna do cluster/corosync, que o BastiON nem sempre alcança)
+        if len(inv.get("hosts") or []) <= 1:
+            return h["host"]
         if "ips" not in cache:
             try:
                 cache["ips"] = await _virt_call(h, "node_ips")
             except Exception:
                 cache["ips"] = {}
+        if cache["ips"].get("__local__") == node:
+            return h["host"]
         if cache["ips"].get(node):
             return cache["ips"][node]
-        return h["host"] if len(inv.get("hosts") or []) <= 1 else node
+        return node
     if inv.get("api_type") == "HostAgent" or len(inv.get("hosts") or []) <= 1:
         return h["host"]                         # ESXi cadastrado direto
     return node                                  # vCenter: o nome do host costuma ser o IP/FQDN
