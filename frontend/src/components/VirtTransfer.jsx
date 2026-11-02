@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Loader2, Folder, ArrowUp, RotateCcw, Server, AlertTriangle, FileText } from "lucide-react";
+import { Loader2, Folder, ArrowUp, RotateCcw, Server, AlertTriangle, FileText, Trash2 } from "lucide-react";
 
 // Restaurar backup do NAS / copiar ou migrar VM entre servidores (ESXi -> ESXi, Proxmox -> Proxmox, ESXi -> Proxmox).
 const lbl = "text-xs text-slate-400 mb-1 block";
@@ -116,7 +116,7 @@ export function TransferDialog({ source, hvs, onClose, onStarted }) {
 }
 
 // Navega os backups no NAS (hypervisor -> VM -> data) e restaura
-export function RestoreBrowser({ dests, hvs, readOnly, onStarted }) {
+export function RestoreBrowser({ dests, hvs, readOnly, onStarted, setAsk }) {
   const [did, setDid] = useState("");
   const [path, setPath] = useState("");
   const [data, setData] = useState(null);
@@ -133,6 +133,15 @@ export function RestoreBrowser({ dests, hvs, readOnly, onStarted }) {
   const parts = path ? path.split("/") : [];
   const up = () => setPath(parts.slice(0, -1).join("/"));
   const into = (n) => setPath(path ? `${path}/${n}` : n);
+  const remove = (rel, what, after) => setAsk({
+    title: "Apagar do NAS?", danger: true, ok: "Apagar",
+    text: `${what}\n\nNão tem volta. Se for uma cópia de uma cadeia incremental, as incrementais feitas depois dela (até o próximo completo) também são apagadas, porque dependem dela.`,
+    run: async () => {
+      try {
+        const r = await api.delete(`/virt/backup/dests/${did}/backup`, { params: { path: rel } });
+        toast.success(`Apagado: ${r.data.removed.length} pasta(s)`); after ? after() : load();
+      } catch (e) { toast.error(formatApiError(e)); }
+    } });
   const vmLabel = parts.length >= 2 ? parts[parts.length - (data?.backup ? 2 : 1)].replace(/_[^_]+$/, "") : "";
   return (
     <Card className="bg-surface border-line" data-testid="vt-browser">
@@ -156,6 +165,9 @@ export function RestoreBrowser({ dests, hvs, readOnly, onStarted }) {
                 {i.stamp ? stampText(i.name) : i.name}</button>
               {i.stamp && !readOnly && <Button size="sm" variant="ghost" className="h-7 text-brand-soft" data-testid={`vt-restore-${i.name}`}
                 onClick={() => setDlg({ path: path ? `${path}/${i.name}` : i.name, label: `${vmLabel} de ${stampText(i.name)}`, name: `${vmLabel}-restaurada`, kind: "" })}>Restaurar</Button>}
+              {!readOnly && setAsk && <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-300" title="Apagar do NAS" data-testid={`vt-del-${i.name}`}
+                onClick={() => remove(path ? `${path}/${i.name}` : i.name, i.stamp ? `Apagar a cópia de ${vmLabel} de ${stampText(i.name)}?`
+                  : parts.length === 0 ? `Apagar TODOS os backups do hypervisor ${i.name}?` : `Apagar TODAS as cópias de ${i.name.replace(/_[^_]+$/, "")}?`)}><Trash2 className="w-4 h-4" /></Button>}
             </div>
           ))}
         </div>
@@ -166,6 +178,8 @@ export function RestoreBrowser({ dests, hvs, readOnly, onStarted }) {
           <div className="text-xs font-mono text-slate-400 space-y-0.5">{data.items.map((i) => <div key={i.name}>{i.name} · {bytes(i.size)}</div>)}</div>
           {!readOnly && data.kind && <Button size="sm" onClick={() => setDlg({ path, label: `${vmLabel} de ${stampText(parts[parts.length - 1])}`, name: `${vmLabel}-restaurada`, kind: data.kind })} className="bg-brand hover:bg-brand-strong" data-testid="vt-restore-here">
             <RotateCcw className="w-4 h-4 mr-1" />Restaurar esta cópia</Button>}
+          {!readOnly && setAsk && <Button size="sm" variant="outline" onClick={() => remove(path, `Apagar a cópia de ${vmLabel} de ${stampText(parts[parts.length - 1])}?`, up)}
+            className="border-line text-red-300 ml-2" data-testid="vt-del-here"><Trash2 className="w-4 h-4 mr-1" />Apagar esta cópia</Button>}
         </div>
       )}
       {dlg && <RestoreKind dlg={dlg} did={did} hvs={hvs} onClose={() => setDlg(null)} onStarted={onStarted} />}

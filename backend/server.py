@@ -15472,6 +15472,52 @@ async def vb_browse(did: str, path: str = "", user: dict = Depends(get_current_u
     return {"path": rel, "items": items, "backup": stampdir, "kind": kind}
 
 
+@api.delete("/virt/backup/dests/{did}/backup")
+async def vb_delete_backup(did: str, path: str, user: dict = Depends(get_current_user)):
+    """Apaga uma cópia (pasta de data) ou todas as cópias de uma VM/hypervisor no NAS. Numa cadeia incremental, as
+    cópias que dependem da apagada (as incrementais seguintes até o próximo completo) vão junto."""
+    _no_viewer(user)
+    d = await _vb_dest_get(user, did)
+    rel = "/".join(p for p in (path or "").split("/") if p and p not in (".", ".."))
+    if not rel:
+        raise HTTPException(status_code=400, detail="Escolha o que apagar")
+    try:
+        sink = await _vb_sink(d)
+    except vbackup.BackupError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    removed: List[str] = []
+    try:
+        full = posixpath.join(d["path"], rel)
+        name = posixpath.basename(rel)
+        if vbackup.STAMP_RE.match(name):
+            vm_folder = posixpath.dirname(full)
+            pts = await vcbt.kinds(sink, vm_folder)
+            stamps = [p for p, _ in pts]
+            if name not in stamps:
+                raise HTTPException(status_code=404, detail="Cópia não encontrada")
+            i = stamps.index(name)
+            victims = [name]
+            for p_, inc in pts[i + 1:]:                 # incrementais que dependem desta
+                if not inc:
+                    break
+                victims.append(p_)
+            for v in victims:
+                await sink.rmtree(posixpath.join(vm_folder, v))
+                removed.append(posixpath.join(posixpath.dirname(rel), v))
+        else:
+            if full.rstrip("/") == d["path"].rstrip("/") or not await sink.isdir(full):
+                raise HTTPException(status_code=404, detail="Pasta não encontrada")
+            await sink.rmtree(full)
+            removed.append(rel)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Não consegui apagar no NAS: {type(e).__name__} {str(e)[:150]}")
+    finally:
+        await sink.close()
+    return {"ok": True, "removed": removed}
+
+
 @api.get("/virt/targets/{hid}")
 async def virt_targets(hid: str, user: dict = Depends(get_current_user)):
     """Hosts e datastores/storages de um hypervisor para escolher o destino."""

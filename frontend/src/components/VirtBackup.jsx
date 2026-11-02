@@ -319,7 +319,7 @@ export function VirtBackup({ hvs, agents, readOnly, setAsk, onEditHv }) {
         ))}
       </Card>
 
-      {dests?.length > 0 && <RestoreBrowser dests={dests} hvs={hvs} readOnly={readOnly} onStarted={load} />}
+      {dests?.length > 0 && <RestoreBrowser dests={dests} hvs={hvs} readOnly={readOnly} onStarted={load} setAsk={setAsk} />}
 
       <Card className="bg-surface border-line">
         <div className="px-3 py-2 border-b border-line text-slate-100 font-medium">Execuções</div>

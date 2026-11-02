@@ -466,13 +466,15 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label:
             if prog_err or vz["on"]:
                 n = 0                                       # quem conta o lido é o script (PROG) / o vzdump
             elif inflate is not None:
+                # disco thin vazio: 1 MB de gzip vira ~1 GB de zeros. Contar isso no loop principal travava o BastiON
+                # inteiro (tela, API, outros backups); agora vai numa thread (o zlib solta o GIL)
+                def _count(chunk, z=inflate):
+                    total_ = len(z.decompress(chunk, CHUNK * 16))
+                    while z.unconsumed_tail:
+                        total_ += len(z.decompress(z.unconsumed_tail, CHUNK * 16))
+                    return total_
                 try:
-                    n = 0
-                    data = inflate.decompress(b, CHUNK * 64)
-                    n += len(data)
-                    while inflate.unconsumed_tail:
-                        data = inflate.decompress(inflate.unconsumed_tail, CHUNK * 64)
-                        n += len(data)
+                    n = await asyncio.to_thread(_count, b)
                 except zlib.error:
                     inflate, n = None, 0
             else:
