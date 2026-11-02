@@ -180,6 +180,22 @@ def _fault(e: Exception) -> str:
     return f"{name}: {msg}"[:300]
 
 
+def _snapinfo(vm):
+    try:
+        return vm.snapshot              # sem snapshot o ESXi pode nem mandar a propriedade
+    except AttributeError:
+        return None
+
+
+def _count_snaps(info) -> int:
+    def n(lst):
+        return sum(1 + n(x.childSnapshotList) for x in (lst or []))
+    try:
+        return n(info.rootSnapshotList) if info else 0
+    except Exception:
+        return 0
+
+
 class VMware:
     def __init__(self, host: str, port: int, user: str, password: str, verify: bool = False):
         self.host, self.port, self.user, self.password, self.verify = host, port, user, password, verify
@@ -245,7 +261,7 @@ class VMware:
         for obj, p in self._collect(vim.VirtualMachine, ["name", "runtime.powerState", "runtime.host", "runtime.maxCpuUsage", "summary.quickStats",
                                                          "config.hardware.numCPU", "config.hardware.memoryMB", "config.template",
                                                          "summary.storage.committed", "summary.storage.uncommitted", "guest.ipAddress",
-                                                         "guest.toolsRunningStatus", "config.files.vmPathName"]):
+                                                         "guest.toolsRunningStatus", "config.files.vmPathName", "snapshot"]):
             qs = p.get("summary.quickStats")
             ps = str(p.get("runtime.powerState") or "")
             h = p.get("runtime.host")
@@ -256,7 +272,7 @@ class VMware:
                         "disk_total": int((p.get("summary.storage.committed") or 0) + (p.get("summary.storage.uncommitted") or 0)),
                         "uptime": int(qs.uptimeSeconds or 0) if qs else 0, "template": bool(p.get("config.template")),
                         "ip": p.get("guest.ipAddress") or "", "tools": str(p.get("guest.toolsRunningStatus") or ""), "tags": "",
-                        "vmx": p.get("config.files.vmPathName") or ""})
+                        "vmx": p.get("config.files.vmPathName") or "", "snapshots": _count_snaps(p.get("snapshot"))})
         stores = []
         for obj, p in self._collect(vim.Datastore, ["summary.name", "summary.capacity", "summary.freeSpace", "summary.accessible",
                                                     "summary.type", "summary.multipleHostAccess"]):
@@ -310,6 +326,74 @@ class VMware:
             raise VirtError(f"VMware: {_fault(e)}")
         raise VirtError(f"Ação {action} não existe")
 
+    # ---- CBT (backup incremental; precisa de ESXi licenciado ou vCenter)
+    def cbt_info(self, vm_id: str) -> dict:
+        vm = self._vm(vm_id)
+        return {"vmx_path": vm.config.files.vmPathName, "has_snapshots": bool(_snapinfo(vm) and _snapinfo(vm).rootSnapshotList),
+                "cbt": bool(vm.config.changeTrackingEnabled), "power": str(vm.runtime.powerState)}
+
+    def cbt_begin(self, vm_id: str, quiesce: bool = False, name: str = "BastiON-backup") -> dict:
+        """Liga o CBT (se precisar) e tira o snapshot do backup. Devolve o snapshot e os discos dele."""
+        from pyVmomi import vim
+        vm = self._vm(vm_id)
+        try:
+            if not vm.config.changeTrackingEnabled:
+                self._wait(vm.ReconfigVM_Task(vim.vm.ConfigSpec(changeTrackingEnabled=True)), 600)
+                # o CBT só passa a valer depois de um ciclo de snapshot (stun/unstun)
+                s0 = self._wait(vm.CreateSnapshot_Task(name="BastiON-cbt", description="ativa o CBT", memory=False, quiesce=False), 1800)
+                if s0 is not None:
+                    self._wait(s0.RemoveSnapshot_Task(removeChildren=False), 3600)
+            snap = self._wait(vm.CreateSnapshot_Task(name=name, description="snapshot temporario do backup", memory=False, quiesce=quiesce), 1800)
+        except VirtError:
+            raise
+        except Exception as e:
+            raise VirtError(f"VMware: {_fault(e)}")
+        if snap is None:
+            raise VirtError("o snapshot do backup não terminou a tempo")
+        disks = []
+        for d in snap.config.hardware.device:
+            if isinstance(d, vim.vm.device.VirtualDisk):
+                b = d.backing
+                disks.append({"key": d.key, "capacity": int(d.capacityInBytes or (d.capacityInKB or 0) * 1024), "file": b.fileName,
+                              "change_id": getattr(b, "changeId", None) or "", "label": d.deviceInfo.label if d.deviceInfo else "",
+                              "thin": bool(getattr(b, "thinProvisioned", False))})
+        return {"snap": snap._moId, "disks": disks}
+
+    def cbt_changes(self, vm_id: str, snap_id: str, key: int, capacity: int, change_id: str) -> list:
+        """[(início, tamanho)] alterados desde change_id ("*" = tudo que está alocado)."""
+        from pyVmomi import vim
+        vm = self._vm(vm_id)
+        snap = vim.vm.Snapshot(snap_id, self.si._stub)
+        out, start = [], 0
+        try:
+            while start < capacity:
+                r = vm.QueryChangedDiskAreas(snapshot=snap, deviceKey=key, startOffset=start, changeId=change_id or "*")
+                for a in r.changedArea or []:
+                    out.append((int(a.start), int(a.length)))
+                nxt = int(r.startOffset) + int(r.length)
+                if nxt <= start:
+                    break
+                start = nxt
+        except Exception as e:
+            raise VirtError(f"CBT: {_fault(e)}")
+        return out
+
+    def cbt_end(self, snap_id: str):
+        from pyVmomi import vim
+        try:
+            self._wait(vim.vm.Snapshot(snap_id, self.si._stub).RemoveSnapshot_Task(removeChildren=False), 7200)
+        except Exception as e:
+            raise VirtError(f"VMware: {_fault(e)}")
+
+    def remove_all_snapshots(self, vm_id: str):
+        vm = self._vm(vm_id)
+        try:
+            return self._wait(vm.RemoveAllSnapshots_Task(), 4 * 3600)
+        except VirtError:
+            raise
+        except Exception as e:
+            raise VirtError(f"VMware: {_fault(e)}")
+
     def _tree(self, vm) -> list:
         out = []
 
@@ -318,7 +402,8 @@ class VMware:
                 out.append({"id": str(s.id), "name": s.name, "description": s.description or "", "parent": parent,
                             "created": s.createTime.isoformat() if s.createTime else None, "memory": str(s.state) == "poweredOn", "_ref": s.snapshot})
                 walk(s.childSnapshotList, s.name)
-        walk(vm.snapshot.rootSnapshotList if vm.snapshot else [])
+        si = _snapinfo(vm)
+        walk(si.rootSnapshotList if si else [])
         return out
 
     def snapshots(self, vm_id: str) -> List[dict]:

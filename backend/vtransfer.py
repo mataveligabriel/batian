@@ -109,6 +109,8 @@ async def copy_folder(src, folder: str, dst: SshSink, dst_folder: str, progress,
 
 
 def backup_kind(names: List[str]) -> str:
+    if "point.json" in names:
+        return "vmware-cbt"
     if any(n.startswith("vzdump-") for n in names):
         return "proxmox"
     if any(n.endswith(".vmx") for n in names):
@@ -153,7 +155,7 @@ def esxi_fix_vmx(vmx: str, name: str, keep_identity: bool) -> str:
     return "\n".join(lines) + "\n"
 
 
-async def esxi_finalize(conn, folder: str, name: str, keep_identity: bool, power_on: bool, progress) -> dict:
+async def esxi_finalize(conn, folder: str, name: str, keep_identity: bool, power_on: bool, progress, punch: bool = True) -> dict:
     code, ls, _ = await run(conn, f"ls -1 {shlex.quote(folder)}")
     files = [x.strip() for x in ls.splitlines() if x.strip()]
     vmxs = [f for f in files if f.endswith(".vmx")]
@@ -170,7 +172,7 @@ async def esxi_finalize(conn, folder: str, name: str, keep_identity: bool, power
     for d in vmx_disks(vmx):
         p = d if d.startswith("/") else posixpath.join(folder, d)
         code, desc, _ = await run(conn, f"cat {shlex.quote(p)}")
-        if code == 0 and re.search(r'ddb\.thinProvisioned\s*=\s*"1"', desc):
+        if punch and code == 0 and re.search(r'ddb\.thinProvisioned\s*=\s*"1"', desc):
             if hasattr(progress, "set_stage"):
                 progress.set_stage(f"devolvendo espaço vazio de {posixpath.basename(p)} (vmkfstools -K)")
             await run(conn, f"vmkfstools -K {shlex.quote(p)}", 6 * 3600)
@@ -280,7 +282,7 @@ def pve_create_args(vmx: str, name: str, bridge: str, bus: str, nic: str) -> Lis
 
 
 async def convert_to_pve(conn, folder: str, vmid: int, storage: str, name: str, bridge: str, bus: str, nic: str,
-                         power_on: bool, progress) -> dict:
+                         power_on: bool, progress, disk_map: Optional[Dict[str, str]] = None) -> dict:
     q = shlex.quote
     code, ls, _ = await run(conn, f"ls -1 {q(folder)}")
     files = [x.strip() for x in ls.splitlines() if x.strip()]
@@ -293,7 +295,7 @@ async def convert_to_pve(conn, folder: str, vmid: int, storage: str, name: str, 
         raise BackupError(f"o Proxmox não criou a VM: {(err or out).strip()[:250]}")
     disks = []
     for i, d in enumerate(vmx_disks(vmx)):
-        p = posixpath.join(folder, posixpath.basename(d))
+        p = (disk_map or {}).get(posixpath.basename(d)) or posixpath.join(folder, posixpath.basename(d))
         if hasattr(progress, "set_stage"):
             progress.set_stage(f"importando {posixpath.basename(d)} para {storage} (qm importdisk)")
         code, out, err = await run(conn, f"qm importdisk {vmid} {q(p)} {q(storage)}", 12 * 3600)
@@ -312,6 +314,140 @@ async def convert_to_pve(conn, folder: str, vmid: int, storage: str, name: str, 
         code, _, _ = await run(conn, f"qm start {vmid}", 300)
         started = code == 0
     return {"vmid": str(vmid), "started": started, "disks": disks}
+
+
+# ------------------------------------------------------------------ restaurar backup incremental (CBT)
+async def _nas_bytes(nas, path: str) -> bytes:
+    buf = b""
+    async for b in nas.open_read(path):
+        buf += b
+    return buf
+
+
+def _vmx_disks_to_basename(vmx: str) -> str:
+    """Discos do .vmx passam a apontar para o nome do arquivo (tudo na pasta nova)."""
+    for d in vmx_disks(vmx):
+        if "/" in d:
+            vmx = vmx.replace(f'"{d}"', f'"{posixpath.basename(d)}"')
+    return vmx
+
+
+async def restore_cbt_esxi(conn, nas, chain: List[dict], folder: str, progress):
+    """Cria os discos thin no datastore e aplica o completo + incrementais em ordem."""
+    import vcbt
+    pt = chain[-1]["point"]
+    vmx = (await _nas_bytes(nas, posixpath.join(chain[-1]["folder"], pt["vmx"]))).decode("utf-8", "replace")
+    await run(conn, f"mkdir -p {shlex.quote(folder)}")
+    await vcbt.put_text(conn, posixpath.join(folder, pt["vmx"]), _vmx_disks_to_basename(vmx).encode())
+    if pt.get("nvram"):
+        await vcbt.put_text(conn, posixpath.join(folder, pt["nvram"]), await _nas_bytes(nas, posixpath.join(chain[-1]["folder"], pt["nvram"])))
+    await vcbt.install(conn)
+    for d in pt["disks"]:
+        target = posixpath.join(folder, d["name"])
+        code, out, err = await run(conn, f"vmkfstools -c {int(d['capacity'])} -d thin {shlex.quote(target)}", 600)
+        if code:
+            raise BackupError(f"não criei o disco {d['name']} no datastore ({(err or out).strip()[:150]})")
+        stem = d["name"][:-5] if d["name"].endswith(".vmdk") else d["name"]
+        if hasattr(progress, "set_stage"):
+            progress.set_stage(f"gravando {d['name']} ({len(chain)} cópia(s) da cadeia)")
+        await vcbt.write_disk(conn, nas, chain, d["n"], posixpath.join(folder, f"{stem}-flat.vmdk"), 0, True, progress)
+
+
+async def restore_cbt_pve_files(conn, nas, chain: List[dict], tmp: str, progress) -> Dict[str, str]:
+    """Discos crus (esparsos) na pasta temporária do nó + o .vmx; devolve nome do disco no .vmx -> arquivo cru."""
+    import vcbt
+    pt = chain[-1]["point"]
+    await run(conn, f"mkdir -p {shlex.quote(tmp)}")
+    vmx = (await _nas_bytes(nas, posixpath.join(chain[-1]["folder"], pt["vmx"]))).decode("utf-8", "replace")
+    await vcbt.put_text(conn, posixpath.join(tmp, pt["vmx"]), _vmx_disks_to_basename(vmx).encode())
+    script = posixpath.join(tmp, "bastion-cbt.py")
+    await vcbt.install(conn, script)
+    out = {}
+    for d in pt["disks"]:
+        raw = posixpath.join(tmp, f"disk{d['n']}.raw")
+        if hasattr(progress, "set_stage"):
+            progress.set_stage(f"gravando {d['name']} ({len(chain)} cópia(s) da cadeia)")
+        await vcbt.write_disk(conn, nas, chain, d["n"], raw, int(d["capacity"]), True, progress, script=script)
+        out[d["name"]] = raw
+    return out
+
+
+async def restore_cbt_local(conn, fs, chain: List[dict], disk_n: int, target: str, size: int, progress, script: str):
+    """NFS montado no destino: o próprio host lê os arquivos da cadeia e grava o disco (nada passa pelo BastiON)."""
+    import vcbt
+    parts = []
+    for c in chain:
+        d = next((x for x in c["point"]["disks"] if x["n"] == disk_n), None)
+        if not d:
+            raise BackupError(f"o disco {disk_n} não existe na cópia {c['stamp']}")
+        parts.append(shlex.quote(fs.abs(posixpath.join(c["folder"], d["data"]))))
+    code, out, err = await run(conn, f"{vcbt.PYSET} cat {' '.join(parts)} | $PY {script} write {shlex.quote(target)} {int(size)} 1", 12 * 3600)
+    if code:
+        raise BackupError(f"não gravei o disco {disk_n} a partir do NFS ({(err or out).strip()[:200]})")
+
+
+async def restore_cbt_esxi_nfs(conn, fs, chain: List[dict], folder: str, progress):
+    import vcbt
+    pt = chain[-1]["point"]
+    await run(conn, f"mkdir -p {shlex.quote(folder)}")
+    for f in [pt["vmx"]] + ([pt["nvram"]] if pt.get("nvram") else []):
+        await run(conn, f"cp {shlex.quote(fs.abs(posixpath.join(chain[-1]['folder'], f)))} {shlex.quote(folder)}/")
+    vmxp = posixpath.join(folder, pt["vmx"])
+    code, vmx, _ = await run(conn, f"cat {shlex.quote(vmxp)}")
+    await vcbt.put_text(conn, vmxp, _vmx_disks_to_basename(vmx).encode())
+    await vcbt.install(conn)
+    for d in pt["disks"]:
+        target = posixpath.join(folder, d["name"])
+        code, out, err = await run(conn, f"vmkfstools -c {int(d['capacity'])} -d thin {shlex.quote(target)}", 600)
+        if code:
+            raise BackupError(f"não criei o disco {d['name']} ({(err or out).strip()[:150]})")
+        stem = d["name"][:-5] if d["name"].endswith(".vmdk") else d["name"]
+        if hasattr(progress, "set_stage"):
+            progress.set_stage(f"gravando {d['name']} a partir do NFS ({len(chain)} cópia(s) da cadeia)")
+        await restore_cbt_local(conn, fs, chain, d["n"], posixpath.join(folder, f"{stem}-flat.vmdk"), 0, progress, vcbt.REMOTE)
+
+
+async def restore_cbt_pve_nfs(conn, fs, chain: List[dict], tmp: str, progress) -> Dict[str, str]:
+    import vcbt
+    pt = chain[-1]["point"]
+    await run(conn, f"mkdir -p {shlex.quote(tmp)}")
+    code, vmx, _ = await run(conn, f"cat {shlex.quote(fs.abs(posixpath.join(chain[-1]['folder'], pt['vmx'])))}")
+    await vcbt.put_text(conn, posixpath.join(tmp, pt["vmx"]), _vmx_disks_to_basename(vmx).encode())
+    script = posixpath.join(tmp, "bastion-cbt.py")
+    await vcbt.install(conn, script)
+    out = {}
+    for d in pt["disks"]:
+        raw = posixpath.join(tmp, f"disk{d['n']}.raw")
+        if hasattr(progress, "set_stage"):
+            progress.set_stage(f"gravando {d['name']} a partir do NFS")
+        await restore_cbt_local(conn, fs, chain, d["n"], raw, int(d["capacity"]), progress, script)
+        out[d["name"]] = raw
+    return out
+
+
+async def restore_vmware_esxi_nfs(conn, fs, src_folder: str, folder: str, progress):
+    """Backup completo (vmx + vmdk) no NFS -> datastore do ESXi: vmkfstools -i de cada disco, cp do resto."""
+    import vnfs
+    q = shlex.quote
+    await run(conn, f"mkdir -p {q(folder)}")
+    names = await fs.listdir(src_folder)
+    packed = any(n.endswith(".gz") for n in names)          # cópia feita por SFTP/FTP e depois posta no NFS
+    for n in names:
+        p = fs.abs(posixpath.join(src_folder, n))
+        if n == "RESTAURAR.txt" or (not packed and (n.endswith("-flat.vmdk") or n.endswith("-delta.vmdk") or n.endswith("-sesparse.vmdk"))):
+            continue
+        if packed and not n.endswith(".gz"):
+            code, out, err = await run(conn, f"cp {q(p)} {q(folder)}/", 12 * 3600)
+        elif n.endswith(".gz"):
+            code, out, err = await run(conn, f"gunzip -c {q(p)} > {q(posixpath.join(folder, n[:-3]))}", 12 * 3600)
+        elif n.endswith(".vmdk"):
+            code, out = await vnfs.run_progress(conn, f"vmkfstools -i {q(p)} -d thin {q(posixpath.join(folder, n))}", progress, f"copiando {n} do NFS")
+            err = ""
+        else:
+            code, out, err = await run(conn, f"cp {q(p)} {q(folder)}/", 3600)
+        if code:
+            raise BackupError(f"não copiei {n} do NFS ({(err or out).strip()[-200:]})")
+    return packed
 
 
 def disk_files(vmx: str) -> List[str]:

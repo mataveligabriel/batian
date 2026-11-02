@@ -13,7 +13,7 @@ import { HardDrive, Plus, Pencil, Trash2, Play, Square, Loader2, CheckCircle2, X
 const lbl = "text-xs text-slate-400 mb-1 block";
 const sel = "h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200";
 const DAYS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];        // weekday() do Python: 0 = segunda
-const KINDS = { sftp: "SFTP", ftp: "FTP", ftps: "FTPS (FTP com TLS)" };
+const KINDS = { nfs: "NFS (mais rápido)", sftp: "SFTP", ftp: "FTP", ftps: "FTPS (FTP com TLS)" };
 const fmt = (s) => (s ? new Date(s).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
 const bytes = (b) => (!b ? "0" : b >= 1e12 ? `${(b / 1e12).toFixed(2)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(0)} MB` : `${Math.round(b / 1e3)} kB`);
 const dur = (s) => (!s ? "—" : s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}` : s >= 60 ? `${Math.floor(s / 60)}min` : `${s}s`);
@@ -31,14 +31,16 @@ function St({ s, spin = true }) {
 }
 
 // ------------------------------------------------------------------ destino (NAS)
-const EMPTY_DEST = { name: "", kind: "sftp", host: "", port: "", user: "", password: "", path: "/backup/vms", passive: true, verify_tls: false, agent_id: "" };
+const EMPTY_DEST = { name: "", kind: "sftp", host: "", port: "", user: "", password: "", path: "/backup/vms", passive: true, verify_tls: false, agent_id: "", share: "", helper_hv_id: "" };
 
-function DestDialog({ cur, agents, onClose, onSaved }) {
-  const [f, setF] = useState(cur ? { ...EMPTY_DEST, ...cur, port: cur.port || "", agent_id: cur.agent_id || "", password: "" } : EMPTY_DEST);
+function DestDialog({ cur, agents, hvs, onClose, onSaved }) {
+  const [f, setF] = useState(cur ? { ...EMPTY_DEST, ...cur, port: cur.port || "", agent_id: cur.agent_id || "", password: "", helper_hv_id: cur.helper_hv_id || "" }
+    : { ...EMPTY_DEST, helper_hv_id: hvs[0]?.id || "" });
+  const nfs = f.kind === "nfs";
   const [busy, setBusy] = useState("");
   const [test, setTest] = useState(null);
   const s = (k) => (e) => setF((p) => ({ ...p, [k]: e?.target ? e.target.value : e }));
-  const body = () => ({ ...f, port: f.port ? Number(f.port) : null, agent_id: f.kind === "sftp" ? f.agent_id || null : null });
+  const body = () => ({ ...f, port: f.port ? Number(f.port) : null, agent_id: f.kind === "sftp" ? f.agent_id || null : null, helper_hv_id: nfs ? f.helper_hv_id || null : null });
   const doTest = async () => {
     setBusy("test"); setTest(null);
     try { const r = await api.post(`/virt/backup/dests/test${cur ? `?did=${cur.id}` : ""}`, body()); setTest({ ok: true, text: r.data.detail }); }
@@ -62,15 +64,22 @@ function DestDialog({ cur, agents, onClose, onSaved }) {
         <div className="grid sm:grid-cols-2 gap-3">
           <div><label className={lbl}>Nome</label><Input value={f.name} onChange={s("name")} placeholder="NAS Datacenter" className="bg-sunken border-line" data-testid="vb-dest-name" /></div>
           <div className="grid grid-cols-[1fr_80px] gap-2">
-            <div><label className={lbl}>Endereço do NAS</label><Input value={f.host} onChange={s("host")} placeholder="192.0.2.30" className="bg-sunken border-line font-mono" data-testid="vb-dest-host" /></div>
-            <div><label className={lbl}>Porta</label><Input value={f.port} onChange={s("port")} placeholder={f.kind === "sftp" ? "22" : "21"} className="bg-sunken border-line font-mono" /></div>
+            <div className={nfs ? "col-span-2" : ""}><label className={lbl}>Endereço do NAS</label><Input value={f.host} onChange={s("host")} placeholder="192.0.2.30" className="bg-sunken border-line font-mono" data-testid="vb-dest-host" /></div>
+            {!nfs && <div><label className={lbl}>Porta</label><Input value={f.port} onChange={s("port")} placeholder={f.kind === "sftp" ? "22" : "21"} className="bg-sunken border-line font-mono" /></div>}
           </div>
+          {nfs ? (<>
+            <div><label className={lbl}>Export NFS no NAS</label><Input value={f.share} onChange={s("share")} placeholder="/volume1/backup" className="bg-sunken border-line font-mono" data-testid="vb-dest-share" /></div>
+            <div><label className={lbl}>Hypervisor para testar e navegar</label>
+              <select value={f.helper_hv_id} onChange={s("helper_hv_id")} className={`${sel} w-full`} data-testid="vb-dest-helper">
+                {hvs.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}</select></div>
+          </>) : (<>
           <div><label className={lbl}>Usuário</label><Input value={f.user} onChange={s("user")} className="bg-sunken border-line font-mono" data-testid="vb-dest-user" /></div>
           <div><label className={lbl}>Senha {cur?.has_password && <span className="text-slate-500">(vazio = mantém)</span>}</label>
             <Input type="password" value={f.password} onChange={s("password")} className="bg-sunken border-line font-mono" data-testid="vb-dest-password" /></div>
-          <div className="sm:col-span-2"><label className={lbl}>Pasta no NAS (o BastiON cria as subpastas: hypervisor / VM / data)</label>
+          </>)}
+          <div className="sm:col-span-2"><label className={lbl}>{nfs ? "Pasta dentro do export" : "Pasta no NAS"} (o BastiON cria as subpastas: hypervisor / VM / data)</label>
             <Input value={f.path} onChange={s("path")} placeholder="/backup/vms" className="bg-sunken border-line font-mono" data-testid="vb-dest-path" /></div>
-          {f.kind === "sftp" ? (
+          {nfs ? null : f.kind === "sftp" ? (
             <div className="sm:col-span-2"><label className={lbl}>Alcançar por</label>
               <select value={f.agent_id} onChange={s("agent_id")} className={`${sel} w-full`} data-testid="vb-dest-agent">
                 <option value="">Direto do servidor do BastiON</option>
@@ -84,7 +93,8 @@ function DestDialog({ cur, agents, onClose, onSaved }) {
           )}
         </div>
         <div className="text-xs text-slate-400 bg-sunken border border-line rounded-md p-2">
-          {f.kind === "ftp" ? "FTP manda usuário, senha e os backups sem criptografia: prefira SFTP ou FTPS se o NAS tiver (Synology, QNAP, TrueNAS e OpenMediaVault têm os dois)."
+          {nfs ? (<>O BastiON monta o NFS em cada ESXi/Proxmox (datastore <span className="font-mono">BASTION-…</span> no ESXi, <span className="font-mono">/mnt/bastion-…</span> no Proxmox) e o próprio host grava e lê os backups — os dados não passam pelo BastiON. No NAS, libere o export para os IPs dos hosts com leitura/escrita e <b>sem root squash</b> (Synology: "Mapear todos os usuários para admin" ou "Sem mapeamento"; TrueNAS: Maproot User = root). No Proxmox o nó precisa do pacote nfs-common.</>)
+            : f.kind === "ftp" ? "FTP manda usuário, senha e os backups sem criptografia: prefira SFTP ou FTPS se o NAS tiver (Synology, QNAP, TrueNAS e OpenMediaVault têm os dois)."
             : "O backup vai direto do hypervisor para o NAS passando pelo BastiON, sem gravar no disco do servidor. Use um usuário do NAS só para isso, com acesso só a esta pasta."}
         </div>
         {test && <div className={`text-sm rounded-md border p-2 ${test.ok ? "border-emerald-700 text-emerald-300" : "border-red-800 text-red-300"}`} data-testid="vb-dest-test-result">{test.text}</div>}
@@ -100,7 +110,7 @@ function DestDialog({ cur, agents, onClose, onSaved }) {
 
 // ------------------------------------------------------------------ rotina
 const EMPTY_JOB = { name: "", hv_id: "", dest_id: "", vms: [], all: false, exclude: [], days: [0, 1, 2, 3, 4, 5, 6], time: "01:00", keep: 7, mode: "snapshot",
-  compress: true, quiesce: false, enabled: true, parallel: 2 };
+  compress: true, quiesce: false, enabled: true, parallel: 2, incremental: true, full_every: 7 };
 
 function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
   const [f, setF] = useState(cur ? { ...EMPTY_JOB, ...cur } : { ...EMPTY_JOB, hv_id: hvs[0]?.id || "", dest_id: dests[0]?.id || "" });
@@ -121,7 +131,7 @@ function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
   const save = async () => {
     setBusy(true);
     try {
-      const b = { ...f, keep: Number(f.keep) || 7, parallel: Number(f.parallel) || 2 };
+      const b = { ...f, keep: Number(f.keep) || 7, parallel: Number(f.parallel) || 2, full_every: Number(f.full_every) || 7 };
       cur ? await api.put(`/virt/backup/jobs/${cur.id}`, b) : await api.post("/virt/backup/jobs", b);
       toast.success("Rotina salva"); onSaved(); onClose();
     } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
@@ -180,6 +190,9 @@ function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
             </select></div>
         ) : (
           <div className="flex flex-wrap gap-5 text-sm text-slate-300">
+            <label className="flex items-center gap-2"><Switch checked={!!f.incremental} onCheckedChange={s("incremental")} data-testid="vb-job-incremental" /> Incremental (CBT — só os blocos alterados)</label>
+            {f.incremental && <label className="flex items-center gap-2">completo a cada
+              <Input type="number" min={1} value={f.full_every} onChange={s("full_every")} className="bg-sunken border-line font-mono h-8 w-16" data-testid="vb-job-full-every" /> cópias</label>}
             <label className="flex items-center gap-2"><Switch checked={!!f.compress} onCheckedChange={s("compress")} /> Compactar os discos (gzip — disco thin vazio vira quase nada)</label>
             <label className="flex items-center gap-2"><Switch checked={!!f.quiesce} onCheckedChange={s("quiesce")} /> Snapshot com VMware Tools (quiesce)</label>
           </div>
@@ -192,7 +205,7 @@ function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
         <div className="text-[11px] text-slate-500 -mt-2">Mais de uma VM por vez aproveita os outros núcleos do hypervisor (a compressão e o SSH usam um núcleo por VM) — use 1 se o storage do host for lento.</div>
         <div className="text-xs text-slate-400 bg-sunken border border-line rounded-md p-2">
           {pve ? "Cada VM vira um arquivo vzdump (.vma.zst / .tar.zst). Para restaurar: copie para a pasta dump de um storage do Proxmox e use Restaurar na própria VM/storage."
-            : "Cada VM vira uma pasta com o .vmx e os discos. Se a VM estiver ligada, o BastiON tira um snapshot temporário e apaga no fim. VM que já tem snapshots (ex.: réplica do Veeam) vai com a cadeia inteira de discos e os snapshots dela continuam intactos. Para restaurar: envie a pasta ao datastore, descompacte (gunzip) e registre o .vmx."}
+            : (f.incremental ? "Incremental: o BastiON liga o CBT na VM e, a cada cópia, pega do ESXi só os blocos que mudaram (precisa de ESXi licenciado ou vCenter; VM com snapshots ou ESXi gratuito cai para o completo). Restaurar monta o disco do dia escolhido. " : "") + "Cada VM vira uma pasta com o .vmx e os discos. Se a VM estiver ligada, o BastiON tira um snapshot temporário e apaga no fim. VM que já tem snapshots (ex.: réplica do Veeam) vai com a cadeia inteira de discos e os snapshots dela continuam intactos. Para restaurar: envie a pasta ao datastore, descompacte (gunzip) e registre o .vmx."}
           {" "}Backups com erro abrem incidente e não apagam as cópias antigas.
         </div>
         <DialogFooter><Button onClick={save} disabled={busy} className="bg-brand hover:bg-brand-strong" data-testid="vb-job-save">{busy && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}Salvar</Button></DialogFooter>
@@ -276,7 +289,7 @@ export function VirtBackup({ hvs, agents, readOnly, setAsk, onEditHv }) {
         ) : dests.map((d) => (
           <div key={d.id} className="px-3 py-2 border-b border-line last:border-0 flex items-center gap-3 text-sm" data-testid={`vb-dest-${d.id}`}>
             <span className="text-slate-200">{d.name}</span>
-            <span className="text-xs font-mono text-slate-500">{d.kind}://{d.user}@{d.host}:{d.port}{d.path}{d.agent_id ? ` · via ${agents.find((a) => a.id === d.agent_id)?.name || "jump"}` : ""}</span>
+            <span className="text-xs font-mono text-slate-500">{d.kind === "nfs" ? `nfs://${d.host}${d.share} → ${d.path}` : `${d.kind}://${d.user}@${d.host}:${d.port}${d.path}`}{d.agent_id ? ` · via ${agents.find((a) => a.id === d.agent_id)?.name || "jump"}` : ""}</span>
             {!readOnly && <span className="ml-auto flex gap-1">
               <Button size="sm" variant="ghost" onClick={() => setDd({ cur: d })} className="h-7 text-slate-300"><Pencil className="w-4 h-4" /></Button>
               <Button size="sm" variant="ghost" onClick={() => delDest(d)} className="h-7 text-red-300"><Trash2 className="w-4 h-4" /></Button></span>}
@@ -314,7 +327,7 @@ export function VirtBackup({ hvs, agents, readOnly, setAsk, onEditHv }) {
           : runs.map((r) => <RunRow key={r.id} r={r} onCancel={cancel} readOnly={readOnly} />)}
       </Card>
 
-      {dd && <DestDialog cur={dd.cur} agents={agents} onClose={() => setDd(null)} onSaved={load} />}
+      {dd && <DestDialog cur={dd.cur} agents={agents} hvs={hvs} onClose={() => setDd(null)} onSaved={load} />}
       {jd && dests && <JobDialog cur={jd.cur} hvs={hvs} dests={dests} onClose={() => setJd(null)} onSaved={load} onEditHv={(h) => { setJd(null); onEditHv(h); }} />}
     </div>
   );

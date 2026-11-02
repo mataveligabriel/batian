@@ -342,7 +342,8 @@ def _gb(n: float) -> str:
     return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
 
 
-async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label: str = "", size: int = 0, gz: bool = False) -> int:
+async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label: str = "", size: int = 0, gz: bool = False,
+                 prog_err: bool = False) -> int:
     """Roda cmd no hypervisor e manda a saída (stdout) para o writer. Devolve os bytes enviados.
 
     Mostra o andamento real: com gz=True o BastiON descompacta só para contar quanto do disco já foi lido (o que vai
@@ -376,6 +377,19 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label:
             m = None
             for m in re.finditer(rb"INFO:\s+(\d+)% \((.+?) of (.+?)\) in .*?read: ([\d.]+ \w+/s)", buf):
                 pass
+            if prog_err:                                    # script do CBT: "PROG lidos total"
+                pm = None
+                for pm in re.finditer(rb"PROG (\d+) (\d+)", buf):
+                    pass
+                if pm:
+                    nonlocal raw
+                    done_, tot_ = int(pm.group(1)), int(pm.group(2))
+                    if add_raw and done_ > raw:
+                        add_raw(done_ - raw)
+                    raw = max(raw, done_)
+                    if set_stage and label:
+                        dt = max(time.time() - t0, 0.001)
+                        set_stage(f"copiando {label}: {min(100, 100 * done_ / max(tot_, 1)):.0f}% ({_gb(done_)} de {_gb(tot_)} alterados/usados, {done_ / dt / 1e6:.0f} MB/s)")
             if m and set_stage:
                 set_stage(f"vzdump {m.group(1).decode()}% ({m.group(2).decode()} de {m.group(3).decode()}, leitura {m.group(4).decode()})")
     et = asyncio.create_task(drain_err())
@@ -387,7 +401,9 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label:
             await writer.write(b)
             total += len(b)
             progress(len(b))
-            if inflate is not None:
+            if prog_err:
+                n = 0                                       # quem conta o lido é o script (PROG)
+            elif inflate is not None:
                 try:
                     n = 0
                     data = inflate.decompress(b, CHUNK * 64)
@@ -399,10 +415,11 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label:
                     inflate, n = None, 0
             else:
                 n = len(b)
-            raw += n
-            if add_raw:
-                add_raw(n)
-            show()
+            if not prog_err:
+                raw += n
+                if add_raw:
+                    add_raw(n)
+                show()
         await asyncio.wait_for(proc.wait_closed(), 120)
         await asyncio.wait_for(et, 30)
     except asyncio.TimeoutError:

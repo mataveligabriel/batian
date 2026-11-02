@@ -249,6 +249,15 @@ function SnapDialog({ hv, vm, readOnly, onClose, setAsk }) {
             ))}
           </div>
         )}
+        {!readOnly && list?.length > 0 && (
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <span className="flex-1">Snapshots antigos atrasam o backup (o disco fica travado) e impedem o incremental.</span>
+            <Button size="sm" variant="outline" onClick={() => setAsk({ title: "Apagar todos os snapshots?", danger: true, ok: "Apagar e consolidar",
+              text: `Todos os snapshots de ${vm.name} são apagados e o conteúdo é consolidado no disco (a VM fica como está agora). Pode demorar e deixar a VM mais lenta durante a consolidação.`,
+              run: async () => { try { await op({ op: "delete_all" }); toast.success("Snapshots apagados"); } catch (e) { toast.error(formatApiError(e)); } } })}
+              className="border-line text-red-300 h-8" data-testid="virt-snap-delall">Apagar todos (consolidar)</Button>
+          </div>
+        )}
         {!readOnly && (
           <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
             <div><label className={lbl}>Nome</label><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="antes_update" className="bg-sunken border-line" data-testid="virt-snap-name" /></div>
@@ -365,6 +374,7 @@ function Detail({ hv, hvs, readOnly, onEdit, reloadList, setAsk }) {
                     <tr key={v.id} className="hover:bg-slate-800/30" data-testid={`virt-vm-${v.vmid}`}>
                       <td className="px-3 py-1.5"><div className="text-slate-200 flex items-center gap-1.5">{v.name}
                         {v.template && <span className="text-[10px] px-1 rounded bg-slate-700 text-slate-300">template</span>}
+                        {v.snapshots > 0 && <span className="text-[10px] px-1 rounded bg-amber-900/60 text-amber-200" title="Snapshots deixam o backup mais lento e impedem o incremental: veja na câmera">{v.snapshots} snap</span>}
                         {v.type === "lxc" && <span className="text-[10px] px-1 rounded bg-indigo-900/60 text-indigo-200">CT</span>}</div>
                         <div className="text-[11px] text-slate-500 font-mono">{hv.kind === "proxmox" ? `ID ${v.vmid}` : v.id} · {v.cpus} vCPU{v.tags ? ` · ${v.tags}` : ""}</div></td>
                       <td className="px-2 text-xs text-slate-400 max-w-[140px] truncate" title={v.host}>{/^[\d.:]+$/.test(v.host || "") ? v.host : (v.host || "").split(".")[0]}</td>

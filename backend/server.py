@@ -95,6 +95,8 @@ import ipamdoc
 import virt as virtmod
 import vbackup
 import vtransfer
+import vcbt
+import vnfs
 import tcprelay
 import runbooks
 import teopt
@@ -14652,6 +14654,13 @@ async def virt_snap_op(hid: str, body: VirtSnapIn, user: dict = Depends(get_curr
                 raise HTTPException(status_code=400, detail="Dê um nome ao snapshot")
             await _virt_call(h, "snapshot_create", body.vm_id, name[:40], body.description[:500], bool(body.memory))
             label, tgt = "Criar snapshot", f"{vm} · {name[:40]}"
+        elif body.op == "delete_all":
+            if h["kind"] == "vmware":
+                await _virt_call(h, "remove_all_snapshots", body.vm_id)
+            else:
+                for sn in sorted(await _virt_call(h, "snapshots", body.vm_id), key=lambda x: x.get("created") or "", reverse=True):
+                    await _virt_call(h, "snapshot_delete", body.vm_id, sn["id"])
+            label, tgt = "Apagar todos os snapshots (consolidar)", vm
         elif body.op in ("revert", "delete"):
             if not body.snap:
                 raise HTTPException(status_code=400, detail="Escolha o snapshot")
@@ -14725,12 +14734,14 @@ class VbDestIn(BaseModel):
     passive: bool = True            # FTP
     verify_tls: bool = False        # FTPS
     agent_id: Optional[str] = None  # SFTP pelo jump
+    share: str = ""                 # NFS: export no NAS (ex.: /volume1/backup)
+    helper_hv_id: Optional[str] = None  # NFS: hypervisor que monta o NFS para testar e navegar
 
 
 async def _vb_dest_clean(body: VbDestIn, user: dict, cur: Optional[dict] = None) -> dict:
-    if body.kind not in ("sftp", "ftp", "ftps"):
+    if body.kind not in ("sftp", "ftp", "ftps", "nfs"):
         raise HTTPException(status_code=400, detail="Tipo inválido")
-    host = re.sub(r"^(s?ftps?|https?)://", "", (body.host or "").strip()).split("/")[0].strip("[]")
+    host = re.sub(r"^(s?ftps?|https?|nfs)://", "", (body.host or "").strip()).split("/")[0].strip("[]")
     name = re.sub(r"[\r\n<>]", " ", body.name or "").strip()[:60]
     if not name or not re.fullmatch(r"[\w.:-]+", host or ""):
         raise HTTPException(status_code=400, detail="Informe nome e endereço do NAS")
@@ -14742,13 +14753,40 @@ async def _vb_dest_clean(body: VbDestIn, user: dict, cur: Optional[dict] = None)
     d = {"name": name, "kind": body.kind, "host": host, "port": int(body.port or (22 if body.kind == "sftp" else 21)),
          "user": (body.user or "").strip()[:120], "path": path, "passive": bool(body.passive), "verify_tls": bool(body.verify_tls),
          "agent_id": body.agent_id or None}
+    if body.kind == "nfs":
+        share = "/" + "/".join(p for p in (body.share or "").replace("\\", "/").split("/") if p and p not in (".", ".."))
+        if share == "/" or not re.fullmatch(r"[\w./-]+", share):
+            raise HTTPException(status_code=400, detail="Informe o export NFS do NAS (ex.: /volume1/backup)")
+        if not body.helper_hv_id:
+            raise HTTPException(status_code=400, detail="Escolha um hypervisor para montar o NFS (testar e navegar nos backups)")
+        await _virt_get(user, body.helper_hv_id)
+        d.update({"share": share, "helper_hv_id": body.helper_hv_id, "port": 2049, "user": "", "agent_id": None, "password": ""})
+        return d
     if not d["user"]:
         raise HTTPException(status_code=400, detail="Informe o usuário do NAS")
     d["password"] = vault.encrypt(body.password) if body.password else (cur or {}).get("password", "")
     return d
 
 
+async def _vb_nfs_on(dest: dict, conn):
+    """NFS montado no hypervisor desta conexão SSH."""
+    return vnfs.HostFs(conn, await vnfs.mount(conn, dest["host"], dest["share"], dest["id"]))
+
+
 async def _vb_sink(dest: dict):
+    if dest["kind"] == "nfs":                               # monta no hypervisor ajudante (testar, navegar, retenção)
+        h = await db.virt_hosts.find_one({"id": dest.get("helper_hv_id")}, {"_id": 0})
+        if not h:
+            raise vbackup.BackupError("o hypervisor que monta o NFS foi removido: edite o destino")
+        st = await db.virt_status.find_one({"_id": h["id"]}) or {}
+        inv = st.get("inv") or {}
+        w = await _vb_ssh(h, await _vb_address(h, inv, {"host": ((inv.get("hosts") or [{}])[0]).get("name", "")}, {}))
+        try:
+            root = await vnfs.mount(w.conn, dest["host"], dest["share"], dest.get("id") or "teste000")
+        except Exception:
+            await w.close()
+            raise
+        return vnfs.HostFs(w.conn, root, w.close)
     pw = vault.decrypt(dest.get("password", ""))
     if dest["kind"] == "sftp":
         hops = []
@@ -14813,6 +14851,7 @@ async def vb_dest_test(body: VbDestIn, did: Optional[str] = None, user: dict = D
     _no_viewer(user)
     cur = await _vb_dest_get(user, did) if did else None
     d = await _vb_dest_clean(body, user, cur)
+    d["id"] = did or "teste000"
     try:
         sink = await _vb_sink(d)
     except vbackup.BackupError as e:
@@ -14842,6 +14881,8 @@ class VbJobIn(BaseModel):
     compress: bool = True           # ESXi: gzip dos discos
     quiesce: bool = False           # ESXi: snapshot com VMware Tools (sistema de arquivos consistente)
     parallel: int = 2               # VMs copiadas ao mesmo tempo (1 a 4)
+    incremental: bool = True        # ESXi licenciado: CBT (só os blocos alterados)
+    full_every: int = 7             # completo novo a cada N cópias
     enabled: bool = True
 
 
@@ -14862,7 +14903,8 @@ async def _vb_job_clean(body: VbJobIn, user: dict) -> dict:
             "all": bool(body.all), "exclude": [str(v)[:200] for v in body.exclude][:500], "days": days, "time": body.time,
             "keep": max(1, min(int(body.keep or 7), 365)), "mode": body.mode if body.mode in ("snapshot", "suspend", "stop") else "snapshot",
             "compress": bool(body.compress), "quiesce": bool(body.quiesce), "enabled": bool(body.enabled),
-            "parallel": max(1, min(int(body.parallel or 2), 4))}
+            "parallel": max(1, min(int(body.parallel or 2), 4)), "incremental": bool(body.incremental),
+            "full_every": max(1, min(int(body.full_every or 7), 60))}
 
 
 async def _vb_job_get(user: dict, jid: str) -> dict:
@@ -15063,8 +15105,10 @@ async def _vb_execute(job: dict, run: dict, only: List[str], prog):
             async def worker(first_sink):
                 """Cada VM em paralelo usa a própria conexão SSH (cifra/gzip em outro núcleo do hypervisor) e a
                 própria conexão com o NAS (FTP não manda dois arquivos na mesma conexão)."""
-                wsink = first_sink or await _vb_sink(dest)
+                nfs = dest["kind"] == "nfs"
+                wsink = None if nfs else (first_sink or await _vb_sink(dest))
                 conns: Dict[str, Any] = {}
+                nfs_fs: Dict[str, Any] = {}
                 try:
                     while not queue_.empty():
                         it, vm = queue_.get_nowait()
@@ -15079,22 +15123,31 @@ async def _vb_execute(job: dict, run: dict, only: List[str], prog):
                             if addr not in conns:
                                 conns[addr] = await _vb_ssh(h, addr)
                             conn = conns[addr].conn
+                            vsink = wsink
+                            if nfs:                         # o próprio host grava no NAS
+                                if addr not in nfs_fs:
+                                    nfs_fs[addr] = await _vb_nfs_on(dest, conn)
+                                vsink = nfs_fs[addr]
                             if h["kind"] == "proxmox":
-                                res = await vbackup.backup_proxmox(conn, vm, wsink, folder, job.get("mode", "snapshot"), cp, when)
+                                if nfs:
+                                    res = await vnfs.backup_proxmox_nfs(conn, vm, vsink, folder, job.get("mode", "snapshot"), cp, when)
+                                else:
+                                    res = await vbackup.backup_proxmox(conn, vm, vsink, folder, job.get("mode", "snapshot"), cp, when)
                             else:
-                                res = await vbackup.backup_esxi(conn, vm, wsink, folder, job.get("compress", True), job.get("quiesce", False), cp)
-                            removed = await vbackup.prune(wsink, vm_folder, int(job.get("keep") or 7))
+                                res = await _vb_esxi_backup(h, vm, conn, vsink, vm_folder, folder, job, cp)
+                            removed = await vcbt.prune_chains(vsink, vm_folder, int(job.get("keep") or 7))
                             it.update({"state": "ok", "bytes": res["bytes"], "path": folder, "files": res["files"], "format": res["format"],
                                        "note": res.get("note", ""), "pruned": removed, "raw": cp.raw})
                             await _vb_incident(h, job, vm, None)
                         except asyncio.CancelledError:
                             it.update({"state": "cancelled", "error": "cancelado"})
-                            await _vb_cleanup(wsink, folder)
+                            await _vb_cleanup(nfs_fs.get(addr) if nfs else wsink, folder)
                             raise
                         except Exception as e:
                             msg = str(e) if isinstance(e, (vbackup.BackupError, VpnDown)) else f"{type(e).__name__}: {str(e)[:200]}"
                             it.update({"state": "error", "error": msg[:400]})
-                            await _vb_cleanup(wsink, folder)
+                            if not nfs or addr in nfs_fs:
+                                await _vb_cleanup(nfs_fs.get(addr) if nfs else wsink, folder)
                             await _vb_incident(h, job, vm, msg)
                             if addr in conns and (isinstance(e, (OSError, EOFError)) or conns[addr].conn is None
                                                   or getattr(conns[addr].conn, "_transport", None) is None):
@@ -15112,7 +15165,7 @@ async def _vb_execute(job: dict, run: dict, only: List[str], prog):
                             await w.close()
                         except Exception:
                             pass
-                    if wsink is not first_sink:
+                    if wsink is not None and wsink is not first_sink:
                         try:
                             await wsink.close()
                         except Exception:
@@ -15187,6 +15240,171 @@ async def _vb_loop():
         except Exception as e:
             logger.warning(f"backup de VMs: {e}")
         await asyncio.sleep(30)
+
+
+class _CbtFallback(Exception):
+    """CBT não serve para esta VM agora: faz o backup completo do jeito antigo."""
+
+
+async def _vb_api(h: dict):
+    host, port = await _virt_endpoint(h)
+    pw = vault.decrypt(h.get("password", ""))
+    verify = bool(h.get("verify_tls")) and not h.get("agent_id")
+    return await asyncio.to_thread(lambda: virtmod.VMware(host, port, h.get("user", ""), pw, verify).connect())
+
+
+async def _vb_cbt_backup(h: dict, vm: dict, conn, sink, vm_folder: str, folder: str, job: dict, prog) -> dict:
+    """Backup incremental por CBT. Levanta _CbtFallback quando precisa cair para o completo por SSH."""
+    stage = prog.set_stage
+    try:
+        api = await _vb_api(h)
+    except Exception as e:
+        raise _CbtFallback(f"API do VMware indisponível ({str(e)[:120]})")
+    snap = None
+    tmp_files: List[str] = []
+    try:
+        try:
+            info = await asyncio.to_thread(api.cbt_info, vm["id"])
+        except Exception as e:
+            raise _CbtFallback(str(e)[:150])
+        if info["has_snapshots"]:
+            raise _CbtFallback("a VM tem snapshots (apague/consolide para usar o incremental)")
+        code, vmx, err = await vbackup.run(conn, f"cat {shlex.quote(vcbt.ds_path(info['vmx_path']))}")
+        if code:
+            raise vbackup.BackupError(f"não li o .vmx ({err[:120]})")
+        stage("criando o snapshot do backup" + ("" if info["cbt"] else " (e ligando o CBT na VM)"))
+        try:
+            b = await asyncio.to_thread(api.cbt_begin, vm["id"], bool(job.get("quiesce")))
+        except virtmod.VirtError as e:
+            if "licença gratuita" in str(e):
+                raise _CbtFallback("ESXi sem licença: a API de backup é bloqueada")
+            raise vbackup.BackupError(str(e))
+        snap = b["snap"]
+        prev = await vcbt.last_point(sink, vm_folder)
+        why_full = vcbt.need_full(prev, b["disks"], int(job.get("full_every") or 7))
+        await sink.makedirs(folder)
+        await vcbt.install(conn)
+        level = 1 if job.get("compress", True) else 0
+        disks_out = []
+        for n, d in enumerate(b["disks"]):
+            desc_path = vcbt.ds_path(d["file"])
+            code, desc, err = await vbackup.run(conn, f"cat {shlex.quote(desc_path)}")
+            exts = vbackup.vmdk_extents(desc) if code == 0 else []
+            if code or len(exts) != 1 or not re.search(r'createType\s*=\s*"vmfs"', desc, re.I):
+                raise _CbtFallback(f"o disco {posixpath.basename(desc_path)} não é um disco VMFS simples")
+            flat = exts[0] if exts[0].startswith("/") else posixpath.join(posixpath.dirname(desc_path), exts[0])
+            old = {x["key"]: x for x in (prev or {}).get("disks") or []}.get(d["key"])
+            since = "*" if why_full else old["change_id"]
+            try:
+                areas = await asyncio.to_thread(api.cbt_changes, vm["id"], snap, d["key"], d["capacity"], since)
+            except virtmod.VirtError as e:
+                if since == "*":
+                    raise vbackup.BackupError(str(e))
+                why_full = f"o ESXi perdeu o histórico do CBT ({str(e)[:80]})"          # ex.: VM movida, CBT reiniciado
+                raise _CbtRestart(why_full)
+            ext_file = f"/tmp/bastion-cbt-{os.urandom(4).hex()}.json"
+            tmp_files.append(ext_file)
+            await vcbt.put_text(conn, ext_file, json.dumps(areas).encode())
+            name = f"disk{n}.cbt"
+            label = f"{posixpath.basename(desc_path)} ({'completo' if why_full else 'incremental'})"
+            if isinstance(sink, vnfs.HostFs) and sink.conn is conn:        # NFS no próprio ESXi: grava direto
+                class _Null:
+                    async def write(self, b):
+                        pass
+                out = sink.abs(posixpath.join(folder, name))
+                try:
+                    await vbackup.stream(conn, f"{vcbt.PY} {vcbt.REMOTE} read {shlex.quote(flat)} {ext_file} {level} > {shlex.quote(out)}", _Null(), prog,
+                                         label=label, prog_err=True)
+                except BaseException:
+                    await sink.remove(posixpath.join(folder, name))
+                    raise
+                sent = await sink.size(posixpath.join(folder, name))
+                prog(sent)
+            else:
+                w = await sink.open_write(posixpath.join(folder, name))
+                try:
+                    sent = await vbackup.stream(conn, f"{vcbt.PY} {vcbt.REMOTE} read {shlex.quote(flat)} {ext_file} {level}", w, prog,
+                                                label=label, prog_err=True)
+                    await w.close()
+                except BaseException:
+                    await w.abort()
+                    raise
+            disks_out.append({"n": n, "key": d["key"], "file": d["file"], "name": posixpath.basename(desc_path), "capacity": d["capacity"],
+                              "change_id": d["change_id"], "data": name, "bytes": sent, "areas": len(areas),
+                              "changed": sum(x[1] for x in areas), "thin": d["thin"]})
+        files = [x["data"] for x in disks_out]
+        vmx_name = posixpath.basename(vcbt.ds_path(info["vmx_path"]))
+        w = await sink.open_write(posixpath.join(folder, vmx_name))
+        await w.write(vmx.encode())
+        await w.close()
+        files.append(vmx_name)
+        nv = vbackup.vmx_get(vmx, "nvram")
+        if nv:
+            p = nv if nv.startswith("/") else posixpath.join(posixpath.dirname(vcbt.ds_path(info["vmx_path"])), nv)
+            w = await sink.open_write(posixpath.join(folder, posixpath.basename(nv)))
+            try:
+                await vbackup.stream(conn, f"cat {shlex.quote(p)}", w, lambda n: None)
+                await w.close()
+                files.append(posixpath.basename(nv))
+            except vbackup.BackupError:
+                await w.abort()                  # .nvram em uso: a VM recria na primeira vez que ligar
+                nv = ""
+        stamp = posixpath.basename(folder)
+        chain = [] if why_full else (prev.get("chain") or []) + [prev["stamp"]]
+        point = {"format": vcbt.FORMAT, "type": "full" if why_full else "incremental", "why": why_full, "chain": chain, "vm": vm["name"],
+                 "vm_id": vm["id"], "hv": h["name"], "vmx": vmx_name, "nvram": posixpath.basename(nv) if nv else "", "disks": disks_out,
+                 "created": datetime.now(timezone.utc).isoformat()}
+        w = await sink.open_write(posixpath.join(folder, "point.json"))
+        await w.write(json.dumps(point, indent=1).encode())
+        await w.close()
+        if not why_full:
+            w = await sink.open_write(posixpath.join(folder, vcbt.MARK_INC))
+            await w.write(b"")
+            await w.close()
+        total = sum(x["bytes"] for x in disks_out)
+        changed = sum(x["changed"] for x in disks_out)
+        return {"bytes": total, "files": files + ["point.json"], "format": f"CBT {'completo' if why_full else 'incremental'}",
+                "note": (f"completo: {why_full}" if why_full else f"incremental sobre {prev['stamp']}") + f" · {vbackup._gb(changed)} lidos do disco"}
+    finally:
+        if snap:
+            stage("removendo o snapshot do backup")
+            try:
+                await asyncio.to_thread(api.cbt_end, snap)
+            except Exception as e:
+                logger.warning(f"CBT: não removi o snapshot {snap}: {e}")
+        for f in tmp_files:
+            try:
+                await vbackup.run(conn, f"rm -f {f}")
+            except Exception:
+                pass
+        await asyncio.to_thread(api.close)
+
+
+class _CbtRestart(Exception):
+    pass
+
+
+async def _vb_esxi_backup(h: dict, vm: dict, conn, sink, vm_folder: str, folder: str, job: dict, prog) -> dict:
+    """ESXi: incremental por CBT quando dá; senão o completo por SSH (com o motivo na nota)."""
+    if job.get("incremental", True):
+        for attempt in range(2):
+            try:
+                return await _vb_cbt_backup(h, vm, conn, sink, vm_folder, folder, job, prog)
+            except _CbtRestart:
+                await _vb_cleanup(sink, folder)
+                job = {**job, "full_every": 1}               # changeId inválido: completo por CBT
+            except _CbtFallback as e:
+                await _vb_cleanup(sink, folder)
+                res = await _vb_esxi_full(vm, conn, sink, folder, job, prog)
+                res["note"] = "; ".join(x for x in [f"completo{' (NFS)' if isinstance(sink, vnfs.HostFs) else ' por SSH'}: {e}", res.get("note", "")] if x)
+                return res
+    return await _vb_esxi_full(vm, conn, sink, folder, job, prog)
+
+
+async def _vb_esxi_full(vm, conn, sink, folder, job, prog):
+    if isinstance(sink, vnfs.HostFs) and sink.conn is conn:
+        return await vnfs.backup_esxi_nfs(conn, vm, sink, folder, bool(job.get("quiesce")), prog)
+    return await vbackup.backup_esxi(conn, vm, sink, folder, job.get("compress", True), job.get("quiesce", False), prog)
 
 
 # ---------- Restaurar backup / copiar / migrar VM entre servidores ----------
@@ -15339,12 +15557,12 @@ async def _vt_execute(run: dict, body: VtIn, th: dict, name: str, src: dict, pro
             if code:
                 raise vbackup.BackupError(f"a pasta temporária {body.tmp_dir} não existe ou não aceita gravação no nó de destino")
 
-        async def to_esxi(fill):
+        async def to_esxi(fill, punch=True):
             folder = esxi_folder
             try:
                 await fill(folder)
                 stage("registrando a VM no ESXi")
-                return await vtransfer.esxi_finalize(tconn, folder, name, body.mode == "migrate", body.power_on, prog)
+                return await vtransfer.esxi_finalize(tconn, folder, name, body.mode == "migrate", body.power_on, prog, punch=punch)
             except BaseException:
                 try:
                     await vbackup.run(tconn, f"rm -rf {shlex.quote(folder)}", 600)
@@ -15352,14 +15570,15 @@ async def _vt_execute(run: dict, body: VtIn, th: dict, name: str, src: dict, pro
                     pass
                 raise
 
-        async def to_pve(fill, convert: bool):
+        async def to_pve(fill, convert: bool, disk_map=None):
             nonlocal created_vm
             try:
                 await fill(tmp)
                 if convert:
                     stage("criando a VM no Proxmox e importando os discos")
                     created_vm = True
-                    return await vtransfer.convert_to_pve(tconn, tmp, vmid, body.datastore, name, body.bridge, body.bus, body.nic, body.power_on, prog)
+                    return await vtransfer.convert_to_pve(tconn, tmp, vmid, body.datastore, name, body.bridge, body.bus, body.nic, body.power_on, prog,
+                                                          disk_map=disk_map)
                 code, ls, _ = await vbackup.run(tconn, f"ls -1 {shlex.quote(tmp)}")
                 arch = next((x.strip() for x in ls.splitlines() if x.strip().startswith("vzdump-")), "")
                 if not arch:
@@ -15382,17 +15601,53 @@ async def _vt_execute(run: dict, body: VtIn, th: dict, name: str, src: dict, pro
 
         if "dest" in src:                                   # restaurar do NAS
             stage("abrindo o backup no NAS")
-            nas = await _vb_sink(src["dest"])
+            nfs = src["dest"]["kind"] == "nfs"
+            nas = await (_vb_nfs_on(src["dest"], tconn) if nfs else _vb_sink(src["dest"]))     # NFS: montado no próprio destino
             names = await nas.listdir(src["path"])
             kind = vtransfer.backup_kind(names)
             if not kind:
                 raise vbackup.BackupError("essa pasta não tem um backup reconhecido (vzdump ou .vmx)")
             if kind == "proxmox" and not pve_t:
                 raise vbackup.BackupError("backup do Proxmox só restaura em Proxmox")
+            cbt_chain = await vcbt.restore_chain(nas, src["path"]) if kind == "vmware-cbt" else None
 
             async def fill_from_nas(folder, unpack=False, sparse=False):
                 await vtransfer.copy_folder(nas, src["path"], vtransfer.SshSink(tconn, unpack=unpack, sparse=sparse), folder, prog)
-            if kind == "proxmox":
+            packed = any(n.endswith(".gz") for n in names)
+            if nfs and kind == "vmware-cbt":
+                if pve_t:
+                    dmap: Dict[str, str] = {}
+
+                    async def fill_cbt_pve_nfs(folder):
+                        dmap.update(await vtransfer.restore_cbt_pve_nfs(tconn, nas, cbt_chain, folder, prog))
+                    result = await to_pve(fill_cbt_pve_nfs, convert=True, disk_map=dmap)
+                else:
+                    result = await to_esxi(lambda f: vtransfer.restore_cbt_esxi_nfs(tconn, nas, cbt_chain, f, prog), punch=False)
+            elif nfs and kind == "proxmox":
+                arch = next(n for n in names if n.startswith("vzdump-"))
+
+                async def link_vzdump(folder):
+                    await vbackup.run(tconn, f"mkdir -p {shlex.quote(folder)} && ln -s {shlex.quote(nas.abs(posixpath.join(src['path'], arch)))} {shlex.quote(folder)}/")
+                result = await to_pve(link_vzdump, convert=False)
+            elif nfs and kind == "vmware" and not pve_t:
+                result = await to_esxi(lambda f: vtransfer.restore_vmware_esxi_nfs(tconn, nas, src["path"], f, prog), punch=packed)
+            elif nfs and kind == "vmware" and not packed:
+                nmap = {n: nas.abs(posixpath.join(src["path"], n)) for n in names if n.endswith(".vmdk") and not re.search(r"-(flat|delta|sesparse)\.vmdk$", n)}
+
+                async def vmx_only(folder):
+                    vmxn = next(n for n in names if n.endswith(".vmx"))
+                    await vbackup.run(tconn, f"mkdir -p {shlex.quote(folder)} && cp {shlex.quote(nas.abs(posixpath.join(src['path'], vmxn)))} {shlex.quote(folder)}/")
+                result = await to_pve(vmx_only, convert=True, disk_map=nmap)
+            elif kind == "vmware-cbt":
+                if pve_t:
+                    disk_map: Dict[str, str] = {}
+
+                    async def fill_cbt_pve(folder):
+                        disk_map.update(await vtransfer.restore_cbt_pve_files(tconn, nas, cbt_chain, folder, prog))
+                    result = await to_pve(fill_cbt_pve, convert=True, disk_map=disk_map)
+                else:
+                    result = await to_esxi(lambda f: vtransfer.restore_cbt_esxi(tconn, nas, cbt_chain, f, prog), punch=False)
+            elif kind == "proxmox":
                 result = await to_pve(lambda f: fill_from_nas(f), convert=False)
             elif pve_t:
                 result = await to_pve(lambda f: fill_from_nas(f, unpack=True, sparse=True), convert=True)
