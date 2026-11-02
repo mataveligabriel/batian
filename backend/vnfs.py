@@ -130,7 +130,7 @@ async def run_progress(conn, cmd: str, progress, label: str, timeout_idle: int =
             buf = (buf + b)[-2000:]
             tail = (tail + b)[-4000:]
             m = None
-            for m in re.finditer(rb"(\d+)% done", buf):
+            for m in re.finditer(rb"(?:progress |Clone: |^|\s)(\d+)% ?(?:done|\()", buf):
                 pass
             if m and hasattr(progress, "set_stage"):
                 pct = int(m.group(1))

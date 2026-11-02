@@ -97,6 +97,7 @@ import vbackup
 import vtransfer
 import vcbt
 import vnfs
+import vpve2esx
 import tcprelay
 import runbooks
 import teopt
@@ -14911,6 +14912,7 @@ class VbJobIn(BaseModel):
     quiesce: bool = False           # ESXi: snapshot com VMware Tools (sistema de arquivos consistente)
     parallel: int = 2               # VMs copiadas ao mesmo tempo (1 a 4)
     incremental: bool = True        # ESXi licenciado: CBT (só os blocos alterados)
+    power_off: bool = False         # ESXi: desliga a VM pelo sistema durante o backup e religa no fim
     full_every: int = 7             # completo novo a cada N cópias
     enabled: bool = True
 
@@ -14933,7 +14935,7 @@ async def _vb_job_clean(body: VbJobIn, user: dict) -> dict:
             "keep": max(1, min(int(body.keep or 7), 365)), "mode": body.mode if body.mode in ("snapshot", "suspend", "stop") else "snapshot",
             "compress": bool(body.compress), "quiesce": bool(body.quiesce), "enabled": bool(body.enabled),
             "parallel": max(1, min(int(body.parallel or 2), 4)), "incremental": bool(body.incremental),
-            "full_every": max(1, min(int(body.full_every or 7), 60))}
+            "full_every": max(1, min(int(body.full_every or 7), 60)), "power_off": bool(body.power_off)}
 
 
 async def _vb_job_get(user: dict, jid: str) -> dict:
@@ -15170,6 +15172,19 @@ async def _vb_execute(job: dict, run: dict, only: List[str], prog):
                                     res = await vnfs.backup_proxmox_nfs(conn, vm, vsink, folder, job.get("mode", "snapshot"), cp, when)
                                 else:
                                     res = await vbackup.backup_proxmox(conn, vm, vsink, folder, job.get("mode", "snapshot"), cp, when)
+                            elif job.get("power_off") and vm.get("state") == "running":
+                                code_, out_, _ = await vbackup.run(conn, "vim-cmd vmsvc/getallvms")
+                                vid_ = vtransfer.find_esxi_vmid(out_, vm)
+                                if not vid_:
+                                    raise vbackup.BackupError("a VM não foi achada no ESXi para desligar")
+                                cp.set_stage("desligando a VM pelo sistema para o backup")
+                                await vtransfer.esxi_shutdown(conn, vid_)
+                                try:
+                                    res = await _vb_esxi_backup(h, {**vm, "state": "stopped"}, conn, vsink, vm_folder, folder, job, cp)
+                                finally:
+                                    cp.set_stage("religando a VM")
+                                    await vbackup.run(conn, f"vim-cmd vmsvc/power.on {vid_}", 600)
+                                res["note"] = "; ".join(x for x in ["VM desligada durante o backup", res.get("note", "")] if x)
                             else:
                                 res = await _vb_esxi_backup(h, vm, conn, vsink, vm_folder, folder, job, cp)
                             removed = await vcbt.prune_chains(vsink, vm_folder, int(job.get("keep") or 7))
@@ -15330,6 +15345,12 @@ async def _vb_cbt_backup(h: dict, vm: dict, conn, sink, vm_folder: str, folder: 
             if code or len(exts) != 1 or not re.search(r'createType\s*=\s*"vmfs"', desc, re.I):
                 raise _CbtFallback(f"o disco {posixpath.basename(desc_path)} não é um disco VMFS simples")
             flat = exts[0] if exts[0].startswith("/") else posixpath.join(posixpath.dirname(desc_path), exts[0])
+            code, _, _ = await vbackup.run(conn, f"dd if={shlex.quote(flat)} of=/dev/null bs=4096 count=1")
+            if code:
+                # ESXi 7+: com a VM ligada nem o disco base (somente leitura sob o snapshot) abre por fora do vmkfstools
+                await db.vbackup_state.update_one({"_id": f"cbtlock:{h['id']}:{vm['id']}"},
+                                                  {"$set": {"until": time.time() + 7 * 86400}}, upsert=True)
+                raise _CbtFallback("o ESXi não deixa ler o disco da VM ligada (só pelo vmkfstools); com 'Desligar a VM durante o backup' o incremental funciona")
             old = {x["key"]: x for x in (prev or {}).get("disks") or []}.get(d["key"])
             since = "*" if why_full else old["change_id"]
             try:
@@ -15423,6 +15444,11 @@ class _CbtRestart(Exception):
 
 async def _vb_esxi_backup(h: dict, vm: dict, conn, sink, vm_folder: str, folder: str, job: dict, prog) -> dict:
     """ESXi: incremental por CBT quando dá; senão o completo por SSH (com o motivo na nota)."""
+    locked = await db.vbackup_state.find_one({"_id": f"cbtlock:{h['id']}:{vm['id']}"}) or {}
+    if job.get("incremental", True) and vm.get("state") == "running" and locked.get("until", 0) > time.time():
+        res = await _vb_esxi_full(vm, conn, sink, folder, job, prog)          # já sabemos que o disco fica travado: vai direto
+        res["note"] = "; ".join(x for x in ["completo: o ESXi não deixa ler o disco da VM ligada (só pelo vmkfstools)", res.get("note", "")] if x)
+        return res
     if job.get("incremental", True):
         for attempt in range(2):
             try:
@@ -15543,7 +15569,9 @@ class VtIn(BaseModel):
     vmid: Optional[int] = None      # Proxmox: VMID novo (vazio = próximo livre)
     bridge: str = "vmbr0"           # ESXi -> Proxmox
     bus: str = "sata"               # sata | scsi
-    nic: str = "vmxnet3"            # vmxnet3 | e1000 | virtio
+    nic: str = "vmxnet3"            # vmxnet3 | e1000 | virtio (Proxmox) / e1000e | vmxnet3 (ESXi)
+    portgroup: str = "VM Network"   # Proxmox -> ESXi: port group da rede
+    helper_hv_id: Optional[str] = None  # backup do Proxmox -> ESXi: Proxmox que desempacota o vzdump
     tmp_dir: str = "/var/tmp"       # Proxmox: pasta temporária no nó
     mode: str = "copy"              # copy (identidade nova, origem segue ligada) | migrate (desliga a origem, mantém MAC/UUID)
     power_on: bool = False
@@ -15558,12 +15586,18 @@ async def vt_start(body: VtIn, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Dê um nome à VM no destino")
     if not re.fullmatch(r"[\w .:-]+", body.datastore or ""):
         raise HTTPException(status_code=400, detail="Escolha o datastore/storage de destino")
-    if body.mode not in ("copy", "migrate") or body.bus not in ("sata", "scsi") or body.nic not in ("vmxnet3", "e1000", "virtio"):
+    if body.mode not in ("copy", "migrate") or body.bus not in ("sata", "scsi") or body.nic not in ("vmxnet3", "e1000", "e1000e", "virtio"):
         raise HTTPException(status_code=400, detail="Opção inválida")
     if not re.fullmatch(r"/[\w./-]*", body.tmp_dir or "") or ".." in body.tmp_dir:
         raise HTTPException(status_code=400, detail="Pasta temporária inválida")
     if not re.fullmatch(r"[\w.-]+", body.bridge or ""):
         raise HTTPException(status_code=400, detail="Bridge inválida")
+    if not re.fullmatch(r"[\w .()-]{1,80}", body.portgroup or ""):
+        raise HTTPException(status_code=400, detail="Port group inválido")
+    if body.helper_hv_id:
+        hh = await _virt_get(user, body.helper_hv_id)
+        if hh["kind"] != "proxmox":
+            raise HTTPException(status_code=400, detail="O desempacotador precisa ser um Proxmox")
     if body.vmid is not None and not (100 <= int(body.vmid) <= 999999999):
         raise HTTPException(status_code=400, detail="VMID entre 100 e 999999999")
     if not _vb_ssh_password(th) and not th.get("ssh_key"):
@@ -15574,8 +15608,8 @@ async def vt_start(body: VtIn, user: dict = Depends(get_current_user)):
         vm = next((v for v in (st.get("inv") or {}).get("vms") or [] if v["id"] == body.vm_id), None)
         if not vm:
             raise HTTPException(status_code=404, detail="VM não encontrada (atualize o hypervisor)")
-        if sh["kind"] == "proxmox" and th["kind"] == "vmware":
-            raise HTTPException(status_code=400, detail="Proxmox → VMware ainda não é suportado (o disco do Proxmox não volta direto para o formato do ESXi)")
+        if sh["kind"] == "proxmox" and th["kind"] == "vmware" and vm.get("type") == "lxc":
+            raise HTTPException(status_code=400, detail="Container LXC não vira VM do VMware (só VM QEMU)")
         if not _vb_ssh_password(sh) and not sh.get("ssh_key"):
             raise HTTPException(status_code=400, detail=f"Cadastre o acesso SSH de {sh['name']} (Editar → Backup das VMs)")
         title = f"{'Migrar' if body.mode == 'migrate' else 'Copiar'} {vm['name']}: {sh['name']} → {th['name']}"
@@ -15690,8 +15724,8 @@ async def _vt_execute(run: dict, body: VtIn, th: dict, name: str, src: dict, pro
             kind = vtransfer.backup_kind(names)
             if not kind:
                 raise vbackup.BackupError("essa pasta não tem um backup reconhecido (vzdump ou .vmx)")
-            if kind == "proxmox" and not pve_t:
-                raise vbackup.BackupError("backup do Proxmox só restaura em Proxmox")
+            if kind == "proxmox" and not pve_t and any("-lxc-" in n for n in names):
+                raise vbackup.BackupError("backup de container LXC não vira VM do VMware (só restaura em Proxmox)")
             cbt_chain = await vcbt.restore_chain(nas, src["path"]) if kind == "vmware-cbt" else None
 
             async def fill_from_nas(folder, unpack=False, sparse=False):
@@ -15706,6 +15740,40 @@ async def _vt_execute(run: dict, body: VtIn, th: dict, name: str, src: dict, pro
                     result = await to_pve(fill_cbt_pve_nfs, convert=True, disk_map=dmap)
                 else:
                     result = await to_esxi(lambda f: vtransfer.restore_cbt_esxi_nfs(tconn, nas, cbt_chain, f, prog), punch=False)
+            elif kind == "proxmox" and not pve_t:            # backup do Proxmox -> ESXi (desempacota num Proxmox)
+                arch = next(n for n in names if n.startswith("vzdump-"))
+                hid_ = body.helper_hv_id
+                if not hid_:
+                    cands = await db.virt_hosts.find({"kind": "proxmox"}, {"_id": 0, "id": 1, "owner_id": 1}).to_list(200)
+                    hid_ = next((x["id"] for x in cands if x.get("owner_id") == run["owner_id"]), None) or (cands[0]["id"] if cands else None)
+                hh = await db.virt_hosts.find_one({"id": hid_ or ""}, {"_id": 0})
+                if not hh:
+                    raise vbackup.BackupError("escolha um Proxmox para desempacotar o backup")
+                hst = await db.virt_status.find_one({"_id": hh["id"]}) or {}
+                stage(f"conectando no Proxmox {hh['name']} (desempacotar)")
+                hw_ = await _vb_ssh(hh, await _vb_address(hh, hst.get("inv") or {}, {"host": ((hst.get("inv") or {}).get("hosts") or [{}])[0].get("name", "")}, {}))
+                conns.append(hw_)
+                hconn = hw_.conn
+                xdir = posixpath.join(body.tmp_dir, f"bastion-{rid}")
+                code, _, _ = await vbackup.run(hconn, f"mkdir -p {shlex.quote(xdir)} && test -w {shlex.quote(xdir)}")
+                if code:
+                    raise vbackup.BackupError(f"a pasta temporária {body.tmp_dir} não existe ou não aceita gravação no Proxmox {hh['name']}")
+
+                async def fill_vz_esxi(folder):
+                    try:
+                        if nfs:
+                            hfs = await _vb_nfs_on(src["dest"], hconn)
+                            ap = hfs.abs(posixpath.join(src["path"], arch))
+                        else:
+                            stage("copiando o backup do NAS para o Proxmox")
+                            await vtransfer.copy_folder(nas, src["path"], vtransfer.SshSink(hconn), posixpath.join(xdir, "arq"), prog)
+                            ap = posixpath.join(xdir, "arq", arch)
+                        await vpve2esx.extract(hconn, vpve2esx.source_from_archive(ap), posixpath.join(xdir, "x"), prog)
+                        await vpve2esx.to_esxi(hconn, posixpath.join(xdir, "x"), tconn, folder, name, body.nic if body.nic in ("e1000e", "vmxnet3") else "e1000e",
+                                               body.bus, body.portgroup, body.mode == "migrate", prog)
+                    finally:
+                        await vbackup.run(hconn, f"rm -rf {shlex.quote(xdir)}", 1800)
+                result = await to_esxi(fill_vz_esxi, punch=False)
             elif nfs and kind == "proxmox":
                 arch = next(n for n in names if n.startswith("vzdump-"))
 
@@ -15756,7 +15824,21 @@ async def _vt_execute(run: dict, body: VtIn, th: dict, name: str, src: dict, pro
                         raise vbackup.BackupError("a VM de origem não foi achada no ESXi")
                     await vtransfer.esxi_shutdown(sconn, svid)
                     src_off = (sconn, f"vim-cmd vmsvc/power.on {svid}")
-            if sh["kind"] == "proxmox":
+            if sh["kind"] == "proxmox" and not pve_t:           # Proxmox -> ESXi ao vivo
+                xdir = posixpath.join(body.tmp_dir, f"bastion-{rid}")
+                code, _, _ = await vbackup.run(sconn, f"mkdir -p {shlex.quote(xdir)} && test -w {shlex.quote(xdir)}")
+                if code:
+                    raise vbackup.BackupError(f"a pasta temporária {body.tmp_dir} não existe ou não aceita gravação no nó de origem")
+
+                async def fill_pve_esxi(folder):
+                    try:
+                        await vpve2esx.extract(sconn, f"vzdump {int(vm['vmid'])} --mode snapshot --stdout", xdir, prog)
+                        await vpve2esx.to_esxi(sconn, xdir, tconn, folder, name, body.nic if body.nic in ("e1000e", "vmxnet3") else "e1000e",
+                                               body.bus, body.portgroup, body.mode == "migrate", prog)
+                    finally:
+                        await vbackup.run(sconn, f"rm -rf {shlex.quote(xdir)}", 1800)
+                result = await to_esxi(fill_pve_esxi, punch=False)
+            elif sh["kind"] == "proxmox":
                 when = datetime.now(_vb_tz())
 
                 async def fill(folder):

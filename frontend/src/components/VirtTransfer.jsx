@@ -18,11 +18,13 @@ const stampText = (s) => { const m = STAMP.exec(s); return m ? `${m[3]}/${m[2]}/
 // source: {type:"vm", hv, vm} | {type:"backup", dest_id, path, kind ("vmware"|"proxmox"), label}
 export function TransferDialog({ source, hvs, onClose, onStarted }) {
   const srcKind = source.type === "vm" ? source.hv.kind : source.kind;
-  const allowed = hvs.filter((h) => srcKind === "vmware" || h.kind === "proxmox");          // Proxmox só vai para Proxmox
+  const lxc = source.type === "vm" ? source.vm.type === "lxc" : (source.label || "").includes("lxc") || (source.path || "").includes("-lxc-");
+  const allowed = hvs.filter((h) => !lxc || h.kind === "proxmox");          // container LXC só vai para Proxmox
   const [f, setF] = useState({
     target_hv_id: (allowed.find((h) => source.type !== "vm" || h.id !== source.hv.id) || allowed[0])?.id || "",
     target_host: "", datastore: "", name: source.type === "vm" ? `${source.vm.name}-copia` : source.name || "", vmid: "",
-    bridge: "vmbr0", bus: "sata", nic: "vmxnet3", tmp_dir: "/var/tmp", mode: "copy", power_on: false,
+    bridge: "vmbr0", bus: "sata", nic: "vmxnet3", tmp_dir: "/var/tmp", mode: "copy", power_on: false, portgroup: "VM Network",
+    helper_hv_id: (hvs.find((h) => h.kind === "proxmox") || {}).id || "",
   });
   const [tg, setTg] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -30,12 +32,15 @@ export function TransferDialog({ source, hvs, onClose, onStarted }) {
   const th = hvs.find((h) => h.id === f.target_hv_id);
   const pve = th?.kind === "proxmox";
   const convert = pve && srcKind === "vmware";
+  const p2e = !pve && srcKind === "proxmox";                       // Proxmox -> ESXi
+  const pveHvs = hvs.filter((h) => h.kind === "proxmox");
   useEffect(() => {
     if (!f.target_hv_id) return;
     setTg(null);
     api.get(`/virt/targets/${f.target_hv_id}`).then((r) => {
       setTg(r.data);
-      setF((p) => ({ ...p, target_host: r.data.hosts[0]?.name || "", datastore: "" }));
+      setF((p) => ({ ...p, target_host: r.data.hosts[0]?.name || "", datastore: "",
+        nic: r.data.kind === "vmware" && srcKind === "proxmox" ? "e1000e" : "vmxnet3" }));
     }).catch((e) => setTg({ error: formatApiError(e), hosts: [], storages: [] }));
   }, [f.target_hv_id]);
   useEffect(() => {
@@ -84,8 +89,22 @@ export function TransferDialog({ source, hvs, onClose, onStarted }) {
               {stores.map((x) => <option key={x.name} value={x.name}>{x.name}{x.type ? ` · ${x.type}` : ""}{x.free ? ` · ${bytes(x.free)} livres` : ""}</option>)}</select></div>
           <div><label className={lbl}>Nome da VM no destino</label><Input value={f.name} onChange={s("name")} className="bg-sunken border-line" data-testid="vt-name" /></div>
           {pve && <div><label className={lbl}>VMID (vazio = próximo livre)</label><Input value={f.vmid} onChange={s("vmid")} placeholder="auto" className="bg-sunken border-line font-mono" data-testid="vt-vmid" /></div>}
-          {pve && <div><label className={lbl}>Pasta temporária no nó (precisa de espaço)</label><Input value={f.tmp_dir} onChange={s("tmp_dir")} className="bg-sunken border-line font-mono" /></div>}
+          {p2e && source.type === "backup" && <div><label className={lbl}>Proxmox que desempacota o backup</label>
+            <select value={f.helper_hv_id} onChange={s("helper_hv_id")} className={`${sel} w-full`} data-testid="vt-helper">
+              {pveHvs.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}</select></div>}
+          {(pve || p2e) && <div><label className={lbl}>{p2e ? (source.type === "backup" ? "Pasta temporária nesse Proxmox" : "Pasta temporária no nó de origem") : "Pasta temporária no nó"} (precisa de espaço)</label><Input value={f.tmp_dir} onChange={s("tmp_dir")} className="bg-sunken border-line font-mono" /></div>}
         </div>
+        {p2e && (
+          <div className="grid sm:grid-cols-3 gap-3">
+            <div><label className={lbl}>Port group (rede no ESXi)</label><Input value={f.portgroup} onChange={s("portgroup")} className="bg-sunken border-line" data-testid="vt-portgroup" /></div>
+            <div><label className={lbl}>Placa de rede</label>
+              <select value={f.nic === "vmxnet3" ? "vmxnet3" : "e1000e"} onChange={s("nic")} className={`${sel} w-full`} data-testid="vt-nic-esx">
+                <option value="e1000e">e1000e (sobe sem driver)</option><option value="vmxnet3">vmxnet3 (precisa VMware Tools)</option></select></div>
+            <div><label className={lbl}>Disco</label>
+              <select value={f.bus} onChange={s("bus")} className={`${sel} w-full`}>
+                <option value="sata">SATA (sobe sem driver)</option><option value="scsi">PVSCSI (precisa driver no Windows)</option></select></div>
+          </div>
+        )}
         {convert && (
           <div className="grid sm:grid-cols-3 gap-3">
             <div><label className={lbl}>Bridge da rede</label><Input value={f.bridge} onChange={s("bridge")} className="bg-sunken border-line font-mono" data-testid="vt-bridge" /></div>
@@ -105,7 +124,8 @@ export function TransferDialog({ source, hvs, onClose, onStarted }) {
           {source.type === "vm" && f.mode === "migrate" && <div>A VM original é desligada pelo sistema (precisa do VMware Tools / QEMU agent ou ACPI) antes da cópia e fica desligada no fim. Se der erro, o BastiON religa a original.</div>}
           {convert && <div>ESXi → Proxmox: cria a VM com a mesma CPU, memória e firmware (BIOS/UEFI) e importa os discos com <span className="font-mono">qm importdisk</span>. Os discos passam pela pasta temporária do nó (só o espaço realmente usado). No primeiro boot, Windows pode pedir drivers; Linux sobe direto. Desinstale o VMware Tools depois.</div>}
           {pve && !convert && <div>Proxmox → Proxmox: vzdump da origem direto para o nó de destino e <span className="font-mono">qmrestore</span>{f.mode === "copy" ? " com MAC novo" : ""}.</div>}
-          {!pve && <div>Destino ESXi: a VM vai para uma pasta nova no datastore, é registrada e os discos thin continuam thin.</div>}
+          {p2e && <div>Proxmox → ESXi: o Proxmox desempacota a VM (<span className="font-mono">vzdump | vma extract</span>) na pasta temporária — precisa do espaço usado pelos discos —, os discos vão para o ESXi pulando as partes vazias (chegam thin) e o .vmx sai com a mesma CPU, memória, BIOS/UEFI e placas de rede. Depois de subir, instale o VMware Tools e tire o QEMU guest agent.</div>}
+          {!pve && !p2e && <div>Destino ESXi: a VM vai para uma pasta nova no datastore, é registrada e os discos thin continuam thin.</div>}
           <div>Tudo passa pelo BastiON (direto ou pelos jumps). O tempo depende do tamanho dos discos e do link até os dois servidores.</div>
         </div>
         <DialogFooter><Button onClick={go} disabled={busy || !f.datastore || !f.name.trim() || !tg?.ssh} className="bg-brand hover:bg-brand-strong" data-testid="vt-go">

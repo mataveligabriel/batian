@@ -110,7 +110,7 @@ function DestDialog({ cur, agents, hvs, onClose, onSaved }) {
 
 // ------------------------------------------------------------------ rotina
 const EMPTY_JOB = { name: "", hv_id: "", dest_id: "", vms: [], all: false, exclude: [], days: [0, 1, 2, 3, 4, 5, 6], time: "01:00", keep: 7, mode: "snapshot",
-  compress: true, quiesce: false, enabled: true, parallel: 2, incremental: true, full_every: 7 };
+  compress: true, quiesce: false, enabled: true, parallel: 2, incremental: true, full_every: 7, power_off: false };
 
 function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
   const [f, setF] = useState(cur ? { ...EMPTY_JOB, ...cur } : { ...EMPTY_JOB, hv_id: hvs[0]?.id || "", dest_id: dests[0]?.id || "" });
@@ -195,6 +195,8 @@ function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
               <Input type="number" min={1} value={f.full_every} onChange={s("full_every")} className="bg-sunken border-line font-mono h-8 w-16" data-testid="vb-job-full-every" /> cópias</label>}
             <label className="flex items-center gap-2"><Switch checked={!!f.compress} onCheckedChange={s("compress")} /> Compactar os discos (gzip — disco thin vazio vira quase nada)</label>
             <label className="flex items-center gap-2"><Switch checked={!!f.quiesce} onCheckedChange={s("quiesce")} /> Snapshot com VMware Tools (quiesce)</label>
+            <label className="flex items-center gap-2" title="O ESXi 7+ não deixa ler o disco de VM ligada fora do vmkfstools: desligada, o backup lê direto e o incremental funciona">
+              <Switch checked={!!f.power_off} onCheckedChange={s("power_off")} data-testid="vb-job-poweroff" /> Desligar a VM durante o backup (religa no fim)</label>
           </div>
         )}
         <div className="flex flex-wrap items-center gap-5">
