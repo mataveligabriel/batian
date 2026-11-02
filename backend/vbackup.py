@@ -151,9 +151,39 @@ class FtpSink(Sink):
         self.ex = ThreadPoolExecutor(max_workers=1)
         self.ftp = None
         self.label = "FTPS" if tls else "FTP"
+        self._last = 0.0
+
+    # Muitos NAS (ProFTPD/Synology: TimeoutNoTransfer 300 s) derrubam a conexão de controle quando passa um tempo sem
+    # transferência — e o backup fica minutos parado enquanto o ESXi consolida ou o vzdump começa. Então: conexão
+    # parada há mais de 2 min é refeita antes de usar, e erro de conexão refaz e tenta de novo uma vez.
+    IDLE_RECONNECT = 120
+    TRANSIENT = (OSError, EOFError, ftplib.error_temp, ftplib.error_reply, AttributeError)
+
+    def _reconnect(self):
+        try:
+            if self.ftp:
+                self.ftp.close()
+        except Exception:
+            pass
+        self.ftp = None
+        self._connect()
+
+    def _ensure(self):
+        if self.ftp is None or time.time() - self._last > self.IDLE_RECONNECT:
+            self._reconnect()
+
+    def _call(self, fn, *a):
+        self._ensure()
+        try:
+            out = fn(*a)
+        except self.TRANSIENT:
+            self._reconnect()
+            out = fn(*a)
+        self._last = time.time()
+        return out
 
     async def _run(self, fn, *a):
-        return await asyncio.get_running_loop().run_in_executor(self.ex, fn, *a)
+        return await asyncio.get_running_loop().run_in_executor(self.ex, self._call, fn, *a)
 
     def _connect(self):
         if self.tls:
@@ -170,10 +200,11 @@ class FtpSink(Sink):
             f.prot_p()
         f.set_pasv(self.passive)
         self.ftp = f
+        self._last = time.time()
 
     async def connect(self):
         try:
-            await self._run(self._connect)
+            await asyncio.get_running_loop().run_in_executor(self.ex, self._connect)
         except ftplib.error_perm as e:
             raise BackupError(f"o NAS recusou o login FTP ({str(e)[:120]})")
         except Exception as e:
@@ -195,7 +226,13 @@ class FtpSink(Sink):
     async def open_write(self, path: str):
         r = _QueueReader()
         loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(self.ex, lambda: self.ftp.storbinary(f"STOR {path}", r, blocksize=CHUNK))
+        def stor():
+            self._ensure()
+            try:
+                return self.ftp.storbinary(f"STOR {path}", r, blocksize=CHUNK)
+            finally:
+                self._last = time.time()
+        fut = loop.run_in_executor(self.ex, stor)
         sink = self
 
         class W:
@@ -270,7 +307,9 @@ class FtpSink(Sink):
 
         def go():
             try:
+                self._ensure()
                 self.ftp.retrbinary(f"RETR {path}", cb, blocksize=CHUNK)
+                self._last = time.time()
                 q.put(None)
             except Exception as e:
                 q.put(e)
@@ -326,7 +365,7 @@ class FtpSink(Sink):
             except Exception:
                 pass
         if self.ftp:
-            await self._run(q)
+            await asyncio.get_running_loop().run_in_executor(self.ex, q)
         self.ex.shutdown(wait=False)
 
 
