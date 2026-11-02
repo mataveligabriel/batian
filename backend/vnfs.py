@@ -118,8 +118,10 @@ class HostFs(Sink):
 async def run_progress(conn, cmd: str, progress, label: str, timeout_idle: int = 3600) -> tuple:
     """Roda e transforma o "Clone: 37% done." do vmkfstools (ou qualquer NN%) em andamento na tela."""
     import asyncio
+    import time
     proc = await conn.create_process(cmd + " 2>&1", encoding=None)
     buf, tail = b"", b""
+    t0 = time.time()
     try:
         while True:
             b = await asyncio.wait_for(proc.stdout.read(4096), timeout_idle)
@@ -131,7 +133,11 @@ async def run_progress(conn, cmd: str, progress, label: str, timeout_idle: int =
             for m in re.finditer(rb"(\d+)% done", buf):
                 pass
             if m and hasattr(progress, "set_stage"):
-                progress.set_stage(f"{label}: {m.group(1).decode()}%")
+                pct = int(m.group(1))
+                el = time.time() - t0
+                left = el * (100 - pct) / pct if pct >= 2 else 0
+                eta = (f", faltam ~{int(left // 3600)}h{int(left % 3600 // 60):02d}" if left >= 3600 else f", faltam ~{max(1, int(left // 60))} min") if left else ""
+                progress.set_stage(f"{label}: {pct}%{eta}")
         await proc.wait_closed()
     finally:
         proc.close()

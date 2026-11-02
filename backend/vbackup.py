@@ -377,6 +377,19 @@ async def run(conn, cmd: str, timeout: int = 120) -> tuple:
     return r.exit_status or 0, out, err
 
 
+def _size_txt(t: str) -> int:
+    """'14.3 GiB' -> bytes"""
+    m = re.match(r"([\d.]+)\s*([KMGT]?)i?B", t.strip())
+    if not m:
+        return 0
+    return int(float(m.group(1)) * {"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}[m.group(2)])
+
+
+def _dur(sec: float) -> str:
+    sec = int(sec)
+    return f"{sec // 3600}h{sec % 3600 // 60:02d}" if sec >= 3600 else f"{max(1, sec // 60)} min"
+
+
 def _gb(n: float) -> str:
     return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
 
@@ -396,6 +409,7 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label:
     set_stage = getattr(progress, "set_stage", None)
     add_raw = getattr(progress, "add_raw", None)
     t0 = time.time()
+    vz = {"on": False}
 
     def show():
         if not set_stage or not label:
@@ -405,6 +419,7 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label:
         set_stage(f"copiando {label}:{pct} ({_gb(raw)}{' de ' + _gb(size) if size else ''} lidos, {raw / dt / 1e6:.0f} MB/s)")
 
     async def drain_err():
+        nonlocal raw
         buf = b""
         while True:
             b = await proc.stderr.read(65536)
@@ -421,7 +436,6 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label:
                 for pm in re.finditer(rb"PROG (\d+) (\d+)", buf):
                     pass
                 if pm:
-                    nonlocal raw
                     done_, tot_ = int(pm.group(1)), int(pm.group(2))
                     if add_raw and done_ > raw:
                         add_raw(done_ - raw)
@@ -429,8 +443,17 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label:
                     if set_stage and label:
                         dt = max(time.time() - t0, 0.001)
                         set_stage(f"copiando {label}: {min(100, 100 * done_ / max(tot_, 1)):.0f}% ({_gb(done_)} de {_gb(tot_)} alterados/usados, {done_ / dt / 1e6:.0f} MB/s)")
-            if m and set_stage:
-                set_stage(f"vzdump {m.group(1).decode()}% ({m.group(2).decode()} de {m.group(3).decode()}, leitura {m.group(4).decode()})")
+            if m:
+                vz["on"] = True                           # o "lido" passa a ser o do vzdump (não o que sai comprimido)
+                done_ = _size_txt(m.group(2).decode())
+                if add_raw and done_ > raw:
+                    add_raw(done_ - raw)
+                raw = max(raw, done_)
+                pct = int(m.group(1))
+                el = time.time() - t0
+                eta = f", faltam ~{_dur(el * (100 - pct) / pct)}" if pct >= 2 else ""
+                if set_stage:
+                    set_stage(f"vzdump {pct}% ({m.group(2).decode()} de {m.group(3).decode()}, leitura {m.group(4).decode()}{eta})")
     et = asyncio.create_task(drain_err())
     try:
         while True:
@@ -440,8 +463,8 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label:
             await writer.write(b)
             total += len(b)
             progress(len(b))
-            if prog_err:
-                n = 0                                       # quem conta o lido é o script (PROG)
+            if prog_err or vz["on"]:
+                n = 0                                       # quem conta o lido é o script (PROG) / o vzdump
             elif inflate is not None:
                 try:
                     n = 0
@@ -454,7 +477,7 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label:
                     inflate, n = None, 0
             else:
                 n = len(b)
-            if not prog_err:
+            if not prog_err and not vz["on"]:
                 raw += n
                 if add_raw:
                     add_raw(n)
@@ -765,8 +788,11 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
             tmpdirs.append(tmp)
             out_vmdk = posixpath.join(tmp, f"d{i}.vmdk")
             await run(conn, f"rm -rf {shlex.quote(tmp)}; mkdir -p {shlex.quote(tmp)}")
-            _stage(f"consolidando {posixpath.basename(t)} com vmkfstools (pode demorar; sem bytes enviados nessa fase)")
-            code, out, err = await run(conn, f"vmkfstools -i {shlex.quote(t)} -d thin {shlex.quote(out_vmdk)}", 12 * 3600)
+            _stage(f"consolidando {posixpath.basename(t)} com vmkfstools (disco travado pelos snapshots da VM)")
+            from vnfs import run_progress
+            code, out = await run_progress(conn, f"vmkfstools -i {shlex.quote(t)} -d thin {shlex.quote(out_vmdk)}", progress,
+                                           f"consolidando {posixpath.basename(t)} (snapshots antigos da VM; apague-os para pular esta fase)")
+            err = ""
             if code:
                 msg = (err or out).strip().splitlines()
                 raise BackupError(f"o vmkfstools não clonou {posixpath.basename(t)} (falta espaço no datastore?): {' '.join(msg[-2:])[:200]}")
