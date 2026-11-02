@@ -219,7 +219,7 @@ function RunRow({ r, onCancel, readOnly }) {
               <span className="font-mono text-slate-400">{i.state === "ok" ? bytes(i.bytes) : ""}</span>
               <span className="text-slate-500">{i.state === "ok" || i.state === "error" ? dur(i.secs) : ""}</span>
               <span className={`truncate ${i.error ? "text-red-300" : "text-slate-500 font-mono"}`} title={i.error || (i.files || []).join(", ")}>
-                {i.error || (i.path ? `${i.path}${i.pruned?.length ? ` · apagou ${i.pruned.length} cópia(s) antiga(s)` : ""}` : "")}</span>
+                {i.error || (i.path ? `${i.path}${i.pruned?.length ? ` · apagou ${i.pruned.length} cópia(s) antiga(s)` : ""}${i.note ? ` · ${i.note}` : ""}` : "")}</span>
             </div>
           ))}
         </div>

@@ -411,9 +411,16 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
         raise BackupError(f"não li o .vmx ({err[:150]})")
     top = [absolute(d) for d in vmx_disks(vmx)]
     chain: Dict[str, str] = {}                       # descritor -> conteúdo (atual + pais até o disco base)
+    chain_of: Dict[str, List[str]] = {}              # disco do .vmx -> cadeia dele (atual ... base)
     for d in top:
         cur = d
-        while cur and cur not in chain:
+        chain_of[d] = []
+        while cur and cur not in chain_of[d] and len(chain_of[d]) < 64:
+            chain_of[d].append(cur)
+            if cur in chain:
+                hint = _parent_hint(chain[cur])
+                cur = absolute(hint, posixpath.dirname(cur)) if hint else None
+                continue
             code, desc, err = await run(conn, f"cat {shlex.quote(cur)}")
             if code:
                 raise BackupError(f"não li o disco {cur} ({err[:120]})")
@@ -449,9 +456,11 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
             desc = re.sub(r'^(\s*parentFileNameHint\s*=\s*)".+?"', lambda mm: f'{mm.group(1)}"{newname[absolute(hint, posixpath.dirname(d))]}"', desc, flags=re.M)
         return desc
 
-    def fix_vmx(text):
+    def fix_vmx(text, override=None):
         def rep(mm):
             v = mm.group(2)
+            if override and absolute(v) in override:
+                return f'{mm.group(1)}"{override[absolute(v)]}"'
             if v.lower().endswith(".vmdk") and absolute(v) in newname:
                 return f'{mm.group(1)}"{newname[absolute(v)]}"'
             return mm.group(0)
@@ -483,43 +492,103 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
         total += len(data)
         progress(len(data))
 
-    async def put_remote(path, name):
+    async def put_remote(path, name, optional=False):
         nonlocal total
+        _stage(f"copiando {name}")
         dest = name + (".gz" if compress else "")
         w = await sink.open_write(posixpath.join(folder, dest))
         try:
             n = await stream(conn, (f"gzip -1 -c {shlex.quote(path)}" if compress else f"cat {shlex.quote(path)}"), w, progress)
             await w.close()
+        except BackupError as e:
+            await w.abort()
+            if optional and "busy" in str(e).lower():
+                notes.append(f"{posixpath.basename(path)} em uso pela VM: não copiado")
+                return
+            raise
         except BaseException:
             await w.abort()
             raise
         files.append(dest)
         total += n
 
+    def _stage(t):
+        if hasattr(progress, "stage"):
+            progress.stage = t
+
+    async def readable(path) -> bool:
+        code, _, _ = await run(conn, f"dd if={shlex.quote(path)} of=/dev/null bs=4096 count=1")
+        return code == 0
+
+    notes: List[str] = []
+    tmpdirs: List[str] = []
     snap = False
     try:
         if on:
+            _stage("criando snapshot temporário")
             code, out, err = await run(conn, f"vim-cmd vmsvc/snapshot.create {vid} {SNAP_NAME} 'snapshot temporario do backup' 0 {1 if quiesce else 0}", 1800)
             if code or "failed" in (out + err).lower() or "fault" in (out + err).lower():
                 raise BackupError(f"o ESXi não criou o snapshot ({(err or out).strip()[:200]})")
             snap = True
-        await put_bytes(vmx_name, fix_vmx(vmx).encode())                      # o .vmx de antes do snapshot
+        # disco que a VM ligada mantém travado (comum com snapshots/SEsparse): não dá para ler o arquivo direto,
+        # então o vmkfstools clona a cadeia num disco thin temporário no mesmo datastore e a cópia sai dele
+        clone = []
+        for t in top:
+            for d in chain_of[t]:
+                exts = [absolute(e, posixpath.dirname(d)) for e in vmdk_extents(chain[d])]
+                if not all([await readable(x) for x in exts]):
+                    clone.append(t)
+                    break
+        override = {t: newname[chain_of[t][-1]] for t in clone}           # o .vmx aponta para o disco consolidado
+        await put_bytes(vmx_name, fix_vmx(vmx, override).encode())         # o .vmx de antes do snapshot
         nv = vmx_get(vmx, "nvram")
         if nv:
             code, _, _ = await run(conn, f"test -f {shlex.quote(absolute(nv))}")
             if code == 0:
-                await put_remote(absolute(nv), posixpath.basename(nv))
-        if vmsd:
+                await put_remote(absolute(nv), posixpath.basename(nv), optional=True)
+        if vmsd and not clone:
             await put_bytes(vmsd[0], vmsd[1].encode())
-        for p in snap_files:
-            await put_remote(p, name_for(p))
-        for d, desc in chain.items():
-            await put_bytes(newname[d], fix_desc(d, desc).encode())
-        for path, name in extents.items():
-            await put_remote(path, name)
+            for p in snap_files:
+                await put_remote(p, name_for(p), optional=True)
+        elif had_snaps:
+            notes.append("discos consolidados na cópia (os snapshots da VM não vão junto)")
+        sent = set()
+        for t in top:
+            if t in clone:
+                continue
+            for d in chain_of[t]:
+                if d in sent:
+                    continue
+                sent.add(d)
+                await put_bytes(newname[d], fix_desc(d, chain[d]).encode())
+                for e in vmdk_extents(chain[d]):
+                    x = absolute(e, posixpath.dirname(d))
+                    await put_remote(x, extents[x])
+        for i, t in enumerate(clone):
+            tmp = posixpath.join(posixpath.dirname(t), f".bastion-tmp-{vid}")
+            tmpdirs.append(tmp)
+            out_vmdk = posixpath.join(tmp, f"d{i}.vmdk")
+            await run(conn, f"rm -rf {shlex.quote(tmp)}; mkdir -p {shlex.quote(tmp)}")
+            _stage(f"consolidando {posixpath.basename(t)} com vmkfstools (pode demorar; sem bytes enviados nessa fase)")
+            code, out, err = await run(conn, f"vmkfstools -i {shlex.quote(t)} -d thin {shlex.quote(out_vmdk)}", 12 * 3600)
+            if code:
+                msg = (err or out).strip().splitlines()
+                raise BackupError(f"o vmkfstools não clonou {posixpath.basename(t)} (falta espaço no datastore?): {' '.join(msg[-2:])[:200]}")
+            code, desc, err = await run(conn, f"cat {shlex.quote(out_vmdk)}")
+            name = override[t]
+            stem = name[:-5] if name.lower().endswith(".vmdk") else name
+            ex = vmdk_extents(desc)
+            if code or len(ex) != 1:
+                raise BackupError(f"o disco clonado de {posixpath.basename(t)} veio estranho ({err[:120]})")
+            await put_bytes(name, desc.replace(f'"{ex[0]}"', f'"{stem}-flat.vmdk"').encode())
+            await put_remote(absolute(ex[0], tmp), f"{stem}-flat.vmdk")
+            await run(conn, f"rm -rf {shlex.quote(tmp)}", 600)
+            tmpdirs.remove(tmp)
         info = (f"Backup da VM {target['name']} feito pelo BastiON em {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
                 f"Origem: [{target['ds']}] {target['rel']}\n"
-                + (f"A VM tinha snapshots: a cadeia inteira de discos veio junto ({len(chain)} descritores).\n" if had_snaps else "")
+                + (f"A VM tinha snapshots: a cadeia inteira de discos veio junto ({len(chain)} descritores).\n" if had_snaps and not clone else "")
+                + ("Discos consolidados (vmkfstools) porque a VM ligada mantinha os arquivos travados.\n" if clone else "")
+                + "".join(f"Obs.: {n}\n" for n in notes)
                 + "\nPara restaurar:\n"
                 "1. Crie uma pasta no datastore e envie estes arquivos para ela (navegador de datastore ou scp).\n"
                 + ("2. No ESXi (SSH), descompacte: gunzip *.gz\n" if compress else "")
@@ -527,7 +596,13 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
                 "4. Na primeira vez que ligar, responda 'Eu movi'/'I moved it'.\n")
         await put_bytes("RESTAURAR.txt", info.encode())
     finally:
+        for tmp in tmpdirs:
+            try:
+                await run(conn, f"rm -rf {shlex.quote(tmp)}", 600)
+            except Exception:
+                pass
         if snap:
+            _stage("removendo o snapshot temporário")
             try:
                 if not had_snaps:
                     await run(conn, f"vim-cmd vmsvc/snapshot.removeall {vid}", 7200)
@@ -538,8 +613,8 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
                             await run(conn, f"vim-cmd vmsvc/snapshot.remove {vid} {sid}", 7200)
             except Exception:
                 pass
-    return {"bytes": total, "files": files, "format": "vmx + vmdk" + (" (gzip)" if compress else "") + (" + cadeia de snapshots" if had_snaps else ""),
-            "was_on": on}
+    return {"bytes": total, "files": files, "format": "vmx + vmdk" + (" (gzip)" if compress else "") + (" + cadeia de snapshots" if had_snaps and not clone else " (discos consolidados)" if clone else ""),
+            "was_on": on, "note": "; ".join(notes)}
 
 
 # ------------------------------------------------------------------ retenção
@@ -574,6 +649,7 @@ def due(job: dict, now_local: datetime) -> Optional[str]:
 class Progress:
     def __init__(self):
         self.bytes, self.t0, self._last = 0, time.time(), 0
+        self.stage = ""                  # o que está fazendo agora (mostrado na tela)
 
     def __call__(self, n: int):
         self.bytes += n

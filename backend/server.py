@@ -14874,7 +14874,7 @@ def _vb_run_public(r: dict) -> dict:
     live = _vb_running.get(r["id"])
     if live:
         p = live["progress"]
-        out["live"] = {"current": live.get("current", ""), "bytes": p.bytes, "rate": round(p.rate())}
+        out["live"] = {"current": live.get("current", "") + (f" · {p.stage}" if getattr(p, "stage", "") else ""), "bytes": p.bytes, "rate": round(p.rate())}
     return out
 
 
@@ -15065,7 +15065,7 @@ async def _vb_execute(job: dict, run: dict, only: List[str], prog):
                         else:
                             res = await vbackup.backup_esxi(conn, vm, sink, folder, job.get("compress", True), job.get("quiesce", False), prog)
                         removed = await vbackup.prune(sink, vm_folder, int(job.get("keep") or 7))
-                        it.update({"state": "ok", "bytes": res["bytes"], "path": folder, "files": res["files"], "format": res["format"],
+                        it.update({"state": "ok", "bytes": res["bytes"], "path": folder, "files": res["files"], "format": res["format"], "note": res.get("note", ""),
                                    "pruned": removed})
                         await _vb_incident(h, job, vm, None)
                     except asyncio.CancelledError:
