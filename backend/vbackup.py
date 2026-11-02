@@ -87,6 +87,30 @@ class SftpSink(Sink):
         except Exception:
             return []
 
+    async def isdir(self, path: str) -> bool:
+        try:
+            return await self.sftp.isdir(path)
+        except Exception:
+            return False
+
+    async def size(self, path: str) -> int:
+        try:
+            return (await self.sftp.stat(path)).size or 0
+        except Exception:
+            return 0
+
+    async def open_read(self, path: str):
+        """Iterador assíncrono dos blocos do arquivo."""
+        f = await self.sftp.open(path, "rb")
+        try:
+            while True:
+                b = await f.read(CHUNK)
+                if not b:
+                    return
+                yield b
+        finally:
+            await f.close()
+
     async def remove(self, path: str):
         await self.sftp.remove(path)
 
@@ -209,6 +233,68 @@ class FtpSink(Sink):
     async def listdir(self, path: str) -> List[str]:
         return [n for n in await self._run(self._nlst, path) if n not in (".", "..")]
 
+    def _isdir(self, path):
+        cur = self.ftp.pwd()
+        try:
+            self.ftp.cwd(path)
+            return True
+        except ftplib.error_perm:
+            return False
+        finally:
+            try:
+                self.ftp.cwd(cur)
+            except Exception:
+                pass
+
+    async def isdir(self, path: str) -> bool:
+        return await self._run(self._isdir, path)
+
+    def _size(self, path):
+        try:
+            self.ftp.voidcmd("TYPE I")
+            return int(self.ftp.size(path) or 0)
+        except Exception:
+            return 0
+
+    async def size(self, path: str) -> int:
+        return await self._run(self._size, path)
+
+    async def open_read(self, path: str):
+        q: "queue.Queue" = queue.Queue(maxsize=16)
+        stop = {"v": False}
+
+        def cb(b):
+            if stop["v"]:
+                raise BackupError("cancelado")
+            q.put(b)
+
+        def go():
+            try:
+                self.ftp.retrbinary(f"RETR {path}", cb, blocksize=CHUNK)
+                q.put(None)
+            except Exception as e:
+                q.put(e)
+        fut = asyncio.get_running_loop().run_in_executor(self.ex, go)
+        try:
+            while True:
+                item = await asyncio.to_thread(q.get)
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise BackupError(f"não consegui ler {posixpath.basename(path)} do NAS ({str(item)[:150]})")
+                yield item
+        finally:
+            stop["v"] = True
+            while not fut.done():                    # destrava o callback se ele estiver esperando espaço na fila
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.05)
+            try:
+                await fut
+            except Exception:
+                pass
+
     async def remove(self, path: str):
         await self._run(self.ftp.delete, path)
 
@@ -252,19 +338,46 @@ async def run(conn, cmd: str, timeout: int = 120) -> tuple:
     return r.exit_status or 0, out, err
 
 
-async def stream(conn, cmd: str, writer, progress: Callable[[int], None]) -> int:
-    """Roda cmd no hypervisor e manda a saída (stdout) para o writer. Devolve os bytes enviados."""
+def _gb(n: float) -> str:
+    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
+
+
+async def stream(conn, cmd: str, writer, progress: Callable[[int], None], label: str = "", size: int = 0, gz: bool = False) -> int:
+    """Roda cmd no hypervisor e manda a saída (stdout) para o writer. Devolve os bytes enviados.
+
+    Mostra o andamento real: com gz=True o BastiON descompacta só para contar quanto do disco já foi lido (o que vai
+    para o NAS é bem menor que o disco); com size, mostra a porcentagem. A saída do vzdump (INFO: 35% ...) também vira
+    andamento."""
+    import zlib
     proc = await conn.create_process(cmd, encoding=None)
-    total = 0
+    total, raw = 0, 0
     err = bytearray()
+    inflate = zlib.decompressobj(16 + zlib.MAX_WBITS) if gz else None
+    set_stage = getattr(progress, "set_stage", None)
+    add_raw = getattr(progress, "add_raw", None)
+    t0 = time.time()
+
+    def show():
+        if not set_stage or not label:
+            return
+        dt = max(time.time() - t0, 0.001)
+        pct = f" {min(100, 100 * raw / size):.0f}%" if size else ""
+        set_stage(f"copiando {label}:{pct} ({_gb(raw)}{' de ' + _gb(size) if size else ''} lidos, {raw / dt / 1e6:.0f} MB/s)")
 
     async def drain_err():
+        buf = b""
         while True:
             b = await proc.stderr.read(65536)
             if not b:
                 return
             err.extend(b[-4000:])
             del err[:-8000]
+            buf = (buf + b)[-4000:]
+            m = None
+            for m in re.finditer(rb"INFO:\s+(\d+)% \((.+?) of (.+?)\) in .*?read: ([\d.]+ \w+/s)", buf):
+                pass
+            if m and set_stage:
+                set_stage(f"vzdump {m.group(1).decode()}% ({m.group(2).decode()} de {m.group(3).decode()}, leitura {m.group(4).decode()})")
     et = asyncio.create_task(drain_err())
     try:
         while True:
@@ -274,6 +387,22 @@ async def stream(conn, cmd: str, writer, progress: Callable[[int], None]) -> int
             await writer.write(b)
             total += len(b)
             progress(len(b))
+            if inflate is not None:
+                try:
+                    n = 0
+                    data = inflate.decompress(b, CHUNK * 64)
+                    n += len(data)
+                    while inflate.unconsumed_tail:
+                        data = inflate.decompress(inflate.unconsumed_tail, CHUNK * 64)
+                        n += len(data)
+                except zlib.error:
+                    inflate, n = None, 0
+            else:
+                n = len(b)
+            raw += n
+            if add_raw:
+                add_raw(n)
+            show()
         await asyncio.wait_for(proc.wait_closed(), 120)
         await asyncio.wait_for(et, 30)
     except asyncio.TimeoutError:
@@ -315,7 +444,8 @@ async def backup_proxmox(conn, vm: dict, sink: Sink, folder: str, mode: str, pro
     await sink.makedirs(folder)
     w = await sink.open_write(path)
     try:
-        n = await stream(conn, f"vzdump {vmid} --mode {mode} --compress {comp} --stdout", w, progress)
+        threads = " --zstd 0" if comp == "zstd" and major >= 7 else ""        # zstd com metade dos núcleos do nó
+        n = await stream(conn, f"vzdump {vmid} --mode {mode} --compress {comp}{threads} --stdout", w, progress)
         if n < 1024:
             raise BackupError("o vzdump não gerou dados")
         await w.close()
@@ -373,7 +503,8 @@ def _parent_hint(desc: str) -> str:
     return m.group(1) if m else ""
 
 
-async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, quiesce: bool, progress) -> dict:
+async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, quiesce: bool, progress, consolidate: bool = False,
+                      readme: bool = True) -> dict:
     """vm: {name, vmx: "[datastore] pasta/vm.vmx"} (o vmid local é achado pelo caminho do .vmx).
 
     Copia o estado atual da VM. Se ela já tiver snapshots (ex.: réplicas do Veeam), vai a cadeia inteira de discos
@@ -496,9 +627,13 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
         nonlocal total
         _stage(f"copiando {name}")
         dest = name + (".gz" if compress else "")
+        code, ls, _ = await run(conn, f"ls -l {shlex.quote(path)}")
+        parts = ls.split()
+        size = int(parts[4]) if code == 0 and len(parts) > 4 and parts[4].isdigit() else 0
         w = await sink.open_write(posixpath.join(folder, dest))
         try:
-            n = await stream(conn, (f"gzip -1 -c {shlex.quote(path)}" if compress else f"cat {shlex.quote(path)}"), w, progress)
+            n = await stream(conn, (f"gzip -1 -c {shlex.quote(path)}" if compress else f"cat {shlex.quote(path)}"), w, progress,
+                             label=name, size=size, gz=compress)
             await w.close()
         except BackupError as e:
             await w.abort()
@@ -513,7 +648,9 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
         total += n
 
     def _stage(t):
-        if hasattr(progress, "stage"):
+        if hasattr(progress, "set_stage"):
+            progress.set_stage(t)
+        elif hasattr(progress, "stage"):
             progress.stage = t
 
     async def readable(path) -> bool:
@@ -534,6 +671,9 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
         # então o vmkfstools clona a cadeia num disco thin temporário no mesmo datastore e a cópia sai dele
         clone = []
         for t in top:
+            if consolidate and len(chain_of[t]) > 1:       # destino que não entende delta (Proxmox): um disco só
+                clone.append(t)
+                continue
             for d in chain_of[t]:
                 exts = [absolute(e, posixpath.dirname(d)) for e in vmdk_extents(chain[d])]
                 if not all([await readable(x) for x in exts]):
@@ -594,7 +734,8 @@ async def backup_esxi(conn, vm: dict, sink: Sink, folder: str, compress: bool, q
                 + ("2. No ESXi (SSH), descompacte: gunzip *.gz\n" if compress else "")
                 + "3. Clique com o botão direito no .vmx -> Registrar VM (ou: vim-cmd solo/registervm /vmfs/volumes/<ds>/<pasta>/<vm>.vmx).\n"
                 "4. Na primeira vez que ligar, responda 'Eu movi'/'I moved it'.\n")
-        await put_bytes("RESTAURAR.txt", info.encode())
+        if readme:
+            await put_bytes("RESTAURAR.txt", info.encode())
     finally:
         for tmp in tmpdirs:
             try:
@@ -647,14 +788,47 @@ def due(job: dict, now_local: datetime) -> Optional[str]:
 
 
 class Progress:
-    def __init__(self):
-        self.bytes, self.t0, self._last = 0, time.time(), 0
+    """Andamento de uma execução. bytes = enviados ao destino; raw = lidos dos discos (antes da compressão).
+    child(nome) cria o andamento de uma VM rodando em paralelo (soma no total e tem a etapa própria)."""
+
+    def __init__(self, name: str = "", parent: "Optional[Progress]" = None):
+        self.bytes, self.raw, self.t0, self._last = 0, 0, time.time(), 0
         self.stage = ""                  # o que está fazendo agora (mostrado na tela)
+        self.name, self.parent = name, parent
+        self.children: List["Progress"] = []
 
     def __call__(self, n: int):
         self.bytes += n
+        if self.parent:
+            self.parent(n)
+
+    def add_raw(self, n: int):
+        self.raw += n
+        if self.parent:
+            self.parent.add_raw(n)
+
+    def set_stage(self, t: str):
+        self.stage = t
+
+    def child(self, name: str) -> "Progress":
+        c = Progress(name, self)
+        self.children.append(c)
+        return c
+
+    def done(self, c: "Progress"):
+        if c in self.children:
+            self.children.remove(c)
+
+    def describe(self) -> str:
+        if self.children:
+            return " | ".join(f"{c.name}: {c.stage}" if c.stage else c.name for c in self.children)
+        return self.stage
 
     def rate(self) -> float:
         dt = time.time() - self.t0
         return self.bytes / dt if dt > 0 else 0.0
+
+    def raw_rate(self) -> float:
+        dt = time.time() - self.t0
+        return self.raw / dt if dt > 0 else 0.0
 

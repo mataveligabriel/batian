@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { RestoreBrowser } from "@/components/VirtTransfer";
 import { HardDrive, Plus, Pencil, Trash2, Play, Square, Loader2, CheckCircle2, XCircle, AlertTriangle, Clock, ChevronRight, KeyRound } from "lucide-react";
 
 // Backup das VMs (Proxmox vzdump / ESXi por SSH) para o NAS por SFTP, FTP ou FTPS.
@@ -99,7 +100,7 @@ function DestDialog({ cur, agents, onClose, onSaved }) {
 
 // ------------------------------------------------------------------ rotina
 const EMPTY_JOB = { name: "", hv_id: "", dest_id: "", vms: [], all: false, exclude: [], days: [0, 1, 2, 3, 4, 5, 6], time: "01:00", keep: 7, mode: "snapshot",
-  compress: true, quiesce: false, enabled: true };
+  compress: true, quiesce: false, enabled: true, parallel: 2 };
 
 function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
   const [f, setF] = useState(cur ? { ...EMPTY_JOB, ...cur } : { ...EMPTY_JOB, hv_id: hvs[0]?.id || "", dest_id: dests[0]?.id || "" });
@@ -120,7 +121,7 @@ function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
   const save = async () => {
     setBusy(true);
     try {
-      const b = { ...f, keep: Number(f.keep) || 7 };
+      const b = { ...f, keep: Number(f.keep) || 7, parallel: Number(f.parallel) || 2 };
       cur ? await api.put(`/virt/backup/jobs/${cur.id}`, b) : await api.post("/virt/backup/jobs", b);
       toast.success("Rotina salva"); onSaved(); onClose();
     } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
@@ -183,7 +184,12 @@ function JobDialog({ cur, hvs, dests, onClose, onSaved, onEditHv }) {
             <label className="flex items-center gap-2"><Switch checked={!!f.quiesce} onCheckedChange={s("quiesce")} /> Snapshot com VMware Tools (quiesce)</label>
           </div>
         )}
-        <label className="flex items-center gap-2 text-sm text-slate-300"><Switch checked={!!f.enabled} onCheckedChange={s("enabled")} /> Rotina ativa</label>
+        <div className="flex flex-wrap items-center gap-5">
+          <label className="flex items-center gap-2 text-sm text-slate-300">VMs ao mesmo tempo
+            <select value={f.parallel} onChange={s("parallel")} className={sel} data-testid="vb-job-parallel">{[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}</select></label>
+          <label className="flex items-center gap-2 text-sm text-slate-300"><Switch checked={!!f.enabled} onCheckedChange={s("enabled")} /> Rotina ativa</label>
+        </div>
+        <div className="text-[11px] text-slate-500 -mt-2">Mais de uma VM por vez aproveita os outros núcleos do hypervisor (a compressão e o SSH usam um núcleo por VM) — use 1 se o storage do host for lento.</div>
         <div className="text-xs text-slate-400 bg-sunken border border-line rounded-md p-2">
           {pve ? "Cada VM vira um arquivo vzdump (.vma.zst / .tar.zst). Para restaurar: copie para a pasta dump de um storage do Proxmox e use Restaurar na própria VM/storage."
             : "Cada VM vira uma pasta com o .vmx e os discos. Se a VM estiver ligada, o BastiON tira um snapshot temporário e apaga no fim. VM que já tem snapshots (ex.: réplica do Veeam) vai com a cadeia inteira de discos e os snapshots dela continuam intactos. Para restaurar: envie a pasta ao datastore, descompacte (gunzip) e registre o .vmx."}
@@ -203,11 +209,14 @@ function RunRow({ r, onCancel, readOnly }) {
       <button onClick={() => setOpen(!open)} className="w-full px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-left hover:bg-slate-800/30">
         <ChevronRight className={`w-4 h-4 text-slate-500 transition-transform ${open ? "rotate-90" : ""}`} />
         <span className="text-xs text-slate-500 w-24">{fmt(r.started_at)}</span>
+        {r.kind && r.kind !== "backup" && <span className="text-[10px] px-1.5 rounded bg-sky-900/50 text-sky-200">{{ restore: "restauração", copy: "cópia", migrate: "migração" }[r.kind] || r.kind}</span>}
         <span className="text-slate-200">{r.job_name}</span>
         <span className="text-xs text-slate-500">{r.hv_name}</span>
         <St s={r.state} />
-        <span className="text-xs text-slate-400 font-mono">{bytes(r.live?.bytes ?? r.bytes)}{r.live ? ` · ${bytes(r.live.rate)}/s · ${r.live.current}` : ""}</span>
+        <span className="text-xs text-slate-400 font-mono" title="lido dos discos / enviado ao destino (depois da compressão)">
+          {r.live ? `lido ${bytes(r.live.raw)} (${bytes(r.live.raw_rate)}/s) · enviado ${bytes(r.live.bytes)}` : bytes(r.bytes)}</span>
         <span className="text-xs text-slate-500 ml-auto">{r.by || "agendado"}</span>
+        {r.live?.current && <span className="basis-full pl-8 text-xs text-sky-300/90 font-mono truncate">{r.live.current}</span>}
         {r.state === "running" && !readOnly && <span onClick={(e) => { e.stopPropagation(); onCancel(r); }} className="text-xs text-red-300 hover:underline" data-testid={`vb-cancel-${r.id}`}>cancelar</span>}
       </button>
       {open && (
@@ -296,6 +305,8 @@ export function VirtBackup({ hvs, agents, readOnly, setAsk, onEditHv }) {
           </div>
         ))}
       </Card>
+
+      {dests?.length > 0 && <RestoreBrowser dests={dests} hvs={hvs} readOnly={readOnly} onStarted={load} />}
 
       <Card className="bg-surface border-line">
         <div className="px-3 py-2 border-b border-line text-slate-100 font-medium">Execuções</div>

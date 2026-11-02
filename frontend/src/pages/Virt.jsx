@@ -9,9 +9,10 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { VirtBackup } from "@/components/VirtBackup";
+import { TransferDialog } from "@/components/VirtTransfer";
 import {
   Boxes, Plus, RefreshCw, Loader2, Pencil, Trash2, Play, Power, PowerOff, RotateCw, Pause, Camera,
-  Globe, Server, HardDrive, AlertTriangle, CheckCircle2, XCircle, Search, Undo2, Bell, BellOff, Zap, Archive,
+  Globe, Server, HardDrive, AlertTriangle, CheckCircle2, XCircle, Search, Undo2, Bell, BellOff, Zap, Archive, Copy,
 } from "lucide-react";
 
 const lbl = "text-xs text-slate-400 mb-1 block";
@@ -264,7 +265,7 @@ function SnapDialog({ hv, vm, readOnly, onClose, setAsk }) {
 }
 
 // ------------------------------------------------------------------ detalhe
-function Detail({ hv, readOnly, onEdit, reloadList, setAsk }) {
+function Detail({ hv, hvs, readOnly, onEdit, reloadList, setAsk }) {
   const nav = useNavigate();
   const [d, setD] = useState(null);
   const [hist, setHist] = useState([]);
@@ -272,6 +273,7 @@ function Detail({ hv, readOnly, onEdit, reloadList, setAsk }) {
   const [q, setQ] = useState("");
   const [only, setOnly] = useState("");
   const [snap, setSnap] = useState(null);
+  const [xfer, setXfer] = useState(null);
   const [busy, setBusy] = useState({});
   const [refreshing, setRefreshing] = useState(false);
   const load = useCallback(() => {
@@ -380,6 +382,7 @@ function Detail({ hv, readOnly, onEdit, reloadList, setAsk }) {
                               <Button key={a} size="sm" variant="ghost" onClick={() => act(v, a)} title={l} data-testid={`virt-act-${v.vmid}-${a}`}
                                 className={`h-7 w-7 p-0 ${a === "start" ? "text-emerald-300" : ["stop", "reset"].includes(a) ? "text-red-300" : "text-slate-300"}`}><I className="w-4 h-4" /></Button>
                             )))}
+                        {!readOnly && !v.template && <Button size="sm" variant="ghost" onClick={() => setXfer(v)} title="Copiar / migrar para outro servidor" className="h-7 w-7 p-0 text-sky-300" data-testid={`virt-xfer-${v.vmid}`}><Copy className="w-4 h-4" /></Button>}
                         {!v.template && <Button size="sm" variant="ghost" onClick={() => setSnap(v)} title="Snapshots" className="h-7 w-7 p-0 text-slate-300" data-testid={`virt-snap-${v.vmid}`}><Camera className="w-4 h-4" /></Button>}
                         {!readOnly && !v.template && <Button size="sm" variant="ghost" onClick={() => watch(v)} data-testid={`virt-watch-${v.vmid}`}
                           title={watched.has(v.id) ? "Monitorada: abre incidente se parar. Clique para deixar de monitorar" : "Abrir incidente se esta VM parar"}
@@ -440,6 +443,7 @@ function Detail({ hv, readOnly, onEdit, reloadList, setAsk }) {
           {!(d?.events || []).length && <div className="p-4 text-xs text-slate-500">Nenhuma ação feita pelo BastiON ainda</div>}
         </Card>
       )}
+      {xfer && <TransferDialog source={{ type: "vm", hv, vm: xfer }} hvs={hvs} onClose={() => setXfer(null)} />}
       {snap && <SnapDialog hv={hv} vm={snap} readOnly={readOnly} onClose={() => setSnap(null)} setAsk={setAsk} />}
     </div>
   );
@@ -517,7 +521,7 @@ export default function Virt() {
         </div>
       )}
 
-      {cur && <Detail key={cur.id} hv={cur} readOnly={readOnly} onEdit={() => setDlg({ cur })} reloadList={load} setAsk={setAsk} />}
+      {cur && <Detail key={cur.id} hv={cur} hvs={list || []} readOnly={readOnly} onEdit={() => setDlg({ cur })} reloadList={load} setAsk={setAsk} />}
       </>}
       <HostDialog open={!!dlg} cur={dlg?.cur} sshOpen={!!dlg?.ssh} agents={agents} onClose={() => setDlg(null)} onSaved={(h) => { load(); pick(h); }} />
       <Confirm ask={ask} onClose={() => setAsk(null)} />

@@ -94,6 +94,7 @@ import ftpserver as ftpmod
 import ipamdoc
 import virt as virtmod
 import vbackup
+import vtransfer
 import tcprelay
 import runbooks
 import teopt
@@ -14840,6 +14841,7 @@ class VbJobIn(BaseModel):
     mode: str = "snapshot"          # Proxmox: snapshot | suspend | stop
     compress: bool = True           # ESXi: gzip dos discos
     quiesce: bool = False           # ESXi: snapshot com VMware Tools (sistema de arquivos consistente)
+    parallel: int = 2               # VMs copiadas ao mesmo tempo (1 a 4)
     enabled: bool = True
 
 
@@ -14859,7 +14861,8 @@ async def _vb_job_clean(body: VbJobIn, user: dict) -> dict:
     return {"name": name, "hv_id": body.hv_id, "dest_id": body.dest_id, "vms": [str(v)[:200] for v in body.vms][:500],
             "all": bool(body.all), "exclude": [str(v)[:200] for v in body.exclude][:500], "days": days, "time": body.time,
             "keep": max(1, min(int(body.keep or 7), 365)), "mode": body.mode if body.mode in ("snapshot", "suspend", "stop") else "snapshot",
-            "compress": bool(body.compress), "quiesce": bool(body.quiesce), "enabled": bool(body.enabled)}
+            "compress": bool(body.compress), "quiesce": bool(body.quiesce), "enabled": bool(body.enabled),
+            "parallel": max(1, min(int(body.parallel or 2), 4))}
 
 
 async def _vb_job_get(user: dict, jid: str) -> dict:
@@ -14874,7 +14877,10 @@ def _vb_run_public(r: dict) -> dict:
     live = _vb_running.get(r["id"])
     if live:
         p = live["progress"]
-        out["live"] = {"current": live.get("current", "") + (f" · {p.stage}" if getattr(p, "stage", "") else ""), "bytes": p.bytes, "rate": round(p.rate())}
+        desc = p.describe() if hasattr(p, "describe") else getattr(p, "stage", "")
+        cur = live.get("current", "") if not getattr(p, "children", None) else ""
+        out["live"] = {"current": (cur + (" · " if cur and desc else "") + desc), "bytes": p.bytes, "rate": round(p.rate()),
+                       "raw": getattr(p, "raw", 0), "raw_rate": round(p.raw_rate()) if hasattr(p, "raw_rate") else 0}
     return out
 
 
@@ -15042,55 +15048,88 @@ async def _vb_execute(job: dict, run: dict, only: List[str], prog):
             if not items:
                 raise vbackup.BackupError("nenhuma VM selecionada existe no hypervisor")
             await db.vbackup_runs.update_one({"id": rid}, {"$set": {"items": items}})
-            sink = await _vb_sink(dest)
+            sink = await _vb_sink(dest)             # confere o NAS antes de começar
             when = datetime.now(_vb_tz())
             folder_stamp = vbackup.stamp(when)
             cache: dict = {}
-            conns: Dict[str, Any] = {}
+            par = max(1, min(int(job.get("parallel") or 2), 4))
+            queue_: asyncio.Queue = asyncio.Queue()
+            for it, vm in zip(items, vms):
+                queue_.put_nowait((it, vm))
+
+            async def save():
+                await db.vbackup_runs.update_one({"id": rid}, {"$set": {"items": items, "bytes": prog.bytes}})
+
+            async def worker(first_sink):
+                """Cada VM em paralelo usa a própria conexão SSH (cifra/gzip em outro núcleo do hypervisor) e a
+                própria conexão com o NAS (FTP não manda dois arquivos na mesma conexão)."""
+                wsink = first_sink or await _vb_sink(dest)
+                conns: Dict[str, Any] = {}
+                try:
+                    while not queue_.empty():
+                        it, vm = queue_.get_nowait()
+                        it["state"] = "running"
+                        cp = prog.child(vm["name"])
+                        await save()
+                        vm_folder = posixpath.join(dest["path"], vbackup.safe(h["name"]), f"{vbackup.safe(vm['name'])}_{vbackup.safe(vm.get('vmid') or vm['id'], 30)}")
+                        folder = posixpath.join(vm_folder, folder_stamp)
+                        t0, addr = time.time(), None
+                        try:
+                            addr = await _vb_address(h, inv, vm, cache)
+                            if addr not in conns:
+                                conns[addr] = await _vb_ssh(h, addr)
+                            conn = conns[addr].conn
+                            if h["kind"] == "proxmox":
+                                res = await vbackup.backup_proxmox(conn, vm, wsink, folder, job.get("mode", "snapshot"), cp, when)
+                            else:
+                                res = await vbackup.backup_esxi(conn, vm, wsink, folder, job.get("compress", True), job.get("quiesce", False), cp)
+                            removed = await vbackup.prune(wsink, vm_folder, int(job.get("keep") or 7))
+                            it.update({"state": "ok", "bytes": res["bytes"], "path": folder, "files": res["files"], "format": res["format"],
+                                       "note": res.get("note", ""), "pruned": removed, "raw": cp.raw})
+                            await _vb_incident(h, job, vm, None)
+                        except asyncio.CancelledError:
+                            it.update({"state": "cancelled", "error": "cancelado"})
+                            await _vb_cleanup(wsink, folder)
+                            raise
+                        except Exception as e:
+                            msg = str(e) if isinstance(e, (vbackup.BackupError, VpnDown)) else f"{type(e).__name__}: {str(e)[:200]}"
+                            it.update({"state": "error", "error": msg[:400]})
+                            await _vb_cleanup(wsink, folder)
+                            await _vb_incident(h, job, vm, msg)
+                            if addr in conns and (isinstance(e, (OSError, EOFError)) or conns[addr].conn is None
+                                                  or getattr(conns[addr].conn, "_transport", None) is None):
+                                try:
+                                    await conns.pop(addr).close()     # conexão caiu: a próxima VM abre outra
+                                except Exception:
+                                    pass
+                        finally:
+                            prog.done(cp)
+                            it["secs"] = round(time.time() - t0)
+                        await save()
+                finally:
+                    for w in conns.values():
+                        try:
+                            await w.close()
+                        except Exception:
+                            pass
+                    if wsink is not first_sink:
+                        try:
+                            await wsink.close()
+                        except Exception:
+                            pass
+            tasks = [asyncio.create_task(worker(sink if i == 0 else None)) for i in range(min(par, len(vms)) or 1)]
             try:
-                for it, vm in zip(items, vms):
-                    it["state"] = "running"
-                    _vb_running[rid]["current"] = vm["name"]
-                    await db.vbackup_runs.update_one({"id": rid}, {"$set": {"items": items}})
-                    vm_folder = posixpath.join(dest["path"], vbackup.safe(h["name"]), f"{vbackup.safe(vm['name'])}_{vbackup.safe(vm.get('vmid') or vm['id'], 30)}")
-                    folder = posixpath.join(vm_folder, folder_stamp)
-                    t0, addr = time.time(), None
-                    try:
-                        addr = await _vb_address(h, inv, vm, cache)
-                        if addr not in conns:
-                            conns[addr] = await _vb_ssh(h, addr)
-                        conn = conns[addr].conn
-                        if h["kind"] == "proxmox":
-                            res = await vbackup.backup_proxmox(conn, vm, sink, folder, job.get("mode", "snapshot"), prog, when)
-                        else:
-                            res = await vbackup.backup_esxi(conn, vm, sink, folder, job.get("compress", True), job.get("quiesce", False), prog)
-                        removed = await vbackup.prune(sink, vm_folder, int(job.get("keep") or 7))
-                        it.update({"state": "ok", "bytes": res["bytes"], "path": folder, "files": res["files"], "format": res["format"], "note": res.get("note", ""),
-                                   "pruned": removed})
-                        await _vb_incident(h, job, vm, None)
-                    except asyncio.CancelledError:
-                        it.update({"state": "cancelled", "error": "cancelado"})
-                        await _vb_cleanup(sink, folder)
-                        raise
-                    except Exception as e:
-                        msg = str(e) if isinstance(e, (vbackup.BackupError, VpnDown)) else f"{type(e).__name__}: {str(e)[:200]}"
-                        it.update({"state": "error", "error": msg[:400]})
-                        await _vb_cleanup(sink, folder)
-                        await _vb_incident(h, job, vm, msg)
-                        if addr in conns and (isinstance(e, (OSError, EOFError)) or conns[addr].conn is None
-                                              or getattr(conns[addr].conn, "_transport", None) is None):
-                            try:
-                                await conns.pop(addr).close()     # conexão caiu: a próxima VM abre outra
-                            except Exception:
-                                pass
-                    it["secs"] = round(time.time() - t0)
-                    await db.vbackup_runs.update_one({"id": rid}, {"$set": {"items": items, "bytes": prog.bytes}})
-            finally:
-                for w in conns.values():
-                    try:
-                        await w.close()
-                    except Exception:
-                        pass
+                done = await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            for r in done:
+                if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
+                    for it in items:                  # worker não conseguiu nem abrir o NAS
+                        if it["state"] == "waiting":
+                            it.update({"state": "error", "error": str(r)[:300]})
         oks = sum(1 for i in items if i["state"] == "ok")
         state = "ok" if oks == len(items) else "partial" if oks else "error"
         err = "" if state == "ok" else f"{len(items) - oks} de {len(items)} VM(s) com erro"
@@ -15148,6 +15187,292 @@ async def _vb_loop():
         except Exception as e:
             logger.warning(f"backup de VMs: {e}")
         await asyncio.sleep(30)
+
+
+# ---------- Restaurar backup / copiar / migrar VM entre servidores ----------
+@api.get("/virt/backup/dests/{did}/browse")
+async def vb_browse(did: str, path: str = "", user: dict = Depends(get_current_user)):
+    """Navega os backups no NAS: hypervisor → VM → data. Na pasta de uma cópia diz o tipo e os arquivos."""
+    d = await _vb_dest_get(user, did)
+    base = d["path"]
+    rel = "/".join(p for p in (path or "").split("/") if p and p not in (".", ".."))
+    full = posixpath.join(base, rel) if rel else base
+    try:
+        sink = await _vb_sink(d)
+    except vbackup.BackupError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        names = sorted(await sink.listdir(full))[:2000]
+        stampdir = bool(rel) and bool(vbackup.STAMP_RE.match(posixpath.basename(rel)))
+        items = []
+        if stampdir:
+            for n in names:
+                items.append({"name": n, "dir": False, "size": await sink.size(posixpath.join(full, n))})
+        else:
+            for n in names:
+                items.append({"name": n, "dir": True, "stamp": bool(vbackup.STAMP_RE.match(n))})
+        kind = vtransfer.backup_kind(names) if stampdir else ""
+    finally:
+        await sink.close()
+    return {"path": rel, "items": items, "backup": stampdir, "kind": kind}
+
+
+@api.get("/virt/targets/{hid}")
+async def virt_targets(hid: str, user: dict = Depends(get_current_user)):
+    """Hosts e datastores/storages de um hypervisor para escolher o destino."""
+    h = await _virt_get(user, hid)
+    st = await db.virt_status.find_one({"_id": hid}) or {}
+    inv = st.get("inv") or {}
+    stores = [{"name": s["name"], "host": s.get("host", ""), "type": s.get("type", ""), "free": max(0, (s.get("total") or 0) - (s.get("used") or 0)),
+               "shared": s.get("shared", False)} for s in inv.get("storages") or [] if s.get("active", True)]
+    return {"kind": h["kind"], "hosts": [{"name": x["name"], "state": x.get("state")} for x in inv.get("hosts") or []], "storages": stores,
+            "ssh": bool(_vb_ssh_password(h) or h.get("ssh_key"))}
+
+
+class VtIn(BaseModel):
+    source: str = "vm"              # vm | backup
+    hv_id: Optional[str] = None     # origem (vm)
+    vm_id: Optional[str] = None
+    dest_id: Optional[str] = None   # origem (backup no NAS)
+    path: Optional[str] = None      # pasta da cópia, relativa à pasta do destino
+    target_hv_id: str
+    target_host: str = ""           # nó Proxmox / host ESXi (vCenter)
+    datastore: str = ""             # ESXi: datastore; Proxmox: storage
+    name: str = ""
+    vmid: Optional[int] = None      # Proxmox: VMID novo (vazio = próximo livre)
+    bridge: str = "vmbr0"           # ESXi -> Proxmox
+    bus: str = "sata"               # sata | scsi
+    nic: str = "vmxnet3"            # vmxnet3 | e1000 | virtio
+    tmp_dir: str = "/var/tmp"       # Proxmox: pasta temporária no nó
+    mode: str = "copy"              # copy (identidade nova, origem segue ligada) | migrate (desliga a origem, mantém MAC/UUID)
+    power_on: bool = False
+
+
+@api.post("/virt/transfer")
+async def vt_start(body: VtIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    th = await _virt_get(user, body.target_hv_id)
+    name = re.sub(r"[^\w .()-]", "_", (body.name or "").strip())[:80].strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Dê um nome à VM no destino")
+    if not re.fullmatch(r"[\w .:-]+", body.datastore or ""):
+        raise HTTPException(status_code=400, detail="Escolha o datastore/storage de destino")
+    if body.mode not in ("copy", "migrate") or body.bus not in ("sata", "scsi") or body.nic not in ("vmxnet3", "e1000", "virtio"):
+        raise HTTPException(status_code=400, detail="Opção inválida")
+    if not re.fullmatch(r"/[\w./-]*", body.tmp_dir or "") or ".." in body.tmp_dir:
+        raise HTTPException(status_code=400, detail="Pasta temporária inválida")
+    if not re.fullmatch(r"[\w.-]+", body.bridge or ""):
+        raise HTTPException(status_code=400, detail="Bridge inválida")
+    if body.vmid is not None and not (100 <= int(body.vmid) <= 999999999):
+        raise HTTPException(status_code=400, detail="VMID entre 100 e 999999999")
+    if not _vb_ssh_password(th) and not th.get("ssh_key"):
+        raise HTTPException(status_code=400, detail=f"Cadastre o acesso SSH de {th['name']} (Editar → Backup das VMs)")
+    if body.source == "vm":
+        sh = await _virt_get(user, body.hv_id or "")
+        st = await db.virt_status.find_one({"_id": sh["id"]}) or {}
+        vm = next((v for v in (st.get("inv") or {}).get("vms") or [] if v["id"] == body.vm_id), None)
+        if not vm:
+            raise HTTPException(status_code=404, detail="VM não encontrada (atualize o hypervisor)")
+        if sh["kind"] == "proxmox" and th["kind"] == "vmware":
+            raise HTTPException(status_code=400, detail="Proxmox → VMware ainda não é suportado (o disco do Proxmox não volta direto para o formato do ESXi)")
+        if not _vb_ssh_password(sh) and not sh.get("ssh_key"):
+            raise HTTPException(status_code=400, detail=f"Cadastre o acesso SSH de {sh['name']} (Editar → Backup das VMs)")
+        title = f"{'Migrar' if body.mode == 'migrate' else 'Copiar'} {vm['name']}: {sh['name']} → {th['name']}"
+        src = {"hv": sh, "vm": vm}
+    elif body.source == "backup":
+        d = await _vb_dest_get(user, body.dest_id or "")
+        rel = "/".join(p for p in (body.path or "").split("/") if p and p not in (".", ".."))
+        if not rel or not vbackup.STAMP_RE.match(posixpath.basename(rel)):
+            raise HTTPException(status_code=400, detail="Escolha a pasta de uma cópia (data/hora)")
+        title = f"Restaurar {rel.split('/')[-2] if '/' in rel else rel} ({posixpath.basename(rel)}) → {th['name']}"
+        src = {"dest": d, "path": posixpath.join(d["path"], rel)}
+    else:
+        raise HTTPException(status_code=400, detail="Origem inválida")
+    if any(x.get("job_id") == f"transfer:{th['id']}:{name}" for x in _vb_running.values()):
+        raise HTTPException(status_code=409, detail="Já tem uma transferência com esse nome rodando")
+    rid = os.urandom(8).hex()
+    now = datetime.now(timezone.utc)
+    kind = "restore" if body.source == "backup" else body.mode
+    run = {"id": rid, "kind": kind, "job_id": None, "job_name": title, "hv_id": th["id"], "hv_name": th["name"], "owner_id": user["id"],
+           "by": user.get("email", ""), "ts": now, "started_at": now.isoformat(), "finished_at": None, "state": "running", "bytes": 0, "error": "",
+           "items": [{"vm_id": body.vm_id or rel, "name": name, "state": "running", "bytes": 0, "secs": 0, "error": "", "path": ""}]}
+    await db.vbackup_runs.insert_one(dict(run))
+    prog = vbackup.Progress()
+    t = asyncio.create_task(_vt_execute(run, body, th, name, src, prog))
+    _vb_running[rid] = {"task": t, "progress": prog, "job_id": f"transfer:{th['id']}:{name}", "hv_id": th["id"], "current": name}
+    t.add_done_callback(lambda _: _vb_running.pop(rid, None))
+    return {"run_id": rid}
+
+
+async def _vt_execute(run: dict, body: VtIn, th: dict, name: str, src: dict, prog):
+    rid, t0 = run["id"], time.time()
+    item = run["items"][0]
+    conns: List[Any] = []
+    nas = None
+    src_off = None                        # (conn, função para religar) na migração
+    state, err, result = "error", "", {}
+
+    def stage(t):
+        prog.stage = t
+
+    try:
+        tst = await db.virt_status.find_one({"_id": th["id"]}) or {}
+        tinv = tst.get("inv") or {}
+        if not tinv:
+            raise vbackup.BackupError("o hypervisor de destino ainda não foi coletado")
+        host = body.target_host or ((tinv.get("hosts") or [{}])[0].get("name", ""))
+        stage("conectando no destino")
+        tw = await _vb_ssh(th, await _vb_address(th, tinv, {"host": host}, {}))
+        conns.append(tw)
+        tconn = tw.conn
+        pve_t = th["kind"] == "proxmox"
+        tmp = posixpath.join(body.tmp_dir, f"bastion-{rid}")
+        vmid = None
+        created_vm = False
+        if pve_t:
+            vmid = int(body.vmid) if body.vmid else await vtransfer.pve_nextid(tconn)
+            await vtransfer.pve_check_id(tconn, vmid)
+
+        esxi_folder = None if pve_t else await vtransfer.esxi_prepare(tconn, body.datastore, name)   # confere antes de mexer na origem
+        if pve_t:
+            code, _, _ = await vbackup.run(tconn, f"mkdir -p {shlex.quote(body.tmp_dir)} && test -w {shlex.quote(body.tmp_dir)}")
+            if code:
+                raise vbackup.BackupError(f"a pasta temporária {body.tmp_dir} não existe ou não aceita gravação no nó de destino")
+
+        async def to_esxi(fill):
+            folder = esxi_folder
+            try:
+                await fill(folder)
+                stage("registrando a VM no ESXi")
+                return await vtransfer.esxi_finalize(tconn, folder, name, body.mode == "migrate", body.power_on, prog)
+            except BaseException:
+                try:
+                    await vbackup.run(tconn, f"rm -rf {shlex.quote(folder)}", 600)
+                except Exception:
+                    pass
+                raise
+
+        async def to_pve(fill, convert: bool):
+            nonlocal created_vm
+            try:
+                await fill(tmp)
+                if convert:
+                    stage("criando a VM no Proxmox e importando os discos")
+                    created_vm = True
+                    return await vtransfer.convert_to_pve(tconn, tmp, vmid, body.datastore, name, body.bridge, body.bus, body.nic, body.power_on, prog)
+                code, ls, _ = await vbackup.run(tconn, f"ls -1 {shlex.quote(tmp)}")
+                arch = next((x.strip() for x in ls.splitlines() if x.strip().startswith("vzdump-")), "")
+                if not arch:
+                    raise vbackup.BackupError("o arquivo vzdump não chegou ao destino")
+                stage(f"restaurando no Proxmox (VMID {vmid})")
+                created_vm = True
+                return await vtransfer.pve_restore(tconn, posixpath.join(tmp, arch), vmid, body.datastore, name, body.mode == "copy", body.power_on)
+            except BaseException:
+                if created_vm:
+                    try:
+                        await vbackup.run(tconn, f"qm destroy {vmid} --purge 1 2>/dev/null || pct destroy {vmid} --purge 1", 600)
+                    except Exception:
+                        pass
+                raise
+            finally:
+                try:
+                    await vbackup.run(tconn, f"rm -rf {shlex.quote(tmp)}", 600)
+                except Exception:
+                    pass
+
+        if "dest" in src:                                   # restaurar do NAS
+            stage("abrindo o backup no NAS")
+            nas = await _vb_sink(src["dest"])
+            names = await nas.listdir(src["path"])
+            kind = vtransfer.backup_kind(names)
+            if not kind:
+                raise vbackup.BackupError("essa pasta não tem um backup reconhecido (vzdump ou .vmx)")
+            if kind == "proxmox" and not pve_t:
+                raise vbackup.BackupError("backup do Proxmox só restaura em Proxmox")
+
+            async def fill_from_nas(folder, unpack=False, sparse=False):
+                await vtransfer.copy_folder(nas, src["path"], vtransfer.SshSink(tconn, unpack=unpack, sparse=sparse), folder, prog)
+            if kind == "proxmox":
+                result = await to_pve(lambda f: fill_from_nas(f), convert=False)
+            elif pve_t:
+                result = await to_pve(lambda f: fill_from_nas(f, unpack=True, sparse=True), convert=True)
+            else:
+                result = await to_esxi(lambda f: fill_from_nas(f, unpack=True))
+        else:                                               # copiar / migrar direto
+            sh, vm = src["hv"], src["vm"]
+            sst = await db.virt_status.find_one({"_id": sh["id"]}) or {}
+            stage("conectando na origem")
+            sw = await _vb_ssh(sh, await _vb_address(sh, sst.get("inv") or {}, vm, {}))
+            conns.append(sw)
+            sconn = sw.conn
+            if body.mode == "migrate":
+                stage("desligando a VM de origem pelo sistema")
+                if sh["kind"] == "proxmox":
+                    await vtransfer.pve_shutdown(sconn, vm)
+                    tool = "pct" if vm.get("type") == "lxc" else "qm"
+                    src_off = (sconn, f"{tool} start {int(vm['vmid'])}")
+                else:
+                    code, out, _ = await vbackup.run(sconn, "vim-cmd vmsvc/getallvms")
+                    svid = vtransfer.find_esxi_vmid(out, vm)
+                    if not svid:
+                        raise vbackup.BackupError("a VM de origem não foi achada no ESXi")
+                    await vtransfer.esxi_shutdown(sconn, svid)
+                    src_off = (sconn, f"vim-cmd vmsvc/power.on {svid}")
+            if sh["kind"] == "proxmox":
+                when = datetime.now(_vb_tz())
+
+                async def fill(folder):
+                    await vbackup.backup_proxmox(sconn, vm, vtransfer.SshSink(tconn), folder, "snapshot", prog, when)
+                result = await to_pve(fill, convert=False)
+            elif pve_t:
+                async def fill(folder):
+                    await vbackup.backup_esxi(sconn, vm, vtransfer.SshSink(tconn, unpack=True, sparse=True), folder, True, False, prog,
+                                              consolidate=True, readme=False)
+                result = await to_pve(fill, convert=True)
+            else:
+                async def fill(folder):
+                    await vbackup.backup_esxi(sconn, vm, vtransfer.SshSink(tconn, unpack=True), folder, True, False, prog, readme=False)
+                result = await to_esxi(fill)
+            src_off = None if body.mode == "migrate" else src_off           # migração deu certo: a origem fica desligada
+        state = "ok"
+        item.update({"state": "ok", "path": f"{th['name']} · {'VMID' if pve_t else 'id'} {result.get('vmid')}"
+                     + (" · ligada" if result.get("started") else ""), "result": result})
+        await _virt_log({"email": run["by"]}, th, {"restore": "Restaurar backup", "copy": "Copiar VM", "migrate": "Migrar VM"}[run["kind"]],
+                        f"{name} ({result.get('vmid')})")
+    except asyncio.CancelledError:
+        state, err = "cancelled", "cancelado por um usuário"
+        item.update({"state": "cancelled", "error": err})
+    except Exception as e:
+        state = "error"
+        err = str(e)[:400] if isinstance(e, (vbackup.BackupError, VpnDown)) else f"{type(e).__name__}: {str(e)[:300]}"
+        item.update({"state": "error", "error": err})
+    finally:
+        if src_off:                                   # migração não terminou: religa a origem
+            try:
+                await vbackup.run(src_off[0], src_off[1], 300)
+                err = (err + " — a VM de origem foi religada").strip(" —")
+                item["error"] = err
+            except Exception:
+                pass
+        for w in conns:
+            try:
+                await w.close()
+            except Exception:
+                pass
+        if nas:
+            try:
+                await nas.close()
+            except Exception:
+                pass
+        item["secs"] = round(time.time() - t0)
+        item["bytes"] = prog.bytes
+        await db.vbackup_runs.update_one({"id": rid}, {"$set": {"state": state, "error": err, "items": [item], "bytes": prog.bytes,
+                                                               "finished_at": datetime.now(timezone.utc).isoformat()}})
+        if state == "ok":
+            for hid in {th["id"], (src.get("hv") or {}).get("id")} - {None}:
+                hh = await db.virt_hosts.find_one({"id": hid}, {"_id": 0})
+                if hh:
+                    asyncio.create_task(_virt_poll(hh))
 
 
 # ---------- Health ----------
