@@ -90,35 +90,57 @@ def parse_autofind(text: str) -> List[dict]:
 
 
 # SN: 16 hexa, mas ONT autenticada por senha/LOID mostra outra coisa (ou "-") — não pode sumir da lista
-_INFO_ROW = re.compile(r"^\s*(\d+)/\s*(\d+)/\s*(\d+)\s+(\d+)\s+(\S+)\s+(active|deactivated|\S+)\s+(online|offline|\S+)\s+(\S+)\s+(\S+)", re.M)
-_INFO_ANY = re.compile(r"^\s*\d+/\s*\d+/\s*\d+\s+\d+\s+\S", re.M)
-_DESC_ROW = re.compile(r"^\s*(\d+)/\s*(\d+)/\s*(\d+)\s+(\d+)\s+(.+?)\s*$", re.M)
+# Linha da tabela de estado. SN: 16 hexa, mas ONT autenticada por senha/LOID mostra outra coisa (ou "-").
+_INFO_ROW = re.compile(r"^\s*(\d+)/\s*(\d+)/\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)")
+_FSP_LINE = re.compile(r"^\s*\d+/\s*\d+/\s*\d+\s+\d+\s+\S")
+_DESC_ROW = re.compile(r"^\s*(\d+)/\s*(\d+)/\s*(\d+)\s+(\d+)\s+(.+?)\s*$")
+
+
+def _info_sections(text: str):
+    """Percorre a saída marcando se cada linha de ONT está numa tabela de estado ou de descrição. A saída de
+    `display ont info 0 all` repete as duas tabelas para cada PON."""
+    mode = "state"
+    for line in (text or "").splitlines():
+        if re.search(r"F/S/P", line):
+            if re.search(r"Description", line, re.I):
+                mode = "desc"
+            elif re.search(r"\bSN\b|Control|Run", line):
+                mode = "state"
+            continue
+        if _FSP_LINE.match(line):
+            # tabela de estado sem cabeçalho repetido: reconhece pela coluna Control/Run
+            if mode == "desc" and re.search(r"\s(active|deactivated?)\s+(online|offline)\s", line, re.I):
+                yield "state", line
+            else:
+                yield mode, line
 
 
 def parse_ont_info(text: str) -> List[dict]:
     """`display ont info 0 all` (ou de uma PON): estado de cada ONT + descrição."""
-    t = text or ""
-    rows = {}
-    head = t.split("Description", 1)[0]
-    for m in _INFO_ROW.finditer(head):
-        k = tuple(int(x) for x in m.groups()[:4])
-        sn = m.group(5).upper() if re.fullmatch(r"[0-9A-Fa-f]{16}", m.group(5)) else ""
-        rows[k] = {"frame": k[0], "slot": k[1], "port": k[2], "ont": k[3], "sn": sn, "control": m.group(6).lower(),
-                   "run": m.group(7).lower(), "config": m.group(8).lower(), "match": m.group(9).lower()}
-    part = t.split("Description", 1)
-    if len(part) == 2:
-        for m in _DESC_ROW.finditer(part[1]):
+    rows, descs = {}, {}
+    for mode, line in _info_sections(text):
+        if mode == "state":
+            m = _INFO_ROW.match(line)
+            if not m:
+                continue
             k = tuple(int(x) for x in m.groups()[:4])
-            if k in rows and not re.fullmatch(r"-+", m.group(5)):
-                rows[k]["description"] = m.group(5)[:120]
-    for r in rows.values():
+            sn = m.group(5).upper() if re.fullmatch(r"[0-9A-Fa-f]{16}", m.group(5)) else ""
+            rows[k] = {"frame": k[0], "slot": k[1], "port": k[2], "ont": k[3], "sn": sn, "control": m.group(6).lower(),
+                       "run": m.group(7).lower(), "config": m.group(8).lower(), "match": m.group(9).lower()}
+        else:
+            m = _DESC_ROW.match(line)
+            if m and not re.fullmatch(r"-+", m.group(5)):
+                descs[tuple(int(x) for x in m.groups()[:4])] = m.group(5)[:120]
+    for k, r in rows.items():
+        if k in descs:
+            r["description"] = descs[k]
         r["off"] = r["run"] != "online"
     return list(rows.values())
 
 
 def info_line_count(text: str) -> int:
-    """Linhas de ONT na tabela de estado (antes da de descrição) — para conferir se o parser leu todas."""
-    return len(_INFO_ANY.findall((text or "").split("Description", 1)[0]))
+    """Linhas de ONT nas tabelas de estado — para conferir se o parser leu todas."""
+    return sum(1 for mode, _ in _info_sections(text) if mode == "state")
 
 
 def _dt(s: str) -> Optional[datetime]:
