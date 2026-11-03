@@ -89,7 +89,9 @@ def parse_autofind(text: str) -> List[dict]:
     return out
 
 
-_INFO_ROW = re.compile(r"^\s*(\d+)/\s*(\d+)/\s*(\d+)\s+(\d+)\s+([0-9A-Fa-f]{16})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)", re.M)
+# SN: 16 hexa, mas ONT autenticada por senha/LOID mostra outra coisa (ou "-") — não pode sumir da lista
+_INFO_ROW = re.compile(r"^\s*(\d+)/\s*(\d+)/\s*(\d+)\s+(\d+)\s+(\S+)\s+(active|deactivated|\S+)\s+(online|offline|\S+)\s+(\S+)\s+(\S+)", re.M)
+_INFO_ANY = re.compile(r"^\s*\d+/\s*\d+/\s*\d+\s+\d+\s+\S", re.M)
 _DESC_ROW = re.compile(r"^\s*(\d+)/\s*(\d+)/\s*(\d+)\s+(\d+)\s+(.+?)\s*$", re.M)
 
 
@@ -97,9 +99,11 @@ def parse_ont_info(text: str) -> List[dict]:
     """`display ont info 0 all` (ou de uma PON): estado de cada ONT + descrição."""
     t = text or ""
     rows = {}
-    for m in _INFO_ROW.finditer(t):
+    head = t.split("Description", 1)[0]
+    for m in _INFO_ROW.finditer(head):
         k = tuple(int(x) for x in m.groups()[:4])
-        rows[k] = {"frame": k[0], "slot": k[1], "port": k[2], "ont": k[3], "sn": m.group(5).upper(), "control": m.group(6).lower(),
+        sn = m.group(5).upper() if re.fullmatch(r"[0-9A-Fa-f]{16}", m.group(5)) else ""
+        rows[k] = {"frame": k[0], "slot": k[1], "port": k[2], "ont": k[3], "sn": sn, "control": m.group(6).lower(),
                    "run": m.group(7).lower(), "config": m.group(8).lower(), "match": m.group(9).lower()}
     part = t.split("Description", 1)
     if len(part) == 2:
@@ -110,6 +114,11 @@ def parse_ont_info(text: str) -> List[dict]:
     for r in rows.values():
         r["off"] = r["run"] != "online"
     return list(rows.values())
+
+
+def info_line_count(text: str) -> int:
+    """Linhas de ONT na tabela de estado (antes da de descrição) — para conferir se o parser leu todas."""
+    return len(_INFO_ANY.findall((text or "").split("Description", 1)[0]))
 
 
 def _dt(s: str) -> Optional[datetime]:

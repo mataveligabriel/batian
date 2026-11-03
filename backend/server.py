@@ -2667,7 +2667,9 @@ async def _hw_offline_scan(j: dict, dev: dict, days: int, only_pons: List[str]):
         async with _HwSess(dev, j) as s:
             j.update(platform="huawei", step="lendo relógio e ONTs da OLT")
             clock = olthw._dt(await s.run("display time", timeout=30))
-            rows = olthw.parse_ont_info(await s.run("display ont info 0 all", timeout=300))
+            info_txt = await s.run("display ont info 0 all", timeout=300)
+            rows = olthw.parse_ont_info(info_txt)
+            j["lines_seen"], j["lines_parsed"] = olthw.info_line_count(info_txt), len(rows)
             if only_pons:
                 want = {tuple(int(x) for x in p.split("/")) for p in only_pons}
                 rows = [r for r in rows if (r["frame"], r["slot"], r["port"]) in want]
@@ -2678,10 +2680,24 @@ async def _hw_offline_scan(j: dict, dev: dict, days: int, only_pons: List[str]):
             j.update(olt_clock=clock.strftime("%Y-%m-%d %H:%M:%S") if clock else None, onus_total=len(rows),
                      pons=len({(r["frame"], r["slot"], r["port"]) for r in rows}), total=len(pons), done=0)
             summ = {}
+            no_summary = False                     # firmware antigo (MA5680T/MA5683T): não tem o "summary"
             for i, (f, sl, pt) in enumerate(pons, 1):
-                j.update(step=f"última queda das ONTs da PON {f}/{sl}/{pt}", done=i)
-                for r in olthw.parse_summary(await s.run(f"display ont info summary {f}/{sl}/{pt}", timeout=120)):
-                    summ[(f, sl, pt, r["ont"])] = r
+                if not no_summary:
+                    j.update(step=f"última queda das ONTs da PON {f}/{sl}/{pt}", done=i)
+                    got = [r for r in olthw.parse_summary(await s.run(f"display ont info summary {f}/{sl}/{pt}", timeout=120)) if r.get("last_down") or r.get("run")]
+                    if got:
+                        for r in got:
+                            summ[(f, sl, pt, r["ont"])] = r
+                        continue
+                    if i == 1:
+                        no_summary = True          # a primeira PON já não respondeu: vai ONT por ONT nas offline
+                if no_summary or not got:
+                    port_offs = [o for o in offs if (o["frame"], o["slot"], o["port"]) == (f, sl, pt)]
+                    for k_, o in enumerate(port_offs, 1):
+                        j.update(step=f"PON {f}/{sl}/{pt}: ONT {o['ont']} ({k_}/{len(port_offs)}) — OLT sem 'summary', lendo uma a uma", done=i)
+                        d = olthw.parse_detail(await s.run(f"display ont info {f} {sl} {pt} {o['ont']}", timeout=60))
+                        summ[(f, sl, pt, o["ont"])] = {"last_down": olthw._dt(d.get("last_down") or ""), "cause": d.get("cause") or "",
+                                                       "description": d.get("description") or ""}
         now = clock or datetime.now()
         res = []
         for o in offs:
@@ -2695,6 +2711,8 @@ async def _hw_offline_scan(j: dict, dev: dict, days: int, only_pons: List[str]):
                         "eligible": off_days is not None and off_days >= days})
         res.sort(key=lambda r: (-(r["days"] if r["days"] is not None else -1), r["slot"], r["pon"], r["onu"]))
         j.update(state="done", step="", onus=res, days=days, eligible=sum(1 for r in res if r["eligible"]),
+                 parse_warn=(f"a OLT listou {j.get('lines_seen')} linhas de ONT, o BastiON entendeu {j.get('lines_parsed')}"
+                             if (j.get("lines_seen") or 0) > (j.get("lines_parsed") or 0) else ""),
                  ended_at=datetime.now(timezone.utc).isoformat(),
                  sample=(j.get("_last") or {}) if res and all(r["days"] is None for r in res) else None)
     except Exception as e:

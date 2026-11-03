@@ -1029,6 +1029,7 @@ function OnuClean({ devices, vendor = "zte" }) {
               </table>
             </div>
           )}
+          {result.parse_warn && <div className="text-xs text-amber-300" data-testid="clean-parse-warn">Atenção: {result.parse_warn} — mande a saída do "display ont info 0 all" para ajustar a leitura deste modelo.</div>}
           {result.sample && (
             <details className="text-xs text-amber-300" data-testid="clean-sample"><summary className="cursor-pointer">Nenhuma ONU veio com a data da queda — ver a resposta da OLT ({result.sample.command})</summary>
               <pre className="text-[11px] text-slate-300 bg-sunken p-2 rounded mt-1 max-h-48 overflow-auto whitespace-pre-wrap">{result.sample.output}</pre></details>
