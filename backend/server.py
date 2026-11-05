@@ -8192,7 +8192,7 @@ async def ftp_access_add(body: FtpAccessIn, user: dict = Depends(get_current_use
     _no_viewer(user)
     name = body.name.strip()[:60]
     if not name:
-        raise HTTPException(status_code=400, detail="Dê um nome (ex.: Backup OLT Guaçuí)")
+        raise HTTPException(status_code=400, detail="Dê um nome (ex.: NOME DO EQUIPAMENTO)")
     if body.via != "local":
         await _get_agent_for(user, body.via) if user.get("role") != "admin" else None
         if not await db.agents.find_one({"id": body.via}, {"_id": 0, "id": 1}):

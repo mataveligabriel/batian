@@ -136,13 +136,13 @@ Para ter HTTPS (certificado grátis e automático do Let's Encrypt):
 
 1. Crie um nome apontando para o IP do VPS — um subdomínio do seu próprio domínio (registro **A**
    `bastion.suaempresa.com.br → IP_DO_VPS`) ou, sem mexer em DNS, use o `sslip.io`:
-   `IP-COM-TRACOS.sslip.io` (ex.: IP `177.10.20.30` → `177-10-20-30.sslip.io`).
+   `IP-COM-TRACOS.sslip.io` (ex.: IP `x.x.x.x` → `x-x-x-x.sslip.io`).
 2. No servidor, edite `/opt/bastion/deploy/.env`:
    ```
-   BASTION_DOMAIN=177-10-20-30.sslip.io
-   BASTION_ALT=http://177.10.20.30
-   PUBLIC_URL=https://177-10-20-30.sslip.io
-   CORS_ORIGINS=https://177-10-20-30.sslip.io,http://177.10.20.30
+   BASTION_DOMAIN=x-x-x-x.sslip.io
+   BASTION_ALT=http://x.x.x.x
+   PUBLIC_URL=https://x-x-x-x.sslip.io
+   CORS_ORIGINS=https://x-x-x-x.sslip.io,http://x.x.x.x
    ```
    `BASTION_ALT` mantém o acesso antigo por IP funcionando (app do Windows) enquanto você migra.
 3. Portas **80 e 443** liberadas no firewall/VPS e rode `bash /opt/bastion/deploy/update.sh`.
@@ -229,7 +229,7 @@ loopback como origem e, se for diferente do IP de gerência cadastrado, informe-
 ```
 ip netstream sampler fix-packets 1000 inbound
 ip netstream export version 9 origin-as
-ip netstream export source 10.255.0.1
+ip netstream export source x.x.x.x
 ip netstream export host IP_DO_BASTION 2055
 ip netstream timeout active 1
 ip netstream timeout inactive 15
@@ -249,9 +249,9 @@ set services flow-monitoring version-ipfix template V6 flow-active-timeout 60
 set services flow-monitoring version-ipfix template V6 flow-inactive-timeout 15
 set forwarding-options sampling instance BASTION input rate 1000
 set forwarding-options sampling instance BASTION family inet output flow-server IP_DO_BASTION port 2055 version-ipfix template V4
-set forwarding-options sampling instance BASTION family inet output inline-jflow source-address 10.255.0.1
+set forwarding-options sampling instance BASTION family inet output inline-jflow source-address x.x.x.x
 set forwarding-options sampling instance BASTION family inet6 output flow-server IP_DO_BASTION port 2055 version-ipfix template V6
-set forwarding-options sampling instance BASTION family inet6 output inline-jflow source-address 10.255.0.1
+set forwarding-options sampling instance BASTION family inet6 output inline-jflow source-address x.x.x.x
 set interfaces xe-0/0/1 unit 0 family inet sampling input
 set interfaces xe-0/0/1 unit 0 family inet6 sampling input
 ```
@@ -389,7 +389,7 @@ nome de cliente. Para cada linha mostra o bloco em que ela está (ex.: `bgp 6500
 e, ao clicar, abre a config inteira já na linha.
 - **Palavra inteira** (padrão): `1302` não casa `13020` nem `Vlanif1302`; `10.0.0.1` não casa `10.0.0.10`.
 - **Trecho**: qualquer pedaço do texto. **Regex**: expressão regular (Python).
-- O assistente também usa essa busca ("onde está a VLAN 1302?", "quem tem o peer 187.16.216.95?").
+- O assistente também usa essa busca ("onde está a VLAN 1302?", "quem tem o peer x.x.x.x?").
 
 **Alerta de configuração alterada** (Automação → Alertas, ligado por padrão): sempre que um backup (o diário ou um
 manual) encontra diferença em relação ao anterior, vai para o Telegram/push:
@@ -433,7 +433,7 @@ sudo docker compose exec mongo mongosh bastion --quiet --eval \
 
 ### Mitigação — Flow → Mitigação
 O Bastion tem um BGP próprio (container `bgp`) que abre iBGP com as suas bordas e anuncia o /32 atacado com
-next-hop de descarte (192.0.2.1 → NULL0), a community escolhida e **NO_EXPORT** — o descarte é só na sua borda,
+next-hop de descarte (x.x.x.x → NULL0), a community escolhida e **NO_EXPORT** — o descarte é só na sua borda,
 nada vai para trânsito/IX.
 
 1. Em **Flow → Configuração**, cadastre os **blocos próprios** (só IP deles pode sofrer blackhole).
@@ -442,7 +442,7 @@ nada vai para trânsito/IX.
 3. Copie a **Configuração da borda** (Huawei ou Juniper) e aplique em cada borda. Ela aceita só /32 dos seus
    blocos com essa community e não manda nada para o Bastion (export deny). Libere TCP/179 vindo do servidor.
 4. Confira as sessões ficando **Established** e faça um teste com um IP seu que não esteja em uso
-   (`display bgp routing-table 177.x.x.x 32` na borda; tem que aparecer com next-hop 192.0.2.1).
+   (`display bgp routing-table 177.x.x.x 32` na borda; tem que aparecer com next-hop x.x.x.x).
 
 Para mitigar: botão **Mitigar** no ataque (aba Ataques), no alerta do Telegram (se o bot do assistente estiver
 ligado e o seu Telegram liberado) ou **Mitigar IP** na aba Mitigação. Sempre com confirmação e prazo (15 min a 24 h);
@@ -536,11 +536,11 @@ o BastiON sobe só no endereço de sempre e mostra o motivo em `docker compose l
 
 ## 23. Backups na nuvem (Google Drive, OneDrive, Dropbox…)
 
-Em **Automação → Backups na nuvem** você escolhe o drive, a pasta e **quais tags** (ex.: FLEX) vão para a nuvem.
+Em **Automação → Backups na nuvem** você escolhe o drive, a pasta e **quais tags** (ex.: GRUPO-X) vão para a nuvem.
 Depois de cada backup (o diário e os manuais) o BastiON copia para o drive só o que ainda não foi:
 
 ```
-gdrive:BastiON/FLEX/OLT ZTE FLEX GUACUI/2026-10-02_03-00-00.cfg
+gdrive:BastiON/GRUPO/NOME DO EQUIPAMENTO/2026-10-02_03-00-00.cfg
 ```
 
 - Só **copia**: nunca apaga nada no drive. Por padrão vão as versões em que a configuração mudou (e a primeira
@@ -603,7 +603,7 @@ mais de um roteador você compara a mesma consulta lado a lado.
 - **Configurar** (só admin): marque quais roteadores ficam disponíveis. Enquanto nenhum estiver marcado, a tela fica vazia.
 - Quem tem o módulo **Looking Glass** consulta esses roteadores mesmo sem ser dono do equipamento e sem ver IP ou senha.
   Operadores que já têm lista de módulos precisam receber este módulo em **Usuários**.
-- Ninguém digita comando: o destino tem de ser um IP, um prefixo (`200.160.0.0/20`, só em Rota BGP) ou um nome
+- Ninguém digita comando: o destino tem de ser um IP, um prefixo (`x.x.x.x/x`, só em Rota BGP) ou um nome
   (`registro.br`, em ping/traceroute). Qualquer outra coisa é recusada.
 - Uma consulta por vez em cada roteador, até 20 por minuto por usuário (`LG_PER_MIN`), 90 s por consulta (`LG_TIMEOUT`).
   Tudo fica no **Histórico** com o tipo `lg` e o comando executado.
@@ -732,7 +732,7 @@ servidor de VPN do cliente/POP, e os agentes (jumps) marcados com aquela VPN pas
 | PPTP | servidor, usuário, senha; *Exigir criptografia* (MPPE-128/MS-CHAPv2) ligado por padrão |
 | L2TP/IPsec | servidor, usuário, senha e a **chave pré-compartilhada**; sem chave vira L2TP puro |
 
-- **Redes pela VPN**: liste as redes do outro lado (ex.: `10.50.0.0/16`). Os IPs dos agentes marcados com a VPN entram
+- **Redes pela VPN**: liste as redes do outro lado (ex.: `x.x.x.x/x`). Os IPs dos agentes marcados com a VPN entram
   sozinhos. A rota padrão do servidor **nunca** vai para a VPN, mesmo que o servidor da VPN mande.
 - **OpenVPN**: os certificados precisam estar embutidos no .ovpn (blocos `<ca>`, `<cert>`, `<key>`, `<tls-auth>`/`<tls-crypt>`).
   Por segurança o BastiON descarta scripts (`up`, `down`, `script-security`), `redirect-gateway`, rotas e DNS do arquivo
@@ -885,16 +885,16 @@ sozinho) com o usuário e a senha do MikroTik. MikroTik sem cadastro: informe o 
 
 ## 36. Roteiros automatizados (Execução em Lote → Roteiros; bot do Telegram)
 
-Um roteiro é uma sequência de passos, cada um com um equipamento e os comandos dele — ex.: **ATIVAR ROTA LIMOEIRO**
-(1. S6730-CASTELO: `sys` / `interface XGigabitEthernet0/0/8.1110` / `undo shutdown`; 2. S6730-VENDA-NOVA: `sys` /
-`interface XGigabitEthernet0/0/27` / `shutdown`) e **VOLTAR ROTA LIMOEIRO** (o inverso).
+Um roteiro é uma sequência de passos, cada um com um equipamento e os comandos dele — ex.: **ATIVAR ROTA BACKUP**
+(1. SW-A: `sys` / `interface XGigabitEthernet0/0/8.1110` / `undo shutdown`; 2. SW-B: `sys` /
+`interface XGigabitEthernet0/0/27` / `shutdown`) e **VOLTAR ROTA BACKUP** (o inverso).
 
 - Os passos rodam **em ordem** e **param no primeiro erro**: se o equipamento do passo 1 recusar um comando, o passo 2
   não é executado. Linhas só com `#` são ignoradas. Confirmação `[Y/N]` é respondida sozinha.
 - Opcional: **gravar a configuração** no fim de cada equipamento (Huawei `return`+`save`, ZTE `write`, Cisco
   `write memory`…). Sem isso a mudança vale até o próximo reboot.
 - **Telegram:** com "Pode ser executado pelo bot" marcado, mande `/roteiros` (lista com botões) ou só o nome do roteiro
-  (`ativar rota limoeiro`, sem diferença de maiúscula/acento). O bot mostra os passos e só executa no **✅ Executar**;
+  (`ativar rota backup`, sem diferença de maiúscula/acento). O bot mostra os passos e só executa no **✅ Executar**;
   depois responde o resultado de cada passo. Vale para quem está liberado no bot (Automação → Assistente IA) e tem o
   módulo Execução em Lote. O bot precisa estar ativo (Assistente IA configurado).
 - Cada execução fica no histórico do roteiro (ícone de relógio) e no Histórico de sessões.
@@ -1026,7 +1026,7 @@ valendo.
 
 ## 43. Domínio próprio pelo painel (Configurações → Domínio)
 
-Cadastre o domínio (ex.: `bastion.net.br` e `www.bastion.net.br`) em **Configurações → Domínio**. O backend grava a
+Cadastre o domínio (ex.: `seudominio.com.br` e `www.seudominio.com.br`) em **Configurações → Domínio**. O backend grava a
 lista em `/data/web/domains.txt` (volume `bastion_data`, montado também no container do Caddy em `/bastion`); o
 Caddy percebe a mudança em até 5 s, gera a configuração com o site do BastiON nesses domínios, valida e recarrega
 sem derrubar conexões. O certificado do Let's Encrypt sai sozinho. O endereço da instalação (`BASTION_DOMAIN`)
@@ -1038,7 +1038,7 @@ nameservers padrão:
 | Tipo  | Nome | Valor               |
 |-------|------|---------------------|
 | A     | @    | IP público do servidor |
-| CNAME | www  | o domínio (ex.: bastion.net.br) |
+| CNAME | www  | o domínio (ex.: seudominio.com.br) |
 
 e libere as portas TCP 80 e 443 no firewall. A tela mostra, para cada domínio: DNS apontando para o servidor,
 porta 80, certificado e se o `https://domínio` abre este BastiON. Se a configuração gerada não validar, o Caddy
@@ -1139,8 +1139,8 @@ respondido; v3 não é decodificado). O `update.sh` já sobe o serviço.
 **Firewall**: as portas ficam fechadas no ufw. Libere só para as redes dos equipamentos/jumps:
 
 ```bash
-sudo ufw allow from 203.0.113.0/24 to any port 514 proto udp
-sudo ufw allow from 203.0.113.0/24 to any port 162 proto udp
+sudo ufw allow from x.x.x.x/x to any port 514 proto udp
+sudo ufw allow from x.x.x.x/x to any port 162 proto udp
 ```
 
 Se a tela mostrar "UDP 514 não abriu: Address already in use", outro programa do servidor está usando a porta
@@ -1468,7 +1468,7 @@ Menu **Monitoramento → Virtualização**. Monitora e opera os hypervisors, dir
 Em **Monitoramento → Virtualização → Backups**. O backup sai do hypervisor e vai **direto para o NAS** passando pelo BastiON em fluxo (nada é gravado no disco do servidor do BastiON).
 
 - **Destinos**: o NAS por **SFTP** (recomendado; pode ser alcançado por um jump), **FTPS** (FTP com TLS) ou **FTP** (só direto; tudo vai sem criptografia). Informe a pasta base; *Testar gravação* cria e apaga um arquivo de teste. Estrutura no NAS: `pasta/<hypervisor>/<VM>_<id>/<AAAA-MM-DD_HHMMSS>/`.
-- **Acesso SSH aos nós/hosts**: em *Editar hypervisor → Backup das VMs*, usuário (root), senha ou a chave global do BastiON e, se o nome do nó não resolver, o endereço de cada nó/host (`pve1 = 192.0.2.11`). O SSH sai pelo mesmo jump do hypervisor.
+- **Acesso SSH aos nós/hosts**: em *Editar hypervisor → Backup das VMs*, usuário (root), senha ou a chave global do BastiON e, se o nome do nó não resolver, o endereço de cada nó/host (`pve1 = x.x.x.x`). O SSH sai pelo mesmo jump do hypervisor.
 - **Proxmox** (4.x a 8.x): o BastiON roda `vzdump <id> --mode snapshot --stdout` no nó onde a VM está (zstd no 6.2+, gzip antes). Sai o arquivo padrão `vzdump-qemu-…vma.zst` / `vzdump-lxc-…tar.zst`; para restaurar, copie para a pasta `dump` de um storage do Proxmox e use *Restaurar*. Modos: snapshot (VM ligada), suspend ou stop.
 - **VMware ESXi** (5.5 a 8.x, **inclusive o gratuito**; ligue o SSH do host): snapshot temporário com `vim-cmd`, cópia do `.vmx` (como estava antes do snapshot), `.nvram` e dos discos (descritor + `-flat` compactado com gzip — disco thin vazio fica pequeno) e remoção do snapshot, mesmo se der erro ou for cancelado. VM que já tem snapshots (ex.: réplicas do Veeam/vSphere Replication) vai com a cadeia inteira (disco base + deltas + `.vmsd`/`.vmsn`), com os caminhos reescritos para a pasta do backup; os snapshots dela não são mexidos — só o temporário do BastiON é removido. Quando a VM ligada mantém algum disco travado ("Device or resource busy", comum com SEsparse), o BastiON consolida aquele disco com `vmkfstools -i … -d thin` numa pasta temporária `.bastion-tmp-<id>` no mesmo datastore (precisa de espaço livre igual ao usado pelo disco), copia o disco consolidado e apaga a pasta. Restaurar: envie a pasta ao datastore, `gunzip *.gz` e registre o `.vmx` (instruções no `RESTAURAR.txt` de cada cópia). Com vCenter, o SSH é feito em cada ESXi (nome do host no vCenter ou o endereço informado).
 - **Rotinas**: hypervisor, destino, VMs (ou *todas*, com exceções), dias, horário (fuso `BASTION_TZ`, padrão America/Sao_Paulo) e quantas cópias guardar por VM. A limpeza das cópias antigas só acontece depois de um backup bem-sucedido; cópia com erro ou cancelada é apagada do NAS para não parecer backup bom. Uma rotina por hypervisor roda de cada vez; *Rodar agora* e *cancelar* na tela.

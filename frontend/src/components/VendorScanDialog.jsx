@@ -88,7 +88,7 @@ export function VendorScanDialog({ open, onOpenChange, agents = [], onDone }) {
             <div>
               <Label className="text-slate-300">Lista de IPs <span className="text-slate-500 font-mono text-xs">({count})</span></Label>
               <Textarea value={form.targets} onChange={e => setForm({ ...form, targets: e.target.value })} rows={16} spellCheck={false} autoFocus
-                placeholder={"10.0.0.1\n10.0.0.2  SW-CORE-01\n10.0.10.5:2222\n10.0.20.0/28"} className="mt-1.5 bg-sunken border-line font-mono text-xs" data-testid="scan-targets" />
+                placeholder={"x.x.x.x\nx.x.x.x  SW-CORE-01\nx.x.x.x:2222\nx.x.x.x/x"} className="mt-1.5 bg-sunken border-line font-mono text-xs" data-testid="scan-targets" />
               <p className="text-[11px] text-slate-500 mt-1.5">Um por linha. Opcional: <code>IP:porta</code>, um nome depois do IP, ou uma rede (até /22). Máximo de 1024 endereços.</p>
             </div>
             <div className="space-y-3 min-w-0">

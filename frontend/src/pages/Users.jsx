@@ -281,7 +281,7 @@ export default function Users() {
                   <div>
                     <div className="text-xs text-slate-400 mb-1">Redes dele (opcional): alarme do Zabbix/LibreNMS com IP dentro destas faixas também aparece para ele, mesmo sem o equipamento cadastrado.</div>
                     <textarea value={editForm.nets} onChange={e => setEditForm({ ...editForm, nets: e.target.value })} rows={3} data-testid="edit-user-nets"
-                              placeholder={"203.0.113.0/24\n198.51.100.0/26"} className="w-full rounded-md bg-sunken border border-line p-2 text-sm font-mono text-slate-100" />
+                              placeholder={"x.x.x.x/x\nx.x.x.x/x"} className="w-full rounded-md bg-sunken border border-line p-2 text-sm font-mono text-slate-100" />
                   </div>
                 )}
               </div>

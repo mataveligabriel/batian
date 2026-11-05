@@ -32,7 +32,7 @@ function Dest({ d, cats, onChange, onDel, onTest, testing }) {
       </div>
       {net ? (
         <div className="grid gap-3 sm:grid-cols-[1fr_7rem_8rem_10rem]">
-          <div><label className={lbl}>Servidor</label><Input value={d.host || ""} onChange={e => set("host", e.target.value)} placeholder="192.0.2.50" className="bg-sunken border-line h-9 font-mono" data-testid="siem-host" /></div>
+          <div><label className={lbl}>Servidor</label><Input value={d.host || ""} onChange={e => set("host", e.target.value)} placeholder="x.x.x.x" className="bg-sunken border-line h-9 font-mono" data-testid="siem-host" /></div>
           <div><label className={lbl}>Porta</label><Input type="number" value={d.port || ""} onChange={e => set("port", Number(e.target.value))} className="bg-sunken border-line h-9 font-mono" data-testid="siem-port" /></div>
           <div><label className={lbl}>Transporte</label><select value={d.proto || "udp"} onChange={e => set("proto", e.target.value)} className={sel} data-testid="siem-proto">
             {[["udp", "UDP"], ["tcp", "TCP"], ...(d.kind === "syslog" ? [["tls", "TCP + TLS"]] : [])].map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></div>

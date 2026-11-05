@@ -249,7 +249,7 @@ function VpnForm({ initial, caps = {}, onClose, onSaved }) {
           )}
           <div>
             <Label>Redes pela VPN{k === "fortinet" ? " (opcional)" : ""}</Label>
-            <Textarea value={f.routes} onChange={e => setF({ ...f, routes: e.target.value })} rows={2} placeholder={"ex.: 10.50.0.0/16"} className={`${inputCls} text-xs`} data-testid="vpn-routes" />
+            <Textarea value={f.routes} onChange={e => setF({ ...f, routes: e.target.value })} rows={2} placeholder={"ex.: x.x.x.x/x"} className={`${inputCls} text-xs`} data-testid="vpn-routes" />
             <div className="text-[11px] text-slate-500 mt-1">Os IPs dos agentes marcados com esta VPN já entram sozinhos. O resto do servidor continua saindo normal (a rota padrão nunca vai para a VPN).</div>
           </div>
         </div>

@@ -1,6 +1,6 @@
 """Roteiros automatizados: uma sequência de passos, cada um com um equipamento e os comandos dele.
 
-Ex.: "ATIVAR ROTA LIMOEIRO" = no S6730-CASTELO dá undo shutdown na subinterface e, em seguida, no S6730-VENDA-NOVA
+Ex.: "ATIVAR ROTA BACKUP" = no SW-A dá undo shutdown na subinterface e, em seguida, no SW-B
 dá shutdown na porta. Roda pelo BastiON (tela Execução em Lote → Roteiros) ou pelo bot do Telegram, sempre com
 confirmação. Os passos são em ordem e param no primeiro erro — o passo seguinte não roda se o anterior falhou.
 """
@@ -33,7 +33,7 @@ class RunbookError(ValueError):
 
 
 def norm_name(s: str) -> str:
-    """Comparação de nome sem acento, caixa ou espaço extra ('ativar rota limoeiro' == 'ATIVAR ROTA LIMOEIRO')."""
+    """Comparação de nome sem acento, caixa ou espaço extra ('ativar rota backup' == 'ATIVAR ROTA BACKUP')."""
     s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
     return re.sub(r"\s+", " ", s).strip().upper()
 

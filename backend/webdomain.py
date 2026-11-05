@@ -37,7 +37,7 @@ def normalize(d: str) -> str:
     d = (d or "").strip().lower().rstrip(".")
     d = re.sub(r"^https?://", "", d).split("/")[0].split(":")[0]
     if not FQDN_RE.match(d) or len(d) > 253:
-        raise DomainError(f"Domínio inválido: {d or '(vazio)'} — use só o nome, ex.: bastion.net.br")
+        raise DomainError(f"Domínio inválido: {d or '(vazio)'} — use só o nome, ex.: seudominio.com.br")
     return d
 
 

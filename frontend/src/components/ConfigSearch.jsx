@@ -7,7 +7,7 @@ import { Search, Loader2, Eye, ChevronDown, ChevronRight, AlertTriangle, CornerD
 
 const TYPES = ["", "huawei", "juniper", "datacom", "zte", "fiberhome", "cisco", "mikrotik", "ubiquiti", "linux", "other"];
 const MODES = [["word", "Palavra inteira"], ["text", "Trecho"], ["regex", "Regex"]];
-const EXAMPLES = ["1302", "187.16.216.95", "vpn-instance", "mpls l2vc"];
+const EXAMPLES = ["1302", "vpn-instance", "mpls l2vc", "interface"];
 const sel = "h-9 bg-sunken border border-line rounded-md px-2 text-sm text-slate-200";
 const fmtAt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 const ageDays = (iso) => iso ? (Date.now() - new Date(iso).getTime()) / 86400000 : 0;

@@ -40,7 +40,7 @@ function PrefixDialog({ p, onClose, onSaved, groups = [], onGroups }) {
       <DialogContent className="bg-surface border-line text-slate-100 max-w-lg" data-testid="ipam-prefix-dialog">
         <DialogHeader><DialogTitle>{p?.id ? "Editar prefixo" : "Novo prefixo"}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-2 gap-3">
-          <div className="col-span-2"><label className={lbl}>Prefixo</label><Input value={f.prefix} onChange={e => setF({ ...f, prefix: e.target.value })} placeholder="203.0.113.0/24 ou 2001:db8::/32" className="bg-sunken border-line font-mono" data-testid="ipam-prefix" /></div>
+          <div className="col-span-2"><label className={lbl}>Prefixo</label><Input value={f.prefix} onChange={e => setF({ ...f, prefix: e.target.value })} placeholder="x.x.x.x/x ou xxxx:xxxx::/xx" className="bg-sunken border-line font-mono" data-testid="ipam-prefix" /></div>
           <div className="col-span-2"><label className={lbl}>Descrição</label><Input value={f.description} onChange={e => setF({ ...f, description: e.target.value })} placeholder="Clientes FTTH POP Centro, PTPs do backbone…" className="bg-sunken border-line" /></div>
           <div><label className={lbl}>VRF (opcional)</label><Input value={f.vrf} onChange={e => setF({ ...f, vrf: e.target.value })} className="bg-sunken border-line" /></div>
           <div><label className={lbl}>VLAN (opcional)</label><Input type="number" value={f.vlan || ""} onChange={e => setF({ ...f, vlan: e.target.value })} className="bg-sunken border-line" /></div>

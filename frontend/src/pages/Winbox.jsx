@@ -108,7 +108,7 @@ export default function Winbox() {
             <div className="text-sm font-semibold text-slate-200">MikroTik sem cadastro (por IP)</div>
             <div className="grid sm:grid-cols-[1fr_6rem_1fr_auto] gap-2 items-end">
               <div><Label className="text-xs text-slate-400">IP do MikroTik</Label>
-                <Input value={adhoc.host} onChange={e => setAdhoc({ ...adhoc, host: e.target.value })} placeholder="10.30.1.1" className="bg-sunken border-line font-mono mt-1" data-testid="winbox-host" /></div>
+                <Input value={adhoc.host} onChange={e => setAdhoc({ ...adhoc, host: e.target.value })} placeholder="x.x.x.x" className="bg-sunken border-line font-mono mt-1" data-testid="winbox-host" /></div>
               <div><Label className="text-xs text-slate-400">Porta</Label>
                 <Input value={adhoc.port} onChange={e => setAdhoc({ ...adhoc, port: e.target.value.replace(/\D/g, "") })} className="bg-sunken border-line font-mono mt-1" /></div>
               <div><Label className="text-xs text-slate-400">Sair por</Label>

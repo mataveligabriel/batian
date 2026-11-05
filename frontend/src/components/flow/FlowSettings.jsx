@@ -15,7 +15,7 @@ const host = () => window.location.hostname || "IP_DO_BASTION";
 const SNIPPETS = {
   huawei: (ip, nf) => `ip netstream sampler fix-packets 1000 inbound
 ip netstream export version 9 origin-as
-ip netstream export source 10.255.0.1
+ip netstream export source x.x.x.x
 ip netstream export host ${ip} ${nf}
 ip netstream timeout active 1
 ip netstream timeout inactive 15
@@ -34,9 +34,9 @@ set services flow-monitoring version-ipfix template V6 flow-active-timeout 60
 set services flow-monitoring version-ipfix template V6 flow-inactive-timeout 15
 set forwarding-options sampling instance BASTION input rate 1000
 set forwarding-options sampling instance BASTION family inet output flow-server ${ip} port ${nf} version-ipfix template V4
-set forwarding-options sampling instance BASTION family inet output inline-jflow source-address 10.255.0.1
+set forwarding-options sampling instance BASTION family inet output inline-jflow source-address x.x.x.x
 set forwarding-options sampling instance BASTION family inet6 output flow-server ${ip} port ${nf} version-ipfix template V6
-set forwarding-options sampling instance BASTION family inet6 output inline-jflow source-address 10.255.0.1
+set forwarding-options sampling instance BASTION family inet6 output inline-jflow source-address x.x.x.x
 set interfaces xe-0/0/1 unit 0 family inet sampling input
 set interfaces xe-0/0/1 unit 0 family inet6 sampling input`,
   ciscoxe: (ip, nf) => `flow record BASTION
@@ -241,7 +241,7 @@ export function FlowSettings({ settings, reload }) {
           </div>
           <div>
             <Label className="text-xs">Prefixos próprios (o detector só olha tráfego que entra para eles)</Label>
-            <Textarea value={f.own_txt} onChange={e => setF({ ...f, own_txt: e.target.value })} disabled={ro} rows={4} placeholder={"177.10.0.0/20\n2804:1::/32"} className={`${inputCls} font-mono text-xs`} data-testid="own-prefixes" />
+            <Textarea value={f.own_txt} onChange={e => setF({ ...f, own_txt: e.target.value })} disabled={ro} rows={4} placeholder={"x.x.x.x/x\nxxxx:xxxx::/xx"} className={`${inputCls} font-mono text-xs`} data-testid="own-prefixes" />
             <div className="text-[10px] text-slate-500 mt-0.5">Vazio: considera tudo que entra pelas interfaces de trânsito, PNI, IX e CDN.</div>
           </div>
           <div>
@@ -280,7 +280,7 @@ export function FlowSettings({ settings, reload }) {
           <button onClick={() => { navigator.clipboard?.writeText(snippet); toast.success("Copiado"); }} className="absolute top-2 right-2 text-slate-400 hover:text-slate-100" title="Copiar"><Copy className="w-4 h-4" /></button>
         </div>
         <div className="px-3 py-2 text-[11px] text-slate-500 border-t border-line">
-          Troque 10.255.0.1 pela loopback do roteador e a interface pelos seus trânsitos/PNIs. Regras: amostragem na <b>entrada</b> das interfaces externas,
+          Troque x.x.x.x pela loopback do roteador e a interface pelos seus trânsitos/PNIs. Regras: amostragem na <b>entrada</b> das interfaces externas,
           timeout ativo de 60 s, e libere o UDP no servidor só para os roteadores: <code className="text-slate-300">ufw allow from IP_DO_ROTEADOR to any port {s.netflow_port} proto udp</code>.
         </div>
       </div>

@@ -119,15 +119,15 @@ function Accesses({ st, agents, reloadSt }) {
       <Card className="bg-surface border-line p-4 space-y-3">
         <div className="text-sm font-semibold text-slate-200">Novo acesso</div>
         <div className="grid gap-2 sm:grid-cols-[1fr_14rem_1fr_12rem] items-end">
-          <div><label className={lbl}>Nome</label><Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="Backup OLT Guaçuí" className="bg-sunken border-line h-9" data-testid="ftp-new-name" /></div>
+          <div><label className={lbl}>Nome</label><Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="NOME DO EQUIPAMENTO" className="bg-sunken border-line h-9" data-testid="ftp-new-name" /></div>
           <div><label className={lbl}>Por onde o equipamento chega</label>
             <select value={f.via} onChange={e => setF({ ...f, via: e.target.value })} className={`${sel} w-full`} data-testid="ftp-new-via">
               <option value="local">BastiON (direto)</option>{agents.map(a => <option key={a.id} value={a.id}>Jump {a.name}</option>)}</select></div>
-          <div><label className={lbl}>Pasta (vazio = o nome)</label><Input value={f.folder} onChange={e => setF({ ...f, folder: e.target.value })} placeholder="backups/olt-guacui" className="bg-sunken border-line h-9 font-mono" data-testid="ftp-new-folder" /></div>
+          <div><label className={lbl}>Pasta (vazio = o nome)</label><Input value={f.folder} onChange={e => setF({ ...f, folder: e.target.value })} placeholder="backups/(nome-olt)" className="bg-sunken border-line h-9 font-mono" data-testid="ftp-new-folder" /></div>
           <div><label className={lbl}>Validade</label>
             <select value={f.hours} onChange={e => setF({ ...f, hours: e.target.value })} className={`${sel} w-full`} data-testid="ftp-new-hours">{VALID.map(([h, l]) => <option key={h} value={h}>{l}</option>)}</select></div>
           <label className="flex items-center gap-2 text-sm text-slate-300"><Switch checked={f.write} onCheckedChange={v => setF({ ...f, write: v })} data-testid="ftp-new-write" />Pode enviar arquivos (senão, só baixar)</label>
-          <div className="sm:col-span-2"><label className={lbl}>Só destes IPs (vazio = qualquer equipamento)</label><Input value={f.allow_ips} onChange={e => setF({ ...f, allow_ips: e.target.value })} placeholder="10.20.0.0/24" className="bg-sunken border-line h-9 font-mono" /></div>
+          <div className="sm:col-span-2"><label className={lbl}>Só destes IPs (vazio = qualquer equipamento)</label><Input value={f.allow_ips} onChange={e => setF({ ...f, allow_ips: e.target.value })} placeholder="x.x.x.x/x" className="bg-sunken border-line h-9 font-mono" /></div>
           <Button onClick={add} disabled={busy || !f.name.trim()} className="bg-brand hover:bg-brand-strong text-onbrand h-9" data-testid="ftp-new-save">{busy ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Plus className="w-4 h-4 mr-1" />}Criar acesso</Button>
         </div>
         <p className="text-[11px] text-slate-500">Usuário e senha são gerados e valem só por aquele caminho (no jump escolhido ou no BastiON). Pelo jump, a porta abre no próprio jump: o equipamento usa o IP do jump. A porta fecha sozinha quando não houver acesso válido.</p>

@@ -114,10 +114,10 @@ function HostDialog({ open, cur, agents, onClose, onSaved, sshOpen }) {
           ))}
         </div>
         <div className="grid sm:grid-cols-2 gap-3">
-          <div><label className={lbl}>Nome</label><Input value={f.name} onChange={s("name")} placeholder={pve ? "Cluster PVE POP-Centro" : "ESXi 01 DC"} className="bg-sunken border-line" data-testid="virt-name" /></div>
+          <div><label className={lbl}>Nome</label><Input value={f.name} onChange={s("name")} placeholder={pve ? "NOME DO CLUSTER" : "NOME DO HOST"} className="bg-sunken border-line" data-testid="virt-name" /></div>
           <div className="grid grid-cols-[1fr_90px] gap-2">
             <div><label className={lbl}>Endereço {pve ? "(qualquer nó do cluster)" : "(ESXi ou vCenter)"}</label>
-              <Input value={f.host} onChange={s("host")} placeholder={pve ? "192.0.2.10" : "vcenter.exemplo.net"} className="bg-sunken border-line font-mono" data-testid="virt-host" /></div>
+              <Input value={f.host} onChange={s("host")} placeholder={pve ? "x.x.x.x" : "x.x.x.x ou vcenter.exemplo.net"} className="bg-sunken border-line font-mono" data-testid="virt-host" /></div>
             <div><label className={lbl}>Porta</label><Input value={f.port} onChange={s("port")} placeholder={pve ? "8006" : "443"} className="bg-sunken border-line font-mono" /></div>
           </div>
           <div><label className={lbl}>Alcançar por</label>
@@ -171,7 +171,7 @@ function HostDialog({ open, cur, agents, onClose, onSaved, sshOpen }) {
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-300"><Switch checked={!!f.ssh_key} onCheckedChange={s("ssh_key")} /> Usar a chave SSH global do BastiON</label>
             <div><label className={lbl}>Endereço SSH de cada {pve ? "nó" : "host"} (só se o nome não resolver; uma linha por {pve ? "nó" : "host"})</label>
-              <textarea value={f.ssh_hosts} onChange={s("ssh_hosts")} rows={2} placeholder={pve ? "pve1 = 192.0.2.11\npve2 = 192.0.2.12" : "esx01.exemplo.net = 192.0.2.21"}
+              <textarea value={f.ssh_hosts} onChange={s("ssh_hosts")} rows={2} placeholder={pve ? "nome-do-no-1 = x.x.x.x\nnome-do-no-2 = x.x.x.x" : "nome-do-host = x.x.x.x"}
                 className="w-full rounded-md bg-sunken border border-line px-2 py-1 text-sm font-mono text-slate-200" data-testid="virt-ssh-hosts" /></div>
           </div>
         </details>

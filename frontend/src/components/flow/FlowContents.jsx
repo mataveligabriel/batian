@@ -47,7 +47,7 @@ function GroupDialog({ initial, onClose, onSaved }) {
           </div>
           <div>
             <Label>Blocos (um por linha)</Label>
-            <Textarea value={g.prefixes} onChange={e => setG({ ...g, prefixes: e.target.value })} rows={5} placeholder={"ex.: bloco do cache dentro da sua rede (GGC, OCA, FNA)\n177.10.200.0/26\n2804:1:ca::/48"} className={`${inputCls} font-mono text-xs`} data-testid="group-prefixes" />
+            <Textarea value={g.prefixes} onChange={e => setG({ ...g, prefixes: e.target.value })} rows={5} placeholder={"ex.: bloco do cache dentro da sua rede (GGC, OCA, FNA)\nx.x.x.x/x\nxxxx:xxxx::/xx"} className={`${inputCls} font-mono text-xs`} data-testid="group-prefixes" />
             <div className="text-[11px] text-slate-500 mt-1">Use para caches instalados no seu provedor (usam IPs seus, então o AS não pega) ou para acompanhar blocos específicos.</div>
           </div>
           {asnInfo && (
@@ -82,7 +82,7 @@ function Lookup({ onCreate }) {
     <div className="border border-line rounded p-2" data-testid="flow-lookup">
       <div className="text-[10px] text-slate-500 mb-1">Descobrir conteúdo</div>
       <div className="flex gap-1">
-        <Input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && go()} placeholder="IP, AS ou nome (ex.: 142.250.79.46)" className={`${inputCls} h-8 text-xs font-mono`} data-testid="lookup-q" />
+        <Input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && go()} placeholder="IP, AS ou nome (ex.: x.x.x.x)" className={`${inputCls} h-8 text-xs font-mono`} data-testid="lookup-q" />
         <Button size="sm" variant="ghost" onClick={go} className="h-8 px-2 hover:bg-slate-800" data-testid="lookup-go">{busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}</Button>
       </div>
       {r?.error && <div className="text-[11px] text-amber-300 mt-1">{r.error}</div>}

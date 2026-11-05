@@ -473,8 +473,8 @@ function Configure({ isAdmin }) {
         <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-200">
           <div className="font-medium mb-1 flex items-center gap-1.5"><Link2 className="w-3.5 h-3.5" /> Firewall do servidor</div>
           Libere as portas só para as redes dos equipamentos/jumps, por exemplo:
-          <pre className="mt-1 font-mono text-[11px] text-amber-100 whitespace-pre-wrap">{`sudo ufw allow from 203.0.113.0/24 to any port ${sp} proto udp
-sudo ufw allow from 203.0.113.0/24 to any port ${tp} proto udp`}</pre>
+          <pre className="mt-1 font-mono text-[11px] text-amber-100 whitespace-pre-wrap">{`sudo ufw allow from x.x.x.x/x to any port ${sp} proto udp
+sudo ufw allow from x.x.x.x/x to any port ${tp} proto udp`}</pre>
         </div>
       </Card>
     </div>

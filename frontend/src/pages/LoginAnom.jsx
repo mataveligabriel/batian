@@ -127,7 +127,7 @@ function Settings() {
         <div><label className={lbl}>Só aceitar login destes países (códigos de 2 letras; vazio = qualquer país)</label>
           <Input value={cc} onChange={e => setCc(e.target.value.toUpperCase())} placeholder="BR" className="bg-sunken border-line h-9 font-mono" data-testid="la-cc" /></div>
         <div><label className={lbl}>Redes confiáveis (sempre entram e não geram alerta) — uma por linha</label>
-          <textarea value={nets} onChange={e => setNets(e.target.value)} rows={3} placeholder="198.51.100.0/24" className="w-full rounded-md bg-sunken border border-line p-2 font-mono text-sm text-slate-200" data-testid="la-nets" /></div>
+          <textarea value={nets} onChange={e => setNets(e.target.value)} rows={3} placeholder="x.x.x.x/x" className="w-full rounded-md bg-sunken border border-line p-2 font-mono text-sm text-slate-200" data-testid="la-nets" /></div>
         <label className="flex items-center gap-2 text-sm text-slate-300"><Switch checked={c.geofence_admins} onCheckedChange={v => set("geofence_admins", v)} /> Vale também para administradores</label>
         <div className="text-[11px] text-slate-500">Rede interna e IPs sem país conhecido sempre passam. O BastiON não deixa salvar uma lista que bloquearia você mesmo agora.</div>
       </Card>

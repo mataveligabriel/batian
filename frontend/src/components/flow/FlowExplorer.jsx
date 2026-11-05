@@ -10,8 +10,8 @@ const load = () => { try { return JSON.parse(localStorage.getItem(STORE) || "{}"
 const save = (v) => { try { localStorage.setItem(STORE, JSON.stringify(v)); } catch { /* sem armazenamento: tudo bem */ } };
 
 const PLACEHOLDER = {
-  sas: "ex.: 15169, 32934", das: "ex.: 263000", spfx: "ex.: 142.250.0.0/15", dpfx: "ex.: 177.10.0.0/22, 2804:1::/32",
-  sip: "ex.: 8.8.8.8 ou 8.8.8.0/24", dip: "ex.: 177.10.0.50", proto: "ex.: UDP, TCP, 47", sport: "ex.: 123, 53", dport: "ex.: 443", peer: "ifIndex, ex.: 20",
+  sas: "ex.: 15169, 32934", das: "ex.: 263000", spfx: "ex.: x.x.x.x/x", dpfx: "ex.: x.x.x.x/x, xxxx:xxxx::/xx",
+  sip: "ex.: x.x.x.x ou x.x.x.x/x", dip: "ex.: x.x.x.x", proto: "ex.: UDP, TCP, 47", sport: "ex.: 123, 53", dport: "ex.: 443", peer: "ifIndex, ex.: 20",
 };
 
 /** Aba Explorar: filtros numa linha, gráfico empilhado e tabela. */

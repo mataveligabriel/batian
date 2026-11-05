@@ -191,7 +191,7 @@ function ProbeDialog({ probe, srcList, onClose, onSaved }) {
   };
   const toggleSrc = (id) => set("sources", f.sources.includes(id) ? f.sources.filter(x => x !== id) : [...f.sources, id]);
   const lbl = "text-xs text-slate-400 mb-1 block";
-  const ph = { ping: "203.0.113.1 ou host.exemplo.net", dns: "IP do servidor DNS (ex.: 192.0.2.53)", http: "https://www.exemplo.net/", tcp: "IP ou nome" }[f.type];
+  const ph = { ping: "x.x.x.x ou host.exemplo.net", dns: "IP do servidor DNS (ex.: x.x.x.x)", http: "https://www.exemplo.net/", tcp: "IP ou nome" }[f.type];
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="bg-surface border-line text-slate-100 max-w-3xl w-[96vw] max-h-[92vh] overflow-y-auto" data-testid="probe-dialog">
@@ -272,7 +272,7 @@ function PresetsDialog({ srcList, onClose, onSaved }) {
       <DialogContent className="bg-surface border-line text-slate-100 max-w-lg" data-testid="presets-dialog">
         <DialogHeader><DialogTitle>Sondas prontas</DialogTitle></DialogHeader>
         <label className="text-xs text-slate-400">IPs dos DNS recursivos da sua rede (DNS + ping para cada um, severidade crítica)</label>
-        <Input value={dns} onChange={e => setDns(e.target.value)} placeholder="192.0.2.53, 192.0.2.54" className="bg-sunken border-line font-mono" data-testid="presets-dns" />
+        <Input value={dns} onChange={e => setDns(e.target.value)} placeholder="x.x.x.x, x.x.x.x" className="bg-sunken border-line font-mono" data-testid="presets-dns" />
         <label className="flex items-center gap-2 text-sm text-slate-300"><Switch checked={pub} onCheckedChange={setPub} /> Também DNS públicos (8.8.8.8, 1.1.1.1), trânsito por ping e HTTP</label>
         <div className="text-xs text-slate-400">Medir a partir de</div>
         <div className="flex flex-wrap gap-2">

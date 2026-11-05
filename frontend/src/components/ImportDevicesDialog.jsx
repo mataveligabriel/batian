@@ -6,9 +6,9 @@ import { toast } from "sonner";
 import { Upload, Download, FileSpreadsheet } from "lucide-react";
 
 const TEMPLATE = `name,host,port,protocol,username,password,device_type,tags,agent,description,backup_enabled,backup_command
-core-sp-01,10.10.1.1,22,ssh,admin,,cisco,Core;SP,jump-vpn,Core Router SP,true,
-sw-rj-02,192.168.20.5,23,telnet,admin,,huawei,Switch;RJ,,Switch Distribuição,true,
-rb-mg-01,172.16.0.1,22,ssh,admin+ct,,mikrotik,Roteador;MG,,RouterBoard,false,
+core-sp-01,x.x.x.x,22,ssh,admin,,cisco,Core;SP,jump-vpn,Core Router SP,true,
+sw-rj-02,x.x.x.x,23,telnet,admin,,huawei,Switch;RJ,,Switch Distribuição,true,
+rb-mg-01,x.x.x.x,22,ssh,admin+ct,,mikrotik,Roteador;MG,,RouterBoard,false,
 `;
 
 // Detecta o separador pela linha de cabeçalho: "," (padrão) ou ";" (Excel pt-BR).

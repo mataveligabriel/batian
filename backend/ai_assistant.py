@@ -299,7 +299,7 @@ HELP_TEXT = (
     "• o que está consumindo o trânsito A agora?\n"
     "• desativa a interface GE0/0/5 do switch S5732-Caxixe\n\n"
     "Leitura roda direto. Qualquer alteração eu mostro os comandos e só executo depois do botão ✅.\n\n"
-    "/roteiros — roteiros automatizados (ex.: ATIVAR ROTA LIMOEIRO); também dá para mandar só o nome do roteiro\n"
+    "/roteiros — roteiros automatizados (ex.: ATIVAR ROTA BACKUP); também dá para mandar só o nome do roteiro\n"
     "/plantao — quem está de plantão agora e os próximos turnos\n"
     "/novo — começa uma conversa nova\n/id — mostra seu ID do Telegram\n/ajuda — esta mensagem"
 )

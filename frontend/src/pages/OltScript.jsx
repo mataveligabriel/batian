@@ -336,9 +336,9 @@ function OltActivation() {
                 <Check id="og-out" checked={f.mgmt.out_enabled} onChange={v => up("mgmt", { out_enabled: v })} testid="oltgen-out">Outband (porta MGMT, VRF mng)</Check>
                 {f.mgmt.out_enabled && (
                   <div className="grid sm:grid-cols-3 gap-3">
-                    <Field label="IP"><Input value={f.mgmt.out_ip} onChange={e => up("mgmt", { out_ip: e.target.value })} placeholder="192.0.2.10" className={inp} data-testid="oltgen-out-ip" /></Field>
+                    <Field label="IP"><Input value={f.mgmt.out_ip} onChange={e => up("mgmt", { out_ip: e.target.value })} placeholder="x.x.x.x" className={inp} data-testid="oltgen-out-ip" /></Field>
                     <Field label="Máscara"><Input value={f.mgmt.out_mask} onChange={e => up("mgmt", { out_mask: e.target.value })} placeholder="24" className={inp} /></Field>
-                    <Field label="Gateway"><Input value={f.mgmt.out_gw} onChange={e => up("mgmt", { out_gw: e.target.value })} placeholder="192.0.2.1" className={inp} /></Field>
+                    <Field label="Gateway"><Input value={f.mgmt.out_gw} onChange={e => up("mgmt", { out_gw: e.target.value })} placeholder="x.x.x.x" className={inp} /></Field>
                   </div>
                 )}
               </div>
@@ -348,9 +348,9 @@ function OltActivation() {
                   <>
                     <div className="grid sm:grid-cols-4 gap-3">
                       <Field label="VLAN"><Input value={f.mgmt.in_vlan} onChange={e => up("mgmt", { in_vlan: e.target.value })} placeholder="999" className={inp} data-testid="oltgen-in-vlan" /></Field>
-                      <Field label="IP"><Input value={f.mgmt.in_ip} onChange={e => up("mgmt", { in_ip: e.target.value })} placeholder="198.51.100.2" className={inp} data-testid="oltgen-in-ip" /></Field>
+                      <Field label="IP"><Input value={f.mgmt.in_ip} onChange={e => up("mgmt", { in_ip: e.target.value })} placeholder="x.x.x.x" className={inp} data-testid="oltgen-in-ip" /></Field>
                       <Field label="Máscara"><Input value={f.mgmt.in_mask} onChange={e => up("mgmt", { in_mask: e.target.value })} placeholder="30" className={inp} /></Field>
-                      <Field label="Gateway"><Input value={f.mgmt.in_gw} onChange={e => up("mgmt", { in_gw: e.target.value })} placeholder="198.51.100.1" className={inp} /></Field>
+                      <Field label="Gateway"><Input value={f.mgmt.in_gw} onChange={e => up("mgmt", { in_gw: e.target.value })} placeholder="x.x.x.x" className={inp} /></Field>
                     </div>
                     <Field label="Uplink(s) por onde a gerência chega">
                       <UplinkPick plat={plat} uplinks={f.uplinks} value={f.mgmt.in_uplinks} onChange={v => up("mgmt", { in_uplinks: v })} testid="oltgen-in-ups" />
@@ -406,7 +406,7 @@ function OltActivation() {
             <div className="space-y-3">
               <div className={sec}>
                 <div className="grid sm:grid-cols-2 gap-3">
-                  <Field label="NTP principal"><Input value={f.ntp[0]} onChange={e => setF({ ...f, ntp: [e.target.value, f.ntp[1]] })} placeholder="200.160.7.186" className={inp} data-testid="oltgen-ntp1" /></Field>
+                  <Field label="NTP principal"><Input value={f.ntp[0]} onChange={e => setF({ ...f, ntp: [e.target.value, f.ntp[1]] })} placeholder="x.x.x.x" className={inp} data-testid="oltgen-ntp1" /></Field>
                   <Field label="NTP secundário"><Input value={f.ntp[1]} onChange={e => setF({ ...f, ntp: [f.ntp[0], e.target.value] })} placeholder="opcional" className={inp} /></Field>
                 </div>
               </div>
@@ -418,7 +418,7 @@ function OltActivation() {
                 <Check id="og-bk" checked={f.backup.enabled} onChange={v => up("backup", { enabled: v })} testid="oltgen-backup">Backup da configuração por FTP</Check>
                 {f.backup.enabled && (
                   <div className="grid sm:grid-cols-2 gap-3">
-                    <Field label="Servidor FTP"><Input value={f.backup.server} onChange={e => up("backup", { server: e.target.value })} placeholder="192.0.2.50" className={inp} /></Field>
+                    <Field label="Servidor FTP"><Input value={f.backup.server} onChange={e => up("backup", { server: e.target.value })} placeholder="x.x.x.x" className={inp} /></Field>
                     <Field label="Pasta"><Input value={f.backup.path} onChange={e => up("backup", { path: e.target.value })} placeholder={f.hostname} className={inp} /></Field>
                     <Field label="Usuário"><Input value={f.backup.username} onChange={e => up("backup", { username: e.target.value })} className={inp} /></Field>
                     <Field label="Senha"><Input type="password" value={f.backup.password} onChange={e => up("backup", { password: e.target.value })} className={inp} autoComplete="new-password" /></Field>
@@ -1169,15 +1169,15 @@ function HwActivation({ devices, models }) {
           {f.mgmt.in_enabled && (
             <div className="grid sm:grid-cols-4 gap-3">
               <Field label="VLAN"><Input value={f.mgmt.in_vlan} onChange={e => up("mgmt", { in_vlan: e.target.value })} placeholder="999" className={inp} data-testid="hw-in-vlan" /></Field>
-              <Field label="IP"><Input value={f.mgmt.in_ip} onChange={e => up("mgmt", { in_ip: e.target.value })} placeholder="198.51.100.2" className={inp} data-testid="hw-in-ip" /></Field>
+              <Field label="IP"><Input value={f.mgmt.in_ip} onChange={e => up("mgmt", { in_ip: e.target.value })} placeholder="x.x.x.x" className={inp} data-testid="hw-in-ip" /></Field>
               <Field label="Máscara"><Input value={f.mgmt.in_mask} onChange={e => up("mgmt", { in_mask: e.target.value })} className={inp} /></Field>
-              <Field label="Gateway"><Input value={f.mgmt.in_gw} onChange={e => up("mgmt", { in_gw: e.target.value })} placeholder="198.51.100.1" className={inp} /></Field>
+              <Field label="Gateway"><Input value={f.mgmt.in_gw} onChange={e => up("mgmt", { in_gw: e.target.value })} placeholder="x.x.x.x" className={inp} /></Field>
             </div>
           )}
           <Check id="hw-out" checked={f.mgmt.out_enabled} onChange={v => up("mgmt", { out_enabled: v })} testid="hw-out">Gerência outband (meth0 da controladora)</Check>
           {f.mgmt.out_enabled && (
             <div className="grid sm:grid-cols-2 gap-3">
-              <Field label="IP"><Input value={f.mgmt.out_ip} onChange={e => up("mgmt", { out_ip: e.target.value })} placeholder="192.0.2.10" className={inp} /></Field>
+              <Field label="IP"><Input value={f.mgmt.out_ip} onChange={e => up("mgmt", { out_ip: e.target.value })} placeholder="x.x.x.x" className={inp} /></Field>
               <Field label="Máscara"><Input value={f.mgmt.out_mask} onChange={e => up("mgmt", { out_mask: e.target.value })} className={inp} /></Field>
             </div>
           )}
@@ -1193,7 +1193,7 @@ function HwActivation({ devices, models }) {
 
         <div className={sec}>
           <div className="grid sm:grid-cols-2 gap-3">
-            <Field label="NTP principal"><Input value={f.ntp[0]} onChange={e => setF({ ...f, ntp: [e.target.value, f.ntp[1]] })} placeholder="192.0.2.123" className={inp} /></Field>
+            <Field label="NTP principal"><Input value={f.ntp[0]} onChange={e => setF({ ...f, ntp: [e.target.value, f.ntp[1]] })} placeholder="x.x.x.x" className={inp} /></Field>
             <Field label="NTP secundário"><Input value={f.ntp[1]} onChange={e => setF({ ...f, ntp: [f.ntp[0], e.target.value] })} placeholder="opcional" className={inp} /></Field>
           </div>
           <Check id="hw-snmp" checked={f.snmp.enabled} onChange={v => up("snmp", { enabled: v })}>SNMP v2c (leitura)</Check>
@@ -1508,8 +1508,8 @@ function FhActivation({ devices }) {
           <Check id="fh-mg" checked={f.mgmt.enabled} onChange={v => up("mgmt", { enabled: v })} testid="fh-mgmt">VLAN e IP de gerência (set manage vlan)</Check>
           {f.mgmt.enabled && <div className="grid sm:grid-cols-4 gap-3">
             <Field label="VLAN"><Input value={f.mgmt.vlan} onChange={e => up("mgmt", { vlan: e.target.value })} placeholder="4000" className={inp} data-testid="fh-mgmt-vlan" /></Field>
-            <Field label="IP/máscara"><Input value={f.mgmt.ip} onChange={e => up("mgmt", { ip: e.target.value })} placeholder="192.0.2.10/30" className={inp} data-testid="fh-mgmt-ip" /></Field>
-            <Field label="Gateway"><Input value={f.mgmt.gw} onChange={e => up("mgmt", { gw: e.target.value })} placeholder="192.0.2.9" className={inp} data-testid="fh-mgmt-gw" /></Field>
+            <Field label="IP/máscara"><Input value={f.mgmt.ip} onChange={e => up("mgmt", { ip: e.target.value })} placeholder="x.x.x.x/x" className={inp} data-testid="fh-mgmt-ip" /></Field>
+            <Field label="Gateway"><Input value={f.mgmt.gw} onChange={e => up("mgmt", { gw: e.target.value })} placeholder="x.x.x.x" className={inp} data-testid="fh-mgmt-gw" /></Field>
             <Field label="Porta" hint="vazio = 1º uplink"><Input value={f.mgmt.port} onChange={e => up("mgmt", { port: e.target.value })} placeholder="19:1" className={inp} /></Field>
           </div>}
           <Check id="fh-snmp" checked={f.snmp.enabled} onChange={v => up("snmp", { enabled: v })}>SNMP (community de leitura)</Check>

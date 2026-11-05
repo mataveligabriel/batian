@@ -28,7 +28,7 @@ def _s(v, n: int = 200) -> str:
 def clean_group(b: dict) -> dict:
     name = _s(b.get("name"), 80)
     if not name:
-        raise DocError("Dê um nome ao grupo (ex.: Rede Guaçuí, Cliente X)")
+        raise DocError("Dê um nome ao grupo (ex.: Rede Cidade X, Cliente Y)")
     color = b.get("color") if re.fullmatch(r"#[0-9A-Fa-f]{6}", str(b.get("color") or "")) else COLORS[0]
     return {"name": name, "description": _s(b.get("description"), 500), "color": color}
 

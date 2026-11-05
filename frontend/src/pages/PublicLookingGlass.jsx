@@ -8,7 +8,7 @@ const call = async (path, body) => {
   if (!r.ok) throw new Error((data && typeof data.detail === "string" && data.detail) || (r.status === 429 ? "Muitas consultas. Aguarde um pouco." : "Não foi possível consultar agora."));
   return data;
 };
-const HINT = { ping: "ex.: 8.8.8.8 ou 2001:4860:4860::8888", trace: "ex.: 1.1.1.1", route: "ex.: 200.160.0.0/20 ou 8.8.8.8" };
+const HINT = { ping: "ex.: x.x.x.x ou xxxx:xxxx::x", trace: "ex.: x.x.x.x", route: "ex.: x.x.x.x/x ou x.x.x.x" };
 
 export default function PublicLookingGlass() {
   const [info, setInfo] = useState(null);

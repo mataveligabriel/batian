@@ -13,7 +13,7 @@ import { Telescope, Loader2, Play, Settings2, Copy, Search, RotateCcw, Trash2 } 
 const VENDOR = { huawei: "Huawei", juniper: "Juniper", cisco: "Cisco", mikrotik: "MikroTik", datacom: "Datacom", zte: "ZTE", linux: "Linux" };
 const TPL_LABEL = { ping: "Ping", ping6: "Ping IPv6", trace: "Traceroute", trace6: "Traceroute IPv6", route: "Rota BGP", route6: "Rota BGP IPv6",
   summary: "Vizinhos BGP", summary6: "Vizinhos BGP IPv6" };
-const HINT = { ping: "IP ou nome — ex.: 8.8.8.8 ou registro.br", trace: "IP ou nome — ex.: 1.1.1.1", route: "IP ou prefixo — ex.: 200.160.0.0/20" };
+const HINT = { ping: "IP ou nome — ex.: x.x.x.x ou nome.exemplo.net", trace: "IP ou nome — ex.: x.x.x.x", route: "IP ou prefixo — ex.: x.x.x.x/x" };
 
 function ManageDialog({ open, onClose, onSaved }) {
   const [data, setData] = useState(null);

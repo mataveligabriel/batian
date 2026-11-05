@@ -81,7 +81,7 @@ def clean_nets(nets) -> list:
         try:
             out.append(str(ipaddress.ip_network(n, strict=False)))
         except ValueError:
-            raise ValueError(f"Rede inválida: {n} (use o formato 177.223.232.0/21)")
+            raise ValueError(f"Rede inválida: {n} (use o formato x.x.x.x/x)")
     return sorted(set(out))[:200]
 
 # Zabbix: Not classified, Information, Warning, Average, High, Disaster

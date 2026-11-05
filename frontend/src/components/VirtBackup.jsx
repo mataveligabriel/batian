@@ -21,7 +21,7 @@ const STATE = {
   ok: ["text-emerald-300", "concluído", CheckCircle2], partial: ["text-amber-300", "parcial", AlertTriangle], error: ["text-red-300", "erro", XCircle],
   running: ["text-sky-300", "rodando", Loader2], cancelled: ["text-slate-400", "cancelado", Square], waiting: ["text-slate-500", "na fila", Clock],
 };
-// "r620.exemplo.net.br" -> "r620" (IP fica inteiro)
+// "host01.exemplo.net" -> "host01" (IP fica inteiro)
 const shortHost = (h) => (!h || /^[\d.:]+$/.test(h) ? h || "" : h.split(".")[0]);
 const daysText = (d) => (!d || d.length === 7 ? "todo dia" : d.length === 5 && [0, 1, 2, 3, 4].every((x) => d.includes(x)) ? "seg a sex" : d.map((x) => DAYS[x]).join(", "));
 
@@ -62,9 +62,9 @@ function DestDialog({ cur, agents, hvs, onClose, onSaved }) {
           ))}
         </div>
         <div className="grid sm:grid-cols-2 gap-3">
-          <div><label className={lbl}>Nome</label><Input value={f.name} onChange={s("name")} placeholder="NAS Datacenter" className="bg-sunken border-line" data-testid="vb-dest-name" /></div>
+          <div><label className={lbl}>Nome</label><Input value={f.name} onChange={s("name")} placeholder="NOME DO NAS" className="bg-sunken border-line" data-testid="vb-dest-name" /></div>
           <div className="grid grid-cols-[1fr_80px] gap-2">
-            <div className={nfs ? "col-span-2" : ""}><label className={lbl}>Endereço do NAS</label><Input value={f.host} onChange={s("host")} placeholder="192.0.2.30" className="bg-sunken border-line font-mono" data-testid="vb-dest-host" /></div>
+            <div className={nfs ? "col-span-2" : ""}><label className={lbl}>Endereço do NAS</label><Input value={f.host} onChange={s("host")} placeholder="x.x.x.x" className="bg-sunken border-line font-mono" data-testid="vb-dest-host" /></div>
             {!nfs && <div><label className={lbl}>Porta</label><Input value={f.port} onChange={s("port")} placeholder={f.kind === "sftp" ? "22" : "21"} className="bg-sunken border-line font-mono" /></div>}
           </div>
           {nfs ? (<>

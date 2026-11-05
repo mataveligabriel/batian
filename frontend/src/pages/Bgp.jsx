@@ -161,7 +161,7 @@ function Configure({ data, devices, reload }) {
         <div className="space-y-2">
           {c.prefixes.map((p, i) => (
             <div key={i} className="grid sm:grid-cols-[1fr_1fr_1fr_1fr_auto] gap-2 items-center" data-testid={`bgp-pfx-row-${i}`}>
-              <Input value={p.prefix} onChange={e => pfxRow(i, "prefix", e.target.value)} placeholder="203.0.113.0/24" className="bg-sunken border-line font-mono h-9" />
+              <Input value={p.prefix} onChange={e => pfxRow(i, "prefix", e.target.value)} placeholder="x.x.x.x/x" className="bg-sunken border-line font-mono h-9" />
               <Input value={Array.isArray(p.origins) ? p.origins.join(", ") : p.origins} onChange={e => pfxRow(i, "origins", e.target.value)} placeholder="AS de origem (64500)" className="bg-sunken border-line font-mono h-9" />
               <Input value={Array.isArray(p.upstreams) ? p.upstreams.join(", ") : p.upstreams || ""} onChange={e => pfxRow(i, "upstreams", e.target.value)} placeholder="upstreams (opcional)" className="bg-sunken border-line font-mono h-9" />
               <Input value={p.note || ""} onChange={e => pfxRow(i, "note", e.target.value)} placeholder="observação" className="bg-sunken border-line h-9" />

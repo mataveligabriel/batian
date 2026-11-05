@@ -49,7 +49,7 @@ function Editor({ value, devices, onCancel, onSaved }) {
       </div>
       <div className="grid sm:grid-cols-2 gap-3">
         <div><Label className="text-xs text-slate-400">Nome (é o que você manda no Telegram)</Label>
-          <Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="ATIVAR ROTA LIMOEIRO" className="bg-sunken border-line mt-1" data-testid="rb-name" /></div>
+          <Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="NOME DO PROCEDIMENTO" className="bg-sunken border-line mt-1" data-testid="rb-name" /></div>
         <div><Label className="text-xs text-slate-400">Descrição</Label>
           <Input value={f.description} onChange={e => setF({ ...f, description: e.target.value })} placeholder="opcional" className="bg-sunken border-line mt-1" /></div>
       </div>

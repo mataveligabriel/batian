@@ -228,7 +228,7 @@ function Clients({ cfg, setCfg, saveCfg, busy }) {
           </div>
           <div className="grid gap-3 md:grid-cols-[1fr_1fr]">
             <div><label className={lbl}>IPs ou redes dos equipamentos (um por linha)</label>
-              <textarea value={(c.networks || []).join("\n")} onChange={e => upd(i, "networks", e.target.value.split("\n"))} rows={3} placeholder={"10.255.0.0/24\n192.0.2.1"} className="w-full rounded-md bg-sunken border border-line p-2 font-mono text-sm text-slate-200" data-testid={`tac-client-nets-${i}`} /></div>
+              <textarea value={(c.networks || []).join("\n")} onChange={e => upd(i, "networks", e.target.value.split("\n"))} rows={3} placeholder={"x.x.x.x/x\nx.x.x.x"} className="w-full rounded-md bg-sunken border border-line p-2 font-mono text-sm text-slate-200" data-testid={`tac-client-nets-${i}`} /></div>
             <div><label className={lbl}>Chave (shared secret)</label>
               {c.id && c.has_secret ? (
                 <div className="flex items-center gap-1">
@@ -346,7 +346,7 @@ function Settings({ cfg, setCfg, saveCfg, busy }) {
     <div className="space-y-4 max-w-4xl" data-testid="tac-settings">
       <Card className="bg-surface border-line p-4 grid gap-3 sm:grid-cols-3 items-end">
         <label className="flex items-center gap-2 text-sm text-slate-200"><Switch checked={cfg.enabled} onCheckedChange={v => setCfg({ ...cfg, enabled: v })} data-testid="tac-enabled" />Servidor TACACS+ ligado</label>
-        <div><label className={lbl}>IP do BastiON visto pelos equipamentos</label><Input value={cfg.server_ip} onChange={e => setCfg({ ...cfg, server_ip: e.target.value })} placeholder={cfg.server_ip_hint || "192.0.2.10"} className="bg-sunken border-line h-9 font-mono" data-testid="tac-server-ip" /></div>
+        <div><label className={lbl}>IP do BastiON visto pelos equipamentos</label><Input value={cfg.server_ip} onChange={e => setCfg({ ...cfg, server_ip: e.target.value })} placeholder={cfg.server_ip_hint || "x.x.x.x"} className="bg-sunken border-line h-9 font-mono" data-testid="tac-server-ip" /></div>
         <div><label className={lbl}>Porta TCP</label><Input type="number" value={cfg.port} onChange={e => setCfg({ ...cfg, port: e.target.value })} className="bg-sunken border-line h-9" /></div>
         <div><label className={lbl}>Senha no equipamento</label>
           <select value={cfg.password_source} onChange={e => setCfg({ ...cfg, password_source: e.target.value })} className={`${sel} w-full`} data-testid="tac-pwsrc">

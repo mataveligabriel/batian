@@ -128,7 +128,7 @@ function OpenDialog({ open, onOpenChange, devices, agents, isAdmin, preset, onOp
 
         <div>
           <Label>Endereço</Label>
-          <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="http://10.0.0.1/  ou  https://10.0.0.1:8443/"
+          <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="http://x.x.x.x/  ou  https://x.x.x.x:8443/"
             onKeyDown={e => e.key === "Enter" && submit()} data-testid="web-url"
             className="bg-sunken border-line font-mono mt-1" />
           {mode === "device" && dev && (
@@ -189,7 +189,7 @@ function SaveDialog({ item, onOpenChange, devices, agents, isAdmin, onSaved, onD
           </div>
           <div>
             <Label htmlFor="web-save-url">Endereço</Label>
-            <Input id="web-save-url" value={url} onChange={e => setUrl(e.target.value)} placeholder="http://10.0.0.1:8080/mapa"
+            <Input id="web-save-url" value={url} onChange={e => setUrl(e.target.value)} placeholder="http://x.x.x.x:8080/mapa"
               onKeyDown={e => e.key === "Enter" && save()} data-testid="web-save-url" className="bg-sunken border-line font-mono mt-1" />
             <div className="text-[11px] text-slate-500 mt-1">Se você navegou dentro da página (ex.: abriu um mapa), cole aqui o endereço exato para ela já abrir nele.</div>
           </div>

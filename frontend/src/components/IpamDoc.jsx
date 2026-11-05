@@ -17,7 +17,7 @@ function GroupForm({ g, onSave, onCancel }) {
   const [f, setF] = useState({ name: g?.name || "", description: g?.description || "", color: g?.color || COLORS[0] });
   return (
     <div className="space-y-2 p-3 rounded border border-line bg-sunken/50" data-testid="doc-group-form">
-      <Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="Nome (ex.: Rede Guaçuí)" className="bg-sunken border-line h-8" data-testid="doc-group-name" />
+      <Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="Nome (ex.: Rede Cidade X)" className="bg-sunken border-line h-8" data-testid="doc-group-name" />
       <Input value={f.description} onChange={e => setF({ ...f, description: e.target.value })} placeholder="descrição" className="bg-sunken border-line h-8 text-xs" />
       <div className="flex gap-1">{COLORS.map(c => <button key={c} onClick={() => setF({ ...f, color: c })} className={`w-5 h-5 rounded-full border-2 ${f.color === c ? "border-white" : "border-transparent"}`} style={{ background: c }} />)}</div>
       <div className="flex gap-1"><Button size="sm" onClick={() => onSave(f)} disabled={!f.name.trim()} className="h-7 bg-brand hover:bg-brand-strong text-onbrand" data-testid="doc-group-save"><Save className="w-3.5 h-3.5 mr-1" />Salvar</Button>
@@ -114,7 +114,7 @@ function SubnetForm({ value, onSave, onCancel }) {
   const set = (k, v) => setF({ ...f, [k]: v });
   return (
     <div className="grid gap-2 sm:grid-cols-[10rem_6rem_8rem_1fr] p-3 rounded border border-line bg-sunken/40" data-testid="doc-sub-form">
-      <Input value={f.prefix} onChange={e => set("prefix", e.target.value)} placeholder="10.20.0.0/24" className="bg-sunken border-line h-8 font-mono" data-testid="doc-sub-prefix" />
+      <Input value={f.prefix} onChange={e => set("prefix", e.target.value)} placeholder="x.x.x.x/x" className="bg-sunken border-line h-8 font-mono" data-testid="doc-sub-prefix" />
       <Input value={f.vlan ?? ""} onChange={e => set("vlan", e.target.value)} placeholder="VLAN" className="bg-sunken border-line h-8" />
       <Input value={f.vrf} onChange={e => set("vrf", e.target.value)} placeholder="VRF" className="bg-sunken border-line h-8 font-mono" />
       <Input value={f.description} onChange={e => set("description", e.target.value)} placeholder="descrição" className="bg-sunken border-line h-8" data-testid="doc-sub-desc" />

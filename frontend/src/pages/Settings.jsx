@@ -410,7 +410,7 @@ function DomainTab() {
       <Section icon={Globe} title="Domínios do BastiON" testid="dom-card"
                desc="O BastiON passa a abrir também nestes endereços, com HTTPS automático (Let's Encrypt). O endereço atual continua funcionando.">
         <div className="flex gap-2 max-w-xl">
-          <Input value={add} onChange={e => setAdd(e.target.value)} onKeyDown={e => e.key === "Enter" && addOne()} placeholder="ex.: bastion.net.br"
+          <Input value={add} onChange={e => setAdd(e.target.value)} onKeyDown={e => e.key === "Enter" && addOne()} placeholder="ex.: seudominio.com.br"
                  className="bg-sunken border-line font-mono h-9" data-testid="dom-add-input" />
           <Button onClick={addOne} disabled={busy || !add.trim()} className="bg-brand hover:bg-brand-strong text-onbrand shrink-0" data-testid="dom-add">
             <Plus className="w-4 h-4 mr-1" /> Adicionar
@@ -556,7 +556,7 @@ function IntegrationsTab() {
       </Section>
 
       <Section icon={Info} title="Genérico (scripts, Grafana, outros)" testid="inc-generic">
-        <CopyBox text={`curl -X POST ${base}/generic -H 'Content-Type: application/json' \\\n  -d '{"key":"bgp-borda-01","status":"problem","severity":"critical","title":"BGP NovatecNet down","host":"203.0.113.1","description":"sessão caiu"}'`} />
+        <CopyBox text={`curl -X POST ${base}/generic -H 'Content-Type: application/json' \\\n  -d '{"key":"bgp-borda-01","status":"problem","severity":"critical","title":"BGP Operadora X down","host":"x.x.x.x","description":"sessão caiu"}'`} />
         <p className="text-[11px] text-slate-500 mt-2">Mesma <span className="font-mono">key</span> com <span className="font-mono">"status":"ok"</span> resolve. Severidades: critical, high, medium, low, info.</p>
       </Section>
     </div>
