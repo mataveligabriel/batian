@@ -111,6 +111,7 @@ import netreport
 import asndb
 import flowagg
 import flowstore
+import flowraw
 import auth as auth_mod
 import snmp_service
 import monitor as monitoring
@@ -10136,6 +10137,9 @@ class FlowSettingsIn(BaseModel):
     own_asn: int = 0
     auto_discover: bool = False
     discover_min_mbps: float = 5
+    raw_enabled: bool = True
+    raw_days: float = 3
+    raw_max_gb: float = 30
 
 
 class FlowIfaceIn(BaseModel):
@@ -10291,7 +10295,9 @@ async def flow_put_settings(body: FlowSettingsIn, _: dict = Depends(require_admi
             "retention_days": max(1, min(body.retention_days, 60)), "hourly_days": max(7, min(body.hourly_days, 730)),
             "own_prefixes": own, "ignore_prefixes": ign, "sampling": samp, "attack": att, "asn_auto": body.asn_auto,
             "own_asn": body.own_asn if 0 <= body.own_asn < 2 ** 32 else 0, "auto_discover": body.auto_discover,
-            "discover_min_mbps": max(0.1, min(float(body.discover_min_mbps or 5), 100000))}
+            "discover_min_mbps": max(0.1, min(float(body.discover_min_mbps or 5), 100000)),
+            "raw_enabled": bool(body.raw_enabled), "raw_days": max(0.25, min(float(body.raw_days or 3), 30)),
+            "raw_max_gb": max(1.0, min(float(body.raw_max_gb or 30), 5000))}
     await db.config.update_one({"key": "flow"}, {"$set": {"key": "flow", **data}}, upsert=True)
     try:
         await flowstore.ensure_indexes(db, data)
@@ -10617,6 +10623,231 @@ async def flow_attack(aid: str, user: dict = Depends(get_current_user)):
     a["src_as"] = [[x, b, (asn.name(x) if asn and x else "")] for x, b in a.get("src_as") or []]
     a["src_ip"] = [[ip, b, p, x, (asn.name(x) if asn and x else "")] for ip, b, p, x in a.get("src_ip") or []]
     return a
+
+
+# ---------- Flow detalhado (consulta livre, consumo por IP, leitura de ataque) ----------
+class RawFilterIn(BaseModel):
+    dim: str
+    op: str = "in"
+    values: List[str] = []
+
+
+class RawQueryIn(BaseModel):
+    minutes: int = 60
+    start: Optional[str] = None          # ISO; com start e end o período é fixo (senão: últimos N minutos)
+    end: Optional[str] = None
+    interfaces: List[str] = []
+    direction: str = "in"
+    filters: List[RawFilterIn] = []
+    group_by: List[str] = []
+    unit: str = "bps"
+    top: int = 10
+    pfx4: int = 24
+    pfx6: int = 48
+
+
+class RawIpIn(BaseModel):
+    target: str
+    minutes: int = 360
+    start: Optional[str] = None
+    end: Optional[str] = None
+    interfaces: List[str] = []
+
+
+_raw_sem = asyncio.Semaphore(2)          # consultas pesadas em disco: no máximo 2 ao mesmo tempo
+_asn_cc_cache = {"ver": None, "map": {}}
+
+
+async def _asn_cc():
+    a = await _asn_db()
+    if not a:
+        return None, {}
+    if _asn_cc_cache["ver"] is not a:
+        _asn_cc_cache["ver"] = a
+        _asn_cc_cache["map"] = {asn: (cc or "") for asn, (_nm, cc) in a.names.items()}
+    return a, _asn_cc_cache["map"]
+
+
+def _raw_window(minutes: int, start: Optional[str], end: Optional[str]):
+    def ts(v):
+        try:
+            d = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            raise HTTPException(400, f"Data inválida: {v}")
+        return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
+    if start and end:
+        a, b = ts(start), ts(end)
+    else:
+        b = time.time() // 60 * 60
+        a = b - max(5, min(int(minutes or 60), flowraw.MAX_MINUTES)) * 60
+    if b <= a:
+        raise HTTPException(400, "O fim do período precisa ser depois do início")
+    return int(a), int(b)
+
+
+async def _raw_ifaces(user: dict, wanted: List[str], default_external: bool = False):
+    """Chaves das interfaces que o usuário pode consultar + rótulo de cada uma."""
+    mine = await _flow_ifaces_of(user)
+    if not mine:
+        raise HTTPException(400, "Nenhuma interface com Flow monitorada (aba Interfaces)")
+    names = {d["id"]: d.get("name") async for d in db.devices.find({"id": {"$in": list({i["device_id"] for i in mine})}}, {"_id": 0, "id": 1, "name": 1})}
+    labels = {}
+    for i in mine:
+        labels.setdefault(i["key"], f"{names.get(i['device_id'], i['exporter'])} · {i['if_name']}" + (f" ({i['label']})" if i.get("label") else ""))
+    if wanted:
+        sel = [i for i in mine if i["id"] in wanted or i["key"] in wanted]
+    elif default_external:
+        sel = [i for i in mine if i.get("role") in flowagg.EXTERNAL_ROLES] or mine
+    else:
+        sel = mine
+    if not sel:
+        raise HTTPException(400, "Escolha pelo menos uma interface monitorada")
+    return list(dict.fromkeys(i["key"] for i in sel)), labels
+
+
+async def _raw_run(start: int, end: int, keys: List[str], specs: List[dict]):
+    asn, cc = await _asn_cc()
+    async with _raw_sem:
+        try:
+            res = await asyncio.to_thread(flowraw.run, flowraw.base_dir(), start=start, end=end, ifaces=keys, specs=specs, asn_cc=cc)
+        except flowraw.QueryError as e:
+            raise HTTPException(400, str(e))
+    return res, asn
+
+
+def _raw_rows(r: dict, asn, labels: dict) -> List[dict]:
+    out = []
+    for i, row in enumerate(r["rows"]):
+        parts, name = flowraw.decode(r["group_by"], row["key"], r.get("pfx") or (24, 48), asn.name if asn else None,
+                                     r.get("gnames"), labels.get)
+        out.append({**{k: v for k, v in row.items() if k != "key"}, "id": f"r{i}", "name": name, "parts": parts})
+    return out
+
+
+async def _raw_status() -> dict:
+    st = await db.flow_live.find_one({"_id": "raw"}, {"_id": 0}) or {}
+    return {k: st.get(k) for k in ("at", "enabled", "files", "bytes", "oldest", "newest", "free", "last", "removed")}
+
+
+@api.get("/flow/raw/meta")
+async def flow_raw_meta(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    s = await flowstore.get_settings(db)
+    return {"dims": flowraw.DIMS, "filters": flowraw.FILTERS, "pkt_sizes": flowraw.PKT_LABEL, "max_minutes": flowraw.MAX_MINUTES,
+            "enabled": s.get("raw_enabled", True), "days": s.get("raw_days"), "max_gb": s.get("raw_max_gb"),
+            "status": await _raw_status()}
+
+
+@api.post("/flow/raw/query")
+async def flow_raw_query(body: RawQueryIn, user: dict = Depends(get_current_user)):
+    """Consulta livre no flow detalhado: filtros por qualquer dimensão e até 3 agrupamentos (estilo Kentik)."""
+    _no_viewer(user)
+    start, end = _raw_window(body.minutes, body.start, body.end)
+    keys, labels = await _raw_ifaces(user, body.interfaces)
+    spec = {"id": "q", "direction": body.direction, "group_by": body.group_by, "unit": body.unit, "top": body.top,
+            "pfx4": body.pfx4, "pfx6": body.pfx6, "filters": [f.model_dump() for f in body.filters]}
+    res, asn = await _raw_run(start, end, keys, [spec])
+    r = res["results"][0]
+    unit = r["unit"]
+    rows = _raw_rows(r, asn, labels)
+    series = [{"id": x["id"], "name": x["name"], "values": x["values"]} for x in rows]
+    if r["other"]:
+        series.append({"id": "__other", "name": f"Outros ({r['other']['groups']})", "values": r["other"]["values"], "other": True})
+    if not r["group_by"]:
+        tot = r["total"]["pps" if unit == "pps" else "bps"]
+        series = [{"id": "total", "name": "Total", "values": tot}]
+    return {"ts": res["ts"], "step": res["step"], "files": res["files"], "minutes": res["minutes"], "coarse": res["coarse"],
+            "start": res["start"], "end": res["end"], "unit": unit, "group_by": r["group_by"], "series": series,
+            "table": rows, "other": r["other"] and {k: v for k, v in r["other"].items() if k != "values"},
+            "total": {"bytes": r["total"]["bytes"], "pkts": r["total"]["pkts"],
+                      "max_bps": max(r["total"]["bps"] or [0]), "max_pps": max(r["total"]["pps"] or [0]),
+                      "avg_bps": r["total"]["bytes"] * 8 / max(1, res["end"] - res["start"]),
+                      "avg_pps": r["total"]["pkts"] / max(1, res["end"] - res["start"])}}
+
+
+def _raw_summary(tot: dict, span: int) -> dict:
+    return {"bytes": tot["bytes"], "pkts": tot["pkts"], "avg_bps": tot["bytes"] * 8 / max(1, span), "avg_pps": tot["pkts"] / max(1, span),
+            "max_bps": max(tot["bps"] or [0]), "max_pps": max(tot["pps"] or [0]), "bps": tot["bps"], "pps": tot["pps"],
+            "pkt_size": tot["bytes"] / tot["pkts"] if tot["pkts"] else 0}
+
+
+@api.post("/flow/raw/ip")
+async def flow_raw_ip(body: RawIpIn, user: dict = Depends(get_current_user)):
+    """Consumo de um IP ou bloco: download/upload no tempo e com quem ele fala (AS, blocos, IPs, portas)."""
+    _no_viewer(user)
+    import ipaddress as _ipa
+    try:
+        net = _ipa.ip_network(body.target.strip(), strict=False)
+    except ValueError:
+        raise HTTPException(400, f"IP ou bloco inválido: {body.target}")
+    target = str(net.network_address) if net.prefixlen == net.max_prefixlen else str(net)
+    is_block = net.prefixlen < net.max_prefixlen
+    start, end = _raw_window(body.minutes, body.start, body.end)
+    keys, labels = await _raw_ifaces(user, body.interfaces, default_external=True)
+    down = [{"dim": "dst_ip", "values": [target]}]
+    up = [{"dim": "src_ip", "values": [target]}]
+    specs = [{"id": "down", "direction": "in", "filters": down}, {"id": "up", "direction": "out", "filters": up},
+             {"id": "down_as", "direction": "in", "filters": down, "group_by": ["src_as"], "top": 10},
+             {"id": "down_pfx", "direction": "in", "filters": down, "group_by": ["src_pfx"], "top": 10},
+             {"id": "down_ip", "direction": "in", "filters": down, "group_by": ["src_ip"], "top": 10},
+             {"id": "down_port", "direction": "in", "filters": down, "group_by": ["proto", "sport"], "top": 10},
+             {"id": "up_as", "direction": "out", "filters": up, "group_by": ["dst_as"], "top": 10},
+             {"id": "up_pfx", "direction": "out", "filters": up, "group_by": ["dst_pfx"], "top": 10},
+             {"id": "up_ip", "direction": "out", "filters": up, "group_by": ["dst_ip"], "top": 10},
+             {"id": "up_port", "direction": "out", "filters": up, "group_by": ["proto", "dport"], "top": 10},
+             {"id": "down_iface", "direction": "in", "filters": down, "group_by": ["iface"], "top": 10}]
+    if is_block:
+        specs += [{"id": "local_down", "direction": "in", "filters": down, "group_by": ["dst_ip"], "top": 15},
+                  {"id": "local_up", "direction": "out", "filters": up, "group_by": ["src_ip"], "top": 15}]
+    res, asn = await _raw_run(start, end, keys, specs)
+    span = res["end"] - res["start"]
+    by = {r["id"]: r for r in res["results"]}
+    return {"target": target, "is_block": is_block, "ts": res["ts"], "step": res["step"], "files": res["files"],
+            "minutes": res["minutes"], "coarse": res["coarse"], "interfaces": [labels.get(k, k) for k in keys],
+            "down": _raw_summary(by["down"]["total"], span), "up": _raw_summary(by["up"]["total"], span),
+            "tables": {k: _raw_rows(v, asn, labels) for k, v in by.items() if k not in ("down", "up")}}
+
+
+@api.get("/flow/raw/attack/{aid}")
+async def flow_raw_attack(aid: str, user: dict = Depends(get_current_user)):
+    """Leitura do ataque no flow detalhado: de quais blocos, ASNs e países vem, portas, tamanho de pacote e sugestão de filtro."""
+    _no_viewer(user)
+    q = {"id": aid} if user.get("role") == "admin" else {"id": aid, "owners": user["id"]}
+    a = await db.flow_attacks.find_one(q, {"_id": 0, "series": 0, "src_ip": 0})
+    if not a:
+        raise HTTPException(404, "Ataque não encontrado")
+    t0 = datetime.fromisoformat(a["start"]).timestamp() - 60
+    t1 = datetime.fromisoformat(a["end"]).timestamp() + 60 if a.get("end") else time.time()
+    t0 = max(t0, t1 - 6 * 3600)              # ataque longo: as últimas 6 h
+    mine = await _flow_ifaces_of(user)
+    keys = list(a.get("ifaces") or [])
+    if user.get("role") != "admin":
+        allowed = {i["key"] for i in mine}
+        keys = [k for k in keys if k in allowed]
+    if not keys:
+        raise HTTPException(400, "As interfaces deste ataque não estão mais monitoradas")
+    labels = {**(a.get("if_labels") or {})}
+    victim = a["victim"]
+    flt = [{"dim": "dst_ip", "values": [victim]}]
+    dims = [("src_pfx", 15), ("src_as", 10), ("src_cc", 10), ("src_ip", 20), ("proto", 5), ("sport", 8), ("dport", 8),
+            ("pktsize", 7), ("tcpflags", 6), ("iface", 8)]
+    specs = [{"id": "total", "direction": "in", "filters": flt}] + \
+            [{"id": d, "direction": "in", "filters": flt, "group_by": [d], "top": n, "unit": "pps" if d in ("tcpflags", "pktsize") else "bps"} for d, n in dims]
+    res, asn = await _raw_run(int(t0), int(t1), keys, specs)
+    by = {r["id"]: r for r in res["results"]}
+    tables = {k: _raw_rows(v, asn, labels) for k, v in by.items() if k != "total"}
+    tot = by["total"]["total"]
+    sig = None
+    if tot["bytes"]:
+        sh = lambda k: [(int(r["parts"][0]["value"]) if r["parts"][0]["value"].isdigit() else r["parts"][0]["value"], r["share"]) for r in tables[k]]  # noqa: E731
+        flags = [(r["parts"][0]["value"], r["share"]) for r in tables["tcpflags"]]
+        n_pfx = len(tables["src_pfx"]) + ((by["src_pfx"]["other"] or {}).get("groups") or 0)
+        sig = flowraw.signature(victim, sh("proto"), sh("sport"), sh("dport"), tot["bytes"] / max(1, tot["pkts"]), flags,
+                                [(r["name"], r["share"]) for r in tables["src_pfx"]], n_pfx)
+    others = {k: ({"groups": v["other"]["groups"], "share": v["other"]["share"]} if v["other"] else None) for k, v in by.items() if k != "total"}
+    return {"victim": victim, "type": a.get("type"), "status": a.get("status"), "ts": res["ts"], "step": res["step"],
+            "files": res["files"], "coarse": res["coarse"], "start": res["start"], "end": res["end"],
+            "total": _raw_summary(tot, res["end"] - res["start"]), "tables": tables, "others": others, "signature": sig}
 
 
 # ---------- Mitigação de DDoS (blackhole via BGP do BastiON) ----------

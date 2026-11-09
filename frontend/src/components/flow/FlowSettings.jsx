@@ -193,6 +193,7 @@ export function FlowSettings({ settings, reload }) {
     own_prefixes: f.own_txt.split(/[\s,;]+/).filter(Boolean), ignore_prefixes: f.ign_txt.split(/[\s,;]+/).filter(Boolean),
     sampling: f.sampling || {}, asn_auto: !!f.asn_auto,
     own_asn: Number(String(f.own_asn || 0).replace(/^AS/i, "")) || 0, auto_discover: !!f.auto_discover, discover_min_mbps: Number(f.discover_min_mbps) || 5,
+    raw_enabled: f.raw_enabled !== false, raw_days: Number(f.raw_days) || 3, raw_max_gb: Number(f.raw_max_gb) || 30,
     attack: { enabled: !!f.att.enabled, pps: Number(f.att.pps), bps: Math.round(Number(f.att.bps_g) * 1e9), amp_bps: Math.round(Number(f.att.amp_m) * 1e6),
               syn_pps: Number(f.att.syn_pps), min_windows: Number(f.att.min_windows), end_windows: Number(f.att.end_windows), avg_windows: Number(f.att.avg_windows) },
     ...over,
@@ -265,6 +266,7 @@ export function FlowSettings({ settings, reload }) {
             </div>
             <label className="flex items-center gap-2 text-xs text-slate-300"><Switch checked={!!f.auto_discover} onCheckedChange={v => setF({ ...f, auto_discover: v })} disabled={ro} data-testid="auto-discover" /> descoberta automática: a cada 6 h adiciona interfaces novas com flow (quando a descrição indica o papel) e avisa</label>
           </div>
+          <RawPanel f={f} setF={setF} ro={ro} num={num} />
           <AsnBase s={s} reload={reload} />
         </div>
       </div>
@@ -284,6 +286,33 @@ export function FlowSettings({ settings, reload }) {
           timeout ativo de 60 s, e libere o UDP no servidor só para os roteadores: <code className="text-slate-300">ufw allow from IP_DO_ROTEADOR to any port {s.netflow_port} proto udp</code>.
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Flow detalhado: liga/desliga, retenção e o que já está gravado em disco. */
+function RawPanel({ f, setF, ro, num }) {
+  const [st, setSt] = useState(null);
+  useEffect(() => { api.get("/flow/raw/meta").then(r => setSt(r.data.status)).catch(() => {}); }, []);
+  const gb = (b) => (b ? `${(b / 1e9).toFixed(b >= 1e10 ? 0 : 1)} GB` : "0 GB");
+  const when = (t) => (t ? new Date(t * 1000).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
+  return (
+    <div className="border border-line rounded p-3 space-y-3" data-testid="raw-settings">
+      <div className="flex items-center gap-2 text-sm text-slate-100">Flow detalhado (Consulta e Consultar IP)
+        <label className="ml-auto flex items-center gap-2 text-xs text-slate-300">gravar <Switch checked={f.raw_enabled !== false} onCheckedChange={v => setF({ ...f, raw_enabled: v })} disabled={ro} data-testid="raw-enabled" /></label>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {num("Dias guardados", f.raw_days ?? 3, v => setF({ ...f, raw_days: v }), "0,25 a 30", "raw-days")}
+        {num("Espaço máximo (GB)", f.raw_max_gb ?? 30, v => setF({ ...f, raw_max_gb: v }), "apaga os minutos mais antigos ao passar", "raw-gb")}
+      </div>
+      <div className="text-[11px] text-slate-400 font-mono" data-testid="raw-usage">
+        {st && st.files ? <>em disco: {gb(st.bytes)} · {st.files.toLocaleString("pt-BR")} minutos · de {when(st.oldest)} até {when(st.newest)}
+          {st.free != null && <> · livre no servidor: {gb(st.free)}</>}
+          {st.last?.rows ? <> · último minuto: {st.last.rows.toLocaleString("pt-BR")} linhas</> : null}</>
+          : "nada gravado ainda (o coletor grava um arquivo por minuto depois da atualização)"}
+      </div>
+      <div className="text-[10px] text-slate-500">Cada minuto guarda IP, porta, AS e interface de todos os flows das interfaces monitoradas — é o que permite achar
+        o consumo de qualquer IP e as origens de um ataque. Ocupa disco proporcional ao número de flows: acompanhe o tamanho acima e ajuste os dias.</div>
     </div>
   );
 }

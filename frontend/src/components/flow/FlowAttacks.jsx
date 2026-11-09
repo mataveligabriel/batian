@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
 import { MitigateDialog } from "@/components/flow/FlowMitigation";
 import { StackedChart } from "@/components/flow/StackedChart";
+import { AttackAnalysis } from "@/components/flow/FlowAttackAnalysis";
 import { STATUS } from "@/lib/netfmt";
 import { ago, fmtDur, fmtRate, SERIES } from "@/components/flow/flowlib";
 
@@ -65,7 +66,7 @@ function SourceIps({ a }) {
   );
 }
 
-function AttackDetail({ a: base }) {
+function AttackDetail({ a: base, onOpenQuery }) {
   const [a, setA] = useState(base);
   useEffect(() => {
     let alive = true;
@@ -98,6 +99,7 @@ function AttackDetail({ a: base }) {
         </div>
       </div>
       <SourceIps a={a} />
+      <AttackAnalysis attack={a} onOpenQuery={onOpenQuery} />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div>
           <div className="text-[10px] text-slate-500 mb-1">Bits/s para {a.victim} (média de 30 s)</div>
@@ -113,7 +115,7 @@ function AttackDetail({ a: base }) {
 }
 
 /** Aba Ataques: em andamento (vermelho, com ícone e rótulo) e histórico. */
-export function FlowAttacks({ settings, onCount }) {
+export function FlowAttacks({ settings, onCount, onOpenQuery }) {
   const [items, setItems] = useState(null);
   const [err, setErr] = useState("");
   const [open, setOpen] = useState(null);
@@ -159,7 +161,7 @@ export function FlowAttacks({ settings, onCount }) {
               : <button onClick={() => setMit(a)} data-testid="attack-mitigate" className="mx-3 my-2 px-3 py-1.5 rounded text-xs font-medium text-onbrand flex items-center gap-1.5 hover:opacity-90" style={{ background: STATUS.critical }}>
                   <ShieldBan className="w-4 h-4" /> Mitigar</button>}
             </div>
-            {open === a.id && <AttackDetail a={a} />}
+            {open === a.id && <AttackDetail a={a} onOpenQuery={onOpenQuery} />}
           </div>
         ))}
       </div>
@@ -182,7 +184,7 @@ export function FlowAttacks({ settings, onCount }) {
                   <span className="text-slate-200">{fmtRate(a.peak_bps)} · {fmtRate(a.peak_pps, "pps")}</span>
                   <span className="text-slate-400">{fmtDur(dur)}</span>
                 </button>
-                {open === a.id && <AttackDetail a={a} />}
+                {open === a.id && <AttackDetail a={a} onOpenQuery={onOpenQuery} />}
               </div>
             );
           })}

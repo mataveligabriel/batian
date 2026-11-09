@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
-import { Compass, Layers, ShieldAlert, Cable, Settings2, ShieldBan, Handshake, Bug, Share2 } from "lucide-react";
+import { Compass, Layers, ShieldAlert, Cable, Settings2, ShieldBan, Handshake, Bug, Share2, SlidersHorizontal, Crosshair } from "lucide-react";
 import { FlowShareDialog } from "@/components/flow/FlowShare";
 import { useAuth } from "@/context/AuthContext";
 import { FlowExplorer } from "@/components/flow/FlowExplorer";
+import { FlowQuery } from "@/components/flow/FlowQuery";
+import { FlowIp } from "@/components/flow/FlowIp";
 import { FlowContents } from "@/components/flow/FlowContents";
 import { FlowAttacks } from "@/components/flow/FlowAttacks";
 import { FlowInterfaces } from "@/components/flow/FlowInterfaces";
@@ -16,7 +18,7 @@ import { STATUS } from "@/lib/netfmt";
 import { fixedColors } from "@/components/flow/flowlib";
 
 const tabBtn = (on) => `flex items-center gap-2 px-4 py-2 text-sm -mb-px border-b-2 ${on ? "border-brand text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"}`;
-const TABS = [["explorar", "Explorar", Compass], ["conteudos", "Conteúdos", Layers], ["ataques", "Ataques", ShieldAlert],
+const TABS = [["explorar", "Explorar", Compass], ["consulta", "Consulta detalhada", SlidersHorizontal], ["ip", "Consultar IP", Crosshair], ["conteudos", "Conteúdos", Layers], ["ataques", "Ataques", ShieldAlert],
               ["mitigacao", "Mitigação", ShieldBan], ["botnet", "Botnet (BNG)", Bug], ["peering", "Peering", Handshake],
               ["interfaces", "Interfaces", Cable], ["config", "Configuração", Settings2]];
 
@@ -30,6 +32,10 @@ export default function Flow() {
   const [active, setActive] = useState(0);
   const [bots, setBots] = useState(0);
   const [share, setShare] = useState(false);
+  const [qPreset, setQPreset] = useState(null);     // consulta montada em outra aba (IP, ataque)
+  const [ipTarget, setIpTarget] = useState(null);
+  const openQuery = useCallback((p) => { setQPreset({ ...p, _t: Date.now() }); setTab("consulta"); }, []);
+  const openIp = useCallback((ip) => { setIpTarget({ target: ip, _t: Date.now() }); setTab("ip"); }, []);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [err, setErr] = useState("");
@@ -77,8 +83,10 @@ export default function Flow() {
       <div className="flex-1 min-h-0 overflow-y-auto p-4 md:px-6 md:pb-6">
         {err && <div className="text-sm text-amber-300 mb-3">{err}</div>}
         {tab === "explorar" && <FlowExplorer ifaces={ifaces} groups={groups} ifColors={ifColors} groupColors={groupColors} />}
+        {tab === "consulta" && <FlowQuery ifaces={ifaces} preset={qPreset} onOpenIp={openIp} />}
+        {tab === "ip" && <FlowIp ifaces={ifaces} target={ipTarget} onOpenQuery={openQuery} />}
         {tab === "conteudos" && <FlowContents ifaces={ifaces} groups={groups} presets={settings?.presets || []} reload={loadGroups} ifColors={ifColors} groupColors={groupColors} />}
-        {tab === "ataques" && <FlowAttacks settings={settings} onCount={setActive} />}
+        {tab === "ataques" && <FlowAttacks settings={settings} onCount={setActive} onOpenQuery={openQuery} />}
         {tab === "mitigacao" && <FlowMitigation />}
         {tab === "botnet" && <FlowBotnet onCount={setBots} />}
         {tab === "peering" && <FlowPeering goConfig={() => setTab("config")} goIfaces={() => setTab("interfaces")} />}

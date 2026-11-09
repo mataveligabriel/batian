@@ -8,6 +8,7 @@ import asyncio
 import logging
 import math
 import os
+import shutil
 import socket
 import time
 import uuid
@@ -23,6 +24,7 @@ import asndb  # noqa: E402
 import botnet  # noqa: E402
 import flowagg  # noqa: E402
 import flowproto  # noqa: E402
+import flowraw  # noqa: E402
 import flowstore  # noqa: E402
 import threatintel  # noqa: E402
 import certbr  # noqa: E402
@@ -92,6 +94,8 @@ class Collector:
         self._ret = None
         self._tpl_sig = None
         self._bg = set()
+        self.raw_dir = flowraw.base_dir()
+        self.raw_last: dict = {}
 
     # ---------- recepção ----------
     def on_datagram(self, data: bytes, addr, sflow: bool):
@@ -208,6 +212,13 @@ class Collector:
         if csig != self.cert_sig:
             self.cert.configure(ccfg["enabled"], cfg.get("own_prefixes") or [], ccfg["ignore"])
             self.cert_sig = csig
+        if cfg.get("raw_enabled", True):
+            if self.agg.raw is None:
+                self.agg.raw = flowraw.Buffer()
+                log.info(f"flow detalhado ligado: {self.raw_dir}")
+        elif self.agg.raw is not None:
+            self.agg.raw = None
+            log.info("flow detalhado desligado")
         ret = (cfg.get("retention_days"), cfg.get("hourly_days"))
         if ret != self._ret:
             await flowstore.ensure_indexes(db, cfg)
@@ -260,6 +271,30 @@ class Collector:
             for d in docs:
                 d["ts"] = ts
             await self.db.flow_1m.insert_many(docs, ordered=False)
+        raw = self.agg.raw
+        if raw is not None:
+            rows, coarse = len(raw), raw.coarse
+            cols = raw.swap()                  # empacota e grava numa thread: o laço continua recebendo UDP
+            if cols is not None:
+                self._spawn(self._safe("detalhado", self.write_raw(int(now) - 60, cols, rows, coarse)))
+
+    async def write_raw(self, minute_ts: int, cols: tuple, rows: int, coarse: int):
+        t = time.time()
+        path = await asyncio.to_thread(flowraw.write, self.raw_dir, minute_ts // 60 * 60, cols)
+        self.raw_last = {"at": _iso(time.time()), "minute": _iso(minute_ts), "rows": rows, "coarse": coarse,
+                         "size": path.stat().st_size, "secs": round(time.time() - t, 2)}
+
+    async def tick_raw_cleanup(self):
+        cfg = self.cfg
+        removed = await asyncio.to_thread(flowraw.cleanup, self.raw_dir, float(cfg.get("raw_days") or 3), float(cfg.get("raw_max_gb") or 30))
+        usage = await asyncio.to_thread(flowraw.disk_usage, self.raw_dir)
+        try:
+            free = shutil.disk_usage(self.raw_dir if self.raw_dir.exists() else self.raw_dir.parent).free
+        except OSError:
+            free = None
+        await self.db.flow_live.replace_one({"_id": "raw"}, {"_id": "raw", "at": _iso(time.time()), "dir": str(self.raw_dir),
+                                                             "enabled": self.agg.raw is not None, "removed": removed,
+                                                             "free": free, "last": self.raw_last, **usage}, upsert=True)
 
     # ---------- threat intel ----------
     async def reload_ti(self, cfg: dict):
@@ -476,6 +511,7 @@ class Collector:
         await self._safe("config", self.reload())
         if self.ports is None:
             await self.bind((int(self.cfg["netflow_port"]), int(self.cfg["sflow_port"])))
+        self._spawn(self._safe("limpeza do detalhado", self.tick_raw_cleanup()))
         nxt = math.ceil(time.time() / 10) * 10
         while True:
             await asyncio.sleep(max(0.0, nxt - time.time()))
@@ -496,6 +532,8 @@ class Collector:
                 await self._safe("status", self.write_exporters(30))
                 await self._safe("templates", self.save_templates())
                 await self._safe("config", self.reload())
+            if t % 600 == 30:
+                self._spawn(self._safe("limpeza do detalhado", self.tick_raw_cleanup()))
             if t % 3600 == 120:
                 self._spawn(self._safe("1h", self.tick_hour(now)))
 

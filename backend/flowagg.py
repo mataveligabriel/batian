@@ -182,6 +182,7 @@ class Aggregator:
         self.bidir: Dict[str, int] = {}                    # exportador -> tick em que mandou flow de saída
         self.tick = 0
         self.stats = {"flows": 0, "unmonitored": 0}
+        self.raw = None                                    # flowraw.Buffer quando o flow detalhado está ligado
 
     # ---------- configuração ----------
     def configure(self, monitored: Dict[Tuple[str, int], str], roles: Dict[str, str], groups: List[dict],
@@ -247,6 +248,9 @@ class Aggregator:
             return
         ver, src, dst, pr = f[F_VER], f[F_SRC], f[F_DST], f[F_PROTO]
         sas, das = self._as(ver, src, f[F_SAS]), self._as(ver, dst, f[F_DAS])
+        raw = self.raw
+        if raw is not None:
+            raw.add(ver, src, dst, pr, svc_port(f[F_SPORT]), svc_port(f[F_DPORT]), f[F_FLAGS], k_in, k_out, sas, das, b, p)
         gids = ()
         if self.groups or self.group_asn:
             gids = set(self.groups.match(ver, src))

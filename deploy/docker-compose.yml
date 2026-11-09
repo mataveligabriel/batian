@@ -31,6 +31,9 @@ services:
     restart: unless-stopped
     network_mode: host
     env_file: .env
+    # flow detalhado: um arquivo por minuto em /data/flowraw (o backend lê da mesma pasta para as consultas)
+    volumes:
+      - bastion_data:/data
     depends_on:
       mongo:
         condition: service_healthy

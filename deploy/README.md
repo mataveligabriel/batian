@@ -1495,3 +1495,25 @@ O BastiON faz o papel de um "Veeam" simples entre os hypervisors cadastrados (pr
 
 - **Proxmox → ESXi** (cópia, migração ou restaurar backup vzdump): um nó Proxmox desempacota a VM (`vzdump … --stdout | vma extract`, ou o arquivo do backup com `zstd -dc`) na pasta temporária — precisa do espaço usado pelos discos; os discos vão para o ESXi pulando as partes zeradas (chegam thin, criados com `vmkfstools -c`) e o `.vmx` sai com CPU, memória, BIOS/UEFI e as placas de rede do `qemu-server.conf` (disco SATA e placa e1000e por padrão, ou PVSCSI/vmxnet3; *port group* escolhido). Na restauração de backup, escolha o Proxmox que desempacota. Container LXC não vira VM do VMware.
 - **ESXi 7+ e VM ligada**: o ESXi não deixa abrir o disco da VM ligada por fora do `vmkfstools`, nem o disco base sob o snapshot. Quando isso acontece o incremental cai para o completo (por `vmkfstools`; com destino NFS vai direto para o NAS numa passada) e o BastiON lembra por 7 dias para não tentar de novo. Para ter incremental nessas VMs, ligue na rotina **Desligar a VM durante o backup**: a VM é desligada pelo sistema, copiada (só os blocos alterados) e religada no fim — mesmo se der erro.
+
+## 73. Análise de Flow — Consulta detalhada, Consultar IP e leitura de ataque
+O coletor passa a gravar o **flow detalhado**: um arquivo por minuto em `/data/flowraw` (volume `bastion_data`, agora
+montado também no container `flow`) com IP de origem/destino, protocolo, portas de serviço, AS, interfaces e flags
+TCP de tudo que passa nas interfaces monitoradas, já multiplicado pela amostragem. Com isso:
+
+- **Consulta detalhada** (estilo Kentik): filtros por qualquer campo (IP ou bloco, AS, país, protocolo, porta ou faixa
+  `1000-2000`, tamanho de pacote, flags TCP), com "é / não é", e até 3 agrupamentos cruzados (ex.: AS de origem ×
+  IP de destino). Clique num valor da tabela para filtrar por ele; o ícone ⊘ exclui. Atalhos: quem mais baixa, quem
+  mais envia, blocos e países de origem, pacotes por IP, tamanho de pacote. "Copiar tabela" cola direto no Excel.
+- **Consultar IP**: digite um IP (ou um bloco `x.x.x.x/x`) e veja download/upload no tempo, de quais AS, blocos e IPs
+  vem o tráfego, as portas e por qual interface entra. Bloco mostra também os IPs dele que mais consomem. Sem escolher
+  interfaces, usa as de trânsito, PNI, IX e CDN (não conta duas vezes o mesmo tráfego).
+- **Ataques → Analisar origens**: blocos /24, ASNs, países e IPs de origem, portas, tamanho de pacote, flags TCP e
+  interface de entrada, com a assinatura (amplificação NTP, SYN flood…) e sugestões de filtro/Flowspec prontas para
+  copiar ("copiar resumo" e "copiar blocos").
+
+Retenção em **Análise de Flow → Configuração → Flow detalhado**: dias guardados (padrão 3) e espaço máximo (padrão
+30 GB) — o que bater primeiro apaga os minutos mais antigos. O painel mostra quanto já ocupa e o espaço livre. Para
+ver o tamanho no servidor: `docker compose exec flow du -sh /data/flowraw`. Consultas de até 72 h; períodos longos
+sem filtro demoram mais — filtre por IP, bloco ou AS. Ataques anteriores à atualização não têm flow detalhado.
+Porta efêmera (alta, de cliente) aparece como 0 para manter o volume de dados pequeno.

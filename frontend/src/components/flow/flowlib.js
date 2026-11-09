@@ -117,3 +117,36 @@ export function fixedColors(ids) {
   if (!ids.length || ids.length > MAX_SERIES) return null;
   return Object.fromEntries(ids.map((id, i) => [id, SERIES[i]]));
 }
+
+// ---------- Flow detalhado (Consulta / Consultar IP / análise de ataque) ----------
+export const RAW_RANGES = [[15, "15 min"], [60, "1h"], [180, "3h"], [360, "6h"], [720, "12h"], [1440, "24h"], [2880, "48h"], [4320, "72h"]];
+export const RAW_DIMS = [
+  ["dst_ip", "IP de destino"], ["src_ip", "IP de origem"], ["dst_pfx", "Bloco de destino"], ["src_pfx", "Bloco de origem"],
+  ["src_as", "AS de origem"], ["dst_as", "AS de destino"], ["src_cc", "País de origem"], ["dst_cc", "País de destino"],
+  ["proto", "Protocolo"], ["sport", "Porta de origem"], ["dport", "Porta de destino"], ["iface", "Interface"],
+  ["pktsize", "Tamanho do pacote"], ["tcpflags", "Flags TCP"],
+];
+export const RAW_DIM_LABEL = Object.fromEntries(RAW_DIMS);
+export const RAW_FILTERS = [
+  ["ip", "IP ou bloco (origem ou destino)"], ["dst_ip", "IP / bloco de destino"], ["src_ip", "IP / bloco de origem"],
+  ["as", "AS (origem ou destino)"], ["src_as", "AS de origem"], ["dst_as", "AS de destino"],
+  ["cc", "País (origem ou destino)"], ["src_cc", "País de origem"], ["dst_cc", "País de destino"],
+  ["proto", "Protocolo"], ["port", "Porta (origem ou destino)"], ["sport", "Porta de origem"], ["dport", "Porta de destino"],
+  ["pktsize", "Tamanho do pacote"], ["tcpflags", "Flags TCP"],
+];
+export const RAW_FILTER_LABEL = { ...Object.fromEntries(RAW_FILTERS), iface: "Interface" };
+export const RAW_PLACEHOLDER = {
+  ip: "x.x.x.x ou x.x.x.x/x", dst_ip: "x.x.x.x ou x.x.x.x/x", src_ip: "x.x.x.x/x, xxxx:xxxx::/xx",
+  as: "ex.: 15169", src_as: "ex.: 15169, 32934", dst_as: "ex.: 64500", cc: "BR, US, CN", src_cc: "CN, RU", dst_cc: "BR",
+  proto: "UDP, TCP, ICMP, 47", port: "443 ou 1000-2000", sport: "123, 53, 1900", dport: "443, 80",
+  pktsize: "0 a 6 (0 = até 64 B)", tcpflags: "SYN, ACK, RST",
+};
+// ao clicar numa linha agrupada, a dimensão de agrupamento vira este filtro
+export const DIM_TO_FILTER = { dst_ip: "dst_ip", src_ip: "src_ip", dst_pfx: "dst_ip", src_pfx: "src_ip", src_as: "src_as", dst_as: "dst_as",
+  src_cc: "src_cc", dst_cc: "dst_cc", proto: "proto", sport: "sport", dport: "dport", iface: "iface", pktsize: "pktsize", tcpflags: "tcpflags" };
+export const IP_DIMS = ["dst_ip", "src_ip", "dst_pfx", "src_pfx"];
+
+/** Período curto em texto: "15 min", "3 h". */
+export const fmtMinutes = (m) => (m < 60 ? `${m} min` : m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`);
+export const fmtBytes = (b) => fmtVolume(b, "bytes");
+export const pct = (x) => `${(x * 100).toFixed(x < 0.1 ? 1 : 0)}%`;
