@@ -13,6 +13,16 @@ import { toast } from "sonner";
 import { Play, Loader2, Plus, Trash2, Pencil, Star, Search, ChevronDown, ChevronRight, Copy, Download, Square } from "lucide-react";
 import { useLocation } from "react-router-dom";
 
+const VENDOR_LABEL = { huawei: "Huawei", juniper: "Juniper", datacom: "Datacom", cisco: "Cisco", zte: "ZTE", fiberhome: "FiberHome",
+  mikrotik: "MikroTik", nokia: "Nokia", linux: "Linux", windows: "Windows", other: "Outro" };
+const vendorOf = (d) => (d.device_type || "other").toLowerCase();
+const vendorName = (v) => VENDOR_LABEL[v] || (v ? v[0].toUpperCase() + v.slice(1) : "Outro");
+const vendorCount = (list) => {
+  const c = {};
+  for (const d of list) c[vendorOf(d)] = (c[vendorOf(d)] || 0) + 1;
+  return Object.entries(c).sort((a, b) => b[1] - a[1] || vendorName(a[0]).localeCompare(vendorName(b[0])));
+};
+
 export default function Batch() {
   const [devices, setDevices] = useState([]);
   const [scripts, setScripts] = useState([]);
@@ -84,6 +94,7 @@ export default function Batch() {
 
   // organização por tag (pastas): filtro, busca e grupos que abrem/fecham e marcam todos de uma vez
   const [tag, setTag] = useState("");                    // "" = todas | tag | "__none__" = sem tag
+  const [vendor, setVendor] = useState("");              // "" = todos os fabricantes
   const [q, setQ] = useState("");
   const [closed, setClosed] = useState(() => new Set());     // aqui guarda os grupos ABERTOS (começam fechados)
   const { allTags, countByTag } = useMemo(() => {
@@ -99,9 +110,20 @@ export default function Batch() {
     return devices.filter(d => {
       const tg = d.tags || [];
       if (tag === "__none__" ? tg.length : tag && !tg.includes(tag)) return false;
-      return !t || d.name.toLowerCase().includes(t) || (d.host || "").includes(t) || tg.some(x => x.toLowerCase().includes(t));
+      if (vendor && vendorOf(d) !== vendor) return false;
+      return !t || d.name.toLowerCase().includes(t) || (d.host || "").includes(t) || tg.some(x => x.toLowerCase().includes(t))
+        || vendorName(vendorOf(d)).toLowerCase().includes(t);
     }).sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { numeric: true, sensitivity: "base" }));
-  }, [devices, tag, q]);
+  }, [devices, tag, q, vendor]);
+  // fabricantes dentro da tag escolhida (contagem para os botões)
+  const vendorsInTag = useMemo(() => vendorCount(devices.filter(d => {
+    const tg = d.tags || [];
+    return tag === "__none__" ? !tg.length : !tag || tg.includes(tag);
+  })), [devices, tag]);
+  const selVendors = useMemo(() => {
+    const ids = new Set(selected);
+    return vendorCount(devices.filter(d => ids.has(d.id)));
+  }, [devices, selected]);
   const groups = useMemo(() => {
     if (tag) return [[tag, shown]];
     const m = new Map();
@@ -212,7 +234,7 @@ export default function Batch() {
             <div className="flex items-center gap-3">
               {selected.length > 0 && <button onClick={() => setSelected([])} data-testid="clear-selection" className="text-xs text-slate-400 hover:text-slate-100">limpar</button>}
               <button onClick={toggleAll} data-testid="toggle-all-devices" className="text-xs text-brand-soft hover:underline">
-                {allShownOn ? "desmarcar" : "marcar"} {tag || q ? `os ${shownIds.length} listados` : "todos"}
+                {allShownOn ? "desmarcar" : "marcar"} {tag || q || vendor ? `os ${shownIds.length} listados` : "todos"}
               </button>
             </div>
           </div>
@@ -229,12 +251,26 @@ export default function Batch() {
               </button>
             ))}
           </div>
+          {vendorsInTag.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1.5 mb-2" data-testid="batch-vendors">
+              <span className="text-[11px] text-slate-500 mr-0.5">Fabricante</span>
+              {[["", "Todos", vendorsInTag.reduce((a, [, n]) => a + n, 0)], ...vendorsInTag.map(([v, n]) => [v, vendorName(v), n])].map(([v, l, n]) => (
+                <button key={v || "all"} onClick={() => setVendor(v)} data-testid={`batch-vendor-${v || "all"}`}
+                        className={`px-2 py-0.5 rounded-md text-xs border ${vendor === v ? "bg-brand border-brand text-onbrand" : "bg-surface border-line text-slate-300 hover:border-line2"}`}>
+                  {l} <span className={vendor === v ? "text-onbrand/70" : "text-slate-500"}>{n}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {vendor && !vendorsInTag.some(([v]) => v === vendor) && (
+            <div className="text-[11px] text-amber-300 mb-2">Nenhum {vendorName(vendor)} nessa tag. <button onClick={() => setVendor("")} className="underline">mostrar todos</button></div>
+          )}
           <div className="max-h-[520px] overflow-y-auto -mx-2">
             {shown.length === 0 && <div className="px-2 py-4 text-sm text-slate-500" data-testid="batch-empty">Nenhum equipamento com esse filtro.</div>}
             {groups.map(([g, list]) => {
               const ids = list.map(d => d.id);
               const on = ids.filter(id => selected.includes(id)).length;
-              const isClosed = !closed.has(g) && !q && !tag;
+              const isClosed = !closed.has(g) && !q && !tag && !vendor;
               return (
                 <div key={g} data-testid={`batch-group-${g}`}>
                   <div className="sticky top-0 z-10 flex items-center gap-2 px-2 py-1.5 bg-panel border-y border-line text-xs">
@@ -245,6 +281,21 @@ export default function Batch() {
                       <span className="font-medium">{g === "__none__" ? "Sem tag" : g}</span>
                       <span className="text-slate-500">{on ? `${on}/` : ""}{ids.length}</span>
                     </button>
+                    {!vendor && vendorCount(list).length > 1 && (
+                      <span className="flex flex-wrap justify-end gap-1" data-testid={`batch-group-vendors-${g}`}>
+                        {vendorCount(list).map(([v, n]) => {
+                          const vids = list.filter(d => vendorOf(d) === v).map(d => d.id);
+                          const vOn = vids.every(id => selected.includes(id));
+                          return (
+                            <button key={v} onClick={() => setMany(vids, !vOn)} data-testid={`batch-gv-${g}-${v}`}
+                                    title={`${vOn ? "Desmarcar" : "Marcar"} os ${n} ${vendorName(v)} de ${g === "__none__" ? "Sem tag" : g}`}
+                                    className={`px-1.5 rounded border text-[10px] leading-5 ${vOn ? "bg-brand/20 border-brand text-brand-soft" : "border-line text-slate-400 hover:text-slate-200 hover:border-line2"}`}>
+                              {vendorName(v)} {n}
+                            </button>
+                          );
+                        })}
+                      </span>
+                    )}
                   </div>
                   {!isClosed && list.map(d => (
                     <label key={d.id} data-testid={`batch-device-${d.id}`}
@@ -253,6 +304,7 @@ export default function Batch() {
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-slate-100 truncate">{d.name}</div>
                         <div className="text-xs text-slate-500 truncate"><span className="font-mono">{d.host}:{d.port}</span>
+                          <span className="ml-1.5 text-slate-400">{vendorName(vendorOf(d))}</span>
                           {(d.tags || []).filter(t => t !== g).map(t => <span key={t} className="ml-1.5 px-1 rounded border border-line text-slate-400">{t}</span>)}</div>
                       </div>
                       <span className={`w-2 h-2 rounded-full shrink-0 ${d.status === "online" ? "bg-emerald-400" : "bg-slate-600"}`} title={d.status === "online" ? "online" : "offline"} />
@@ -315,6 +367,11 @@ export default function Batch() {
             <Textarea data-testid="batch-inline-cmd" rows={3} value={inline} onChange={e => setInline(e.target.value)} placeholder="uname -a" className="bg-sunken border-line font-mono text-emerald-300" />
           </div>
 
+          {mode === "saved" && selVendors.length > 1 && (
+            <div className="mb-2 text-[11px] text-amber-300" data-testid="batch-mixed-vendors">
+              A seleção mistura fabricantes ({selVendors.map(([v, n]) => `${vendorName(v)} ${n}`).join(" · ")}): o comando precisa existir em todos — ou marque um fabricante por vez.
+            </div>
+          )}
           <Button onClick={execute} disabled={running} data-testid="execute-batch-btn" className="bg-brand hover:bg-brand-strong w-full">
             {running ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Play className="w-4 h-4 mr-2" />}
             {mode === "ips" ? `Executar em ${ipCount} IP(s)` : `Executar em ${selected.length} equipamento(s)`}

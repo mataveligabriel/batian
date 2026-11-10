@@ -1517,3 +1517,26 @@ Retenção em **Análise de Flow → Configuração → Flow detalhado**: dias g
 ver o tamanho no servidor: `docker compose exec flow du -sh /data/flowraw`. Consultas de até 72 h; períodos longos
 sem filtro demoram mais — filtre por IP, bloco ou AS. Ataques anteriores à atualização não têm flow detalhado.
 Porta efêmera (alta, de cliente) aparece como 0 para manter o volume de dados pequeno.
+
+## 74. Script de OLT → Migração (trocar ONUs de OLT, PON por PON)
+Leva as ONUs de uma OLT para outra, entre fabricantes ou modelos: ZTE C300 → C600/C650/C620, Huawei → ZTE, FiberHome →
+ZTE, ZTE → Huawei, ZTE → FiberHome… Em **Script de OLT → Migração**:
+
+1. **Origem** — OLT de origem e de onde ler: *último backup* (ZTE e Huawei: serial, tipo, nome, descrição, VLANs, modo
+   das portas, perfil de banda, usuário PPPoE), *ler agora da OLT* (`show running-config` / `display
+   current-configuration`; na FiberHome, `show authorization` de cada PON: serial, tipo e posição) ou *planilha*
+   (`pon;onu;serial;tipo;nome;vlan;modo;portas`, qualquer fabricante). Senha de PPPoE nunca é lida.
+2. **PONs a migrar** — marque só as PONs que vai mudar agora (dá para migrar por partes e voltar depois para as outras) e
+   a PON de destino de cada uma ("mesma numeração" ou "em sequência a partir de…"). Duas PONs podem ir para uma só.
+3. **Destino** — OLT, modelo/CLI (TITAN, C300, Huawei, FiberHome), manter o ID ou renumerar (o Huawei numera de 0: o
+   ID é ajustado sozinho) e de onde vem o nome da ONU.
+4. **Ajustes** — troca de VLAN, tipo da ONU no destino (onu-type da ZTE / tipo da FiberHome), line/srv profile e gem
+   port por VLAN (Huawei), perfil de T-CONT (ZTE) e o serviço padrão para ONUs sem VLAN lida.
+
+**Gerar plano** confere no último backup do destino os IDs já ocupados (só a ONU em conflito muda de ID) e os seriais
+já autorizados lá. ONUs com pendência (sem serial — LOID/senha —, sem tipo, sem perfil) ficam fora dos scripts e
+aparecem marcadas. O plano fica salvo (**Migrações salvas**). Para cada PON: *Script do destino* / *Aplicar no destino*
+→ mudar a fibra → *Conferir no destino* (lê quais ONUs subiram) → *Remover na origem* (só libera depois de aplicar no
+destino). *Desfazer* remove do destino o que foi migrado. Na mesma OLT (troca de placa) a ordem é remover primeiro.
+Tudo passa pela política de comandos e fica no histórico de sessões; ONU roteada migra a VLAN — a WAN/PPPoE continua
+na própria ONU (ou no TR-069).

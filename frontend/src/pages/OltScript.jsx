@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { TagOptions } from "@/components/TagSelect";
-import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search, Unplug, CheckCircle2, XCircle, Send, PowerOff, History } from "lucide-react";
+import { OltMigration } from "@/components/OltMigration";
+import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search, Unplug, CheckCircle2, XCircle, Send, PowerOff, History, ArrowLeftRight } from "lucide-react";
 
 const KEY = "bastion_oltgen_form";                       // formulário lembrado neste navegador, sem senhas
 const TABS = [["ports", "Placas e portas"], ["mgmt", "Gerência"], ["services", "Serviços"], ["system", "Sistema"], ["access", "Acesso"]];
@@ -1743,7 +1744,7 @@ export default function OltScript() {
           </div>
         </div>
         <div className="flex gap-1 p-1 bg-sunken border border-line rounded-md text-sm overflow-x-auto max-w-full">
-          {[["olt", "Ativação da OLT", Cpu], ["onu", "Autorizar ONU", Router], ["rm", "Desautorizar ONU", Unplug], ["off", "ONUs off", PowerOff]].map(([k, l, I]) => (
+          {[["olt", "Ativação da OLT", Cpu], ["onu", "Autorizar ONU", Router], ["rm", "Desautorizar ONU", Unplug], ["off", "ONUs off", PowerOff], ["mig", "Migração", ArrowLeftRight]].map(([k, l, I]) => (
             <button key={k} onClick={() => go(k)} data-testid={`oltgen-view-${k}`}
               className={`shrink-0 flex items-center gap-1.5 px-3 h-8 rounded ${view === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`}>
               <I className="w-4 h-4" />{l}
@@ -1751,7 +1752,7 @@ export default function OltScript() {
           ))}
         </div>
       </div>
-      {fh ? (view === "olt" ? <FhActivation devices={devices} /> : view === "rm" ? <FhRemove devices={devices} /> : view === "off" ? <FhNoClean /> : <FhAuthorize devices={devices} />)
+      {view === "mig" ? <OltMigration devices={all} /> : fh ? (view === "olt" ? <FhActivation devices={devices} /> : view === "rm" ? <FhRemove devices={devices} /> : view === "off" ? <FhNoClean /> : <FhAuthorize devices={devices} />)
         : hw ? (view === "olt" ? <HwActivation devices={devices} models={hwModels} /> : view === "rm" ? <HwRemove devices={devices} />
         : view === "off" ? <OnuClean key="hw" devices={devices} vendor="huawei" /> : <HwAuthorize devices={devices} />)
         : (view === "olt" ? <OltActivation /> : view === "rm" ? <OnuRemove meta={meta} devices={devices} /> : view === "off" ? <OnuClean key="zte" devices={devices} /> : <OnuAuthorize meta={meta} devices={devices} />)}

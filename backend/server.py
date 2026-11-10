@@ -82,6 +82,7 @@ import rdp
 import oltgen
 import olthw
 import oltfh
+import oltmig
 import cmdpolicy
 import siem as siemmod
 import loginanom
@@ -12840,6 +12841,308 @@ async def bgpmon_refresh(what: str = "all", _: dict = Depends(require_admin)):
 async def bgpmon_events(key: str, user: dict = Depends(get_current_user)):
     _no_viewer(user)
     return await db.bgp_events.find({"key": key}, {"_id": 0}).sort("at", -1).to_list(200)
+
+
+# ---------- Migração de ONUs entre OLTs (qualquer fabricante, PON por PON) ----------
+class MigSourceIn(BaseModel):
+    device_id: str = ""
+    mode: str = "backup"          # backup | live | csv
+    csv: str = ""
+    vendor: str = ""              # csv sem OLT de origem cadastrada: zte | huawei | fiberhome
+    pons: List[str] = []          # FiberHome ao vivo: só estas PONs (slot/pon)
+
+
+class MigPlanIn(BaseModel):
+    id: str = ""
+    name: str = ""
+    src_device_id: str = ""
+    src_vendor: str = ""
+    src_platform: str = ""
+    source_kind: str = ""
+    source_at: Optional[str] = None
+    onus: List[dict] = []
+    dst_device_id: str
+    opts: dict = {}
+
+
+class MigActIn(BaseModel):
+    dst: str
+    which: str = "dest"           # dest | remove | rollback
+
+
+def _mig_vendor(dev: dict) -> str:
+    t = (dev.get("device_type") or "").lower()
+    if t not in oltmig.VENDORS:
+        raise HTTPException(400, f"{dev.get('name')}: cadastre o equipamento como ZTE, Huawei ou FiberHome")
+    return t
+
+
+def _mig_err(e: Exception):
+    raise HTTPException(400, str(e) or "Parâmetros inválidos")
+
+
+@api.get("/oltmig/meta")
+async def oltmig_meta(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return {"dest_kinds": oltmig.DEST_KINDS, "modes": oltmig.MODES, "csv_help": oltmig.CSV_HELP, "zte_types": list(oltgen.ONU_TYPES)}
+
+
+@api.post("/oltmig/source")
+async def oltmig_source(body: MigSourceIn, user: dict = Depends(get_current_user)):
+    """ONUs da OLT de origem: do último backup, lidas agora da OLT ou de uma planilha. Só leitura."""
+    _no_viewer(user)
+    dev = await _get_device_for(user, body.device_id) if body.device_id else None
+    vendor = _mig_vendor(dev) if dev else (body.vendor if body.vendor in oltmig.VENDORS else "zte")
+    platform, at, onus, note = "", None, [], ""
+    try:
+        if body.mode == "csv":
+            onus = oltmig.parse_csv(body.csv[:3_000_000], vendor)
+            at = datetime.now(timezone.utc).isoformat()
+        elif not dev:
+            raise HTTPException(400, "Escolha a OLT de origem")
+        elif body.mode == "backup":
+            if vendor == "fiberhome":
+                raise HTTPException(400, "FiberHome não tem a configuração das ONUs no backup: use 'Ler agora da OLT' ou a planilha")
+            b = await db.backups.find_one({"device_id": dev["id"], "ok": {"$ne": False}}, {"_id": 0, "content": 1, "created_at": 1}, sort=[("created_at", -1)])
+            if not b or not (b.get("content") or "").strip():
+                raise HTTPException(400, "Essa OLT ainda não tem backup de configuração: faça um backup ou use 'Ler agora da OLT'")
+            cfg, at = b["content"], b.get("created_at")
+        else:
+            started = datetime.now(timezone.utc)
+            if vendor == "zte":
+                cli = await _connect_device(dev)
+                try:
+                    sess = await cli.shell()
+                    try:
+                        cfg = await sess.run("show running-config", timeout=600)
+                    finally:
+                        try:
+                            await sess.close()
+                        except Exception:
+                            pass
+                finally:
+                    await cli.close()
+            elif vendor == "huawei":
+                async with _HwSess(dev) as s:
+                    cfg = await s.run("display current-configuration", timeout=900)
+            else:
+                rows = []
+                async with _FhSess(dev) as s:
+                    pons = await s.pons(_fh_pons(body.pons) or None)
+                    await s.cd_onu("")
+                    for sl, pn in pons[:128]:
+                        rows += oltfh.parse_auth(await s.run(f"show authorization slot {sl} pon {pn}", timeout=90), sl, pn)
+                onus = oltmig.from_fiberhome(rows)
+                note = "FiberHome: a leitura traz serial, tipo e posição; a VLAN vem do 'serviço padrão' (ou use a planilha)."
+            at = datetime.now(timezone.utc).isoformat()
+            await _olt_log(user, dev, started, oltmig="leitura da origem")
+        if body.mode != "csv" and vendor != "fiberhome":
+            onus = oltmig.parse_zte(cfg) if vendor == "zte" else oltmig.parse_huawei(cfg)
+            if vendor == "zte":
+                platform = "c300" if re.search(r"gpon-olt_1/", cfg) else "titan"
+            if not onus:
+                raise HTTPException(422, "Não achei ONUs autorizadas na configuração" + (" do backup" if body.mode == "backup" else ""))
+    except HTTPException:
+        raise
+    except oltmig.MigError as e:
+        _mig_err(e)
+    except Exception as e:
+        raise HTTPException(502, f"Não consegui ler a OLT: {e}"[:300])
+    return {"vendor": vendor, "platform": platform, "device": dev["name"] if dev else None, "device_id": dev["id"] if dev else "",
+            "mode": body.mode, "source_at": at, "onus": onus, "summary": oltmig.summarize(onus), "note": note}
+
+
+async def _mig_dest_check(dev: dict, kind: str):
+    """Do último backup do destino: IDs ocupados por PON e seriais já autorizados (evita colisão e duplicidade)."""
+    b = await db.backups.find_one({"device_id": dev["id"], "ok": {"$ne": False}}, {"_id": 0, "content": 1, "created_at": 1}, sort=[("created_at", -1)])
+    if not b or kind == "fiberhome":
+        return {}, {}, None
+    used, sns = {}, {}
+    try:
+        cur = oltmig.parse_zte(b.get("content") or "") if kind.startswith("zte") else oltmig.parse_huawei(b.get("content") or "")
+    except Exception:
+        return {}, {}, None
+    for o in cur:
+        used.setdefault(o["pon"], []).append(o["onu"])
+        if o["sn"]:
+            sns[o["sn"]] = f"{o['pon']}:{o['onu']}"
+    return used, sns, b.get("created_at")
+
+
+def _mig_out(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k not in ("_id", "onus")}
+
+
+async def _mig_get(user: dict, mid: str) -> dict:
+    q = {"id": mid} if user.get("role") == "admin" else {"id": mid, "owner_id": user["id"]}
+    doc = await db.olt_migrations.find_one(q, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Migração não encontrada")
+    return doc
+
+
+@api.post("/oltmig/plan")
+async def oltmig_plan(body: MigPlanIn, user: dict = Depends(get_current_user)):
+    """Monta (e salva) o plano: PONs escolhidas -> PONs de destino, IDs, VLANs, tipos e perfis. Não mexe em OLT nenhuma."""
+    _no_viewer(user)
+    dst = await _get_device_for(user, body.dst_device_id)
+    dvendor = _mig_vendor(dst)
+    kind = (body.opts or {}).get("kind") or ""
+    if (kind.startswith("zte") and dvendor != "zte") or (kind in ("huawei", "fiberhome") and dvendor != kind):
+        raise HTTPException(400, f"A OLT de destino ({dst['name']}) está cadastrada como {oltmig.VENDORS[dvendor]}")
+    src = await _get_device_for(user, body.src_device_id) if body.src_device_id else None
+    same = bool(src and src["id"] == dst["id"])
+    if len(body.onus) > 20000:
+        raise HTTPException(400, "ONUs demais numa migração (máximo 20.000)")
+    used, sns, dest_at = await _mig_dest_check(dst, kind)
+    src_vendor = "csv" if body.source_kind == "csv" else (body.src_vendor or (_mig_vendor(src) if src else "zte"))
+    if same:   # mesma OLT (troca de placa/PON): as posições de origem continuam ocupadas até a remoção
+        sns = {}
+    try:
+        plan = oltmig.build_plan(body.onus, body.opts or {}, src_vendor, used, sns)
+    except (oltmig.MigError, oltgen.GenError, ValueError, TypeError, KeyError) as e:
+        _mig_err(e)
+    plan["fh_dir"] = (body.opts or {}).get("fh_dir") or "onu"
+    now = datetime.now(timezone.utc).isoformat()
+    prev = await _mig_get(user, body.id) if body.id else None
+    doc = {"id": prev["id"] if prev else os.urandom(8).hex(), "owner_id": prev["owner_id"] if prev else user["id"],
+           "name": (body.name or "").strip()[:80] or f"{src['name'] if src else 'Planilha'} → {dst['name']}",
+           "src_device_id": src["id"] if src else "", "src_device": src["name"] if src else "Planilha",
+           "src_vendor": body.src_vendor or (_mig_vendor(src) if src else ""), "src_platform": body.src_platform or "",
+           "source_kind": body.source_kind, "source_at": body.source_at, "dst_device_id": dst["id"], "dst_device": dst["name"],
+           "dst_vendor": dvendor, "dest_backup_at": dest_at, "opts": body.opts or {}, "plan": plan, "onus": body.onus,
+           "status": (prev or {}).get("status") or {}, "created_at": (prev or {}).get("created_at") or now, "updated_at": now,
+           "created_by": (prev or {}).get("created_by") or user.get("email")}
+    await db.olt_migrations.replace_one({"id": doc["id"]}, doc, upsert=True)
+    return _mig_out(doc)
+
+
+@api.get("/oltmig")
+async def oltmig_list(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    q = {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+    items = await db.olt_migrations.find(q, {"_id": 0, "onus": 0, "plan.groups.onus": 0}).sort("updated_at", -1).to_list(200)
+    return items
+
+
+@api.get("/oltmig/{mid}")
+async def oltmig_get(mid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    doc = await _mig_get(user, mid)
+    return {**_mig_out(doc), "onus": doc.get("onus") or []}
+
+
+@api.delete("/oltmig/{mid}")
+async def oltmig_delete(mid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    doc = await _mig_get(user, mid)
+    await db.olt_migrations.delete_one({"id": doc["id"]})
+    return {"ok": True}
+
+
+def _mig_script(doc: dict, dst: str, which: str, write: bool = True) -> dict:
+    plan = doc["plan"]
+    try:
+        if which == "dest":
+            return oltmig.script_dest(plan, dst, write=write)
+        if which == "rollback":
+            return oltmig.script_rollback(plan, dst, write=write)
+        if which == "remove":
+            if not doc.get("src_device_id") or doc.get("src_vendor") not in oltmig.VENDORS:
+                raise oltmig.MigError("Origem por planilha sem OLT cadastrada: não dá para gerar a remoção")
+            plat = doc.get("src_platform") or ("titan" if doc["src_vendor"] == "zte" else "onu")
+            return oltmig.script_src_remove(plan, dst, doc["src_vendor"], plat, write=write)
+    except (oltmig.MigError, oltgen.GenError) as e:
+        _mig_err(e)
+    raise HTTPException(400, "Script desconhecido")
+
+
+@api.get("/oltmig/{mid}/script")
+async def oltmig_script(mid: str, dst: str, which: str = "dest", user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return _mig_script(await _mig_get(user, mid), dst, which)
+
+
+@api.post("/oltmig/{mid}/apply")
+async def oltmig_apply(mid: str, body: MigActIn, user: dict = Depends(get_current_user)):
+    """Aplica um script do plano numa OLT (destino: autorizar ou desfazer; origem: remover) — uma PON por vez, grava no fim."""
+    _no_viewer(user)
+    doc = await _mig_get(user, mid)
+    res = _mig_script(doc, body.dst, body.which)
+    dev_id = doc["src_device_id"] if body.which == "remove" else doc["dst_device_id"]
+    dev = await _get_device_for(user, dev_id)
+    await _cmdpol_guard(user, dev, cmdpolicy.command_lines(res["script"]), "olt")
+    lock = _olt_apply_locks.setdefault(dev["id"], asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(409, "Já tem um script sendo aplicado nessa OLT; espere terminar")
+    started = datetime.now(timezone.utc)
+    async with lock:
+        try:
+            r = await _olt_run_script(dev, res["script"])
+        except Exception as e:
+            raise HTTPException(502, f"Não consegui aplicar na OLT: {e}"[:300])
+    st = {"at": datetime.now(timezone.utc).isoformat(), "by": user.get("email"), "ok": r["ok"], "failed": r["failed"],
+          "steps": len(r["steps"]), "device": dev["name"]}
+    await db.olt_migrations.update_one({"id": doc["id"]}, {"$set": {f"status.{body.dst.replace('/', '_')}.{body.which}": st,
+                                                                  "updated_at": st["at"]}})
+    await _olt_log(user, dev, started, commands=[s["command"] for s in r["steps"]], oltgen=f"migracao-{body.which}", ok=r["ok"])
+    logger.info("Migração de OLT %s (%s, PON %s) por %s em %s: %s", doc["name"], body.which, body.dst, user.get("email"), dev["name"], "ok" if r["ok"] else "ERRO")
+    return {**r, "device": dev["name"], "status": st}
+
+
+@api.post("/oltmig/{mid}/verify")
+async def oltmig_verify(mid: str, body: MigActIn, user: dict = Depends(get_current_user)):
+    """Lê na OLT de destino o estado das ONUs migradas para a PON (quais já subiram). Só leitura."""
+    _no_viewer(user)
+    doc = await _mig_get(user, mid)
+    dev = await _get_device_for(user, doc["dst_device_id"])
+    kind = doc["plan"]["kind"]
+    states = {}
+    try:
+        if kind.startswith("zte"):
+            plat = "c300" if kind == "zte-c300" else "titan"
+            sl, pt = (int(x) for x in body.dst.split("/"))
+            cli = await _connect_device(dev)
+            try:
+                sess = await cli.shell()
+                try:
+                    out = await sess.run(f"show gpon onu state {oltgen.pon_if(plat, sl, pt)}", timeout=90)
+                finally:
+                    try:
+                        await sess.close()
+                    except Exception:
+                        pass
+            finally:
+                await cli.close()
+            for r in oltgen.parse_onu_state(out):
+                if (r["slot"], r["pon"]) == (sl, pt):
+                    states[r["onu"]] = {"off": r["off"] or r["phase"].lower() not in ("working", "online"), "phase": r["phase"]}
+        elif kind == "huawei":
+            f, sl, pt = (int(x) for x in body.dst.split("/"))
+            async with _HwSess(dev) as s:
+                out = await s.run(f"display ont info {f} {sl} {pt} all", timeout=120)
+                rows = olthw.parse_ont_info(out)
+                if not rows:
+                    rows = olthw.parse_ont_info(await s.run(f"display ont info {f} all", timeout=300))
+            for r in rows:
+                if (r["frame"], r["slot"], r["port"]) == (f, sl, pt):
+                    states[r["ont"]] = {"off": r["off"], "phase": "offline" if r["off"] else "online"}
+        else:
+            sl, pn = (int(x) for x in body.dst.split("/"))
+            async with _FhSess(dev) as s:
+                await s.cd_onu(doc["plan"].get("fh_dir") or "")
+                for r in oltfh.parse_auth(await s.run(f"show authorization slot {sl} pon {pn}", timeout=90), sl, pn):
+                    states[r["onu"]] = {"off": r["off"] or r["state"] != "online", "phase": r["state"]}
+    except Exception as e:
+        raise HTTPException(502, f"Não consegui ler a OLT de destino: {e}"[:300])
+    try:
+        v = oltmig.verify(doc["plan"], body.dst, states)
+    except oltmig.MigError as e:
+        _mig_err(e)
+    v["at"] = datetime.now(timezone.utc).isoformat()
+    await db.olt_migrations.update_one({"id": doc["id"]}, {"$set": {f"status.{body.dst.replace('/', '_')}.verify":
+                                                                  {k: v[k] for k in ("online", "offline", "missing", "at")}}})
+    return v
 
 
 # ---------- GPON: sinal, estado e ocupação de todas as ONUs ----------
