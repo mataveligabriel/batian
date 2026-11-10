@@ -48,11 +48,22 @@ def norm_sn(v: str) -> str:
 
 
 def _onu(pon: str, onu: int, sn_raw: str, **kw) -> dict:
+    """auth: sn | pw | loid. Para pw/loid, auth_val guarda a senha/LOID da ONT (a mesma que está na config da OLT)."""
     sn = norm_sn(sn_raw)
     d = {"pon": pon, "onu": int(onu), "sn": sn, "sn_raw": str(sn_raw or "")[:40], "type": "", "name": "", "description": "",
          "services": [], "pppoe": [], "tcont": "", "profile": "", "auth": "sn" if sn else "outro"}
     d.update({k: v for k, v in kw.items() if v is not None})
+    if d.get("auth_val") and not d["sn_raw"]:
+        d["sn_raw"] = str(d["auth_val"])[:40]
     return d
+
+
+AUTH_VAL_RE = re.compile(r"^[A-Za-z0-9._@-]{1,24}$")
+
+
+def _authable(o: dict) -> bool:
+    """Tem como autorizar no destino: serial válido, ou senha/LOID da ONT."""
+    return bool(o.get("sn") or (o.get("auth") in ("pw", "loid") and AUTH_VAL_RE.fullmatch(str(o.get("auth_val") or ""))))
 
 
 # =====================================================================================
@@ -141,7 +152,8 @@ def parse_zte(cfg: str) -> List[dict]:
                  tcont=tc.group(1) if tc else "", services=_zte_services(oc, mc, vc),
                  pppoe=list(dict.fromkeys(_PPPOE.findall(mc + "\n" + oc))))
         if o["auth"] != "sn":
-            d["auth"], d["sn_raw"] = o["auth"], o["sn_raw"][:40]
+            d["auth"] = "pw" if o["auth"] in ("pw", "password") else o["auth"]
+            d["sn_raw"] = d["auth_val"] = o["sn_raw"][:40]
         out.append(d)
     return out
 
@@ -198,7 +210,9 @@ def parse_huawei(cfg: str) -> List[dict]:
             eth = sorted(set(nat.get(uv) or prof_ports.get(uv) or []))
             svcs.append({"vlan": sv["vlan"], "uvlan": uv, "mode": "bridge" if eth else "router", "ports": eth, "gemport": sv.get("gemport")})
         lp, sp = d.get("line_profile"), d.get("srv_profile")
-        out.append(_onu(f"{f}/{s}/{p}", o, d.get("sn") or "", name=(d.get("description") or "")[:64],
+        auth = d.get("auth") or "sn"
+        out.append(_onu(f"{f}/{s}/{p}", o, d.get("sn") if auth == "sn" else "", auth=auth if auth != "sn" else None,
+                        auth_val=d.get("sn") if auth != "sn" else None, name=(d.get("description") or "")[:64],
                         description=d.get("description") or "", services=svcs, pppoe=d.get("pppoe") or [],
                         profile=f"line {lp} / srv {sp}" if lp is not None else "",
                         type=f"line {lp} / srv {sp}" if lp is not None else ""))
@@ -208,6 +222,24 @@ def parse_huawei(cfg: str) -> List[dict]:
 # =====================================================================================
 # Origem: FiberHome (show authorization) e planilha
 # =====================================================================================
+def from_huawei_tables(info_rows: List[dict], sports: Dict[tuple, List[dict]]) -> List[dict]:
+    """Huawei sem a configuração: `display ont info 0 all` (posição, serial, descrição) + `display service-port all` (VLANs).
+    O modo das portas da ONU não aparece nessas tabelas: fica "unknown" e o plano usa o modo do serviço padrão."""
+    out = []
+    for r in sorted(info_rows, key=lambda r: (r["frame"], r["slot"], r["port"], r["ont"])):
+        k = (r["frame"], r["slot"], r["port"], r["ont"])
+        svcs, seen = [], set()
+        for sp in sports.get(k, []):
+            uv = sp.get("user_vlan") or sp["vlan"]
+            if (uv, sp["vlan"]) in seen:
+                continue
+            seen.add((uv, sp["vlan"]))
+            svcs.append({"vlan": sp["vlan"], "uvlan": uv, "mode": "unknown", "ports": [], "gemport": sp.get("gemport")})
+        out.append(_onu(f"{r['frame']}/{r['slot']}/{r['port']}", r["ont"], r.get("sn") or "", name=(r.get("description") or "")[:64],
+                        description=r.get("description") or "", services=svcs))
+    return out
+
+
 def from_fiberhome(rows: List[dict]) -> List[dict]:
     return [_onu(f"{r['slot']}/{r['pon']}", r["onu"], r.get("sn") or "", type=r.get("type") or "") for r in rows]
 
@@ -370,7 +402,7 @@ def build_plan(onus: List[dict], opts: dict, src_vendor: str, dest_used: Optiona
     assign: Dict[tuple, tuple] = {}
     for dst in dict.fromkeys(dst_of.values()):
         taken = used.setdefault(dst, set())
-        members = [(src, o) for src in order if dst_of[src] == dst for o in sorted(by_src[src], key=lambda x: x["onu"]) if o["sn"]]
+        members = [(src, o) for src in order if dst_of[src] == dst for o in sorted(by_src[src], key=lambda x: x["onu"]) if _authable(o)]
         pending = []
         for src, o in members:
             want = o["onu"] + shift if keep else None
@@ -393,11 +425,17 @@ def build_plan(onus: List[dict], opts: dict, src_vendor: str, dest_used: Optiona
             nid, moved = assign.get((src, o["onu"]), (None, False))
             if moved:
                 warns.append(f"ID {o['onu'] + shift} já usado/fora da faixa no destino: vai como {nid}")
-            if nid is None and o["sn"]:
+            if nid is None and _authable(o):
                 errs.append(f"PON {dst} cheia ({MAX_PER_PON} ONUs)")
             sn = o["sn"]
-            if not sn:
-                errs.append("sem serial (autorizada por " + ({"loid": "LOID", "pw": "senha", "password": "senha"}.get(o.get("auth"), "outro método")) + ") — autorize à mão")
+            auth = "sn" if sn else o.get("auth") or "outro"
+            how = {"loid": "LOID", "pw": "senha"}.get(auth, "outro método")
+            if not sn and not _authable(o):
+                errs.append(f"sem serial (autorizada por {how}) — autorize à mão")
+            elif not sn and kind == "fiberhome":
+                errs.append(f"autorizada por {how}: a FiberHome aqui só autoriza por serial")
+            elif not sn:
+                warns.append(f"autorização por {how} mantida no destino")
             elif dest_sns and sn in dest_sns:
                 errs.append(f"serial já autorizado no destino ({dest_sns[sn]})")
             st = o.get("type") or "?"
@@ -414,7 +452,14 @@ def build_plan(onus: List[dict], opts: dict, src_vendor: str, dest_used: Optiona
                 src_svcs = [{"vlan": int(dsvc["vlan"]), "uvlan": int(dsvc.get("user_vlan") or dsvc["vlan"]),
                              "mode": dsvc.get("mode") or "bridge", "ports": [int(x) for x in (dsvc.get("ports") or [1])]}]
                 warns.append("sem VLAN na origem: usou o serviço padrão")
+            unknown_mode = dsvc.get("mode") or "bridge"
+            unknown_ports = [int(x) for x in (dsvc.get("ports") or [1])]
+            if any(sv["mode"] == "unknown" for sv in src_svcs):
+                warns.append(f"modo das portas não veio da OLT: usando {MODES.get(unknown_mode, unknown_mode).split(' (')[0].lower()}"
+                             + (f" na(s) porta(s) {','.join(map(str, unknown_ports))}" if unknown_mode != "router" else ""))
             for sv in src_svcs:
+                if sv["mode"] == "unknown":
+                    sv = {**sv, "mode": unknown_mode, "ports": unknown_ports if unknown_mode != "router" else []}
                 nv = vlan_map.get(sv["vlan"], sv["vlan"])
                 nu = vlan_map.get(sv["uvlan"], sv["uvlan"]) if sv["uvlan"] == sv["vlan"] else sv["uvlan"]
                 svcs.append({**sv, "vlan": nv, "uvlan": nu, "src_vlan": sv["vlan"]})
@@ -426,7 +471,7 @@ def build_plan(onus: List[dict], opts: dict, src_vendor: str, dest_used: Optiona
                 errs.append("mais de 8 VLANs")
             raw_name = {"description": o.get("description"), "pppoe": (o.get("pppoe") or [""])[0], "sn": sn}.get(name_from) or o.get("name") or o.get("description") or (o.get("pppoe") or [""])[0]
             name = _clean_label(raw_name, sn or f"onu{o['onu']}")
-            tcont = tcont_map.get(o.get("tcont") or "") or opts.get("default_tcont") or o.get("tcont") or ""
+            tcont = tcont_map.get(o.get("tcont") or "") or o.get("tcont") or opts.get("default_tcont") or ""   # mapa > origem > padrão
             if kind.startswith("zte") and not tcont:
                 errs.append("perfil de banda (T-CONT) do destino não definido")
             line = srv = None
@@ -439,6 +484,7 @@ def build_plan(onus: List[dict], opts: dict, src_vendor: str, dest_used: Optiona
                 for i, s in enumerate(svcs, 1):
                     s["gemport"] = hw_gem.get(s["vlan"]) or s.get("gemport") or i
             item = {"src_pon": src, "src_onu": o["onu"], "dst_pon": dst, "dst_onu": nid, "sn": sn, "sn_raw": o.get("sn_raw"),
+                    "auth": auth, "auth_val": o.get("auth_val") if auth in ("pw", "loid") else None,
                     "src_type": o.get("type") or "", "type": dtype, "name": name, "description": _clean_desc(o.get("description")),
                     "services": svcs, "tcont": tcont, "line": line, "srv": srv, "pppoe": o.get("pppoe") or [],
                     "warnings": warns, "errors": errs, "ok": not errs}
@@ -477,7 +523,7 @@ def script_dest(plan: dict, dst: str, write: bool = True, comments: bool = True)
         slot, port = (int(x) for x in dst.split("/"))
         out = [f"! Migração: {len(items)} ONU(s) de {', '.join(g['src'])} para {oltgen.pon_if(plat, slot, port)}"] if comments else []
         out += ["configure terminal", f"interface {oltgen.pon_if(plat, slot, port)}"]
-        out += [f" onu {o['dst_onu']} type {o['type']} sn {o['sn']}" for o in items]
+        out += [f" onu {o['dst_onu']} type {o['type']} " + (f"sn {o['sn']}" if o.get("auth", "sn") == "sn" else f"{o['auth']} {o['auth_val']}") for o in items]
         out.append("exit")
         for o in items:
             onu_if = oltgen.onu_if_name(plat, slot, port, o["dst_onu"])
@@ -514,9 +560,10 @@ def script_dest(plan: dict, dst: str, write: bool = True, comments: bool = True)
         out = olthw._head(comments, f"Migração: {len(items)} ONT(s) de {', '.join(g['src'])} para {dst}")
         out.append(f"interface gpon {f}/{s}")
         for o in items:
-            sn = olthw.sn_hex(o["sn"])
-            desc = _clean_desc(o["description"] or o["name"]) or o["sn"]
-            out.append(f" ont add {p} {o['dst_onu']} sn-auth {sn} omci ont-lineprofile-id {o['line']} ont-srvprofile-id {o['srv']} desc \"{desc}\"")
+            desc = _clean_desc(o["description"] or o["name"]) or o["sn"] or o["dst_onu"]
+            auth = o.get("auth", "sn")
+            how = f"sn-auth {olthw.sn_hex(o['sn'])}" if auth == "sn" else f"{'password' if auth == 'pw' else 'loid'}-auth \"{o['auth_val']}\" always-on"
+            out.append(f" ont add {p} {o['dst_onu']} {how} omci ont-lineprofile-id {o['line']} ont-srvprofile-id {o['srv']} desc \"{desc}\"")
             for sv in o["services"]:
                 if sv["mode"] == "bridge":
                     out += [f" ont port native-vlan {p} {o['dst_onu']} eth {e} vlan {sv['uvlan']} priority 0" for e in sv["ports"] or [1]]

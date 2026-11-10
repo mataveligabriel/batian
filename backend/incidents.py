@@ -180,10 +180,10 @@ class Incidents:
         devs, ags = [], []
         if cands:
             q = {"$or": [{"host": {"$in": cands}}, {"name": {"$in": cands}}]}
-            devs = await self.db.devices.find(q, {"_id": 0, "id": 1, "name": 1, "host": 1, "owner_id": 1}).to_list(50)
+            devs = await self.db.devices.find(q, {"_id": 0, "id": 1, "name": 1, "host": 1, "owner_id": 1, "no_alert": 1}).to_list(50)
             ags = await self.db.agents.find(q, {"_id": 0, "id": 1, "name": 1, "owner_id": 1}).to_list(50)
         if device_id and not any(d["id"] == device_id for d in devs):
-            d = await self.db.devices.find_one({"id": device_id}, {"_id": 0, "id": 1, "name": 1, "host": 1, "owner_id": 1})
+            d = await self.db.devices.find_one({"id": device_id}, {"_id": 0, "id": 1, "name": 1, "host": 1, "owner_id": 1, "no_alert": 1})
             if d:
                 devs.insert(0, d)
         ids = {x["owner_id"] for x in devs + ags if x.get("owner_id")}
@@ -288,8 +288,11 @@ class Incidents:
             inc["maintenance"] = {"id": mw["id"], "name": mw.get("name", "")}
             inc["timeline"].append({"at": now, "by": "BastiON", "type": "maintenance",
                                     "text": f"Em janela de manutenção: {mw.get('name', '')} — sem aviso"})
+        if not mw and source == "bastion" and dev and dev.get("no_alert"):   # ping/interface de equipamento "não alarmar": histórico, sem aviso
+            inc["muted"] = True
+            inc["timeline"].append({"at": now, "by": "BastiON", "type": "maintenance", "text": "Equipamento marcado como 'não alarmar' — sem aviso"})
         await self.db.incidents.insert_one(dict(inc))
-        if not mw:
+        if not mw and not inc.get("muted"):
             await self._notify(inc, "open", s)
         return {"action": "opened", "incident": inc}
 

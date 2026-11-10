@@ -1347,6 +1347,8 @@ async def import_devices(payload: dict, user: dict = Depends(get_current_user)):
 async def update_device(device_id: str, payload: DeviceCreate, user: dict = Depends(get_current_user)):
     existing = await _get_device_for(user, device_id)
     data = _normalize_device(_apply_secret(payload.model_dump(), existing), user)
+    if data.get("no_alert") is None:                 # tela antiga / API sem o campo: mantém como está
+        data.pop("no_alert", None)
     if data.get("agent_id") and data["agent_id"] != existing.get("agent_id"):
         await _get_agent_for(user, data["agent_id"])
     data["owner_id"] = existing.get("owner_id") or user["id"]
@@ -1480,6 +1482,8 @@ async def bulk_update_devices(payload: DeviceBulkUpdate, user: dict = Depends(ge
         setf["username"] = payload.username.strip()
     if payload.backup_enabled is not None:
         setf["backup_enabled"] = payload.backup_enabled
+    if payload.no_alert is not None:
+        setf["no_alert"] = payload.no_alert
     if payload.snmp_community is not None:
         com = payload.snmp_community.strip()
         if len(com) > 64 or re.search(r"[\s\"'\\]", com):
@@ -12925,6 +12929,14 @@ async def oltmig_source(body: MigSourceIn, user: dict = Depends(get_current_user
             elif vendor == "huawei":
                 async with _HwSess(dev) as s:
                     cfg = await s.run("display current-configuration", timeout=900)
+                    if not oltmig.parse_huawei(cfg):
+                        # firmware antigo / config sem as ONTs: lê as tabelas (as mesmas do "ONUs off")
+                        info = olthw.parse_ont_info(await s.run("display ont info 0 all", timeout=600))
+                        if info:
+                            sp = olthw.parse_service_ports(await s.run("display service-port all", timeout=600))
+                            onus = oltmig.from_huawei_tables(info, sp)
+                            note = ("Huawei: a configuração não trouxe as ONTs; li 'display ont info' e 'display service-port'. "
+                                    "O modo das portas (bridge/roteada) não vem nessas tabelas: defina no serviço padrão.")
             else:
                 rows = []
                 async with _FhSess(dev) as s:
@@ -12936,12 +12948,18 @@ async def oltmig_source(body: MigSourceIn, user: dict = Depends(get_current_user
                 note = "FiberHome: a leitura traz serial, tipo e posição; a VLAN vem do 'serviço padrão' (ou use a planilha)."
             at = datetime.now(timezone.utc).isoformat()
             await _olt_log(user, dev, started, oltmig="leitura da origem")
-        if body.mode != "csv" and vendor != "fiberhome":
+        if body.mode != "csv" and vendor != "fiberhome" and not onus:
             onus = oltmig.parse_zte(cfg) if vendor == "zte" else oltmig.parse_huawei(cfg)
             if vendor == "zte":
                 platform = "c300" if re.search(r"gpon-olt_1/", cfg) else "titan"
             if not onus:
-                raise HTTPException(422, "Não achei ONUs autorizadas na configuração" + (" do backup" if body.mode == "backup" else ""))
+                lines = (cfg or "").splitlines()
+                hint = "ont add" if vendor == "huawei" else "onu N type"
+                n = sum(1 for l in lines if re.search(r"^\s*ont\s+add\b" if vendor == "huawei" else r"^\s*onu\s+\d+\s+type\b", l))
+                first = next((l.strip() for l in lines if re.search(r"ont\s+add|onu\s+\d+\s+type", l)), "")
+                raise HTTPException(422, f"Não achei ONUs autorizadas na configuração{' do backup' if body.mode == 'backup' else ''} "
+                                         f"({len(lines)} linhas lidas, {n} com '{hint}')" + (f"; exemplo: {first[:120]}" if first else "")
+                                         + (". Tente 'Ler agora da OLT'." if body.mode == "backup" else ""))
     except HTTPException:
         raise
     except oltmig.MigError as e:

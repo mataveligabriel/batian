@@ -250,7 +250,8 @@ export function OltMigration({ devices }) {
       vlan_map: maps.vlan_map, type_map: maps.type_map, tcont_map: maps.tcont_map, default_type: maps.default_type, default_tcont: maps.default_tcont,
       hw_profiles: maps.hw_profiles, default_line: maps.default_line === "" ? null : Number(maps.default_line), default_srv: maps.default_srv === "" ? null : Number(maps.default_srv),
       hw_gem: maps.hw_gem,
-      default_service: maps.default_service.vlan ? { vlan: Number(maps.default_service.vlan), mode: maps.default_service.mode, ports: String(maps.default_service.ports).split(/[\s,]+/).filter(Boolean).map(Number) } : {},
+      default_service: { ...(maps.default_service.vlan ? { vlan: Number(maps.default_service.vlan) } : {}), mode: maps.default_service.mode,
+                         ports: String(maps.default_service.ports).split(/[\s,]+/).filter(Boolean).map(Number) },
     };
     try {
       const { data } = await api.post("/oltmig/plan", {
@@ -273,7 +274,7 @@ export function OltMigration({ devices }) {
       const ponsAll = [...new Set(data.onus.map(x => x.pon))].sort(cmpPon);
       setPons(Object.fromEntries(ponsAll.map(p => [p, { on: !!(o.pons || {})[p], dst: (o.pons || {})[p] || "" }])));
       setMaps(mm => ({ ...mm, ...o, default_line: o.default_line ?? "", default_srv: o.default_srv ?? "",
-                       default_service: o.default_service?.vlan ? { vlan: o.default_service.vlan, mode: o.default_service.mode || "bridge", ports: (o.default_service.ports || [1]).join(",") } : mm.default_service }));
+                       default_service: o.default_service?.mode ? { vlan: o.default_service.vlan || "", mode: o.default_service.mode || "bridge", ports: (o.default_service.ports || [1]).join(",") } : mm.default_service }));
     } catch (e) { toast.error(formatApiError(e)); }
   };
   const remove = async (m) => {
@@ -505,7 +506,7 @@ export function OltMigration({ devices }) {
               </div>
             )}
             <div>
-              <div className="text-xs text-slate-300 mb-1.5">Serviço padrão (ONUs sem VLAN lida{noSvc ? `: ${noSvc} nas PONs marcadas` : ""})</div>
+              <div className="text-xs text-slate-300 mb-1.5">Serviço padrão (ONUs sem VLAN lida{noSvc ? `: ${noSvc} nas PONs marcadas` : ""}; o modo e as portas também valem quando a OLT não informa o modo)</div>
               <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
                 VLAN <Input value={maps.default_service.vlan} onChange={e => setMaps({ ...maps, default_service: { ...maps.default_service, vlan: e.target.value.replace(/\D/g, "") } })} className={`${small} w-16`} aria-label="VLAN padrão" />
                 <select value={maps.default_service.mode} onChange={e => setMaps({ ...maps, default_service: { ...maps.default_service, mode: e.target.value } })} className={`${sel} h-8 text-xs`} aria-label="Modo padrão">

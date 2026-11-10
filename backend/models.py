@@ -101,6 +101,7 @@ class DeviceCreate(BaseModel):
     backup_command: Optional[str] = None  # overrides the per-type default
     snmp_community: str = ""  # v2c; vazio = community padrão do monitoramento
     snmp_port: int = 161
+    no_alert: Optional[bool] = None  # True = não alarmar (Telegram/push) quando cair ou voltar; None = manter
 
 
 class DeviceCreateRequest(DeviceCreate):
@@ -136,6 +137,7 @@ class DeviceBulkUpdate(BaseModel):
     backup_enabled: Optional[bool] = None
     snmp_community: Optional[str] = None   # "" = volta para a community padrão do monitoramento
     snmp_port: Optional[int] = None
+    no_alert: Optional[bool] = None        # True = não alarmar, False = alarmar, None = manter
 
 
 # ---------- Scripts ----------

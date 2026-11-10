@@ -357,6 +357,9 @@ class Scheduler:
             if t["kind"] == "device" and not s["notify_devices"]:
                 continue
             if t["kind"] == "device" and t.get("id"):
+                d = await self.db.devices.find_one({"id": t["id"]}, {"_id": 0, "no_alert": 1})
+                if d and d.get("no_alert"):
+                    continue                      # marcado "não alarmar": cai e volta sem aviso
                 try:
                     import maint
                     if await maint.active_for(self.db, t["id"]):

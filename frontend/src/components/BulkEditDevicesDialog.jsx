@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 
 const KEEP = "__keep__";
-const empty = { add_tags: "", remove_tags: "", agent_id: KEEP, device_type: KEEP, protocol: KEEP, port: "", username: "", change_username: false, backup_enabled: KEEP,
+const empty = { add_tags: "", remove_tags: "", agent_id: KEEP, device_type: KEEP, protocol: KEEP, port: "", username: "", change_username: false, backup_enabled: KEEP, no_alert: KEEP,
   change_snmp: false, snmp_community: "", snmp_port: "" };
 const splitTags = (s) => s.split(/[,;]/).map(t => t.trim()).filter(Boolean);
 
@@ -29,6 +29,7 @@ export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, d
     if (String(f.port).trim()) payload.port = Number(f.port);
     if (f.change_username) payload.username = f.username;
     if (f.backup_enabled !== KEEP) payload.backup_enabled = f.backup_enabled === "on";
+    if (f.no_alert !== KEEP) payload.no_alert = f.no_alert === "mute";
     if (f.change_snmp) payload.snmp_community = f.snmp_community.trim();
     if (String(f.snmp_port).trim()) payload.snmp_port = Number(f.snmp_port);
     const changes = Object.keys(payload).filter(k => k !== "device_ids" && !(Array.isArray(payload[k]) && !payload[k].length));
@@ -91,6 +92,18 @@ export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, d
                 </SelectContent>
               </Select>
             </div>
+          </div>
+          <div>
+            <Label>Alerta no Telegram / push quando cair ou voltar</Label>
+            <Select value={f.no_alert} onValueChange={v => setF({ ...f, no_alert: v })}>
+              <SelectTrigger data-testid="bulk-no-alert" className={trigger}><SelectValue /></SelectTrigger>
+              <SelectContent className={content}>
+                <SelectItem value={KEEP}>— manter —</SelectItem>
+                <SelectItem value="mute">Não alarmar (só registra no histórico)</SelectItem>
+                <SelectItem value="alert">Alarmar normalmente</SelectItem>
+              </SelectContent>
+            </Select>
+            {f.no_alert === "mute" && <p className="text-[11px] text-slate-500 mt-1">Vale para equipamento fora/de volta e interfaces caindo nos Mapas. Os incidentes continuam abertos no histórico, sem aviso.</p>}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

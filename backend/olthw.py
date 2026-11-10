@@ -236,22 +236,25 @@ def parse_mac_lookup(text: str, mac: str) -> Optional[dict]:
 
 
 def parse_inventory(cfg: str) -> Dict[Tuple[int, int, int, int], dict]:
-    """`display current-configuration` -> {(f, s, p, ont): {sn, description, line_profile, srv_profile, pppoe, services}}."""
+    """`display current-configuration` -> {(f, s, p, ont): {sn, auth (sn|pw|loid), description, line_profile, srv_profile, pppoe, services}}."""
     inv: Dict[tuple, dict] = {}
     cur = None
-    for ln in (cfg or "").splitlines():
+    cfg = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|[\x08\x00]", "", cfg or "")
+    cfg = re.sub(r"[ \t]*-+\s*More\b[^\n\r]*?-+[ \t]*", "", cfg, flags=re.I)      # marca de paginação que sobrou
+    for ln in cfg.replace("\r\n", "\n").replace("\r", "\n").splitlines():
         m = re.match(r"^\s*interface\s+gpon\s+(\d+)/(\d+)\s*$", ln)
         if m:
             cur = (int(m.group(1)), int(m.group(2)))
             continue
-        if re.match(r"^\s*(quit|#)\s*$", ln) or (ln[:1].strip() and not ln.startswith("service-port")):
+        if re.match(r"^\s*(quit|#)\s*$", ln) or (ln[:1].strip() and not ln.startswith(("service-port", "ont "))):
             cur = None
-        m = re.match(r"^\s*ont\s+add\s+(\d+)\s+(\d+)\s+(?:sn-auth|password-auth|loid-auth)\s+\"?([0-9A-Fa-f]{16}|[^\s\"]+)\"?(.*)$", ln)
+        m = re.match(r"^\s*ont\s+add\s+(\d+)\s+(\d+)\s+(sn-auth|password-auth|loid-auth)\s+\"?([0-9A-Fa-f]{16}|[^\s\"]+)\"?(.*)$", ln)
         if m and cur:
             k = (cur[0], cur[1], int(m.group(1)), int(m.group(2)))
-            rest = m.group(4)
+            rest = m.group(5)
             d = inv.setdefault(k, {"pppoe": [], "services": []})
-            d["sn"] = m.group(3).upper()
+            d["auth"] = {"sn-auth": "sn", "password-auth": "pw", "loid-auth": "loid"}[m.group(3)]
+            d["sn"] = m.group(4).upper() if d["auth"] == "sn" else m.group(4)
             lp = re.search(r"ont-lineprofile-id\s+(\d+)", rest)
             sp = re.search(r"ont-srvprofile-id\s+(\d+)", rest)
             ds = re.search(r"desc\s+\"([^\"]*)\"|desc\s+(\S+)", rest)
@@ -273,6 +276,22 @@ def parse_inventory(cfg: str) -> Dict[Tuple[int, int, int, int], dict]:
             d["services"].append({"index": int(m.group(1)) if m.group(1) else None, "vlan": int(m.group(2)), "gemport": int(m.group(7)),
                                   "user_vlan": int(m.group(8)) if m.group(8) else None})
     return inv
+
+
+_SP_ROW = re.compile(r"^\s*(\d+)\s+(\d+)\s+\S+\s+gpon\s+(\d+)/\s*(\d+)\s*/\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)", re.I)
+
+
+def parse_service_ports(text: str) -> Dict[Tuple[int, int, int, int], List[dict]]:
+    """`display service-port all` -> {(f, s, p, ont): [{index, vlan, gemport, user_vlan}]} (FLOW-TYPE vlan: FLOW-PARA = VLAN do usuário)."""
+    out: Dict[tuple, List[dict]] = {}
+    for ln in re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|[\x08\x00]", "", text or "").splitlines():
+        m = _SP_ROW.match(ln)
+        if not m:
+            continue
+        k = tuple(int(m.group(i)) for i in (3, 4, 5, 6))
+        uv = int(m.group(9)) if m.group(8).lower() == "vlan" and m.group(9).isdigit() else None
+        out.setdefault(k, []).append({"index": int(m.group(1)), "vlan": int(m.group(2)), "gemport": int(m.group(7)), "user_vlan": uv})
+    return out
 
 
 def used_ont_ids(info_rows: List[dict], f: int, s: int, p: int) -> List[int]:

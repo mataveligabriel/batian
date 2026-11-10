@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy, Send, Globe, Radar, Router } from "lucide-react";
+import { Plus, TerminalSquare, Trash2, Pencil, Search, Wifi, WifiOff, Zap, Upload, Download, KeyRound, Play, X, Loader2, Copy, Send, Globe, Radar, Router, BellOff } from "lucide-react";
 import { TransferDialog } from "@/components/TransferDialog";
 import { ImportDevicesDialog } from "@/components/ImportDevicesDialog";
 import { VendorScanDialog } from "@/components/VendorScanDialog";
@@ -24,7 +24,7 @@ export const DEVICE_TYPES = [
 ];
 const typeLabel = (t) => DEVICE_TYPES.find(x => x[0] === t)?.[1] || t || "linux";
 
-const emptyDevice = { name: "", host: "", port: 22, protocol: "ssh", owner_id: "", username: "", password: "", clear_password: false, device_type: "linux", tags: "", agent_id: "", description: "", backup_enabled: true, backup_command: "", snmp_community: "", snmp_port: 161 };
+const emptyDevice = { name: "", host: "", port: 22, protocol: "ssh", owner_id: "", username: "", password: "", clear_password: false, device_type: "linux", tags: "", agent_id: "", description: "", backup_enabled: true, backup_command: "", snmp_community: "", snmp_port: 161, no_alert: false };
 
 // SNMP: verde = community respondeu · vermelho = não respondeu · cinza = sem community no equipamento · contorno = não testado
 function SnmpButton({ d, busy, onTest, size = "h-8" }) {
@@ -76,7 +76,7 @@ export default function Devices() {
   useEffect(() => { load(); }, []);
 
   const openNew = () => { setEditing(null); setCloneOf(null); setForm(emptyDevice); setOpen(true); };
-  const toForm = (d) => ({ ...emptyDevice, ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", protocol: d.protocol || "ssh", owner_id: d.owner_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "", description: d.description || "", username: d.username || "", snmp_community: d.snmp_community || "", snmp_port: d.snmp_port || 161 });
+  const toForm = (d) => ({ ...emptyDevice, ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", protocol: d.protocol || "ssh", owner_id: d.owner_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "", description: d.description || "", username: d.username || "", snmp_community: d.snmp_community || "", snmp_port: d.snmp_port || 161, no_alert: !!d.no_alert });
   const openEdit = (d) => { setEditing(d); setCloneOf(null); setForm(toForm(d)); setOpen(true); };
   // Duplicar: mesmo formulário do "novo", pré-preenchido; a senha é copiada no servidor
   const openClone = (d) => {
@@ -102,6 +102,7 @@ export default function Devices() {
       backup_command: (form.backup_command || "").trim() || null,
       snmp_community: (form.snmp_community || "").trim(),
       snmp_port: Number(form.snmp_port) || 161,
+      no_alert: !!form.no_alert,
       copy_password_from: cloneOf?.has_password && !form.password && !form.clear_password ? cloneOf.id : null,
     };
     if (!payload.name || !payload.host) return toast.error("Nome e host são obrigatórios");
@@ -169,7 +170,7 @@ export default function Devices() {
     const matchQ = !q || d.name.toLowerCase().includes(ql) || d.host.includes(q) || (d.description || "").toLowerCase().includes(ql);
     const matchTag = !tagFilter || (d.tags || []).includes(tagFilter);
     const st = d.status === "online" || d.status === "offline" ? d.status : "unknown";
-    const matchStatus = !statusFilter || st === statusFilter;
+    const matchStatus = !statusFilter || (statusFilter === "muted" ? !!d.no_alert : st === statusFilter);
     return matchQ && matchTag && matchStatus;
   }), [devices, q, tagFilter, statusFilter]);
 
@@ -280,7 +281,7 @@ export default function Devices() {
           ))}
         </div>
         <div className="flex gap-1 md:ml-auto overflow-x-auto" data-testid="status-filter">
-          {[["", "Todos"], ["online", "Online"], ["offline", "Offline"], ["unknown", "Sem status"]].map(([v, l]) => (
+          {[["", "Todos"], ["online", "Online"], ["offline", "Offline"], ["unknown", "Sem status"], ...(devices.some(d => d.no_alert) ? [["muted", `Sem alarme (${devices.filter(d => d.no_alert).length})`]] : [])].map(([v, l]) => (
             <button key={v || "all"} onClick={() => setStatusFilter(v)} data-testid={`status-filter-${v || "all"}`}
               className={`text-xs font-mono px-2.5 py-1 rounded border ${statusFilter === v ? "border-brand bg-brand/15 text-slate-100" : "border-line bg-surface text-slate-400 hover:text-slate-200"}`}>{l}</button>
           ))}
@@ -329,6 +330,7 @@ export default function Devices() {
               <div className="flex items-center gap-2">
                 <span className={`w-2 h-2 rounded-full shrink-0 ${d.status === "online" ? "bg-emerald-400" : d.status === "offline" ? "bg-red-400" : "bg-slate-600"}`} />
                 <span className="text-slate-100 font-medium truncate">{d.name}</span>
+                {d.no_alert && <BellOff className="w-3.5 h-3.5 shrink-0 text-slate-500" aria-label="não alarma" />}
               </div>
               <div className="text-[11px] font-mono text-slate-400 truncate mt-0.5">
                 {d.host}:{d.port} · {d.protocol === "telnet" ? "telnet" : "ssh"} · {typeLabel(d.device_type)}{d.latency_ms ? ` · ${d.latency_ms} ms` : ""}
@@ -379,7 +381,7 @@ export default function Devices() {
                       <span className="text-slate-500 font-mono text-xs">—</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-slate-100 font-medium">{d.name}</td>
+                  <td className="px-4 py-3 text-slate-100 font-medium">{d.name}{d.no_alert && <span title="Não alarma no Telegram quando cai ou volta" data-testid={`device-muted-${d.id}`}><BellOff className="w-3.5 h-3.5 inline ml-1.5 text-slate-500" aria-label="não alarma" /></span>}</td>
                   <td className="px-4 py-3 font-mono text-slate-300">{d.host}:{d.port} <span data-testid={`device-proto-${d.id}`} className={`ml-1 text-[9px] uppercase px-1 py-0.5 rounded border ${d.protocol === "telnet" ? "border-amber-500/40 text-amber-400" : "border-line text-slate-500"}`}>{d.protocol || "ssh"}</span></td>
                   <td className="px-4 py-3 text-xs text-slate-400" data-testid={`device-type-${d.id}`}>{typeLabel(d.device_type)}</td>
                   <td className="px-4 py-3 font-mono text-slate-400">
@@ -525,6 +527,10 @@ export default function Devices() {
             <div className="grid grid-cols-3 gap-3 items-end">
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer pb-2">
                 <input type="checkbox" data-testid="device-form-backup-enabled" checked={form.backup_enabled !== false} onChange={e => setForm({ ...form, backup_enabled: e.target.checked })} /> Backup diário
+              </label>
+              <label className="col-span-3 flex items-center gap-2 text-xs text-slate-300 cursor-pointer" title="Não manda alerta no Telegram/push quando o equipamento cai ou volta (nem das interfaces dele). Continua registrando no histórico.">
+                <input type="checkbox" data-testid="device-form-no-alert" checked={!!form.no_alert} onChange={e => setForm({ ...form, no_alert: e.target.checked })} />
+                <BellOff className="w-3.5 h-3.5 text-slate-400" /> Não alarmar no Telegram quando cair ou voltar (continua no histórico)
               </label>
               <div className="col-span-2">
                 <Label>Comando de backup (opcional, sobrescreve o padrão do tipo)</Label>

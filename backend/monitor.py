@@ -217,6 +217,8 @@ class Monitor:
                                                        "alias": alias, "status": status, "oper": r.get("oper")})
             except Exception as e:
                 logger.warning(f"incidente de interface: {e}")
+        if dev.get("no_alert"):
+            return                               # equipamento marcado "não alarmar": registra, sem aviso
         try:
             import maint
             if await maint.active_for(self.db, dev["id"]):

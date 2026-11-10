@@ -113,22 +113,23 @@ def test_parse_titan_and_huawei():
 
 def test_c300_to_titan_only_selected_pon():
     onus = oltmig.parse_zte(C300)
-    plan = oltmig.build_plan(onus, {"kind": "zte-titan", "pons": {"2/1": "1/3"}, "vlan_map": {"100": "1100"}}, "zte",
+    plan = oltmig.build_plan(onus, {"kind": "zte-titan", "pons": {"2/1": "1/3"}, "vlan_map": {"100": "1100"},
+                                     "default_tcont": "50M", "default_service": {"vlan": 900}}, "zte",
                              dest_used={"1/3": [2]})
     assert plan["total"] == 3 and len(plan["groups"]) == 1           # só a PON escolhida
     g = plan["groups"][0]
     ids = {o["src_onu"]: o for o in g["onus"]}
     assert ids[1]["dst_onu"] == 1 and ids[2]["dst_onu"] == 3 and ids[2]["warnings"]   # 2 já ocupado no destino
     assert not ids[1]["warnings"]
-    assert not ids[5]["ok"] and "LOID" in ids[5]["errors"][0]
+    assert ids[5]["ok"] and "LOID" in ids[5]["warnings"][0]        # LOID: autoriza do mesmo jeito no destino
     assert ids[1]["services"][0]["vlan"] == 1100 and ids[1]["type"] == "ZTE-F601"
     sc = oltmig.script_dest(plan, "1/3")["script"]
     assert "interface gpon_olt-1/1/3\n onu 1 type ZTE-F601 sn ZTEGC0000001\n onu 3 type ZTE-F670L sn ZTEGC0000002" in sc
     assert "interface vport-1/1/3.1:1\n service-port 1 user-vlan 1100 vlan 1100" in sc
     assert " vlan port eth_0/1 mode tag vlan 1100" in sc and " vlan port eth_0/2 mode transparent" in sc
-    assert sc.rstrip().endswith("write") and "ZTEGC0000003" not in sc
+    assert sc.rstrip().endswith("write") and "ZTEGC0000003" not in sc and " onu 5 type ZTE-F601 loid 1234567" in sc
     rm = oltmig.script_src_remove(plan, "1/3", "zte", "c300")["script"]
-    assert "interface gpon-olt_1/2/1\n no onu 1\n no onu 2\nexit" in rm and "no onu 5" not in rm
+    assert "interface gpon-olt_1/2/1\n no onu 1\n no onu 2\n no onu 5\nexit" in rm
     rb = oltmig.script_rollback(plan, "1/3")["script"]
     assert "interface gpon_olt-1/1/3\n no onu 1\n no onu 3" in rb
 
@@ -183,3 +184,61 @@ def test_one_taken_id_does_not_shift_the_rest():
                                                     "default_service": {"vlan": 100}}, "zte", dest_used={"1/2": [3]})
     got = {o["src_onu"]: o["dst_onu"] for o in plan["groups"][0]["onus"]}
     assert got == {1: 1, 2: 2, 3: 8, 4: 4, 5: 5, 6: 6, 7: 7}
+
+
+MA5680T = """interface gpon 0/1\r
+ ont add 0 1 password-auth "0000000001" always-on omci ont-lineprofile-id 1 ont-srvprofile-id 1 desc "cliente senha"\r
+  ---- More ( Press 'Q' to break ) ----\x1b[37D                                     \x1b[37D ont add 0 2 sn-auth "48575443A1B2C3D9" omci ont-lineprofile-id 1 ont-srvprofile-id 1 desc "cli2"\r
+ ont add 1 0 loid-auth "LOID123" always-on omci ont-lineprofile-id 2 ont-srvprofile-id 2\r
+quit\r
+service-port 5 vlan 100 gpon 0/1/0 ont 1 gemport 1 multi-service user-vlan 100\r
+"""
+
+INFO = """  -----------------------------------------------------------------------------
+  F/S/P   ONT         SN         Control     Run      Config   Match    Protect
+          ID                     flag        state    state    state    side
+  -----------------------------------------------------------------------------
+  0/ 1/ 0    1  48575443A1B2C3D4  active      online   normal   match    no
+  0/ 1/ 0    2  48575443A1B2C3D5  active      offline  initial  initial  no
+  -----------------------------------------------------------------------------
+  F/S/P   ONT-ID   Description
+  -----------------------------------------------------------------------------
+  0/ 1/ 0      1   CLIENTE UM
+  0/ 1/ 0      2   CLIENTE DOIS
+"""
+
+SPORTS = """  INDEX VLAN VLAN     PORT F/ S/ P VPI  VCI   FLOW  FLOW       RX   TX   STATE
+        ID   ATTR     TYPE                    TYPE  PARA
+  -----------------------------------------------------------------------------
+      0  100 common   gpon 0/1 /0  1    1     vlan  100        -    -    up
+      1  200 common   gpon 0/1 /0  2    1     vlan  200        -    -    down
+"""
+
+
+def test_huawei_password_loid_and_pager_garbage():
+    h = oltmig.parse_huawei(MA5680T)
+    by = {(o["pon"], o["onu"]): o for o in h}
+    assert set(by) == {("0/1/0", 1), ("0/1/0", 2), ("0/1/1", 0)}
+    assert by[("0/1/0", 1)]["auth"] == "pw" and by[("0/1/0", 1)]["auth_val"] == "0000000001" and by[("0/1/0", 1)]["sn"] == ""
+    assert by[("0/1/0", 2)]["sn"] == "HWTCA1B2C3D9"
+    assert by[("0/1/1", 0)]["auth"] == "loid"
+    plan = oltmig.build_plan(h, {"kind": "zte-titan", "pons": {"0/1/0": "1/1"}, "default_type": "ZTE-F601", "default_tcont": "100M",
+                                 "default_service": {"vlan": 300, "mode": "bridge", "ports": [1]}}, "huawei")
+    g = plan["groups"][0]
+    assert all(o["ok"] for o in g["onus"]) and "senha" in g["onus"][0]["warnings"][0]
+    sc = oltmig.script_dest(plan, "1/1")["script"]
+    assert " onu 2 type ZTE-F601 pw 0000000001" in sc and " onu 3 type ZTE-F601 sn HWTCA1B2C3D9" in sc
+    p2 = oltmig.build_plan(h, {"kind": "huawei", "pons": {"0/1/1": "0/3/1"}, "default_line": 5, "default_srv": 5,
+                               "default_service": {"vlan": 300}}, "huawei")
+    assert 'ont add 1 0 loid-auth "LOID123" always-on omci ont-lineprofile-id 5' in oltmig.script_dest(p2, "0/3/1")["script"]
+
+
+def test_huawei_tables_fallback():
+    import olthw
+    onus = oltmig.from_huawei_tables(olthw.parse_ont_info(INFO), olthw.parse_service_ports(SPORTS))
+    assert [(o["pon"], o["onu"], o["sn"], o["name"]) for o in onus] == [("0/1/0", 1, "HWTCA1B2C3D4", "CLIENTE UM"), ("0/1/0", 2, "HWTCA1B2C3D5", "CLIENTE DOIS")]
+    assert onus[1]["services"][0]["vlan"] == 200 and onus[1]["services"][0]["mode"] == "unknown"
+    plan = oltmig.build_plan(onus, {"kind": "zte-c300", "pons": {"0/1/0": "2/1"}, "default_type": "ZTE-F601", "default_tcont": "100M",
+                                    "default_service": {"mode": "router"}}, "huawei")
+    o = plan["groups"][0]["onus"][0]
+    assert o["ok"] and o["services"][0]["mode"] == "router" and "roteada" in " ".join(o["warnings"])
