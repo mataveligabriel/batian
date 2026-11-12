@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 
 const KEEP = "__keep__";
-const empty = { add_tags: "", remove_tags: "", agent_id: KEEP, device_type: KEEP, protocol: KEEP, port: "", username: "", change_username: false, backup_enabled: KEEP, no_alert: KEEP,
+const empty = { add_tags: "", remove_tags: "", agent_id: KEEP, device_type: KEEP, protocol: KEEP, port: "", username: "", change_username: false, pw_mode: KEEP, password: "", password2: "", show_pw: false, backup_enabled: KEEP, no_alert: KEEP,
   change_snmp: false, snmp_community: "", snmp_port: "" };
 const splitTags = (s) => s.split(/[,;]/).map(t => t.trim()).filter(Boolean);
 
@@ -28,11 +28,20 @@ export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, d
     if (f.protocol !== KEEP) payload.protocol = f.protocol;
     if (String(f.port).trim()) payload.port = Number(f.port);
     if (f.change_username) payload.username = f.username;
+    if (f.pw_mode === "set") {
+      if (!f.password) return toast.error("Digite a nova senha");
+      if (f.password !== f.password2) return toast.error("As duas senhas não conferem");
+      payload.password = f.password;
+    }
+    if (f.pw_mode === "clear") payload.clear_password = true;
     if (f.backup_enabled !== KEEP) payload.backup_enabled = f.backup_enabled === "on";
     if (f.no_alert !== KEEP) payload.no_alert = f.no_alert === "mute";
     if (f.change_snmp) payload.snmp_community = f.snmp_community.trim();
     if (String(f.snmp_port).trim()) payload.snmp_port = Number(f.snmp_port);
     const changes = Object.keys(payload).filter(k => k !== "device_ids" && !(Array.isArray(payload[k]) && !payload[k].length));
+    if ((payload.password || payload.clear_password) && !window.confirm(
+      `${payload.clear_password ? "Apagar a senha" : "Trocar a senha"} de login de ${deviceIds.length} equipamento(s)?` +
+      (payload.username !== undefined ? ` Usuário: ${payload.username || "(padrão)"}.` : ""))) return;
     if (!changes.length) return toast.error("Nenhuma alteração definida");
     setBusy(true);
     try {
@@ -122,14 +131,40 @@ export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, d
               <Input data-testid="bulk-port" type="number" value={f.port} onChange={e => setF({ ...f, port: e.target.value })} placeholder="manter" className={trigger} />
             </div>
           </div>
-          <div>
+          <div className="rounded-md border border-line p-3 space-y-2" data-testid="bulk-login">
+            <div className="text-sm font-medium">Login SSH/Telnet</div>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" data-testid="bulk-change-username" checked={f.change_username} onChange={e => setF({ ...f, change_username: e.target.checked })} />
-              Alterar usuário SSH/Telnet
+              Alterar usuário
             </label>
             {f.change_username && (
-              <Input data-testid="bulk-username" value={f.username} onChange={e => setF({ ...f, username: e.target.value })} placeholder="vazio = usuário padrão" className={`${trigger} mt-1`} />
+              <Input data-testid="bulk-username" value={f.username} onChange={e => setF({ ...f, username: e.target.value })} placeholder="vazio = usuário padrão" className={trigger} autoComplete="off" />
             )}
+            <div>
+              <Label>Senha</Label>
+              <Select value={f.pw_mode} onValueChange={v => setF({ ...f, pw_mode: v, password: "", password2: "" })}>
+                <SelectTrigger data-testid="bulk-pw-mode" className={trigger}><SelectValue /></SelectTrigger>
+                <SelectContent className={content}>
+                  <SelectItem value={KEEP}>— manter a senha de cada um —</SelectItem>
+                  <SelectItem value="set">Definir nova senha</SelectItem>
+                  <SelectItem value="clear">Apagar a senha salva</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {f.pw_mode === "set" && (
+              <div className="grid grid-cols-2 gap-2">
+                <Input data-testid="bulk-password" type={f.show_pw ? "text" : "password"} value={f.password} onChange={e => setF({ ...f, password: e.target.value })}
+                       placeholder="nova senha" className={trigger} autoComplete="new-password" aria-label="Nova senha" />
+                <Input data-testid="bulk-password2" type={f.show_pw ? "text" : "password"} value={f.password2} onChange={e => setF({ ...f, password2: e.target.value })}
+                       placeholder="repita a senha" className={trigger} autoComplete="new-password" aria-label="Repita a senha" />
+                <label className="col-span-2 flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+                  <input type="checkbox" checked={f.show_pw} onChange={e => setF({ ...f, show_pw: e.target.checked })} /> mostrar senha
+                  {f.password && f.password2 && f.password !== f.password2 && <span className="text-red-300 ml-auto">as senhas não conferem</span>}
+                </label>
+              </div>
+            )}
+            {f.pw_mode === "clear" && <p className="text-[11px] text-slate-500">Os equipamentos ficam sem senha salva (acesso só por chave SSH, se houver).</p>}
+            <p className="text-[11px] text-slate-500">A senha vai criptografada para os {deviceIds.length} equipamento(s) e nunca aparece de volta na tela.</p>
           </div>
           <div>
             <label className="flex items-center gap-2 text-sm cursor-pointer">

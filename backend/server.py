@@ -1480,6 +1480,12 @@ async def bulk_update_devices(payload: DeviceBulkUpdate, user: dict = Depends(ge
         setf["port"] = payload.port
     if payload.username is not None:
         setf["username"] = payload.username.strip()
+    if payload.clear_password:
+        setf["password"] = ""
+    elif payload.password:
+        if len(payload.password) > 256 or "\n" in payload.password or "\r" in payload.password:
+            raise HTTPException(status_code=400, detail="Senha inválida (até 256 caracteres, sem quebra de linha)")
+        setf["password"] = vault.encrypt(payload.password)
     if payload.backup_enabled is not None:
         setf["backup_enabled"] = payload.backup_enabled
     if payload.no_alert is not None:
@@ -1504,6 +1510,9 @@ async def bulk_update_devices(payload: DeviceBulkUpdate, user: dict = Depends(ge
         await db.devices.update_many(q, {"$pull": {"tags": {"$in": rem}}})
     if add:
         await db.devices.update_many(q, {"$addToSet": {"tags": {"$each": add}}})
+    if "password" in setf or "username" in setf:          # registro de quem trocou o login (nunca a senha)
+        logger.info("Edição em massa por %s: %d equipamento(s) — %s", user.get("email"), matched,
+                    ", ".join(x for x, on in (("usuário", "username" in setf), ("senha apagada" if payload.clear_password else "senha nova", "password" in setf)) if on))
     return {"updated": matched}
 
 

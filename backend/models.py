@@ -134,6 +134,8 @@ class DeviceBulkUpdate(BaseModel):
     protocol: Optional[str] = None
     port: Optional[int] = None
     username: Optional[str] = None
+    password: Optional[str] = None         # nova senha de login (None/vazio = manter); vai criptografada
+    clear_password: bool = False           # apaga a senha salva (usa chave / pergunta no acesso)
     backup_enabled: Optional[bool] = None
     snmp_community: Optional[str] = None   # "" = volta para a community padrão do monitoramento
     snmp_port: Optional[int] = None
