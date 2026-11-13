@@ -44,7 +44,7 @@ export const BASES = {
 };
 const LABELS = { url: "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", attribution: "nomes © Esri" };
 
-export const GEO_DEFAULTS = { view: "schema", base: "satellite", custom_url: "", labels: true, scale: 0.8, opacity: 1 };
+export const GEO_DEFAULTS = { view: "schema", base: "satellite", custom_url: "", labels: true, scale: 0.8, opacity: 1, nodes: "icon", names: false };
 
 // camadas que o canvas desenha: [{url, opacity, maxZoom}] + atribuição
 export function geoLayers(g) {
@@ -54,7 +54,7 @@ export function geoLayers(g) {
   const layers = url ? [{ url, opacity: cfg.opacity, maxZoom: base.maxZoom }] : [];
   if (cfg.labels && cfg.base === "satellite") layers.push({ url: LABELS.url, opacity: 1, maxZoom: 19 });
   const attribution = [cfg.base === "custom" ? "mapa personalizado" : base.attribution, cfg.labels && cfg.base === "satellite" ? LABELS.attribution : ""].filter(Boolean).join(" · ");
-  return { layers, attribution, scale: cfg.scale || 0.8 };
+  return { layers, attribution, scale: cfg.scale || 0.8, icons: cfg.nodes !== "box", names: !!cfg.names };
 }
 
 export const tileUrl = (tpl, z, x, y) => tpl.replace("{z}", z).replace("{x}", x).replace("{y}", y).replace("{s}", "abc"[(x + y) % 3]);

@@ -13,6 +13,7 @@ import shutil
 import tempfile
 import re
 import hashlib
+import secrets
 import hmac
 import httpx
 import asyncio
@@ -230,6 +231,8 @@ async def startup():
     await db.gpon_samples.create_index([("key", 1), ("at", 1)])
     await db.bgp_events.create_index([("key", 1), ("at", -1)])
     await db.maps.create_index("owner_id")
+    await db.tv_shares.create_index("token_hash", unique=True)
+    await db.tv_shares.create_index("owner_id")
     await db.net_reports.create_index([("map_id", 1), ("at", -1)])
     await db.net_reports_raw.create_index("rid")
     scheduler.start()
@@ -4357,7 +4360,8 @@ def _map_geo(g: dict) -> dict:
     return {"view": "geo" if g.get("view") == "geo" else "schema",
             "base": g.get("base") if g.get("base") in ("satellite", "streets", "dark", "custom") else "satellite",
             "custom_url": url[:400], "labels": bool(g.get("labels", True)),
-            "scale": min(2.0, max(0.3, float(g.get("scale") or 0.8))), "opacity": min(1.0, max(0.1, float(g.get("opacity") or 1.0)))}
+            "scale": min(2.0, max(0.3, float(g.get("scale") or 0.8))), "opacity": min(1.0, max(0.1, float(g.get("opacity") or 1.0))),
+            "nodes": "box" if g.get("nodes") == "box" else "icon", "names": bool(g.get("names"))}
 
 
 @api.put("/maps/{map_id}")
@@ -4502,7 +4506,10 @@ async def maps_auto_create(body: AutoMapCreateIn, user: dict = Depends(get_curre
 
 @api.get("/maps/{map_id}/live")
 async def map_live(map_id: str, user: dict = Depends(get_current_user)):
-    m = await _map_for(user, map_id)
+    return await _map_live_data(await _map_for(user, map_id))
+
+
+async def _map_live_data(m: dict) -> dict:
     dev_ids = [n["device_id"] for n in m.get("nodes", []) if n.get("device_id")]
     devs = {d["id"]: d for d in await db.devices.find({"id": {"$in": dev_ids}}, {"_id": 0, "id": 1, "name": 1, "host": 1, "status": 1, "latency_ms": 1}).to_list(1000)}
     node_dev = {n["id"]: n.get("device_id") for n in m.get("nodes", [])}
@@ -4542,6 +4549,134 @@ async def map_live(map_id: str, user: dict = Depends(get_current_user)):
     s = await monitoring.get_settings(db)
     return {"nodes": nodes, "links": links, "interval_sec": s["interval_sec"], "enabled": s["enabled"],
             "last_tick": net_monitor.last_tick.isoformat() if net_monitor.last_tick else None}
+
+
+# ----- telão (TV): link público, só leitura, de um ou mais mapas -----
+class TvShareIn(BaseModel):
+    name: str = ""
+    map_ids: List[str] = []
+    rotate_sec: int = 30          # 0 = não troca de mapa sozinho
+    show_hosts: bool = False      # mostrar o IP dos equipamentos na TV
+    enabled: bool = True
+
+
+def _tv_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def _tv_clean(user: dict, body: TvShareIn) -> dict:
+    mine = {m["id"] for m in await db.maps.find({"owner_id": user["id"]}, {"_id": 0, "id": 1}).to_list(1000)}
+    ids = [i for i in dict.fromkeys(body.map_ids) if i in mine]
+    if not ids:
+        raise HTTPException(status_code=400, detail="Escolha pelo menos um mapa")
+    return {"name": (body.name or "").strip()[:80] or "Mapa NOC", "map_ids": ids[:30],
+            "rotate_sec": 0 if body.rotate_sec <= 0 else max(10, min(int(body.rotate_sec), 3600)),
+            "show_hosts": bool(body.show_hosts), "enabled": bool(body.enabled)}
+
+
+def _tv_out(d: dict) -> dict:
+    try:
+        token = vault.decrypt(d["token_enc"])
+    except Exception:
+        token = ""
+    return {k: d.get(k) for k in ("id", "name", "map_ids", "rotate_sec", "show_hosts", "enabled", "created_at", "last_seen", "last_ip")} | {"token": token}
+
+
+@api.get("/maps-tv")
+async def tv_list(user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    docs = await db.tv_shares.find({"owner_id": user["id"]}, {"_id": 0}).sort("created_at", 1).to_list(200)
+    return [_tv_out(d) for d in docs]
+
+
+@api.post("/maps-tv")
+async def tv_create(body: TvShareIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    token = secrets.token_urlsafe(32)
+    doc = {**await _tv_clean(user, body), "id": os.urandom(8).hex(), "owner_id": user["id"], "token_hash": _tv_hash(token),
+           "token_enc": vault.encrypt(token), "created_at": datetime.now(timezone.utc).isoformat(), "last_seen": None, "last_ip": ""}
+    await db.tv_shares.insert_one(dict(doc))
+    return _tv_out(doc)
+
+
+@api.put("/maps-tv/{sid}")
+async def tv_update(sid: str, body: TvShareIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    r = await db.tv_shares.update_one({"id": sid, "owner_id": user["id"]}, {"$set": await _tv_clean(user, body)})
+    if not r.matched_count:
+        raise HTTPException(status_code=404, detail="Link do mapa não encontrado")
+    return _tv_out(await db.tv_shares.find_one({"id": sid}, {"_id": 0}))
+
+
+@api.post("/maps-tv/{sid}/new-link")
+async def tv_new_link(sid: str, user: dict = Depends(get_current_user)):
+    """Gera outro endereço: o antigo para de funcionar na hora (ex.: link vazou ou TV foi desativada)."""
+    _no_viewer(user)
+    token = secrets.token_urlsafe(32)
+    r = await db.tv_shares.update_one({"id": sid, "owner_id": user["id"]}, {"$set": {"token_hash": _tv_hash(token), "token_enc": vault.encrypt(token)}})
+    if not r.matched_count:
+        raise HTTPException(status_code=404, detail="Link do mapa não encontrado")
+    return _tv_out(await db.tv_shares.find_one({"id": sid}, {"_id": 0}))
+
+
+@api.delete("/maps-tv/{sid}")
+async def tv_delete(sid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    r = await db.tv_shares.delete_one({"id": sid, "owner_id": user["id"]})
+    return {"deleted": r.deleted_count}
+
+
+async def _tv_share(token: str, request: Request) -> dict:
+    if not token or len(token) > 100:
+        raise HTTPException(status_code=404, detail="Link inválido")
+    d = await db.tv_shares.find_one({"token_hash": _tv_hash(token)}, {"_id": 0})
+    if not d or not d.get("enabled"):
+        raise HTTPException(status_code=404, detail="Link do mapa inválido ou desativado")
+    owner = await db.users.find_one({"id": d["owner_id"]}, {"_id": 0, "id": 1, "disabled": 1})
+    if not owner or owner.get("disabled"):
+        raise HTTPException(status_code=404, detail="Link do mapa inválido ou desativado")
+    now = datetime.now(timezone.utc)
+    last = d.get("last_seen")
+    if not last or (now - datetime.fromisoformat(last)).total_seconds() > 60:
+        await db.tv_shares.update_one({"id": d["id"]}, {"$set": {"last_seen": now.isoformat(), "last_ip": security.client_ip(request)}})
+    return d
+
+
+async def _tv_map(d: dict, map_id: str) -> dict:
+    if map_id not in d["map_ids"]:
+        raise HTTPException(status_code=404, detail="Mapa não faz parte deste link")
+    m = await db.maps.find_one({"id": map_id, "owner_id": d["owner_id"]}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Mapa não encontrado")
+    return m
+
+
+@api.get("/public/tv/{token}")
+async def tv_public_info(token: str, request: Request):
+    """O que a TV precisa para desenhar: só os mapas do link, nomes e status dos equipamentos (IP só se liberado)."""
+    d = await _tv_share(token, request)
+    maps = await db.maps.find({"id": {"$in": d["map_ids"]}, "owner_id": d["owner_id"]}, {"_id": 0}).to_list(50)
+    order = {i: n for n, i in enumerate(d["map_ids"])}
+    maps.sort(key=lambda m: order.get(m["id"], 99))
+    dev_ids = list({n["device_id"] for m in maps for n in m.get("nodes", []) if n.get("device_id")})
+    devs = await db.devices.find({"id": {"$in": dev_ids}}, {"_id": 0, "id": 1, "name": 1, "host": 1, "status": 1}).to_list(5000)
+    keep = ("id", "name", "nodes", "links", "geo", "updated_at")
+    return {"name": d["name"], "rotate_sec": d["rotate_sec"],
+            "maps": [{k: m.get(k) for k in keep} for m in maps],
+            "devices": [{"id": x["id"], "name": x["name"], "status": x.get("status"), "host": x["host"] if d["show_hosts"] else ""} for x in devs]}
+
+
+@api.get("/public/tv/{token}/live/{map_id}")
+async def tv_public_live(token: str, map_id: str, request: Request):
+    d = await _tv_share(token, request)
+    data = await _map_live_data(await _tv_map(d, map_id))
+    if not d["show_hosts"]:
+        for n in data["nodes"].values():
+            n["host"] = ""
+            n["snmp_error"] = "sem resposta SNMP" if n.get("snmp_error") else None
+        for ln in data["links"].values():
+            ln["error"] = "sem resposta SNMP" if ln.get("error") else None
+    return data
 
 
 @api.get("/monitor/history")

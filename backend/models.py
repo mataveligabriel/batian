@@ -292,6 +292,8 @@ class MapGeo(BaseModel):
     labels: bool = True             # nomes de cidades/limites por cima do satélite
     scale: float = 0.8              # tamanho das caixas sobre o mapa
     opacity: float = 1.0            # opacidade do fundo
+    nodes: str = "icon"             # icon (ícone de roteador; clique mostra nome/IP) | box (caixa com nome)
+    names: bool = False             # nome embaixo do ícone
 
 
 class MapUpdate(BaseModel):

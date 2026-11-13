@@ -1574,5 +1574,16 @@ Menu **Documentação BGP** (módulo `bgpdoc`; libere em Usuários para quem nã
 - O campo **ir para** centraliza o mapa numa coordenada (útil para começar um mapa novo).
 - O traçado dos enlaces no satélite é separado do esquema: dá para desenhar o caminho real da fibra sem bagunçar o desenho lógico.
 - **Fundo** (em Editar): tipo de mapa, tamanho das caixas e opacidade. A visão em que o mapa estava ao salvar é a que ele abre por padrão, inclusive no painel NOC.
+- No satélite os equipamentos aparecem como **ícone de roteador** (anel colorido = status). Clique no ícone para ver nome, IP, status, latência e enlaces. Em **Fundo** dá para voltar às caixas com nome ou mostrar o nome embaixo do ícone.
 - As caixas e linhas mantêm o tamanho na tela em qualquer zoom; o tráfego ao vivo continua igual.
 - O navegador de quem abre o mapa precisa acessar o servidor de tiles escolhido (os tiles não passam pelo BastiON).
+
+## 78. Mapas → Link do mapa (abrir sem login em qualquer PC ou TV)
+
+Em **Mapas → Link do mapa** (ou no botão **Link do mapa** de um mapa aberto) crie um link: nome, os mapas que aparecem (na ordem marcada), de quanto em quanto tempo troca de mapa e se mostra os IPs.
+
+- O link `https://SEU-BASTION/tv/<código>` abre o mapa em tela cheia **sem login**. Mostra o tráfego ao vivo dos enlaces (a cada 10 s), o relógio, os contadores de enlaces down, acima de 80% e equipamentos offline, e um rodapé com os alarmes de todos os mapas do link.
+- Na tela: ← → trocam de mapa, espaço pausa a troca automática, F põe em tela cheia. O navegador tenta manter a tela acesa.
+- **.html**: baixa um arquivo pequeno que abre o mapa em tela cheia e mostra um aviso, recarregando sozinho quando a conexão volta (bom para pendrive, Chromecast ou mini PC).
+- Mapas em visão Satélite abrem no satélite. As alterações nos mapas aparecem na TV em até 5 min.
+- Segurança: o link só dá acesso aos mapas escolhidos (nomes, status e tráfego). Sem "mostrar IPs", os endereços e as mensagens de erro SNMP ficam escondidos. **Trocar endereço** invalida o endereço antigo na hora; desmarcar "link ativo" tira o link do ar. A lista mostra quando e de qual IP cada link foi aberto por último.

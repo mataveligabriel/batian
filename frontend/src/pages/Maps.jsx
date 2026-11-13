@@ -4,6 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { TransferDialog } from "@/components/TransferDialog";
 import { NetAnalysis } from "@/components/maps/NetAnalysis";
 import { AutoMapDialog } from "@/components/maps/AutoMap";
+import { TvShares } from "@/components/maps/TvShares";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -13,7 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
   Network, Plus, Pencil, Save, X, Trash2, Copy, Cable, Cloud, Type, Server, Loader2, MousePointer2,
-  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw, Send, Eye, Stethoscope, Wand2, Satellite, MapPin, Spline,
+  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw, Send, Eye, Stethoscope, Wand2, Satellite, MapPin, Spline, Tv,
 } from "lucide-react";
 import { MapCanvas } from "@/components/maps/MapCanvas";
 import { BASES, GEO_DEFAULTS, geoCenterOf, geoLayers, parseLatLon, project, toGeoView, unproject } from "@/components/maps/geo";
@@ -217,6 +218,7 @@ export default function Maps() {
   const [sendOpen, setSendOpen] = useState(false);
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [autoOpen, setAutoOpen] = useState(null);       // null | "new" | "current"
+  const [tvPre, setTvPre] = useState(null);             // mapa já marcado ao abrir a aba Link do mapa
   const [tab, setTab] = useState("maps");
   const [maps, setMaps] = useState([]);
   const [devices, setDevices] = useState([]);
@@ -385,6 +387,7 @@ export default function Maps() {
           <button className={tabBtn(tab === "maps")} onClick={() => setTab("maps")} data-testid="tab-maps"><Network className="w-4 h-4" /> Mapas</button>
           {!readOnly && <>
             <button className={tabBtn(tab === "alarms")} onClick={() => setTab("alarms")} data-testid="tab-alarms"><BellRing className="w-4 h-4" /> Alarmes de interface</button>
+            <button className={tabBtn(tab === "tv")} onClick={() => { setTvPre(null); setTab("tv"); }} data-testid="tab-tv"><Tv className="w-4 h-4" /> Link do mapa</button>
             <button className={tabBtn(tab === "settings")} onClick={() => setTab("settings")} data-testid="tab-settings"><Settings2 className="w-4 h-4" /> Configurações</button>
           </>}
           {readOnly && <span className="ml-auto self-center text-[11px] font-mono text-amber-300 flex items-center gap-1"><Eye className="w-3.5 h-3.5" /> somente leitura</span>}
@@ -395,6 +398,7 @@ export default function Maps() {
                                    onDone={async (id) => { setAutoOpen(null); await loadMaps(); openMap(id); }} />}
       {tab === "alarms" && <div className="p-4 md:p-6 pt-4 overflow-y-auto flex-1"><MonitorTab devices={devices} /></div>}
       {tab === "settings" && <div className="p-4 md:p-6 pt-4 overflow-y-auto flex-1"><SettingsTab /></div>}
+      {tab === "tv" && <div className="p-4 md:p-6 pt-4 overflow-y-auto flex-1"><TvShares key={tvPre?.id || "all"} maps={maps} preselect={tvPre} /></div>}
 
       {tab === "maps" && (
         <div className="flex-1 min-h-0 flex gap-4 p-2 md:px-6 md:pb-6 md:pt-4">
@@ -444,6 +448,8 @@ export default function Maps() {
                           title="Descobrir os enlaces dos equipamentos deste mapa (e de outros que você escolher) e acrescentar o que faltar"><Wand2 className="w-3.5 h-3.5 mr-1.5" /> Descobrir enlaces</Button>
                   <Button size="sm" variant="outline" onClick={startEdit} className={tb} data-testid="map-edit" title="Editar"><Pencil className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Editar</span></Button>
                   <Button size="sm" variant="outline" onClick={duplicate} className={`${tb} hidden md:inline-flex`}><Copy className="w-3.5 h-3.5 mr-1.5" /> Duplicar</Button>
+                  <Button size="sm" variant="outline" onClick={() => { setTvPre({ id: current.id, name: current.name }); setTab("tv"); }} className={`${tb} hidden md:inline-flex`} data-testid="map-tv"
+                          title="Link sem login para abrir este mapa em qualquer PC ou TV"><Tv className="w-3.5 h-3.5 mr-1.5" /> Link do mapa</Button>
                   <Button size="sm" variant="outline" onClick={() => setSendOpen(true)} className={`${tb} hidden md:inline-flex`} data-testid="map-send" title="Enviar este mapa (com os equipamentos) para outro usuário"><Send className="w-3.5 h-3.5 mr-1.5" /> Enviar</Button>
                   <Button size="sm" variant="ghost" onClick={removeMap} className="h-8 text-xs text-red-400 hover:bg-red-950/40 hidden md:inline-flex"><Trash2 className="w-3.5 h-3.5 mr-1.5" /> Excluir</Button>
                 </> : <>
@@ -490,12 +496,18 @@ export default function Maps() {
                   <div className="relative">
                     <Button size="sm" variant="outline" onClick={() => setGeoCfgOpen(v => !v)} className={tb} data-testid="map-geo-cfg"><Settings2 className="w-3.5 h-3.5 mr-1.5" /> Fundo</Button>
                     {geoCfgOpen && (
-                      <div className="absolute top-full mt-1 left-0 z-30 w-80 max-w-[calc(100vw-24px)] bg-surface border border-line rounded-md shadow-2xl p-3 space-y-2.5 text-xs">
+                      <div className="absolute top-full mt-1 right-0 z-40 w-80 max-w-[calc(100vw-24px)] bg-surface border border-line rounded-md shadow-2xl p-3 space-y-2.5 text-xs" data-testid="map-geo-panel">
+                        <div className="flex items-center justify-between"><span className="text-slate-300 font-medium">Fundo do mapa</span>
+                          <button onClick={() => setGeoCfgOpen(false)} className="text-slate-500 hover:text-slate-200" aria-label="Fechar"><X className="w-3.5 h-3.5" /></button></div>
                         <div className="flex flex-wrap gap-1">{Object.entries(BASES).map(([k, b]) => (
                           <button key={k} onClick={() => setGeo({ base: k })} className={`px-2 py-1 rounded border ${geoCfg.base === k ? "border-brand bg-brand/15 text-slate-100" : "border-line text-slate-400"}`}>{b.label}</button>))}</div>
                         {geoCfg.base === "custom" && <Input value={geoCfg.custom_url} onChange={e => setGeo({ custom_url: e.target.value })} placeholder="https://servidor/{z}/{x}/{y}.png" className="h-8 bg-sunken border-line text-xs font-mono" />}
                         {geoCfg.base === "satellite" && <label className="flex items-center gap-2 text-slate-300"><input type="checkbox" checked={geoCfg.labels} onChange={e => setGeo({ labels: e.target.checked })} /> nomes de cidades e divisas por cima</label>}
-                        <label className="block text-slate-400">Tamanho das caixas · {Math.round(geoCfg.scale * 100)}%
+                        <div className="flex items-center gap-1"><span className="text-slate-400 mr-1">Equipamentos:</span>
+                          {[["icon", "ícone de roteador"], ["box", "caixa com nome"]].map(([k, l]) => (
+                            <button key={k} onClick={() => setGeo({ nodes: k })} className={`px-2 py-1 rounded border ${geoCfg.nodes === k ? "border-brand bg-brand/15 text-slate-100" : "border-line text-slate-400"}`}>{l}</button>))}</div>
+                        {geoCfg.nodes !== "box" && <label className="flex items-center gap-2 text-slate-300"><input type="checkbox" checked={!!geoCfg.names} onChange={e => setGeo({ names: e.target.checked })} /> nome embaixo do ícone (senão, clique no ícone)</label>}
+                        <label className="block text-slate-400">Tamanho dos ícones/caixas · {Math.round(geoCfg.scale * 100)}%
                           <input type="range" min="0.3" max="1.5" step="0.05" value={geoCfg.scale} onChange={e => setGeo({ scale: Number(e.target.value) })} className="w-full" /></label>
                         <label className="block text-slate-400">Opacidade do fundo · {Math.round(geoCfg.opacity * 100)}%
                           <input type="range" min="0.2" max="1" step="0.05" value={geoCfg.opacity} onChange={e => setGeo({ opacity: Number(e.target.value) })} className="w-full" /></label>

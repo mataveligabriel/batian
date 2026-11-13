@@ -15,6 +15,7 @@ import OltScript from "@/pages/OltScript";
 import Winbox from "@/pages/Winbox";
 import TrafficEng from "@/pages/TrafficEng";
 import PublicLookingGlass from "@/pages/PublicLookingGlass";
+import TvMaps from "@/pages/TvMaps";
 import Rpki from "@/pages/Rpki";
 import Rdp from "@/pages/Rdp";
 import Agents from "@/pages/Agents";
@@ -67,6 +68,8 @@ function ProtectedShell() {
 function App() {
   // Looking Glass público: página avulsa, sem login e sem o resto do app
   if (window.location.pathname.replace(/\/+$/, "") === "/looking-glass") return <PublicLookingGlass />;
+  const tv = window.location.pathname.match(/^\/tv\/([\w-]{20,100})\/?$/);   // telão público (link sem login)
+  if (tv) return <TvMaps token={tv[1]} />;
   return (
     <AuthProvider>
       <BrowserRouter>

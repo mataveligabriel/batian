@@ -7,7 +7,10 @@ const SURFACE = "rgb(var(--c-panel))";
 
 const SPREAD = 62; // distância entre enlaces paralelos (no meio da curva)
 
+const ICON_R = 17;   // raio do ícone de roteador (mapa de satélite)
+
 function insideBox(node, p, s = 1) {
+  if (node._icon) return Math.hypot(p.x - node.x, p.y - node.y) <= (ICON_R + 4) * s;
   const z = NODE[node.kind] || NODE.device;
   return Math.abs(p.x - node.x) <= (z.w / 2 + 3) * s && Math.abs(p.y - node.y) <= (z.h / 2 + 3) * s;
 }
@@ -124,6 +127,25 @@ function Half({ pts, color, dashed, s = 1 }) {
   );
 }
 
+// símbolo clássico de roteador: disco com 4 setas (2 entrando, 2 saindo) + anel com a cor do status
+function RouterIcon({ color, sel }) {
+  const R = ICON_R;
+  const arrow = (rot, out) => (
+    <g transform={`rotate(${rot})`}>
+      <path d={out ? "M0,-3.2 L0,-11 M-3.6,-7.6 L0,-11.4 L3.6,-7.6" : "M0,-11.4 L0,-3.6 M-3.6,-7 L0,-3.2 L3.6,-7"} stroke="#fff" strokeWidth="2.1" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    </g>
+  );
+  return (
+    <g>
+      {sel && <circle r={R + 7} fill="none" stroke="#fff" strokeOpacity=".9" strokeWidth="2" strokeDasharray="4 3" />}
+      <circle r={R + 3} fill={color} />
+      <circle r={R} fill="#1e5aa8" stroke="#0b1d3a" strokeWidth="1" />
+      <ellipse rx={R - 2} ry={R / 2.6} cy={-R / 3.2} fill="#fff" fillOpacity=".12" />
+      {arrow(45, true)}{arrow(225, true)}{arrow(135, false)}{arrow(315, false)}
+    </g>
+  );
+}
+
 function ValueTag({ x, y, text, sub, accent, s = 1 }) {
   const w = Math.max(64, text.length * 6.6 + 14);
   return (
@@ -166,7 +188,9 @@ export function MapCanvas({
   const [drag, setDrag] = useState(null);       // {kind:"pan"|"node"|"vertex"|"pinch", ...}
   const [pending, setPending] = useState(null); // 1º nó escolhido na ferramenta "ligar"
   const [hover, setHover] = useState(null);     // {linkId, x, y}
-  const nodesById = useMemo(() => Object.fromEntries((map.nodes || []).map(n => [n.id, n])), [map.nodes]);
+  const icons = !!geo?.icons;
+  const nodes = useMemo(() => (map.nodes || []).map(n => (icons && n.kind === "device" ? { ...n, _icon: true } : n)), [map.nodes, icons]);
+  const nodesById = useMemo(() => Object.fromEntries(nodes.map(n => [n.id, n])), [nodes]);
   const devById = useMemo(() => Object.fromEntries((devices || []).map(d => [d.id, d])), [devices]);
   const [kMin, kMax] = geo ? [2 ** (3 - GEO_Z), 2 ** (19 - GEO_Z)] : [0.2, 3];
   const clampK = (k) => Math.max(kMin, Math.min(kMax, k));
@@ -407,7 +431,7 @@ export function MapCanvas({
             );
           })}
 
-          {(map.nodes || []).map(n => {
+          {nodes.map(n => {
             const sz = NODE[n.kind] || NODE.device;
             const dev = n.device_id ? devById[n.device_id] : null;
             const st = live?.nodes?.[n.id];
@@ -418,6 +442,15 @@ export function MapCanvas({
             const title = n.kind === "device" ? (dev?.name || n.label || "equipamento removido") : (n.label || (n.kind === "cloud" ? "Internet" : "texto"));
             const cursor = editing ? (tool === "connect" ? "crosshair" : "move") : "pointer";
             const tr = `translate(${n.x},${n.y})${s !== 1 ? ` scale(${s})` : ""}`;
+            if (n._icon) {
+              return (
+                <g key={n.id} transform={tr} onPointerDown={(e) => onNodeDown(e, n)} style={{ cursor }} data-testid={`node-${n.id}`}>
+                  <RouterIcon color={isPending ? "#FAB219" : n._nogeo ? "#FAB219" : stColor} sel={isSel} />
+                  {geo.names && <text y={ICON_R + 16} textAnchor="middle" fontSize="11" fontWeight="600" fill="#fff" stroke="#000" strokeWidth="3" paintOrder="stroke" fontFamily="DM Sans, sans-serif">{title.length > 22 ? title.slice(0, 21) + "…" : title}</text>}
+                  <title>{`${title}${dev?.host ? `\n${dev.host}` : ""}\nstatus: ${status}`}</title>
+                </g>
+              );
+            }
             if (n.kind === "label") {
               return (
                 <g key={n.id} transform={tr} onPointerDown={(e) => onNodeDown(e, n)} style={{ cursor }} data-testid={`node-${n.id}`}>
@@ -438,7 +471,7 @@ export function MapCanvas({
                     {title.length > 24 ? title.slice(0, 23) + "…" : title}
                   </text>
                   <text x={-sz.w / 2 + 24} y={13} fontSize="10" fill={n._nogeo ? "#FAB219" : "rgb(var(--c-slate-400))"} fontFamily="JetBrains Mono, monospace">
-                    {n._nogeo ? "sem posição no mapa" : <>{status}{st?.snmp_error ? " · ⚠ snmp" : ""}{dev ? ` · ${dev.host}` : ""}</>}
+                    {n._nogeo ? "sem posição no mapa" : <>{status}{st?.snmp_error ? " · ⚠ snmp" : ""}{dev?.host ? ` · ${dev.host}` : ""}</>}
                   </text>
                   <title>{`${title}\n${dev?.host || ""}\nstatus: ${status}${st?.snmp_error ? `\nSNMP: ${st.snmp_error}` : ""}`}</title>
                 </> : (
@@ -455,6 +488,31 @@ export function MapCanvas({
           {pending ? `Agora clique no 2º equipamento para ligar a ${nodeName(pending)}` : "Clique no 1º equipamento do link"}
         </div>
       )}
+
+      {(() => {   // ícone selecionado: cartão com nome, IP e status em cima do mapa
+        const n = selected?.type === "node" && nodesById[selected.id];
+        if (!n?._icon) return null;
+        const dev = devById[n.device_id];
+        const st = live?.nodes?.[n.id];
+        const status = st?.status || dev?.status || "unknown";
+        const host = dev?.host || st?.host || "";
+        const x = n.x * view.k + view.tx, y = n.y * view.k + view.ty - (ICON_R + 10) * (geo.scale || 0.8);
+        const nl = (map.links || []).filter(l => l.from === n.id || l.to === n.id);
+        const down = nl.filter(l => live?.links?.[l.id]?.down).length;
+        return (
+          <div className="absolute z-20 -translate-x-1/2 -translate-y-full bg-surface/95 border border-line2 rounded-md px-3 py-2 shadow-2xl text-xs min-w-[190px] pointer-events-auto"
+               style={{ left: Math.max(100, Math.min(x, size.w - 100)), top: Math.max(70, y) }} onPointerDown={(e) => e.stopPropagation()} data-testid="node-popup">
+            <button onClick={() => onSelect(null)} className="absolute top-1 right-1.5 text-slate-500 hover:text-slate-200" aria-label="Fechar">×</button>
+            <div className="font-semibold text-slate-100 pr-4">{dev?.name || n.label || "equipamento"}</div>
+            {host && <div className="font-mono text-slate-300">{host}</div>}
+            <div className="font-mono text-[11px] mt-0.5">
+              <span className={status === "online" ? "text-emerald-400" : status === "offline" ? "text-red-400" : "text-slate-400"}>● {status}</span>
+              {st?.latency_ms != null && <span className="text-slate-400"> · {Math.round(st.latency_ms)} ms</span>}
+            </div>
+            <div className="text-[11px] text-slate-400">{nl.length} enlace(s){down ? <span className="text-red-400"> · {down} down</span> : ""}{n._nogeo ? <span className="text-amber-300"> · sem posição</span> : ""}</div>
+          </div>
+        );
+      })()}
 
       {hoverLink && (
         <div className="absolute z-20 pointer-events-none bg-surface border border-line2 rounded-md px-3 py-2 text-[11px] font-mono text-slate-200 shadow-xl w-72"
