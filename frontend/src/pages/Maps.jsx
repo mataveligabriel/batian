@@ -13,9 +13,10 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
   Network, Plus, Pencil, Save, X, Trash2, Copy, Cable, Cloud, Type, Server, Loader2, MousePointer2,
-  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw, Send, Eye, Stethoscope, Wand2,
+  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw, Send, Eye, Stethoscope, Wand2, Satellite, MapPin, Spline,
 } from "lucide-react";
 import { MapCanvas } from "@/components/maps/MapCanvas";
+import { BASES, GEO_DEFAULTS, geoCenterOf, geoLayers, parseLatLon, project, toGeoView, unproject } from "@/components/maps/geo";
 import { LinkDialog } from "@/components/maps/LinkDialog";
 import { MonitorTab } from "@/components/maps/MonitorTab";
 import { TrafficChart } from "@/components/maps/TrafficChart";
@@ -40,7 +41,7 @@ function Legend() {
   );
 }
 
-function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onMonitor, siblings = [], liveLinks, onPick, onAddParallel, onResetCurve, readOnly = false }) {
+function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onMonitor, siblings = [], liveLinks, onPick, onAddParallel, onResetCurve, onShape, hasRoute, readOnly = false }) {
   const [range, setRange] = useState(60);
   const [points, setPoints] = useState([]);
   const a = nodes[link.from], b = nodes[link.to];
@@ -120,11 +121,38 @@ function LinkDetails({ link, live, nameOf, nodes, editing, onEdit, onDelete, onM
         {editing && <>
           <Button size="sm" variant="outline" onClick={onEdit} className="h-7 text-xs border-line bg-panel text-slate-200 hover:bg-slate-800"><Pencil className="w-3.5 h-3.5 mr-1" /> Editar link</Button>
           <Button size="sm" variant="outline" onClick={onAddParallel} data-testid="link-add-parallel" className="h-7 text-xs border-line bg-panel text-slate-200 hover:bg-slate-800"><Plus className="w-3.5 h-3.5 mr-1" /> Outro enlace entre estes</Button>
-          {link.curve != null && <Button size="sm" variant="ghost" onClick={onResetCurve} className="h-7 text-xs text-slate-300 hover:bg-slate-800"><RotateCcw className="w-3.5 h-3.5 mr-1" /> Curva automática</Button>}
+          {(hasRoute || link.curve != null) && <Button size="sm" variant="ghost" onClick={onResetCurve} className="h-7 text-xs text-slate-300 hover:bg-slate-800" data-testid="link-reset-route"><RotateCcw className="w-3.5 h-3.5 mr-1" /> Traçado automático</Button>}
           <Button size="sm" variant="ghost" onClick={onDelete} className="h-7 text-xs text-red-400 hover:bg-red-950/40"><Trash2 className="w-3.5 h-3.5 mr-1" /> Excluir</Button>
         </>}
-      {editing && <div className="text-[11px] text-slate-500 w-full">Arraste a bolinha no meio do enlace para curvar/afastar (duplo clique volta ao automático).</div>}
+      {editing && hasRoute && (
+        <div className="flex items-center gap-1 w-full text-[11px]">
+          <span className="text-slate-500 mr-1">Traçado:</span>
+          {[["smooth", "curvo"], ["straight", "segmentos retos"]].map(([k, l]) => (
+            <button key={k} onClick={() => onShape(k)} className={`px-2 py-0.5 rounded border ${(link.shape || "smooth") === k ? "border-brand bg-brand/15 text-slate-100" : "border-line text-slate-400"}`}>{l}</button>
+          ))}
+        </div>
+      )}
+      {editing && <div className="text-[11px] text-slate-500 w-full">Arraste a bolinha do meio para levar a linha por onde quiser. Com o enlace selecionado, os <b>+</b> criam mais pontos; arraste os quadrados para mover e dê duplo clique para apagar um ponto.</div>}
       </div>
+    </div>
+  );
+}
+
+function GeoCoords({ node, editing, onSet }) {
+  const [txt, setTxt] = useState("");
+  useEffect(() => { setTxt(node.lat != null ? `${node.lat}, ${node.lon}` : ""); }, [node.id, node.lat, node.lon]);
+  const apply = () => { const c = parseLatLon(txt); if (!c) return toast.error("Coordenada inválida. Ex.: -20.7700, -41.5300"); onSet({ lat: +c.lat.toFixed(6), lon: +c.lon.toFixed(6) }); };
+  return (
+    <div className="border-t border-line pt-2 space-y-1" data-testid="node-geo">
+      <div className="text-[11px] text-slate-400 flex items-center gap-1"><MapPin className="w-3 h-3" /> Posição no mapa</div>
+      {editing ? <>
+        <div className="flex gap-1">
+          <Input value={txt} onChange={e => setTxt(e.target.value)} onKeyDown={e => e.key === "Enter" && apply()} placeholder="-20.7700, -41.5300" className="h-8 bg-sunken border-line text-xs font-mono" aria-label="Coordenada" />
+          <Button size="sm" onClick={apply} className="h-8 bg-brand hover:bg-brand-strong text-xs">OK</Button>
+        </div>
+        <div className="text-[10px] text-slate-500">No Google Maps: botão direito no local → clique na coordenada para copiar. Ou arraste a caixa no mapa.</div>
+        {node.lat != null && <button onClick={() => onSet(null)} className="text-[10px] text-slate-500 hover:text-red-300">tirar posição</button>}
+      </> : <div className="text-[11px] font-mono text-slate-300">{node.lat != null ? `${node.lat}, ${node.lon}` : "sem posição"}</div>}
     </div>
   );
 }
@@ -204,9 +232,19 @@ export default function Maps() {
   const [addQ, setAddQ] = useState("");
   const [newName, setNewName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [viewMode, setViewMode] = useState("schema");   // schema | geo (satélite)
+  const [geoCenter, setGeoCenter] = useState(null);     // onde ficam os equipamentos ainda sem coordenada
+  const [geoCfgOpen, setGeoCfgOpen] = useState(false);
+  const [goTo, setGoTo] = useState("");
   const isMobile = useIsMobile();
 
   const map = editing ? draft : current;
+  const isGeo = viewMode === "geo";
+  const geoCfg = { ...GEO_DEFAULTS, ...(map?.geo || {}) };
+  const geoSig = JSON.stringify(map?.geo || null);
+  const geo = useMemo(() => (isGeo ? geoLayers(map?.geo) : null), [isGeo, geoSig]); // eslint-disable-line react-hooks/exhaustive-deps
+  const viewMap = useMemo(() => (isGeo ? toGeoView(map, geoCenter) : map), [isGeo, map, geoCenter]);
+  const noGeoCount = isGeo ? (map?.nodes || []).filter(n => n.lat == null).length : 0;
   const dirty = editing && JSON.stringify(draft) !== JSON.stringify(current);
   const nodesById = useMemo(() => Object.fromEntries((map?.nodes || []).map(n => [n.id, n])), [map]);
   const devById = useMemo(() => Object.fromEntries(devices.map(d => [d.id, d])), [devices]);
@@ -239,6 +277,7 @@ export default function Maps() {
     try {
       const { data } = await api.get(`/maps/${id}`);
       setCurrent(data); setDraft(null); setEditing(false); setSelected(null); setLive(null); setTool("select");
+      setViewMode(data.geo?.view === "geo" ? "geo" : "schema"); setGeoCenter(geoCenterOf(data));
       setFitSignal(s => s + 1);
     } catch (e) { toast.error(formatApiError(e)); }
   };
@@ -256,7 +295,8 @@ export default function Maps() {
   const save = async () => {
     setSaving(true);
     try {
-      const { data } = await api.put(`/maps/${draft.id}`, { name: draft.name, description: draft.description || "", nodes: draft.nodes, links: draft.links });
+      const { data } = await api.put(`/maps/${draft.id}`, { name: draft.name, description: draft.description || "", nodes: draft.nodes, links: draft.links,
+                                                            geo: { ...GEO_DEFAULTS, ...(draft.geo || {}), view: viewMode } });
       setCurrent(data); setDraft(null); setEditing(false); setTool("select");
       toast.success("Mapa salvo"); loadMaps();
     } catch (e) { toast.error(formatApiError(e)); }
@@ -283,8 +323,22 @@ export default function Maps() {
     if (draft.nodes.some(n => n.device_id === dev.id)) return toast.info(`${dev.name} já está no mapa`);
     addNode("device", { device_id: dev.id }); setAddOpen(false); setAddQ("");
   };
-  const bendLink = (id, curve) => setDraft(d => ({ ...d, links: d.links.map(l => l.id === id ? { ...l, curve } : l) }));
-  const moveNode = (id, x, y) => setDraft(d => ({ ...d, nodes: d.nodes.map(n => n.id === id ? { ...n, x, y } : n) }));
+  // traçado livre: no esquema fica em points (x/y); no satélite em geo_points (lat/lon) — cada visão tem o seu
+  const setLinkPoints = (id, pts) => setDraft(d => ({ ...d, links: d.links.map(l => {
+    if (l.id !== id) return l;
+    if (isGeo) return { ...l, geo_points: (pts || []).map(p => unproject(p.x, p.y)) };
+    return { ...l, points: pts || [], curve: null };
+  }) }));
+  const resetRoute = (id) => setDraft(d => ({ ...d, links: d.links.map(l => (l.id === id ? (isGeo ? { ...l, geo_points: [] } : { ...l, points: [], curve: null }) : l)) }));
+  const setShape = (id, shape) => setDraft(d => ({ ...d, links: d.links.map(l => (l.id === id ? { ...l, shape } : l)) }));
+  const moveNode = (id, x, y) => setDraft(d => ({ ...d, nodes: d.nodes.map(n => (n.id !== id ? n : isGeo ? { ...n, ...unproject(x, y) } : { ...n, x, y })) }));
+  const setGeo = (p) => setDraft(d => ({ ...d, geo: { ...GEO_DEFAULTS, ...(d.geo || {}), ...p } }));
+  const switchView = (m) => { setViewMode(m); setSelected(null); if (m === "geo" && !geoCenter) setGeoCenter(geoCenterOf(map)); setFitSignal(s => s + 1); };
+  const goToCoord = () => {
+    const c = parseLatLon(goTo);
+    if (!c) return toast.error("Coordenada inválida. Ex.: -20.7700, -41.5300");
+    setGeoCenter(project(c.lat, c.lon)); setGoTo(""); setFitSignal(s => s + 1);
+  };
   const deleteSelected = () => {
     if (!selected) return;
     if (selected.type === "node") patch(d => { d.nodes = d.nodes.filter(n => n.id !== selected.id); d.links = d.links.filter(l => l.from !== selected.id && l.to !== selected.id); return d; });
@@ -318,6 +372,7 @@ export default function Maps() {
   const pairOf = (l) => [l.from, l.to].sort().join("|");
   const selSiblings = selLink ? map.links.filter(l => pairOf(l) === pairOf(selLink)) : [];
   const selDev = selNode?.device_id && devById[selNode.device_id];
+  const selHasRoute = !!selLink && (isGeo ? !!selLink.geo_points?.length : !!selLink.points?.length);
   const addList = devices.filter(d => !addQ || `${d.name} ${d.host} ${(d.tags || []).join(" ")}`.toLowerCase().includes(addQ.toLowerCase()));
   const tb = "h-8 text-xs border-line bg-panel text-slate-200 hover:bg-slate-800";
 
@@ -427,6 +482,28 @@ export default function Maps() {
                     </Button>
                   </div>
                 </>}
+                <div className={`flex border border-line rounded overflow-hidden ${editing ? "" : "ml-auto md:ml-0"}`} data-testid="map-view-mode">
+                  <button onClick={() => switchView("schema")} className={`h-8 px-2.5 text-xs flex items-center gap-1.5 ${!isGeo ? "bg-brand/25 text-slate-100" : "bg-panel text-slate-400"}`} title="Desenho livre (esquema)"><Spline className="w-3.5 h-3.5" /> Esquema</button>
+                  <button onClick={() => switchView("geo")} className={`h-8 px-2.5 text-xs flex items-center gap-1.5 ${isGeo ? "bg-brand/25 text-slate-100" : "bg-panel text-slate-400"}`} data-testid="map-view-geo" title="Sobre o mapa de satélite, ligando as cidades"><Satellite className="w-3.5 h-3.5" /> Satélite</button>
+                </div>
+                {isGeo && editing && (
+                  <div className="relative">
+                    <Button size="sm" variant="outline" onClick={() => setGeoCfgOpen(v => !v)} className={tb} data-testid="map-geo-cfg"><Settings2 className="w-3.5 h-3.5 mr-1.5" /> Fundo</Button>
+                    {geoCfgOpen && (
+                      <div className="absolute top-full mt-1 left-0 z-30 w-80 max-w-[calc(100vw-24px)] bg-surface border border-line rounded-md shadow-2xl p-3 space-y-2.5 text-xs">
+                        <div className="flex flex-wrap gap-1">{Object.entries(BASES).map(([k, b]) => (
+                          <button key={k} onClick={() => setGeo({ base: k })} className={`px-2 py-1 rounded border ${geoCfg.base === k ? "border-brand bg-brand/15 text-slate-100" : "border-line text-slate-400"}`}>{b.label}</button>))}</div>
+                        {geoCfg.base === "custom" && <Input value={geoCfg.custom_url} onChange={e => setGeo({ custom_url: e.target.value })} placeholder="https://servidor/{z}/{x}/{y}.png" className="h-8 bg-sunken border-line text-xs font-mono" />}
+                        {geoCfg.base === "satellite" && <label className="flex items-center gap-2 text-slate-300"><input type="checkbox" checked={geoCfg.labels} onChange={e => setGeo({ labels: e.target.checked })} /> nomes de cidades e divisas por cima</label>}
+                        <label className="block text-slate-400">Tamanho das caixas · {Math.round(geoCfg.scale * 100)}%
+                          <input type="range" min="0.3" max="1.5" step="0.05" value={geoCfg.scale} onChange={e => setGeo({ scale: Number(e.target.value) })} className="w-full" /></label>
+                        <label className="block text-slate-400">Opacidade do fundo · {Math.round(geoCfg.opacity * 100)}%
+                          <input type="range" min="0.2" max="1" step="0.05" value={geoCfg.opacity} onChange={e => setGeo({ opacity: Number(e.target.value) })} className="w-full" /></label>
+                        <div className="text-[10px] text-slate-500">Ao salvar, o mapa passa a abrir na visão {isGeo ? "Satélite" : "Esquema"}.</div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {!editing && (
                   <div className="ml-auto text-[11px] font-mono text-slate-500 hidden md:flex items-center gap-3">
                     <span>{live?.enabled === false ? "coleta desativada" : `atualiza a cada ${live?.interval_sec || 30}s · última ${fmtTime(live?.last_tick)}`}</span>
@@ -435,6 +512,19 @@ export default function Maps() {
                 )}
               </div>
               <Legend />
+              {isGeo && (
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400" data-testid="map-geo-bar">
+                  <MapPin className="w-3.5 h-3.5 text-brand-soft" />
+                  {noGeoCount > 0
+                    ? <span className="text-amber-200">{noGeoCount} equipamento(s) sem posição (borda tracejada){editing ? " — arraste cada um até a cidade, ou selecione e cole a coordenada." : " — clique em Editar para posicioná-los."}</span>
+                    : <span>Equipamentos na posição geográfica.{editing ? " Arraste para ajustar; selecione um enlace para desenhar o caminho da fibra." : ""}</span>}
+                  <span className="ml-auto flex items-center gap-1">
+                    <Input value={goTo} onChange={e => setGoTo(e.target.value)} onKeyDown={e => e.key === "Enter" && goToCoord()} placeholder="ir para: -20.77, -41.53"
+                           className="h-7 w-48 bg-sunken border-line text-[11px] font-mono" aria-label="Ir para coordenada" />
+                    <Button size="sm" variant="outline" onClick={goToCoord} className="h-7 text-[11px] border-line bg-panel">Ir</Button>
+                  </span>
+                </div>
+              )}
               <div className="flex-1 min-h-0 flex gap-3">
                 <div className="flex-1 min-w-0 rounded-lg border border-line overflow-hidden">
                   {map.nodes.length === 0 && !editing ? (
@@ -443,8 +533,8 @@ export default function Maps() {
                       {!readOnly && <Button size="sm" onClick={startEdit} className="bg-brand hover:bg-brand-strong"><Pencil className="w-3.5 h-3.5 mr-1.5" /> Montar o mapa</Button>}
                     </div>
                   ) : (
-                    <MapCanvas map={map} live={live} devices={devices} editing={editing} tool={tool} selected={selected}
-                               onSelect={setSelected} onMoveNode={moveNode} onBendLink={bendLink} fitSignal={fitSignal}
+                    <MapCanvas map={viewMap} geo={geo} live={live} devices={devices} editing={editing} tool={tool} selected={selected}
+                               onSelect={setSelected} onMoveNode={moveNode} onLinkPoints={setLinkPoints} fitSignal={fitSignal}
                                onConnect={(a, b) => setLinkDlg({ from: a, to: b })} />
                   )}
                 </div>
@@ -459,7 +549,7 @@ export default function Maps() {
                                    onDelete={deleteSelected} onMonitor={() => monitorLinkIfaces(selLink)} readOnly={readOnly}
                                    siblings={selSiblings} liveLinks={live?.links} onPick={(id) => setSelected({ type: "link", id })}
                                    onAddParallel={() => setLinkDlg({ from: selLink.from, to: selLink.to })}
-                                   onResetCurve={() => bendLink(selLink.id, null)} />
+                                   onResetCurve={() => resetRoute(selLink.id)} hasRoute={selHasRoute} onShape={(k) => setShape(selLink.id, k)} />
                     )}
                     {selNode && (
                       <div className="space-y-3" data-testid="node-details">
@@ -475,6 +565,8 @@ export default function Maps() {
                             <Input value={selNode.label || ""} onChange={e => patch(d => { d.nodes.find(n => n.id === selNode.id).label = e.target.value; return d; })}
                                    className="bg-sunken border-line" /></div>
                         )}
+                        {(isGeo || selNode.lat != null) && <GeoCoords node={selNode} editing={editing}
+                          onSet={(c) => { patch(d => { const n = d.nodes.find(x => x.id === selNode.id); n.lat = c ? c.lat : null; n.lon = c ? c.lon : null; return d; }); }} />}
                         {editing && <Button size="sm" variant="ghost" onClick={deleteSelected} className="h-7 text-xs text-red-400 hover:bg-red-950/40"><Trash2 className="w-3.5 h-3.5 mr-1" /> Remover do mapa</Button>}
                         {editing && <div className="text-[11px] text-slate-500">Para ligar: ferramenta <b>Ligar</b> → clique neste e no outro equipamento.</div>}
                       </div>

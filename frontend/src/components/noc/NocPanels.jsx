@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import { Network, Gauge, LayoutGrid, Settings2, ExternalLink, Maximize, Minimize, Timer, Loader2 } from "lucide-react";
 import { MapCanvas } from "@/components/maps/MapCanvas";
+import { geoLayers, toGeoView } from "@/components/maps/geo";
 import { WidgetBody, widgetIcon } from "@/components/dash/WidgetBody";
 import { fmtBps, UTIL_BANDS, STATUS, NO_DATA } from "@/lib/netfmt";
 
@@ -33,7 +34,8 @@ function MapPanel({ id, devices, height, onOpen }) {
   return (
     <div>
       <div className="rounded-md border border-line overflow-hidden" style={{ height }}>
-        <MapCanvas map={map} live={live} devices={devices} editing={false} tool="select" selected={sel} onSelect={setSel}
+        <MapCanvas map={map.geo?.view === "geo" ? toGeoView(map) : map} geo={map.geo?.view === "geo" ? geoLayers(map.geo) : null}
+                   live={live} devices={devices} editing={false} tool="select" selected={sel} onSelect={setSel}
                    onMoveNode={() => {}} onConnect={() => {}} fitSignal={height} />
       </div>
       <div className="flex items-center gap-3 flex-wrap mt-1.5 text-[10px] font-mono text-slate-500">

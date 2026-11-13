@@ -1560,3 +1560,19 @@ Menu **Documentação BGP** (módulo `bgpdoc`; libere em Usuários para quem nã
 - **Communities e prefixos**: catálogo de communities do grupo (valor, nome, papel, alvo, descrição). O papel define o que a config padrão faz com ela (marcar rota de upstream/cliente/IX/CDN, blackhole, no-export…). Abaixo, documente **prefixo + ASN + communities**: fica registrado no grupo, com quem e quando. Community fora do catálogo aparece destacada.
 - **Pares BGP**: upstreams, downstreams, IX/PTT, CDN e iBGP, com IPs, roteador, interface/VLAN, banda, circuito, limites de prefixos, local-pref, o que exportar, contatos do NOC e a **sessão agora** (vinda do Monitor BGP pelo IP do vizinho). **Importar do Monitor BGP** traz as sessões que ainda não estão documentadas.
 - **Config padrão**: escolha fabricante (Huawei VRP, Junos, Cisco IOS-XE, MikroTik v7), pares, ASN local e router-id. Sai prefix-list dos próprios, community-list de clientes, políticas de entrada (upstream/IX/CDN negam seus prefixos, removem a community de cliente, marcam a do papel e o local-pref; cliente aceita só os prefixos dele) e de saída, max-prefix e os peers. Senha MD5 nunca é guardada: sai como `<SENHA>`. Revise antes de aplicar.
+
+## 77. Mapas → traçado livre dos enlaces e visão Satélite
+
+**Traçado livre (Editar → Mover):**
+- Arraste a bolinha do meio de um enlace para levar a linha por onde quiser. Isso cria um ponto no traçado.
+- Com o enlace selecionado, os **+** de cada trecho criam mais pontos. Arraste os quadrados para mover; duplo clique apaga o ponto.
+- No painel do enlace você escolhe o traçado **curvo** (passa suave pelos pontos) ou em **segmentos retos**, e **Traçado automático** volta ao padrão.
+
+**Visão Satélite (botões Esquema | Satélite, em cima do mapa):**
+- Os equipamentos ficam na posição geográfica, sobre imagem de satélite (Esri), ruas (OpenStreetMap), fundo escuro (CARTO) ou um servidor de tiles próprio (`https://.../{z}/{x}/{y}.png`). No satélite dá para ligar os nomes das cidades e divisas por cima.
+- Posicionar: em Editar, arraste a caixa até a cidade ou selecione o equipamento e cole a coordenada (Google Maps → botão direito no local → clique na coordenada). Aceita `-20.7700, -41.5300` ou graus/minutos (`20°46'S 41°32'W`). Quem ainda não tem posição aparece com borda tracejada perto dos demais.
+- O campo **ir para** centraliza o mapa numa coordenada (útil para começar um mapa novo).
+- O traçado dos enlaces no satélite é separado do esquema: dá para desenhar o caminho real da fibra sem bagunçar o desenho lógico.
+- **Fundo** (em Editar): tipo de mapa, tamanho das caixas e opacidade. A visão em que o mapa estava ao salvar é a que ele abre por padrão, inclusive no painel NOC.
+- As caixas e linhas mantêm o tamanho na tela em qualquer zoom; o tráfego ao vivo continua igual.
+- O navegador de quem abre o mapa precisa acessar o servidor de tiles escolhido (os tiles não passam pelo BastiON).

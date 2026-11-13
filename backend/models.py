@@ -251,6 +251,18 @@ class MapNode(BaseModel):
     label: str = ""
     x: float = 0
     y: float = 0
+    lat: Optional[float] = None     # posição no mapa de satélite (independente do x/y do esquema)
+    lon: Optional[float] = None
+
+
+class MapPoint(BaseModel):
+    x: float
+    y: float
+
+
+class MapGeoPoint(BaseModel):
+    lat: float
+    lon: float
 
 
 class MapLink(BaseModel):
@@ -262,6 +274,9 @@ class MapLink(BaseModel):
     capacity_mbps: Optional[int] = None
     label: str = ""
     curve: Optional[float] = None   # curvatura (px, perpendicular a from→to); None = automático
+    points: List[MapPoint] = []     # traçado livre no esquema (pontos intermediários)
+    geo_points: List[MapGeoPoint] = []   # traçado livre no mapa de satélite
+    shape: str = "smooth"           # smooth (curva pelos pontos) | straight (segmentos retos)
     model_config = {"populate_by_name": True}
 
 
@@ -270,11 +285,21 @@ class MapCreate(BaseModel):
     description: str = ""
 
 
+class MapGeo(BaseModel):
+    view: str = "schema"            # visão que abre por padrão: schema | geo
+    base: str = "satellite"         # satellite | streets | dark | custom
+    custom_url: str = ""            # https://.../{z}/{x}/{y}.png
+    labels: bool = True             # nomes de cidades/limites por cima do satélite
+    scale: float = 0.8              # tamanho das caixas sobre o mapa
+    opacity: float = 1.0            # opacidade do fundo
+
+
 class MapUpdate(BaseModel):
     name: str
     description: str = ""
     nodes: List[MapNode] = []
     links: List[MapLink] = []
+    geo: Optional[MapGeo] = None
 
 
 class MonitorSettings(BaseModel):

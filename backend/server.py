@@ -4339,6 +4339,27 @@ async def get_map(map_id: str, user: dict = Depends(get_current_user)):
     return await _map_for(user, map_id)
 
 
+def _map_latlon(lat, lon):
+    """Coordenada válida (6 casas ~ 10 cm) ou (None, None)."""
+    try:
+        lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return None, None
+    if not (-85 <= lat <= 85 and -180 <= lon <= 180):
+        return None, None
+    return round(lat, 6), round(lon, 6)
+
+
+def _map_geo(g: dict) -> dict:
+    url = (g.get("custom_url") or "").strip()
+    if url and not (re.match(r"^https://[^\s\"'<>]+$", url) and all(k in url for k in ("{z}", "{x}", "{y}"))):
+        raise HTTPException(status_code=400, detail="URL de mapa personalizado: use https://... com {z}, {x} e {y}")
+    return {"view": "geo" if g.get("view") == "geo" else "schema",
+            "base": g.get("base") if g.get("base") in ("satellite", "streets", "dark", "custom") else "satellite",
+            "custom_url": url[:400], "labels": bool(g.get("labels", True)),
+            "scale": min(2.0, max(0.3, float(g.get("scale") or 0.8))), "opacity": min(1.0, max(0.1, float(g.get("opacity") or 1.0)))}
+
+
 @api.put("/maps/{map_id}")
 async def update_map(map_id: str, payload: MapUpdate, user: dict = Depends(get_current_user)):
     await _map_for(user, map_id)
@@ -4352,6 +4373,7 @@ async def update_map(map_id: str, payload: MapUpdate, user: dict = Depends(get_c
         else:
             nd["device_id"] = None
         nd["x"], nd["y"] = round(float(nd["x"]), 1), round(float(nd["y"]), 1)
+        nd["lat"], nd["lon"] = _map_latlon(nd.get("lat"), nd.get("lon"))
         nodes.append(nd)
     node_ids = {n["id"] for n in nodes}
     links = []
@@ -4359,9 +4381,14 @@ async def update_map(map_id: str, payload: MapUpdate, user: dict = Depends(get_c
         ld = ln.model_dump(by_alias=True)
         if ld["from"] not in node_ids or ld["to"] not in node_ids or ld["from"] == ld["to"]:
             continue  # link órfão (nó removido)
+        ld["points"] = [{"x": round(p["x"], 1), "y": round(p["y"], 1)} for p in ld.get("points", [])][:200]
+        ld["geo_points"] = [{"lat": a, "lon": b} for a, b in (_map_latlon(p["lat"], p["lon"]) for p in ld.get("geo_points", [])) if a is not None][:500]
+        ld["shape"] = "straight" if ld.get("shape") == "straight" else "smooth"
         links.append(ld)
     upd = {"name": payload.name.strip() or "Mapa", "description": payload.description.strip(),
            "nodes": nodes, "links": links, "updated_at": datetime.now(timezone.utc).isoformat()}
+    if payload.geo is not None:
+        upd["geo"] = _map_geo(payload.geo.model_dump())
     await db.maps.update_one({"id": map_id}, {"$set": upd})
     return await _map_for(user, map_id)
 
