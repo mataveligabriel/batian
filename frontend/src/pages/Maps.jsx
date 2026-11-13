@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { TransferDialog } from "@/components/TransferDialog";
 import { NetAnalysis } from "@/components/maps/NetAnalysis";
+import { AutoMapDialog } from "@/components/maps/AutoMap";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -12,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
   Network, Plus, Pencil, Save, X, Trash2, Copy, Cable, Cloud, Type, Server, Loader2, MousePointer2,
-  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw, Send, Eye, Stethoscope,
+  TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw, Send, Eye, Stethoscope, Wand2,
 } from "lucide-react";
 import { MapCanvas } from "@/components/maps/MapCanvas";
 import { LinkDialog } from "@/components/maps/LinkDialog";
@@ -187,6 +188,7 @@ export default function Maps() {
   const [params, setParams] = useSearchParams();
   const [sendOpen, setSendOpen] = useState(false);
   const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [autoOpen, setAutoOpen] = useState(null);       // null | "new" | "current"
   const [tab, setTab] = useState("maps");
   const [maps, setMaps] = useState([]);
   const [devices, setDevices] = useState([]);
@@ -334,6 +336,8 @@ export default function Maps() {
         </div>
       </div>
 
+      {autoOpen && <AutoMapDialog devices={devices} maps={maps} current={autoOpen === "current" ? current : null} onClose={() => setAutoOpen(null)}
+                                   onDone={async (id) => { setAutoOpen(null); await loadMaps(); openMap(id); }} />}
       {tab === "alarms" && <div className="p-4 md:p-6 pt-4 overflow-y-auto flex-1"><MonitorTab devices={devices} /></div>}
       {tab === "settings" && <div className="p-4 md:p-6 pt-4 overflow-y-auto flex-1"><SettingsTab /></div>}
 
@@ -346,6 +350,11 @@ export default function Maps() {
                      placeholder="Novo mapa…" className="h-8 bg-sunken border-line text-sm" data-testid="new-map-name" />
               <Button size="sm" onClick={createMap} disabled={!newName.trim()} className="h-8 px-2 bg-brand hover:bg-brand-strong" data-testid="new-map-btn"><Plus className="w-4 h-4" /></Button>
             </div>
+            {!readOnly && (
+              <button onClick={() => setAutoOpen("new")} className="mx-3 mt-2 mb-1 h-8 rounded-md border border-brand/50 text-brand-soft text-xs flex items-center justify-center gap-1.5 hover:bg-brand/10" data-testid="automap-open">
+                <Wand2 className="w-3.5 h-3.5" /> Mapa automático
+              </button>
+            )}
             <div className="flex-1 overflow-y-auto divide-y divide-line">
               {maps.length === 0 && <div className="p-4 text-xs text-slate-500 font-mono">{readOnly ? "Nenhum mapa liberado para você ainda. Peça ao administrador." : 'Nenhum mapa. Crie o primeiro acima (ex.: "Backbone", "POP Cachoeiro").'}</div>}
               {maps.map(m => (
@@ -376,6 +385,8 @@ export default function Maps() {
                 {readOnly ? null : !editing ? <>
                   <Button size="sm" variant="outline" onClick={() => setAnalysisOpen(true)} className={`${tb} border-brand/50 text-brand-soft`} data-testid="map-analyze"
                           title="Diagnóstico: custos OSPF, BGP, erros de interface e cenários de falha"><Stethoscope className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Analisar</span></Button>
+                  <Button size="sm" variant="outline" onClick={() => setAutoOpen("current")} className={`${tb} hidden md:inline-flex`} data-testid="map-autodiscover"
+                          title="Descobrir os enlaces dos equipamentos deste mapa (e de outros que você escolher) e acrescentar o que faltar"><Wand2 className="w-3.5 h-3.5 mr-1.5" /> Descobrir enlaces</Button>
                   <Button size="sm" variant="outline" onClick={startEdit} className={tb} data-testid="map-edit" title="Editar"><Pencil className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Editar</span></Button>
                   <Button size="sm" variant="outline" onClick={duplicate} className={`${tb} hidden md:inline-flex`}><Copy className="w-3.5 h-3.5 mr-1.5" /> Duplicar</Button>
                   <Button size="sm" variant="outline" onClick={() => setSendOpen(true)} className={`${tb} hidden md:inline-flex`} data-testid="map-send" title="Enviar este mapa (com os equipamentos) para outro usuário"><Send className="w-3.5 h-3.5 mr-1.5" /> Enviar</Button>

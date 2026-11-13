@@ -1540,3 +1540,23 @@ aparecem marcadas. O plano fica salvo (**Migrações salvas**). Para cada PON: *
 destino). *Desfazer* remove do destino o que foi migrado. Na mesma OLT (troca de placa) a ordem é remover primeiro.
 Tudo passa pela política de comandos e fica no histórico de sessões; ONU roteada migra a VLAN — a WAN/PPPoE continua
 na própria ONU (ou no TR-069).
+
+## 75. Mapas → Mapa automático (descobrir enlaces e tráfego real)
+
+Em **Mapas**, o botão **Mapa automático** (barra lateral) ou **Descobrir enlaces** (no mapa aberto) analisa os equipamentos que você escolher — filtre por tag (grupo/backbone) e fabricante e marque os que entram.
+
+- O BastiON lê por SNMP as interfaces, os IPs e duas amostras de tráfego (intervalo configurável, padrão 10 s) e, opcionalmente, a tabela LLDP (LLDP-MIB).
+- Enlaces L3: as duas pontas na mesma sub-rede /29–/31. Enlaces L2: vizinhos LLDP que também estão na seleção. Por padrão, as portas físicas de um bundle (Eth-Trunk/ae) cujo par já está ligado por IP ficam de fora; marque **incluir portas físicas** para ver cada membro.
+- O resultado mostra cada enlace com interface A/B, capacidade e uso A→B / B→A em tempo real. Desmarque o que não quiser e escolha **Criar mapa novo** ou **Acrescentar em** um mapa existente (não duplica nós nem enlaces e mantém as posições).
+- Vizinhos LLDP fora da seleção aparecem em uma lista à parte, com botão para incluí-los e rodar de novo.
+- Depois de salvo, o mapa passa a ser coletado pelo monitor normalmente (tráfego ao vivo nos enlaces).
+- Requisitos: SNMP configurado nos equipamentos; LLDP habilitado onde quiser enlaces L2.
+
+## 76. Documentação BGP (grupos, communities, prefixos, pares e config padrão)
+
+Menu **Documentação BGP** (módulo `bgpdoc`; libere em Usuários para quem não é admin).
+
+- **Visão geral**: um cartão por grupo (empresa/backbone com o ASN) com contagens de communities, prefixos e pares por tipo, e exportação da documentação em Markdown.
+- **Communities e prefixos**: catálogo de communities do grupo (valor, nome, papel, alvo, descrição). O papel define o que a config padrão faz com ela (marcar rota de upstream/cliente/IX/CDN, blackhole, no-export…). Abaixo, documente **prefixo + ASN + communities**: fica registrado no grupo, com quem e quando. Community fora do catálogo aparece destacada.
+- **Pares BGP**: upstreams, downstreams, IX/PTT, CDN e iBGP, com IPs, roteador, interface/VLAN, banda, circuito, limites de prefixos, local-pref, o que exportar, contatos do NOC e a **sessão agora** (vinda do Monitor BGP pelo IP do vizinho). **Importar do Monitor BGP** traz as sessões que ainda não estão documentadas.
+- **Config padrão**: escolha fabricante (Huawei VRP, Junos, Cisco IOS-XE, MikroTik v7), pares, ASN local e router-id. Sai prefix-list dos próprios, community-list de clientes, políticas de entrada (upstream/IX/CDN negam seus prefixos, removem a community de cliente, marcam a do papel e o local-pref; cliente aceita só os prefixos dele) e de saída, max-prefix e os peers. Senha MD5 nunca é guardada: sai como `<SENHA>`. Revise antes de aplicar.

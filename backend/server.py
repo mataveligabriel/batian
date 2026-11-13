@@ -83,6 +83,7 @@ import oltgen
 import olthw
 import oltfh
 import oltmig
+import bgpdoc
 import cmdpolicy
 import siem as siemmod
 import loginanom
@@ -102,6 +103,7 @@ import vpve2esx
 import tcprelay
 import runbooks
 import teopt
+import topodisc
 import vpnconf
 import botnet
 import webpush
@@ -4378,6 +4380,97 @@ async def duplicate_map(map_id: str, user: dict = Depends(get_current_user)):
     await db.maps.insert_one(dict(m))
     m.pop("_id", None)
     return m
+
+
+class AutoMapIn(BaseModel):
+    device_ids: List[str]
+    sample_sec: int = 10
+    lldp: bool = True
+    physical: bool = False      # também as portas físicas de um par que já tem enlace L3 (membros de bundle)
+
+
+class AutoMapCreateIn(BaseModel):
+    name: str = ""
+    description: str = ""
+    map_id: str = ""            # vazio = mapa novo; senão acrescenta neste mapa (mantém o que já está desenhado)
+    device_ids: List[str]
+    links: List[dict] = []
+
+
+@api.post("/maps/auto/discover")
+async def maps_auto_discover(body: AutoMapIn, user: dict = Depends(get_current_user)):
+    """Lê os equipamentos escolhidos por SNMP (interfaces, IPs, tráfego em duas leituras e vizinhos LLDP) e devolve os
+    enlaces encontrados com o tráfego medido agora. Não grava nada."""
+    _no_viewer(user)
+    ids = list(dict.fromkeys(body.device_ids))[:150]
+    if len(ids) < 2:
+        raise HTTPException(400, "Escolha ao menos 2 equipamentos")
+    started = time.monotonic()
+    devs = {d["id"]: d async for d in db.devices.find({"id": {"$in": ids}, **_scope(user)}, {"_id": 0})}
+    settings = await monitoring.get_settings(db)
+    sample = max(3, min(int(body.sample_sec or 10), 30))
+    sem = asyncio.Semaphore(8)
+    lldp: Dict[str, list] = {}
+
+    async def one(did):
+        dev = devs.get(did)
+        if not dev:
+            return did, {"ok": False, "error": "equipamento não encontrado"}
+        async with sem:
+            try:
+                client = await _snmp_client(dev, settings)
+                d = await asyncio.wait_for(teopt.collect(client, sample), timeout=180)
+                if body.lldp:
+                    try:
+                        lldp[did] = await asyncio.wait_for(topodisc.collect_lldp(client), timeout=60)
+                    except Exception:
+                        lldp[did] = []
+                return did, d
+            except asyncio.TimeoutError:
+                return did, {"ok": False, "error": "SNMP demorou demais"}
+            except Exception as e:
+                return did, {"ok": False, "error": (str(e) or type(e).__name__)[:200]}
+    data = dict(await asyncio.gather(*[one(d) for d in ids]))
+    ip_links, notes = teopt.discover_links(devs, data)
+    ll, outside = topodisc.lldp_links(devs, data, lldp) if body.lldp else ([], [])
+    links = topodisc.merge(devs, data, ip_links, ll, body.physical)
+    nodes = [{"id": did, "name": (devs.get(did) or {}).get("name", "?"), "type": (devs.get(did) or {}).get("device_type"),
+              "ok": bool((data.get(did) or {}).get("ok")), "error": (data.get(did) or {}).get("error"),
+              "lldp": len(lldp.get(did) or []) if body.lldp else None,
+              "links": sum(1 for L in links if did in (L["a"], L["b"]))} for did in ids]
+    return {"nodes": nodes, "links": links, "outside": outside[:100], "notes": notes[:50], "sample_sec": sample,
+            "duration_sec": round(time.monotonic() - started, 1)}
+
+
+@api.post("/maps/auto/create")
+async def maps_auto_create(body: AutoMapCreateIn, user: dict = Depends(get_current_user)):
+    """Grava o mapa com os equipamentos e enlaces escolhidos (posições automáticas). O tráfego começa a ser coletado sozinho."""
+    _no_viewer(user)
+    mine = set(await _my_device_ids(user))
+    ids = [d for d in dict.fromkeys(body.device_ids) if d in mine]
+    if not ids:
+        raise HTTPException(400, "Nenhum equipamento válido")
+    links = []
+    for L in body.links[:2000]:
+        try:
+            if L["a"] in ids and L["b"] in ids and L["a"] != L["b"] and isinstance(L.get("a_idx"), int):
+                links.append({k: L.get(k) for k in ("a", "b", "a_idx", "b_idx", "a_if", "b_if", "a_speed", "b_speed", "capacity_mbps", "a_alias")})
+        except (KeyError, TypeError):
+            continue
+    now = datetime.now(timezone.utc).isoformat()
+    existing = await _map_for(user, body.map_id) if body.map_id else None
+    if existing and _is_viewer(user):
+        raise HTTPException(403, "Sem permissão")
+    nodes, mlinks, st = topodisc.build_map_items(links, ids, existing)
+    if existing:
+        await db.maps.update_one({"id": existing["id"]}, {"$set": {"nodes": nodes, "links": mlinks, "updated_at": now}})
+        mid = existing["id"]
+    else:
+        mid = os.urandom(8).hex()
+        await db.maps.insert_one({"id": mid, "owner_id": user["id"], "name": (body.name.strip() or "Mapa automático")[:80],
+                                  "description": (body.description.strip() or f"Gerado pelo BastiON em {now[:10]} ({len(ids)} equipamentos)")[:300],
+                                  "nodes": nodes, "links": mlinks, "created_at": now, "updated_at": now, "auto": True})
+    return {"id": mid, **st, "nodes": len(nodes), "links": len(mlinks)}
 
 
 @api.get("/maps/{map_id}/live")
@@ -12854,6 +12947,283 @@ async def bgpmon_refresh(what: str = "all", _: dict = Depends(require_admin)):
 async def bgpmon_events(key: str, user: dict = Depends(get_current_user)):
     _no_viewer(user)
     return await db.bgp_events.find({"key": key}, {"_id": 0}).sort("at", -1).to_list(200)
+
+
+# ---------- Documentação BGP: grupos, communities, prefixos, pares e config padrão ----------
+class BgpDocGroupIn(BaseModel):
+    name: str
+    asn: Optional[str] = None
+    tag: str = ""
+    description: str = ""
+    communities: List[dict] = []
+
+
+class BgpDocEntryIn(BaseModel):
+    prefix: str
+    asn: str
+    communities: List[str] = []
+    origin: str = ""
+    peer_id: str = ""
+    note: str = ""
+
+
+class BgpDocGenIn(BaseModel):
+    group_id: str
+    vendor: str = "huawei"
+    peer_ids: List[str] = []
+    local_asn: Optional[str] = None
+    router_id: str = ""
+    base: bool = True
+
+
+def _bd_err(e: Exception):
+    raise HTTPException(400, str(e) or "Dados inválidos")
+
+
+async def _bd_group(gid: str) -> dict:
+    g = await db.bgpdoc_groups.find_one({"id": gid}, {"_id": 0})
+    if not g:
+        raise HTTPException(404, "Grupo não encontrado")
+    return g
+
+
+async def _bd_live() -> Dict[str, dict]:
+    """Sessões do Monitor BGP por IP do vizinho (estado ao vivo dos pares documentados)."""
+    out = {}
+    async for x in db.bgp_peers.find({}, {"_id": 0, "peer": 1, "state": 1, "asn": 1, "device_id": 1, "device_name": 1, "established_s": 1,
+                                         "prefixes": 1, "updated_at": 1, "at": 1}):
+        if x.get("peer"):
+            out.setdefault(x["peer"], x)
+    return out
+
+
+@api.get("/bgpdoc/meta")
+async def bgpdoc_meta(user: dict = Depends(get_current_user)):
+    return {"kinds": bgpdoc.KINDS, "roles": bgpdoc.ROLES, "exports": bgpdoc.EXPORTS, "vendors": bgpdoc.VENDORS,
+            "default_lp": bgpdoc.DEFAULT_LP, "can_edit": not _is_viewer(user)}
+
+
+@api.get("/bgpdoc/groups")
+async def bgpdoc_groups(user: dict = Depends(get_current_user)):
+    groups = await db.bgpdoc_groups.find({}, {"_id": 0}).sort("name", 1).to_list(500)
+    counts: Dict[str, Dict[str, int]] = {}
+    async for p in db.bgpdoc_peers.find({}, {"_id": 0, "group_id": 1, "kind": 1}):
+        counts.setdefault(p.get("group_id"), {}).setdefault(p["kind"], 0)
+        counts[p.get("group_id")][p["kind"]] += 1
+    for g in groups:
+        g["n_prefixes"] = len(g.get("prefixes") or [])
+        g["n_communities"] = len(g.get("communities") or [])
+        g["peers"] = counts.get(g["id"], {})
+        g.pop("prefixes", None)
+    return groups
+
+
+@api.get("/bgpdoc/groups/{gid}")
+async def bgpdoc_group(gid: str, user: dict = Depends(get_current_user)):
+    return await _bd_group(gid)
+
+
+@api.post("/bgpdoc/groups")
+async def bgpdoc_group_add(body: BgpDocGroupIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    try:
+        d = bgpdoc.clean_group(body.model_dump())
+    except bgpdoc.DocError as e:
+        _bd_err(e)
+    if await db.bgpdoc_groups.find_one({"name": d["name"]}):
+        raise HTTPException(409, "Já existe um grupo com esse nome")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": os.urandom(8).hex(), **d, "prefixes": [], "created_at": now, "updated_at": now, "updated_by": user.get("email")}
+    await db.bgpdoc_groups.insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/bgpdoc/groups/{gid}")
+async def bgpdoc_group_upd(gid: str, body: BgpDocGroupIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    g = await _bd_group(gid)
+    try:
+        d = bgpdoc.clean_group(body.model_dump())
+    except bgpdoc.DocError as e:
+        _bd_err(e)
+    if d["name"] != g["name"] and await db.bgpdoc_groups.find_one({"name": d["name"]}):
+        raise HTTPException(409, "Já existe um grupo com esse nome")
+    known = {c["value"] for c in d["communities"]}
+    prefixes = [{**e, "unknown": [c for c in e.get("communities") or [] if c not in known]} for e in g.get("prefixes") or []]
+    await db.bgpdoc_groups.update_one({"id": gid}, {"$set": {**d, "prefixes": prefixes, "updated_at": datetime.now(timezone.utc).isoformat(),
+                                                              "updated_by": user.get("email")}})
+    return await _bd_group(gid)
+
+
+@api.delete("/bgpdoc/groups/{gid}")
+async def bgpdoc_group_del(gid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _bd_group(gid)
+    if await db.bgpdoc_peers.count_documents({"group_id": gid}):
+        raise HTTPException(400, "O grupo tem pares BGP: mova ou apague os pares antes")
+    await db.bgpdoc_groups.delete_one({"id": gid})
+    return {"ok": True}
+
+
+@api.post("/bgpdoc/groups/{gid}/prefixes")
+async def bgpdoc_entry_add(gid: str, body: BgpDocEntryIn, user: dict = Depends(get_current_user)):
+    """Documenta um prefixo no grupo: prefixo + ASN de origem + communities."""
+    _no_viewer(user)
+    g = await _bd_group(gid)
+    try:
+        e = bgpdoc.clean_entry(body.model_dump(), g)
+    except bgpdoc.DocError as ex:
+        _bd_err(ex)
+    if any(x["prefix"] == e["prefix"] and x["asn"] == e["asn"] for x in g.get("prefixes") or []):
+        raise HTTPException(409, f"{e['prefix']} do AS{e['asn']} já está documentado nesse grupo — edite a linha")
+    e.update({"id": os.urandom(6).hex(), "at": datetime.now(timezone.utc).isoformat(), "by": user.get("email")})
+    await db.bgpdoc_groups.update_one({"id": gid}, {"$push": {"prefixes": e}, "$set": {"updated_at": e["at"], "updated_by": user.get("email")}})
+    return e
+
+
+@api.put("/bgpdoc/groups/{gid}/prefixes/{eid}")
+async def bgpdoc_entry_upd(gid: str, eid: str, body: BgpDocEntryIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    g = await _bd_group(gid)
+    cur = next((x for x in g.get("prefixes") or [] if x.get("id") == eid), None)
+    if not cur:
+        raise HTTPException(404, "Prefixo não encontrado")
+    try:
+        e = bgpdoc.clean_entry(body.model_dump(), g)
+    except bgpdoc.DocError as ex:
+        _bd_err(ex)
+    e.update({"id": eid, "at": datetime.now(timezone.utc).isoformat(), "by": user.get("email")})
+    await db.bgpdoc_groups.update_one({"id": gid, "prefixes.id": eid}, {"$set": {"prefixes.$": e, "updated_at": e["at"]}})
+    return e
+
+
+@api.delete("/bgpdoc/groups/{gid}/prefixes/{eid}")
+async def bgpdoc_entry_del(gid: str, eid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _bd_group(gid)
+    await db.bgpdoc_groups.update_one({"id": gid}, {"$pull": {"prefixes": {"id": eid}}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
+
+@api.get("/bgpdoc/peers")
+async def bgpdoc_peers(group_id: str = "", user: dict = Depends(get_current_user)):
+    q = {"group_id": group_id} if group_id else {}
+    peers = await db.bgpdoc_peers.find(q, {"_id": 0}).sort([("kind", 1), ("name", 1)]).to_list(5000)
+    live = await _bd_live()
+    names = {d["id"]: d["name"] async for d in db.devices.find({"id": {"$in": list({p.get("device_id") for p in peers if p.get("device_id")})}}, {"_id": 0, "id": 1, "name": 1})}
+    for p in peers:
+        p["device_name"] = names.get(p.get("device_id"), "")
+        p["live"] = [{k: s.get(k) for k in ("state", "device_name", "established_s", "prefixes")} for ip in (p.get("peer_ipv4"), p.get("peer_ipv6"))
+                     if ip and (s := live.get(ip))]
+    return peers
+
+
+async def _bd_peer_doc(body: dict, user: dict) -> dict:
+    try:
+        d = bgpdoc.clean_peer(body)
+    except bgpdoc.DocError as e:
+        _bd_err(e)
+    gid = str(body.get("group_id") or "")
+    await _bd_group(gid)
+    if d["device_id"]:
+        await _get_device_for(user, d["device_id"])
+    return {**d, "group_id": gid}
+
+
+@api.post("/bgpdoc/peers")
+async def bgpdoc_peer_add(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    d = await _bd_peer_doc(body, user)
+    for ip in (d["peer_ipv4"], d["peer_ipv6"]):
+        if ip and await db.bgpdoc_peers.find_one({"$or": [{"peer_ipv4": ip}, {"peer_ipv6": ip}], "device_id": d["device_id"]}):
+            raise HTTPException(409, f"O vizinho {ip} já está documentado nesse roteador")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": os.urandom(8).hex(), **d, "created_at": now, "updated_at": now, "updated_by": user.get("email")}
+    await db.bgpdoc_peers.insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/bgpdoc/peers/{pid}")
+async def bgpdoc_peer_upd(pid: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    if not await db.bgpdoc_peers.find_one({"id": pid}):
+        raise HTTPException(404, "Par não encontrado")
+    d = await _bd_peer_doc(body, user)
+    await db.bgpdoc_peers.update_one({"id": pid}, {"$set": {**d, "updated_at": datetime.now(timezone.utc).isoformat(), "updated_by": user.get("email")}})
+    return await db.bgpdoc_peers.find_one({"id": pid}, {"_id": 0})
+
+
+@api.delete("/bgpdoc/peers/{pid}")
+async def bgpdoc_peer_del(pid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await db.bgpdoc_peers.delete_one({"id": pid})
+    return {"ok": True}
+
+
+@api.get("/bgpdoc/sessions")
+async def bgpdoc_sessions(user: dict = Depends(get_current_user)):
+    """Sessões que o Monitor BGP já enxerga e ainda não estão documentadas (para importar)."""
+    _no_viewer(user)
+    have = set()
+    async for p in db.bgpdoc_peers.find({}, {"_id": 0, "peer_ipv4": 1, "peer_ipv6": 1}):
+        have.update(x for x in (p.get("peer_ipv4"), p.get("peer_ipv6")) if x)
+    cfg = await _bgp_cfg()
+    names = cfg.get("peer_names") or {}
+    mine = {d["id"] for d in await db.devices.find({} if user.get("role") == "admin" else _scope(user), {"_id": 0, "id": 1}).to_list(10000)}
+    out = []
+    async for x in db.bgp_peers.find({}, {"_id": 0}):
+        if x.get("peer") and x["peer"] not in have and x.get("device_id") in mine:
+            out.append({"key": x.get("key"), "peer": x["peer"], "asn": x.get("asn"), "state": x.get("state"), "device_id": x.get("device_id"),
+                        "device_name": x.get("device_name"), "name": names.get(x.get("key")) or names.get(x["peer"]) or ""})
+    return sorted(out, key=lambda r: (r.get("device_name") or "", r["peer"]))
+
+
+class BgpDocImportIn(BaseModel):
+    group_id: str
+    sessions: List[dict] = []      # [{peer, asn, device_id, name, kind}]
+
+
+@api.post("/bgpdoc/import")
+async def bgpdoc_import(body: BgpDocImportIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _bd_group(body.group_id)
+    n, errs = 0, []
+    now = datetime.now(timezone.utc).isoformat()
+    for s in body.sessions[:500]:
+        ip = str(s.get("peer") or "")
+        fam = "peer_ipv6" if ":" in ip else "peer_ipv4"
+        try:
+            d = await _bd_peer_doc({"group_id": body.group_id, "kind": s.get("kind") or "upstream", "name": s.get("name") or f"AS{s.get('asn')}",
+                                    "remote_asn": s.get("asn"), fam: ip, "device_id": s.get("device_id") or ""}, user)
+        except HTTPException as e:
+            errs.append(f"{ip}: {e.detail}")
+            continue
+        await db.bgpdoc_peers.insert_one({"id": os.urandom(8).hex(), **d, "created_at": now, "updated_at": now, "updated_by": user.get("email"),
+                                          "imported": True})
+        n += 1
+    return {"imported": n, "errors": errs}
+
+
+@api.post("/bgpdoc/generate")
+async def bgpdoc_generate(body: BgpDocGenIn, user: dict = Depends(get_current_user)):
+    """Config BGP padrão do grupo para os pares escolhidos (só gera o texto)."""
+    _no_viewer(user)
+    g = await _bd_group(body.group_id)
+    peers = await db.bgpdoc_peers.find({"id": {"$in": body.peer_ids}, "group_id": body.group_id}, {"_id": 0}).to_list(500) if body.peer_ids else []
+    try:
+        return bgpdoc.generate(body.vendor, g, peers, bgpdoc.clean_asn(body.local_asn), body.router_id.strip(), body.base)
+    except bgpdoc.DocError as e:
+        _bd_err(e)
+
+
+@api.get("/bgpdoc/groups/{gid}/markdown")
+async def bgpdoc_markdown(gid: str, user: dict = Depends(get_current_user)):
+    g = await _bd_group(gid)
+    peers = await db.bgpdoc_peers.find({"group_id": gid}, {"_id": 0}).to_list(5000)
+    names = {d["id"]: d["name"] async for d in db.devices.find({}, {"_id": 0, "id": 1, "name": 1})}
+    return {"markdown": bgpdoc.markdown(g, peers, names), "filename": f"bgp-{re.sub(r'[^A-Za-z0-9]+', '-', g['name']).strip('-').lower()}.md"}
 
 
 # ---------- Migração de ONUs entre OLTs (qualquer fabricante, PON por PON) ----------

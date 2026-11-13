@@ -32,6 +32,7 @@ import Probes from "@/pages/Probes";
 import Sla, { SlaReport } from "@/pages/Sla";
 import Maint from "@/pages/Maint";
 import Bgp from "@/pages/Bgp";
+import BgpDoc from "@/pages/BgpDoc";
 import Gpon from "@/pages/Gpon";
 import Compliance from "@/pages/Compliance";
 import CmdPolicy from "@/pages/CmdPolicy";
@@ -82,6 +83,7 @@ function App() {
             <Route path="/sla" element={<Sla />} />
             <Route path="/maint" element={<Maint />} />
             <Route path="/bgp-monitor" element={<Bgp />} />
+            <Route path="/bgp-doc" element={<BgpDoc />} />
             <Route path="/gpon" element={<Gpon />} />
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/soc/commands" element={<CmdPolicy />} />

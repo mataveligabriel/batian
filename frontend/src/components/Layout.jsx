@@ -9,7 +9,7 @@ import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { AccountSecurity } from "@/components/AccountSecurity";
 import {
   ChevronDown, LayoutDashboard, Server, TerminalSquare, Play, Radio, KeyRound,
-  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send, UserX, Radar, ShieldAlert, Bug, Fingerprint, FolderUp, Boxes,
+  History, Users as UsersIcon, LogOut, Palette, Settings as SettingsIcon, Siren, ShieldCheck, Archive, ChevronsLeft, ChevronsRight, Network, Gauge, Menu, X, Waves, Globe, Telescope, FileBadge, MonitorUp, Cpu, Router, Waypoints, ScrollText, Activity, BadgeCheck, Wrench, Share2, Cable, ClipboardCheck, Binary, Send, UserX, Radar, ShieldAlert, Bug, Fingerprint, FolderUp, Boxes, BookMarked,
 } from "lucide-react";
 import { PushToggle, InstallHint } from "@/components/PushToggle";
 import { AssistantChat } from "@/components/AssistantChat";
@@ -53,6 +53,7 @@ const MENU = [
   { group: "routing", icon: Waves, label: "Tráfego e rotas", items: [
     { to: "/flow", icon: Waves, label: "Análise de Flow", testid: "nav-flow" },
     { to: "/te", icon: Waypoints, label: "Eng. de tráfego", testid: "nav-te" },
+    { to: "/bgp-doc", icon: BookMarked, label: "Documentação BGP", testid: "nav-bgpdoc" },
     { to: "/lg", icon: Telescope, label: "Looking Glass", testid: "nav-lg" },
     { to: "/rpki", icon: FileBadge, label: "RPKI", testid: "nav-rpki" },
   ] },
