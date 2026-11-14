@@ -85,6 +85,8 @@ import olthw
 import oltfh
 import oltmig
 import bgpdoc
+import ifauto
+import alertroutes
 import cmdpolicy
 import siem as siemmod
 import loginanom
@@ -220,6 +222,8 @@ async def startup():
     await db.optics_samples.create_index([("device_id", 1), ("if_index", 1), ("ts", -1)])
     await db.dashboards.create_index("owner_id")
     await db.if_monitors.create_index([("device_id", 1), ("if_index", 1)], unique=True)
+    await db.if_auto.create_index("device_id", unique=True)
+    await db.alert_routes.create_index("id", unique=True)
     await db.if_events.create_index([("at", -1)])
     await db.bgp_peers.create_index("key", unique=True)
     await db.gpon_onus.create_index("key", unique=True)
@@ -254,6 +258,7 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(_ipam_loop()))
     _bg_tasks.append(asyncio.create_task(_virt_loop()))
     _bg_tasks.append(asyncio.create_task(_vb_loop()))
+    _bg_tasks.append(asyncio.create_task(_ifauto_loop()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
@@ -4739,14 +4744,276 @@ async def set_device_monitor(device_id: str, payload: DeviceMonitorPayload, user
     current = {r["if_index"] for r in await db.if_monitors.find({"device_id": device_id}, {"_id": 0, "if_index": 1}).to_list(5000)}
     removed = [i for i in current if i not in wanted]
     if removed:
-        await db.if_monitors.delete_many({"device_id": device_id, "if_index": {"$in": removed}})
+        await _mon_remove(device_id, removed)
     for idx, i in wanted.items():
         if idx in current:
             await db.if_monitors.update_one({"device_id": device_id, "if_index": idx}, {"$set": {"if_name": i.name, "alias": i.alias}})
         else:
             await db.if_monitors.insert_one({"device_id": device_id, "if_index": idx, "if_name": i.name, "alias": i.alias,
                                              "owner_id": dev.get("owner_id"), "created_at": datetime.now(timezone.utc).isoformat()})
+    if wanted:   # escolheu na mão: sai da lista de ignoradas
+        await db.if_auto.update_one({"device_id": device_id}, {"$pull": {"ignored": {"index": {"$in": list(wanted)}}}})
     return {"monitored": len(wanted), "removed": len(removed)}
+
+
+# ----- monitoramento automático: regra por equipamento; interface nova que casa com a regra entra sozinha -----
+async def _mon_remove(device_id: str, indexes: list):
+    """Tira do monitoramento e guarda como ignorada (a regra automática não traz de volta)."""
+    rows = await db.if_monitors.find({"device_id": device_id, "if_index": {"$in": indexes}}, {"_id": 0, "if_index": 1, "if_name": 1}).to_list(5000)
+    await db.if_monitors.delete_many({"device_id": device_id, "if_index": {"$in": indexes}})
+    if rows and await db.if_auto.find_one({"device_id": device_id}, {"_id": 0, "device_id": 1}):
+        await db.if_auto.update_one({"device_id": device_id}, {"$pull": {"ignored": {"index": {"$in": [r["if_index"] for r in rows]}}}})
+        await db.if_auto.update_one({"device_id": device_id}, {"$push": {"ignored": {"$each": [{"index": r["if_index"], "name": r.get("if_name") or ""} for r in rows]}}})
+
+
+async def _ifauto_scan(dev: dict, rule: dict, ignored: set) -> dict:
+    """Lê as interfaces por SNMP e coloca no monitoramento as que casam com a regra. Devolve {added: [...], total, match}."""
+    info = await asyncio.wait_for(snmp_service.discover_interfaces(await _snmp_client(dev)), timeout=90)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.device_ifaces.update_one({"device_id": dev["id"]}, {"$set": {"device_id": dev["id"], "at": now, **info}}, upsert=True)
+    current = {r["if_index"] for r in await db.if_monitors.find({"device_id": dev["id"]}, {"_id": 0, "if_index": 1}).to_list(5000)}
+    new = ifauto.plan(info["interfaces"], rule, current, ignored)[:2000]
+    if new:
+        await db.if_monitors.insert_many([{"device_id": dev["id"], "if_index": i["index"], "if_name": i["name"], "alias": i["alias"],
+                                           "owner_id": dev.get("owner_id"), "created_at": now, "auto": True} for i in new])
+    return {"added": new, **ifauto.preview(info["interfaces"], rule)}
+
+
+class MonBulkIn(BaseModel):
+    device_ids: List[str] = []
+    rule: dict = {}
+    auto: bool = True             # manter a regra: interfaces novas entram sozinhas
+
+
+_mon_jobs: dict = {}
+
+
+@api.get("/monitor/auto")
+async def mon_auto_list(user: dict = Depends(get_current_user)):
+    mine = await _my_device_ids(user)
+    rules = await db.if_auto.find({"device_id": {"$in": mine}}, {"_id": 0}).to_list(5000)
+    return {"presets": {k: {x: v[x] for x in ("label", "include", "exclude", "only_up", "only_alias")} for k, v in ifauto.PRESETS.items()},
+            "rules": {r["device_id"]: r for r in rules}}
+
+
+@api.post("/monitor/bulk")
+async def mon_bulk(body: MonBulkIn, user: dict = Depends(get_current_user)):
+    """Vários equipamentos de uma vez: aplica a regra em cada um (em segundo plano) e, com `auto`, deixa a regra valendo."""
+    _no_viewer(user)
+    try:
+        rule = ifauto.clean_rule(body.rule)
+    except ifauto.RuleError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    mine = set(await _my_device_ids(user))
+    ids = [i for i in dict.fromkeys(body.device_ids) if i in mine][:500]
+    if not ids:
+        raise HTTPException(status_code=400, detail="Escolha pelo menos um equipamento")
+    devs = await db.devices.find({"id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    jid = os.urandom(6).hex()
+    job = _mon_jobs[jid] = {"id": jid, "owner_id": user["id"], "total": len(devs), "done": 0, "added": 0, "running": True, "results": []}
+    for k in [k for k, v in _mon_jobs.items() if not v["running"]][:-20]:
+        _mon_jobs.pop(k, None)
+    sem = asyncio.Semaphore(8)
+
+    async def one(dev):
+        async with sem:
+            try:
+                if body.auto:
+                    await db.if_auto.update_one({"device_id": dev["id"]}, {"$set": {**rule, "enabled": True, "device_id": dev["id"], "owner_id": dev.get("owner_id")},
+                                                                         "$setOnInsert": {"ignored": []}}, upsert=True)
+                doc = await db.if_auto.find_one({"device_id": dev["id"]}, {"_id": 0, "ignored": 1}) or {}
+                res = await _ifauto_scan(dev, rule, {x["index"] for x in doc.get("ignored", [])})
+                if body.auto:
+                    await db.if_auto.update_one({"device_id": dev["id"]}, {"$set": {"last_scan": datetime.now(timezone.utc).isoformat(), "last_error": ""}})
+                job["added"] += len(res["added"])
+                job["results"].append({"device_id": dev["id"], "name": dev["name"], "ok": True, "added": len(res["added"]), "match": res["match"], "total": res["total"]})
+            except Exception as e:
+                msg = "SNMP demorou demais para responder" if isinstance(e, asyncio.TimeoutError) else f"SNMP: {e}"
+                if body.auto:
+                    await db.if_auto.update_one({"device_id": dev["id"]}, {"$set": {"last_error": msg[:200]}})
+                job["results"].append({"device_id": dev["id"], "name": dev["name"], "ok": False, "error": msg[:200]})
+            job["done"] += 1
+
+    async def run():
+        try:
+            await asyncio.gather(*[one(d) for d in devs])
+        finally:
+            job["running"] = False
+
+    _bg(run())
+    return job
+
+
+@api.get("/monitor/bulk/{jid}")
+async def mon_bulk_status(jid: str, user: dict = Depends(get_current_user)):
+    job = _mon_jobs.get(jid)
+    if not job or job["owner_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    return job
+
+
+class MonAutoIn(BaseModel):
+    enabled: Optional[bool] = None
+    restore: List[int] = []        # índices que saem da lista de ignoradas (voltam a ser monitorados)
+
+
+@api.put("/monitor/auto/{device_id}")
+async def mon_auto_update(device_id: str, body: MonAutoIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    dev = await _get_device_for(user, device_id)
+    doc = await db.if_auto.find_one({"device_id": device_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Este equipamento não tem regra automática")
+    if body.enabled is not None:
+        await db.if_auto.update_one({"device_id": device_id}, {"$set": {"enabled": bool(body.enabled)}})
+    if body.restore:
+        back = [x for x in doc.get("ignored", []) if x["index"] in set(body.restore)]
+        await db.if_auto.update_one({"device_id": device_id}, {"$pull": {"ignored": {"index": {"$in": body.restore}}}})
+        have = {r["if_index"] for r in await db.if_monitors.find({"device_id": device_id}, {"_id": 0, "if_index": 1}).to_list(5000)}
+        cached = {i["index"]: i for i in ((await db.device_ifaces.find_one({"device_id": device_id}, {"_id": 0, "interfaces": 1})) or {}).get("interfaces", [])}
+        rows = [{"device_id": device_id, "if_index": x["index"], "if_name": x.get("name") or cached.get(x["index"], {}).get("name") or f"if{x['index']}",
+                 "alias": cached.get(x["index"], {}).get("alias") or "", "owner_id": dev.get("owner_id"),
+                 "created_at": datetime.now(timezone.utc).isoformat()} for x in back if x["index"] not in have]
+        if rows:
+            await db.if_monitors.insert_many(rows)
+    return await db.if_auto.find_one({"device_id": device_id}, {"_id": 0})
+
+
+class MonRemoveIn(BaseModel):
+    items: List[dict] = []         # [{device_id, if_index}]
+    device_ids: List[str] = []     # parar de monitorar o equipamento inteiro (apaga a regra também)
+
+
+@api.post("/monitor/remove")
+async def mon_remove(body: MonRemoveIn, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    mine = set(await _my_device_ids(user))
+    by_dev: dict = {}
+    for it in body.items[:5000]:
+        if it.get("device_id") in mine and it.get("if_index") is not None:
+            by_dev.setdefault(it["device_id"], []).append(int(it["if_index"]))
+    n = 0
+    for dev_id, idxs in by_dev.items():
+        await _mon_remove(dev_id, idxs)
+        n += len(idxs)
+    whole = [d for d in body.device_ids if d in mine]
+    if whole:
+        r = await db.if_monitors.delete_many({"device_id": {"$in": whole}})
+        n += r.deleted_count
+        await db.if_auto.delete_many({"device_id": {"$in": whole}})
+    return {"removed": n, "devices": len(whole)}
+
+
+# ----- grupos de alerta do Telegram (além do chat principal) -----
+@api.get("/alert-routes")
+async def alert_routes_list(_: dict = Depends(require_admin)):
+    rows = await db.alert_routes.find({}, {"_id": 0}).sort("name", 1).to_list(500)
+    tags = sorted({t for d in await db.devices.find({}, {"_id": 0, "tags": 1}).to_list(20000) for t in (d.get("tags") or [])})
+    return {"routes": [alertroutes.public(r) for r in rows], "kinds": alertroutes.KINDS, "tags": tags}
+
+
+@api.post("/alert-routes")
+async def alert_routes_create(body: dict, _: dict = Depends(require_admin)):
+    try:
+        doc = {**alertroutes.clean(body), "id": alertroutes.new_id(), "created_at": datetime.now(timezone.utc).isoformat()}
+    except alertroutes.RouteError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.alert_routes.insert_one(dict(doc))
+    return alertroutes.public(doc)
+
+
+@api.put("/alert-routes/{rid}")
+async def alert_routes_update(rid: str, body: dict, _: dict = Depends(require_admin)):
+    cur = await db.alert_routes.find_one({"id": rid}, {"_id": 0})
+    if not cur:
+        raise HTTPException(status_code=404, detail="Grupo não encontrado")
+    try:
+        upd = alertroutes.clean(body, cur)
+    except alertroutes.RouteError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.alert_routes.update_one({"id": rid}, {"$set": upd})
+    return alertroutes.public({**cur, **upd})
+
+
+@api.delete("/alert-routes/{rid}")
+async def alert_routes_delete(rid: str, _: dict = Depends(require_admin)):
+    r = await db.alert_routes.delete_one({"id": rid})
+    return {"deleted": r.deleted_count}
+
+
+@api.post("/alert-routes/{rid}/test")
+async def alert_routes_test(rid: str, _: dict = Depends(require_admin)):
+    r = await db.alert_routes.find_one({"id": rid}, {"_id": 0})
+    if not r:
+        raise HTTPException(status_code=404, detail="Grupo não encontrado")
+    async with httpx.AsyncClient(timeout=15) as client:
+        res = await alertroutes.send(client, r, await _telegram_token(), "✅ BastiON", f"Teste do grupo de alertas \"{r['name']}\" — funcionando.")
+    return {"result": res, "ok": res == "ok"}
+
+
+@api.post("/alert-routes/find-chats")
+async def alert_routes_find_chats(body: dict, _: dict = Depends(require_admin)):
+    """Outro bot (que o BastiON não fica escutando): lista os grupos onde ele recebeu mensagem há pouco, com o chat ID.
+    Para o bot do BastiON use /id dentro do grupo."""
+    token = str(body.get("token") or "").strip()
+    if not token and body.get("route_id"):
+        r = await db.alert_routes.find_one({"id": body["route_id"]}, {"_id": 0, "token_enc": 1})
+        token = vault.decrypt((r or {}).get("token_enc") or "")
+    main = await _telegram_token()
+    if body.get("bot") == "default":
+        token = main
+    if not alertroutes._TOKEN.match(token or ""):
+        raise HTTPException(status_code=400, detail="Informe o token do bot" if body.get("bot") != "default" else "Configure antes o token do bot em Automação")
+    if token == main and getattr(assistant, "status", "") == "ativo":
+        raise HTTPException(status_code=400, detail="Este é o bot do BastiON: adicione ele ao grupo e mande /id lá que ele responde com o chat ID")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            data = (await client.get(f"https://api.telegram.org/bot{token}/getUpdates", params={"timeout": 0, "limit": 100})).json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Telegram: {e.__class__.__name__}")
+    if not data.get("ok"):
+        raise HTTPException(status_code=400, detail=f"Telegram: {data.get('description', 'token recusado')}")
+    chats = {}
+    for u in data.get("result", []):
+        m = u.get("message") or u.get("channel_post") or u.get("my_chat_member") or {}
+        c = m.get("chat") or {}
+        if c.get("id") is not None:
+            chats[c["id"]] = {"chat_id": str(c["id"]), "title": c.get("title") or c.get("username") or c.get("first_name") or "", "type": c.get("type", "")}
+    return {"chats": list(chats.values())}
+
+
+async def _ifauto_loop():
+    """A cada 30 min: equipamentos com regra automática ganham no monitoramento as interfaces novas que casam com ela."""
+    await asyncio.sleep(180)
+    while True:
+        try:
+            rules = await db.if_auto.find({"enabled": True}, {"_id": 0}).to_list(5000)
+            devs = {d["id"]: d async for d in db.devices.find({"id": {"$in": [r["device_id"] for r in rules]}}, {"_id": 0})}
+            sem = asyncio.Semaphore(6)
+
+            async def one(r):
+                dev = devs.get(r["device_id"])
+                if not dev:
+                    return await db.if_auto.delete_one({"device_id": r["device_id"]})   # equipamento apagado
+                async with sem:
+                    try:
+                        res = await _ifauto_scan(dev, r, {x["index"] for x in r.get("ignored", [])})
+                        upd = {"last_scan": datetime.now(timezone.utc).isoformat(), "last_error": ""}
+                        if res["added"]:
+                            upd["last_added"] = {"at": upd["last_scan"], "names": [i["name"] for i in res["added"]][:30]}
+                            if r.get("notify_new", True):
+                                names = "\n".join(f"• {i['name']}" + (f" — {i['alias']}" if i["alias"] else "") for i in res["added"][:25])
+                                await automation.send_alert(db, f"➕ {len(res['added'])} interface(s) nova(s) em monitoramento — {dev['name']}",
+                                                            names + "\nEntraram pela regra automática. Para tirar: Mapas → Alarmes.",
+                                                            push_url="/maps", device_id=dev["id"], kind="interface")
+                        await db.if_auto.update_one({"device_id": dev["id"]}, {"$set": upd})
+                    except Exception as e:
+                        await db.if_auto.update_one({"device_id": dev["id"]}, {"$set": {"last_error": str(e)[:200] or e.__class__.__name__}})
+
+            await asyncio.gather(*[one(r) for r in rules])
+        except Exception as e:
+            logger.warning(f"monitoramento automático de interfaces: {e}")
+        await asyncio.sleep(1800)
 
 
 @api.get("/monitor/events")

@@ -1095,6 +1095,10 @@ class TelegramAssistant(AgentCore):
         s = await get_ai_settings(self.db)
         cmd = text.split()[0].split("@")[0].lower() if text.startswith("/") else ""
         if cmd == "/id":
+            if msg["chat"].get("type") in ("group", "supergroup", "channel"):
+                topic = f"\nTópico (thread): {msg['message_thread_id']}" if msg.get("is_topic_message") and msg.get("message_thread_id") else ""
+                return await self.send(chat_id, f"Chat ID deste grupo: {chat_id}{topic}\nSeu ID do Telegram: {from_id}\n"
+                                                f"Use o chat ID em Automação → Grupos de alerta do Telegram.")
             return await self.send(chat_id, f"Seu ID do Telegram: {from_id}")
         link = self._auth(s, from_id)
         if not link:

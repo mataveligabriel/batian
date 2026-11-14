@@ -10,6 +10,7 @@ import { Activity, Archive, BellRing, Send, Zap, Loader2, ClipboardList, Eye } f
 import { useAuth } from "@/context/AuthContext";
 import { AIAssistantCard } from "@/components/AIAssistantCard";
 import { CloudBackupCard } from "@/components/CloudBackupCard";
+import { AlertRoutesCard } from "@/components/AlertRoutesCard";
 
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pt-BR") : "nunca";
 
@@ -158,7 +159,7 @@ export default function Automation({ embedded = false }) {
               <input type="checkbox" data-testid="clear-telegram-token" checked={clearToken} onChange={e => setClearToken(e.target.checked)} /> remover token
             </label>
           )}
-          <Label className="mt-3 block">Telegram — chat ID</Label>
+          <Label className="mt-3 block">Telegram — chat ID (chat principal)</Label>
           <Input data-testid="telegram-chat" value={s.telegram_chat_id || ""} onChange={e => setS({ ...s, telegram_chat_id: e.target.value })} placeholder="-1001234567890 ou 123456789" className={inputCls} disabled={!isAdmin} />
           <Label className="mt-3 block">Webhook (Slack / Discord / genérico)</Label>
           <Input data-testid="webhook-url" value={s.webhook_url || ""} onChange={e => setS({ ...s, webhook_url: e.target.value })} placeholder="https://hooks.slack.com/services/…" className={inputCls} disabled={!isAdmin} />
@@ -178,6 +179,8 @@ export default function Automation({ embedded = false }) {
         </div>
       )}
 
+      {isAdmin && <AlertRoutesCard />}
+
       {isAdmin && <CloudBackupCard />}
 
       {isAdmin && <AIAssistantCard />}
@@ -189,7 +192,7 @@ export default function Automation({ embedded = false }) {
           {alerts.map(a => (
             <div key={a.id} className="px-4 py-2.5 text-sm">
               <div className="text-slate-100">{a.title}</div>
-              <div className="text-[11px] font-mono text-slate-500">{fmt(a.created_at)} · telegram: {a.results?.telegram || "—"} · webhook: {a.results?.webhook || "—"}</div>
+              <div className="text-[11px] font-mono text-slate-500">{fmt(a.created_at)} · telegram: {a.results?.telegram || "—"} · webhook: {a.results?.webhook || "—"}{a.results?.groups?.length ? ` · grupos: ${a.results.groups.join("; ")}` : ""}</div>
             </div>
           ))}
         </div>

@@ -236,7 +236,8 @@ class Monitor:
             text = "\n".join(x for x in [alias and f"Descrição: {alias}",
                                          prev_duration and f"Ficou fora por {fmt_duration(prev_duration)}", when] if x)
         try:
-            await self.send_alert(self.db, title, text, push_url="/maps", push_tag=f"if-{dev['id']}-{m['if_index']}")
+            await self.send_alert(self.db, title, text, push_url="/maps", push_tag=f"if-{dev['id']}-{m['if_index']}",
+                                  device_id=dev["id"], kind="interface")
         except Exception as e:
             logger.warning(f"falha ao enviar alerta: {e}")
 

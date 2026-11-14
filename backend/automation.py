@@ -13,6 +13,7 @@ import httpx
 import webpush
 
 import vault
+import alertroutes
 
 logger = logging.getLogger("bastion.automation")
 
@@ -56,9 +57,17 @@ def backup_command_for(dev: dict) -> str:
     return (dev.get("backup_command") or BACKUP_COMMANDS.get(dev.get("device_type") or "linux", "")).strip()
 
 
-async def send_alert(db, title: str, text: str, push_url: str = "/", push_tag: str = None, buttons: list = None) -> dict:
-    """buttons: teclado inline do Telegram ([[{text, callback_data}]]), tratado pelo bot do assistente."""
+async def send_alert(db, title: str, text: str, push_url: str = "/", push_tag: str = None, buttons: list = None,
+                     device_id: str = None, kind: str = None) -> dict:
+    """buttons: teclado inline do Telegram ([[{text, callback_data}]]), tratado pelo bot do assistente.
+    device_id/kind: alerta de um equipamento — vai também para os grupos do Telegram que cobrem esse equipamento
+    (e deixa de ir para o chat principal se algum deles for exclusivo)."""
     s = await get_settings(db)
+    try:
+        tg = await alertroutes.targets(db, device_id, kind)
+    except Exception as e:
+        logger.warning(f"grupos de alerta: {e}")
+        tg = {"routes": [], "skip_main": False}
     token = vault.decrypt(s.get("telegram_bot_token", ""))
     chat = (s.get("telegram_chat_id") or "").strip()
     hook = (s.get("webhook_url") or "").strip()
@@ -70,14 +79,23 @@ async def send_alert(db, title: str, text: str, push_url: str = "/", push_tag: s
             results["push"] = f"{pr['sent']} aparelho(s)" + (f", {pr['failed']} falha(s)" if pr["failed"] else "")
     except Exception as e:
         results["push"] = f"erro: {e}"
-    if not token and not hook:
+    custom = [r for r in tg["routes"] if r.get("bot") == "custom"]
+    if not token and not hook and not custom:
         if results["push"]:
             await db.alerts.insert_one({"id": os.urandom(8).hex(), "title": title, "text": text,
                                         "created_at": datetime.now(timezone.utc).isoformat(), "results": results})
             return results
         return {**results, "error": "Nenhum canal configurado"}
     async with httpx.AsyncClient(timeout=15) as client:
-        if token and chat:
+        sent_to = []
+        for r in tg["routes"]:
+            if r.get("bot") != "custom" and r.get("chat_id") == chat and not tg["skip_main"]:
+                continue                                   # mesmo chat do principal: não manda duas vezes
+            res = await alertroutes.send(client, r, token, title, text, buttons)
+            sent_to.append(f"{r['name']}: {res}")
+        if sent_to:
+            results["groups"] = sent_to
+        if token and chat and not tg["skip_main"]:
             try:
                 body = {"chat_id": chat, "text": f"{title}\n{text}"}
                 if buttons:
@@ -86,7 +104,7 @@ async def send_alert(db, title: str, text: str, push_url: str = "/", push_tag: s
                 results["telegram"] = "ok" if r.status_code == 200 else f"HTTP {r.status_code}: {r.text[:200]}"
             except Exception as e:
                 results["telegram"] = f"erro: {e}"
-        if hook:
+        if hook and not tg["skip_main"]:
             try:
                 r = await client.post(hook, json={"text": f"*{title}*\n{text}", "title": title, "message": text})
                 results["webhook"] = "ok" if r.status_code < 300 else f"HTTP {r.status_code}"
@@ -237,7 +255,8 @@ async def notify_config_changes(db, results: List[dict], trigger: str) -> int:
                 lines.append("")
                 lines += ex
             await send_alert(db, f"📝 Config alterada: {r['device_name']}", "\n".join(lines)[:3500],
-                             push_url=f"/backups?device={r['device_id']}&diff={r['id']}", push_tag=f"cfg-{r['device_id']}")
+                             push_url=f"/backups?device={r['device_id']}&diff={r['id']}", push_tag=f"cfg-{r['device_id']}",
+                             device_id=r["device_id"], kind="config")
             sent += 1
         except Exception as e:
             logger.warning(f"alerta de config alterada ({r.get('device_name')}): {e}")
@@ -369,4 +388,5 @@ class Scheduler:
             icon = "🔴" if t["status"] == "offline" else "🟢"
             label = "Agente" if t["kind"] == "agent" else "Equipamento"
             await send_alert(self.db, f"{icon} {label} {t['name']} está {t['status'].upper()}",
-                             f"{t.get('detail', '')}\n{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+                             f"{t.get('detail', '')}\n{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+                             device_id=t.get("id") if t["kind"] == "device" else None, kind="device")

@@ -237,7 +237,7 @@ class Incidents:
                 pass
         try:
             await self.alert(self.db, title, text, push_url=f"{'/soc/incidents' if inc.get('source') == 'soc' else '/incidents'}?id={inc['id']}", push_tag=f"inc-{inc['id']}",
-                             buttons=buttons)
+                             buttons=buttons, device_id=inc.get("device_id"), kind="incident")
             if kind == "open":
                 await self.db.incidents.update_one({"id": inc["id"]}, {"$set": {"notified": True}})
         except Exception:
