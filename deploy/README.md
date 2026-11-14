@@ -1587,3 +1587,24 @@ Em **Mapas → Link do mapa** (ou no botão **Link do mapa** de um mapa aberto) 
 - **.html**: baixa um arquivo pequeno que abre o mapa em tela cheia e mostra um aviso, recarregando sozinho quando a conexão volta (bom para pendrive, Chromecast ou mini PC).
 - Mapas em visão Satélite abrem no satélite. As alterações nos mapas aparecem na TV em até 5 min.
 - Segurança: o link só dá acesso aos mapas escolhidos (nomes, status e tráfego). Sem "mostrar IPs", os endereços e as mensagens de erro SNMP ficam escondidos. **Trocar endereço** invalida o endereço antigo na hora; desmarcar "link ativo" tira o link do ar. A lista mostra quando e de qual IP cada link foi aberto por último.
+
+## 79. Mapas → Alarmes: vários equipamentos de uma vez e monitoramento automático de interfaces
+
+Na aba **Alarmes** de Mapas, a lista de equipamentos agora vem **separada por grupo (tag)**:
+
+- Marque equipamentos um a um ou o grupo inteiro (caixa no cabeçalho do grupo). A busca filtra por nome, IP ou grupo. Clicar no nome continua abrindo a escolha interface por interface.
+- Com equipamentos marcados, escolha a regra: **portas físicas que estão up** (padrão), **portas físicas com descrição**, **todas as portas físicas** ou **personalizado** (expressões de incluir/não incluir sobre nome e descrição, só up, só com descrição). As regras prontas deixam de fora loopback, gerência, VLAN lógica, túnel, PPPoE, subinterface (.N) e ONU.
+- **Automático** (ligado por padrão): a regra fica valendo no equipamento. A cada 30 min o BastiON relê as interfaces por SNMP e as novas que casarem com a regra entram sozinhas no monitoramento, com um aviso no Telegram.
+- **Tirar interfaces**: lixeira na linha, marcar várias e **Tirar N do monitoramento**, ou **tirar** direto no evento de queda. Uma interface retirada fica guardada em "retiradas" e a regra automática **não a traz de volta**; clique nela ali para voltar a monitorar.
+- No cabeçalho de cada equipamento: quantas estão down, o selo **auto** (clique para pausar/ligar) e a lixeira para parar de monitorar o equipamento inteiro.
+
+## 80. Automação → Grupos de alerta do Telegram
+
+Além do chat principal, crie outros destinos em **Automação → Grupos de alerta do Telegram** (só administrador):
+
+- **Bot**: o mesmo bot do BastiON em outro grupo, ou **outro bot** (token próprio, guardado criptografado e nunca mostrado de volta).
+- **Chat ID**: adicione o bot ao grupo e mande `/id` — o bot do BastiON responde com o chat ID (e o tópico, se o grupo usa tópicos). Para outro bot, mande uma mensagem no grupo e use **Descobrir chat ID**.
+- **Recebe alertas de**: equipamentos de algumas tags (grupos), equipamentos específicos ou todos. **Tipos**: interface, equipamento, configuração alterada, incidentes (nenhum marcado = todos).
+- **Exclusivo**: os alertas desses equipamentos deixam de ir para o chat principal (grupo seletivo, só para aquelas pessoas).
+- **Testar** manda uma mensagem de teste. O histórico de alertas mostra o resultado por grupo.
+- Avisos do sistema (login bloqueado, backup, resumo diário…) continuam só no chat principal. Os botões de incidente (Reconhecer/Resolver) só aparecem nos grupos que usam o bot do BastiON.
