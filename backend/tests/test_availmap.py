@@ -69,3 +69,16 @@ def test_links_in_summary():
     sm = A.summarize({"r1", "s1"}, st, keys, {"r1|1": {"oper": "up"}, "s1|7": {"oper": "down"}})
     assert sm["state"] == "down" and sm["links_down"] == 1 and sm["links"] == 2
     assert A.link_state(None) == "unknown" and A.link_state({"oper": "lowerLayerDown"}) == "down"
+
+
+def test_style_and_annotations():
+    st = A.clean_style({"up": "#00ff00", "down": "vermelho", "bg": "dots", "sub_shape": "circle", "dev_shape": "card", "scale": 9})
+    assert st["up"] == "#00ff00" and "down" not in st and st["bg"] == "dots" and st["sub_shape"] == "circle" and st["dev_shape"] == "card" and st["scale"] == 2
+    assert A.clean_style(None)["sub_shape"] == "hex"
+    m = A.clean_map({"name": "x", "nodes": [
+        {"id": "n1", "kind": "note", "x": 10, "y": 20, "w": 5, "h": 9999, "text": "obs: fibra em manutenção", "fill": "#112233", "stroke": "x"},
+        {"id": "s1", "kind": "shape", "shape": "ellipse", "w": 300, "h": 200, "opacity": 3}]}, set(), set())
+    n1, s1 = m["nodes"]
+    assert n1["w"] == 20 and n1["h"] == 4000 and n1["fill"] == "#112233" and n1["stroke"] == "#2dd4bf" and n1["text"].startswith("obs")
+    assert s1["shape"] == "ellipse" and s1["opacity"] == 1 and s1["fill"] == "transparent"
+    assert m["style"]["bg"] == "grid"

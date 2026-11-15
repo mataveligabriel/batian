@@ -5228,6 +5228,7 @@ async def _avail_loop():
 def _avail_summary_row(m: dict, maps: dict, status: dict, par: dict, ifst: dict) -> dict:
     return {"id": m["id"], "name": m["name"], "description": m.get("description", ""), "updated_at": m.get("updated_at"),
             "parents": par.get(m["id"], []), "children": [n["map_id"] for n in m.get("nodes", []) if n["kind"] == "submap"],
+            "child_labels": {n["map_id"]: n["label"] for n in m.get("nodes", []) if n["kind"] == "submap" and n.get("label")},
             "summary": availmap.summarize(availmap.devices_of(m["id"], maps), status, availmap.links_of(m["id"], maps), ifst)}
 
 
@@ -5278,6 +5279,13 @@ async def avail_update(map_id: str, body: dict, user: dict = Depends(get_current
     except availmap.MapError as e:
         raise HTTPException(status_code=400, detail=str(e))
     doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # nome do submapa editado no mapa = nome do próprio mapa (menu lateral, caminho e link público mostram igual)
+    for n in doc["nodes"]:
+        if n["kind"] == "submap" and n["label"]:
+            await db.avail_maps.update_one({"id": n["map_id"]}, {"$set": {"name": n["label"], "updated_at": doc["updated_at"]}})
+            await db.avail_maps.update_many({"nodes": {"$elemMatch": {"kind": "submap", "map_id": n["map_id"]}}, "id": {"$ne": map_id}},
+                                            {"$set": {"nodes.$[x].label": ""}}, array_filters=[{"x.kind": "submap", "x.map_id": n["map_id"]}])
+            n["label"] = ""
     await db.avail_maps.update_one({"id": map_id}, {"$set": doc})
     _avail_kick.set()                 # equipamento novo no mapa: pinga já
     return await _avail_map(map_id)
@@ -5594,7 +5602,7 @@ async def avs_public(token: str, request: Request):
     out = {}
     for mid in allowed:
         m = maps[mid]
-        out[mid] = {"id": mid, "name": m["name"], "bg": m.get("bg", "grid"), "nodes": m["nodes"],
+        out[mid] = {"id": mid, "name": m["name"], "bg": m.get("bg", "grid"), "style": m.get("style") or {}, "nodes": m["nodes"],
                     "links": [{**l, "snmp": {"if_name": l["snmp"].get("if_name")} if l.get("snmp") else None} for l in m.get("links", [])]}
     return {"name": d["name"], "root": d["map_id"], "maps": out}
 

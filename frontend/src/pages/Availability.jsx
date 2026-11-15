@@ -10,12 +10,29 @@ import { toast } from "sonner";
 import { DeviceSelect } from "@/components/TagSelect";
 import {
   ChevronRight, Hexagon, Link2, Loader2, Maximize2, MousePointer2, Pencil, Plus, RotateCcw, Save, Search, Settings2,
-  Trash2, Type, Upload, Volume2, VolumeX, X, Zap,
+  Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap,
 } from "lucide-react";
 
 // Paleta própria do mapa (independe do tema do app: o mapa é sempre "sala escura")
 export const C = { bg0: "#06111d", bg1: "#0b2034", grid: "rgba(96,165,250,0.07)", ink: "#e3eef8", dim: "#7f9bb3", panel: "#0d1d2e",
   up: "#2dd4bf", warn: "#f5b544", down: "#ff4d5e", pending: "#5b6f86", empty: "#3a4b5e", line: "#1d3a55" };
+// temas prontos da aparência do mapa (cada cor pode ser trocada depois)
+export const PRESETS = {
+  neon: { label: "Neon (padrão)", bg0: "#06111d", bg1: "#0b2034", ink: "#e3eef8", dim: "#7f9bb3", panel: "#0d1d2e", line: "#1d3a55", up: "#2dd4bf", warn: "#f5b544", down: "#ff4d5e", pending: "#5b6f86" },
+  classic: { label: "Claro", bg0: "#dfe6ee", bg1: "#f7f9fb", ink: "#16212c", dim: "#55687a", panel: "#ffffff", line: "#b9c6d3", up: "#16a34a", warn: "#d97706", down: "#dc2626", pending: "#94a3b8" },
+  graphite: { label: "Grafite", bg0: "#101215", bg1: "#1b1f24", ink: "#e5e7eb", dim: "#9ca3af", panel: "#1f242a", line: "#2f363e", up: "#22c55e", warn: "#eab308", down: "#ef4444", pending: "#6b7280" },
+  contrast: { label: "Alto contraste", bg0: "#000000", bg1: "#000000", ink: "#ffffff", dim: "#d1d5db", panel: "#000000", line: "#3f3f46", up: "#00ff9c", warn: "#ffd400", down: "#ff2d55", pending: "#8e8e93" },
+  ocean: { label: "Oceano", bg0: "#041b2d", bg1: "#0a3354", ink: "#e6f4ff", dim: "#8fb3cc", panel: "#072640", line: "#13466d", up: "#38bdf8", warn: "#fbbf24", down: "#fb7185", pending: "#64748b" },
+};
+const hexA = (h, a) => (/^#[0-9a-f]{6}$/i.test(h || "") ? `${h}${Math.round(a * 255).toString(16).padStart(2, "0")}` : h);
+// paleta efetiva do mapa: tema padrão + o que o mapa personalizou
+export function paletteOf(style) {
+  const p = { ...C, ...Object.fromEntries(Object.entries(style || {}).filter(([k, v]) => k in C && /^#[0-9a-f]{6}$/i.test(v || ""))) };
+  p.grid = hexA(p.line, 0.45) || C.grid;
+  p.empty = hexA(p.pending, 0.6) || C.empty;
+  return p;
+}
+
 export const STATE_TXT = { up: "respondendo", warn: "instável", down: "sem resposta", pending: "aguardando 1º ping", empty: "vazio" };
 const R_DEV = 22, R_SUB = 36;
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -77,7 +94,7 @@ function hexPath(r) {
 }
 
 // anel segmentado: fatia de cada estado dentro do submapa
-function Ring({ s, r }) {
+function Ring({ s, r, C }) {
   const circ = 2 * Math.PI * r, total = s?.total || 0;
   if (!total) return <circle r={r} fill="none" stroke={C.empty} strokeWidth="3" strokeDasharray="2 5" />;
   let off = 0;
@@ -90,8 +107,13 @@ function Ring({ s, r }) {
   })}</g>;
 }
 
-export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected, onSelect, onMove, onConnect, onEnter, onLinkPoints, fitSignal }) {
+export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected, onSelect, onMove, onConnect, onEnter, onLinkPoints, onPatchNode, fitSignal }) {
   const wrap = useRef(null), svg = useRef(null);
+  const sty = map.style || {};
+  const C = useMemo(() => paletteOf(map.style), [map.style]);   // paleta deste mapa (sobrepõe a padrão)
+  const K = Math.max(0.5, Math.min(2, Number(sty.scale) || 1));  // tamanho dos ícones
+  const subShape = sty.sub_shape || "hex", devShape = sty.dev_shape || "orb";
+  const flow = sty.flow !== false;
   const [view, setView] = useState({ tx: 0, ty: 0, k: 1 });
   const [drag, setDrag] = useState(null);
   const [pending, setPending] = useState(null);
@@ -103,7 +125,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
     if (!el) return;
     const W = el.clientWidth, H = el.clientHeight;
     if (!map.nodes.length) return setView({ tx: W / 2, ty: H / 2, k: 1 });
-    const xs = map.nodes.map(n => n.x), ys = map.nodes.map(n => n.y);
+    const xs = map.nodes.flatMap(n => (n.w ? [n.x, n.x + n.w] : [n.x])), ys = map.nodes.flatMap(n => (n.h ? [n.y, n.y + n.h] : [n.y]));
     const minX = Math.min(...xs) - 120, maxX = Math.max(...xs) + 120, minY = Math.min(...ys) - 90, maxY = Math.max(...ys) + 110;
     const k = Math.max(0.25, Math.min(1.6, Math.min(W / (maxX - minX), H / (maxY - minY))));
     setView({ k, tx: W / 2 - ((minX + maxX) / 2) * k, ty: H / 2 - ((minY + maxY) / 2) * k });
@@ -123,6 +145,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
     e.stopPropagation();
     if (e.button !== 0) return;
     if (editing && tool === "link" && n) {
+      if (n.kind === "note" || n.kind === "shape" || n.kind === "label") return;
       if (!pending) setPending(n.id); else if (pending !== n.id) { onConnect(pending, n.id); setPending(null); }
       return;
     }
@@ -134,6 +157,9 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
     if (drag.kind === "pan") {
       setView(v => ({ ...v, tx: drag.tx + e.clientX - drag.sx, ty: drag.ty + e.clientY - drag.sy }));
       if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true;
+    } else if (drag.kind === "resize" && editing) {
+      const w = world(e); drag.moved = true;
+      onPatchNode?.(drag.id, { w: Math.max(40, Math.round((w.x - drag.x0) / 10) * 10), h: Math.max(24, Math.round((w.y - drag.y0) / 10) * 10) });
     } else if (drag.kind === "vertex" && editing) {
       const w = world(e); drag.moved = true;
       const pt = { x: Math.round(w.x / 5) * 5, y: Math.round(w.y / 5) * 5 };
@@ -153,6 +179,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
     setDrag({ kind: "vertex", id: l.id, idx, insert, base: (l.points || []).map(p => ({ ...p })), moved: false });
   };
   const up = () => {
+    if (drag?.kind === "resize") { setDrag(null); return; }
     if (drag?.kind === "vertex") {
       if (!drag.moved) onSelect({ link: drag.id });
       setDrag(null);
@@ -171,8 +198,8 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
   };
 
   const st = (n) => live?.nodes?.[n.id];
-  const stateOf = (n) => (n.kind === "label" ? null : st(n)?.state || "pending");
-  const radius = (n) => (n.kind === "submap" ? R_SUB + 6 : n.kind === "device" ? R_DEV + 4 : 0);
+  const stateOf = (n) => (n.kind === "device" || n.kind === "submap" ? st(n)?.state || "pending" : null);
+  const radius = (n) => (n.kind === "submap" ? (R_SUB + 6) * K : n.kind === "device" ? (devShape === "dot" ? 12 : devShape === "card" ? 26 : R_DEV + 4) * K : 0);
   // várias ligações entre os mesmos dois itens (rotas): abrem em leque
   const fan = useMemo(() => {
     const g = {}, out = {};
@@ -183,7 +210,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
     });
     return out;
   }, [map.links]);
-  const bg = map.bg || "grid";
+  const bg = sty.bg || map.bg || "grid";
 
   return (
     <div ref={wrap} className="relative w-full h-full overflow-hidden select-none" style={{ background: `radial-gradient(ellipse at 50% 40%, ${C.bg1} 0%, ${C.bg0} 70%)`, touchAction: "none" }}
@@ -200,6 +227,11 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
           <filter id="av-glow" x="-1" y="-1" width="3" height="3"><feGaussianBlur stdDeviation="5" /></filter>
         </defs>
         {bg === "grid" && <rect width="100%" height="100%" fill="url(#av-grid)" />}
+        {bg === "dots" && <>
+          <defs><pattern id="av-dots" width={28 * view.k} height={28 * view.k} patternUnits="userSpaceOnUse" x={view.tx} y={view.ty}>
+            <circle cx="1.5" cy="1.5" r={Math.max(0.8, 1.4 * Math.min(view.k, 1.5))} fill={C.line} /></pattern></defs>
+          <rect width="100%" height="100%" fill="url(#av-dots)" />
+        </>}
         {bg === "radar" && (
           <g transform={`translate(${wrap.current?.clientWidth / 2 || 0},${wrap.current?.clientHeight / 2 || 0})`} pointerEvents="none">
             {[120, 240, 360, 480, 600].map(r => <circle key={r} r={r} fill="none" stroke={C.grid} strokeWidth="1.2" />)}
@@ -208,6 +240,34 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
           </g>
         )}
         <g transform={`translate(${view.tx},${view.ty}) scale(${view.k})`}>
+          {/* formas e caixas de texto ficam atrás das linhas e dos equipamentos */}
+          {map.nodes.filter(n => n.kind === "shape" || n.kind === "note").sort((a, b) => (a.kind === "note") - (b.kind === "note")).map(n => {
+            const isSel = selected?.id === n.id;
+            const w = n.w || 200, h = n.h || 80, fill = n.fill || (n.kind === "note" ? C.panel : "transparent");
+            const shapeEl = n.shape === "ellipse" ? <ellipse cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} />
+              : <rect width={w} height={h} rx={n.shape === "rect" ? 0 : Math.min(16, h / 4)} />;
+            return (
+              <g key={n.id} transform={`translate(${n.x},${n.y})`} onPointerDown={(e) => down(e, n)} style={{ cursor: editing ? "move" : "default" }} data-testid={`av-node-${n.id}`}>
+                {React.cloneElement(shapeEl, { fill: fill === "transparent" ? "transparent" : fill, fillOpacity: fill === "transparent" ? 0 : (n.opacity ?? 0.9),
+                  stroke: n.stroke || C.line, strokeWidth: 1.6, strokeDasharray: n.dashed ? "8 6" : undefined })}
+                {n.text && (
+                  <foreignObject x="0" y="0" width={w} height={h} pointerEvents="none">
+                    <div style={{ width: "100%", height: "100%", padding: n.kind === "note" ? "10px 12px" : "8px 12px", boxSizing: "border-box", color: n.color || C.ink,
+                                  fontSize: n.size || 13, lineHeight: 1.35, whiteSpace: "pre-wrap", overflow: "hidden", fontFamily: "DM Sans, sans-serif",
+                                  fontWeight: n.kind === "shape" ? 600 : 400 }}>{n.text}</div>
+                  </foreignObject>
+                )}
+                {isSel && <rect x="-4" y="-4" width={w + 8} height={h + 8} fill="none" stroke="#fff" strokeOpacity=".7" strokeDasharray="4 3" />}
+                {isSel && editing && (
+                  <g transform={`translate(${w},${h})`} style={{ cursor: "nwse-resize" }} data-testid={`av-resize-${n.id}`}
+                     onPointerDown={(e) => { e.stopPropagation(); setDrag({ kind: "resize", id: n.id, x0: n.x, y0: n.y, moved: false }); }}>
+                    <circle r="12" fill="transparent" /><rect x="-6" y="-6" width="12" height="12" rx="2" fill="#fff" stroke={C.up} strokeWidth="2" />
+                    <title>Arraste para mudar o tamanho</title>
+                  </g>
+                )}
+              </g>
+            );
+          })}
           {map.links.map(l => {
             const a = byId[l.from], b = byId[l.to];
             if (!a || !b) return null;
@@ -254,7 +314,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
                 {isSel && <path d={path} fill="none" stroke="#fff" strokeOpacity=".3" strokeWidth="10" />}
                 {bad && <path d={path} fill="none" stroke={C.down} strokeOpacity=".35" strokeWidth="9" filter="url(#av-glow)" />}
                 <path d={path} fill="none" stroke={col} strokeOpacity={l.snmp ? 0.95 : ok ? 0.45 : 0.85} strokeWidth={l.snmp ? (bad ? 3 : 2.6) : bad ? 2.4 : 2} strokeDasharray={dashed ? "7 6" : undefined} />
-                {ok && !reduced && map.links.length < 400 && [0, 0.5].map(o => (
+                {ok && flow && !reduced && map.links.length < 400 && [0, 0.5].map(o => (
                   <circle key={o} r="2.4" fill={C.up}>
                     <animateMotion dur={`${dur}s`} begin={`${o * dur}s`} repeatCount="indefinite" path={path} />
                   </circle>
@@ -294,7 +354,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
             );
           })}
 
-          {map.nodes.map(n => {
+          {map.nodes.filter(n => n.kind !== "shape" && n.kind !== "note").map(n => {
             const s = st(n) || {};
             const state = stateOf(n);
             const col = C[state] || C.pending;
@@ -309,32 +369,55 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
               );
             }
             if (n.kind === "submap") {
+              const R = R_SUB;
+              const outline = (r) => (subShape === "circle" ? <circle r={r} /> : subShape === "square" ? <rect x={-r} y={-r} width={r * 2} height={r * 2} rx={r * 0.22} />
+                : subShape === "diamond" ? <path d={`M0,${-r * 1.2} L${r * 1.2},0 L0,${r * 1.2} L${-r * 1.2},0 Z`} /> : <path d={hexPath(r)} />);
               return (
-                <g key={n.id} transform={`translate(${n.x},${n.y})`} onPointerDown={(e) => down(e, n)}
+                <g key={n.id} transform={`translate(${n.x},${n.y}) scale(${K})`} onPointerDown={(e) => down(e, n)}
                    style={{ cursor }} data-testid={`av-node-${n.id}`}>
-                  {state === "down" && <circle r={R_SUB + 14} fill={C.down} opacity=".18" filter="url(#av-glow)" />}
-                  {state === "down" && !reduced && <circle className="av-shock" r={R_SUB} fill="none" stroke={C.down} strokeWidth="2" />}
-                  <Ring s={s} r={R_SUB + 7} />
-                  <path d={hexPath(R_SUB)} fill={C.panel} stroke={isPend ? C.warn : isSel ? "#fff" : col} strokeOpacity={isSel || isPend ? 1 : 0.7} strokeWidth={isSel || isPend ? 2.4 : 1.6} />
-                  <path d={hexPath(R_SUB - 7)} fill="none" stroke={col} strokeOpacity=".25" />
+                  {state === "down" && <circle r={R + 14} fill={C.down} opacity=".18" filter="url(#av-glow)" />}
+                  {state === "down" && !reduced && <circle className="av-shock" r={R} fill="none" stroke={C.down} strokeWidth="2" />}
+                  <Ring s={s} r={(subShape === "diamond" ? R * 1.25 : R) + 7} C={C} />
+                  {React.cloneElement(outline(R), { fill: C.panel, stroke: isPend ? C.warn : isSel ? "#fff" : col, strokeOpacity: isSel || isPend ? 1 : 0.7, strokeWidth: isSel || isPend ? 2.4 : 1.6 })}
+                  {React.cloneElement(outline(R - 7), { fill: "none", stroke: col, strokeOpacity: 0.25 })}
                   <text y="2" textAnchor="middle" fontSize="17" fontWeight="700" fill={C.ink} fontFamily="JetBrains Mono, monospace">{s.total ?? "–"}</text>
                   <text y="15" textAnchor="middle" fontSize="8.5" fill={C.dim}>{s.down ? <tspan fill={C.down}>{s.down} fora</tspan> : s.links_down ? <tspan fill={C.down}>{s.links_down} rota fora</tspan> : "equip."}</text>
-                  <text y={R_SUB + 26} textAnchor="middle" fontSize="12.5" fontWeight="600" fill={C.ink} stroke={C.bg0} strokeWidth="4" strokeLinejoin="round" paintOrder="stroke">{n.label || s.name || names[n.map_id] || "submapa"}</text>
+                  <text y={(subShape === "diamond" ? R * 1.25 : R) + 26} textAnchor="middle" fontSize="12.5" fontWeight="600" fill={C.ink} stroke={C.bg0} strokeWidth="4" strokeLinejoin="round" paintOrder="stroke">{n.label || s.name || names[n.map_id] || "submapa"}</text>
                   <title>{`${s.name || ""}\n${s.up || 0} respondendo · ${s.warn || 0} instável · ${s.down || 0} sem resposta\nDois cliques para abrir`}</title>
                 </g>
               );
             }
+            const nm = (n.label || s.name || names[n.device_id] || "").slice(0, 26);
+            const sub = state === "down" ? `sem resposta · ${ago(s.since)}` : state === "pending" ? "aguardando" : s.ms != null ? `${s.ms < 10 ? s.ms.toFixed(1) : Math.round(s.ms)} ms${s.loss ? ` · ${Math.round(s.loss)}% perda` : ""}` : "";
+            if (devShape === "card") {                 // cartão com nome dentro (estilo Dude, mais moderno)
+              const W = Math.max(120, nm.length * 7.8 + 50), H = 40;
+              return (
+                <g key={n.id} transform={`translate(${n.x},${n.y}) scale(${K})`} onPointerDown={(e) => down(e, n)} style={{ cursor }} data-testid={`av-node-${n.id}`}>
+                  {state === "down" && <rect x={-W / 2 - 6} y={-H / 2 - 6} width={W + 12} height={H + 12} rx="12" fill={C.down} opacity=".25" filter="url(#av-glow)" />}
+                  <rect x={-W / 2} y={-H / 2} width={W} height={H} rx="9" fill={C.panel} stroke={isPend ? C.warn : isSel ? "#fff" : col} strokeWidth={isSel || isPend ? 2.6 : 1.8} />
+                  <rect x={-W / 2} y={-H / 2} width="5" height={H} rx="2" fill={col} />
+                  <g transform={`translate(${-W / 2 + 19},0)`}><Glyph type={s.type} color={col} /></g>
+                  <text x={-W / 2 + 34} y="-3" fontSize="12" fontWeight="600" fill={C.ink}>{nm}</text>
+                  <text x={-W / 2 + 34} y="12" fontSize="9.5" fill={state === "down" ? C.down : C.dim} fontFamily="JetBrains Mono, monospace">{sub}</text>
+                  <title>{`${s.name || ""}\n${s.host || ""}\n${STATE_TXT[state]}`}</title>
+                </g>
+              );
+            }
+            const r = devShape === "dot" ? 9 : R_DEV;
+            const body = devShape === "square" ? <rect x={-r} y={-r} width={r * 2} height={r * 2} rx="7" />
+              : devShape === "diamond" ? <path d={`M0,${-r * 1.25} L${r * 1.25},0 L0,${r * 1.25} L${-r * 1.25},0 Z`} /> : <circle r={r} />;
             return (
-              <g key={n.id} transform={`translate(${n.x},${n.y})`} onPointerDown={(e) => down(e, n)} style={{ cursor }} data-testid={`av-node-${n.id}`}>
-                {state === "down" && <circle r={R_DEV + 10} fill={C.down} opacity=".22" filter="url(#av-glow)" />}
-                {state === "down" && !reduced && <circle className="av-shock" r={R_DEV} fill="none" stroke={C.down} strokeWidth="2" />}
-                {state !== "down" && <circle r={R_DEV + 6} fill={col} opacity={state === "pending" ? 0.05 : 0.1} />}
-                <circle r={R_DEV} fill={C.panel} stroke={isPend ? C.warn : col} strokeWidth={isSel || isPend ? 3 : 2.2} />
-                {isSel && <circle r={R_DEV + 5} fill="none" stroke="#fff" strokeOpacity=".7" strokeWidth="1.2" strokeDasharray="3 3" />}
-                <Glyph type={s.type} color={col} />
-                <text y={R_DEV + 17} textAnchor="middle" fontSize="12" fontWeight="600" fill={C.ink} stroke={C.bg0} strokeWidth="4" strokeLinejoin="round" paintOrder="stroke">{(n.label || s.name || names[n.device_id] || "").slice(0, 26)}</text>
-                <text y={R_DEV + 31} textAnchor="middle" fontSize="10" fill={state === "down" ? C.down : C.dim} fontFamily="JetBrains Mono, monospace" stroke={C.bg0} strokeWidth="4" strokeLinejoin="round" paintOrder="stroke">
-                  {state === "down" ? `sem resposta · ${ago(s.since)}` : state === "pending" ? "aguardando" : s.ms != null ? `${s.ms < 10 ? s.ms.toFixed(1) : Math.round(s.ms)} ms${s.loss ? ` · ${Math.round(s.loss)}% perda` : ""}` : ""}
+              <g key={n.id} transform={`translate(${n.x},${n.y}) scale(${K})`} onPointerDown={(e) => down(e, n)} style={{ cursor }} data-testid={`av-node-${n.id}`}>
+                {state === "down" && <circle r={r + 10} fill={C.down} opacity=".22" filter="url(#av-glow)" />}
+                {state === "down" && !reduced && <circle className="av-shock" r={r} fill="none" stroke={C.down} strokeWidth="2" />}
+                {state !== "down" && devShape !== "dot" && <circle r={r + 6} fill={col} opacity={state === "pending" ? 0.05 : 0.1} />}
+                {React.cloneElement(body, devShape === "dot" ? { fill: col, stroke: isPend ? C.warn : isSel ? "#fff" : C.panel, strokeWidth: 2.5 }
+                  : { fill: C.panel, stroke: isPend ? C.warn : col, strokeWidth: isSel || isPend ? 3 : 2.2 })}
+                {isSel && <circle r={r + 6} fill="none" stroke="#fff" strokeOpacity=".7" strokeWidth="1.2" strokeDasharray="3 3" />}
+                {devShape !== "dot" && <Glyph type={s.type} color={col} />}
+                <text y={r * (devShape === "diamond" ? 1.25 : 1) + 17} textAnchor="middle" fontSize="12" fontWeight="600" fill={C.ink} stroke={C.bg0} strokeWidth="4" strokeLinejoin="round" paintOrder="stroke">{nm}</text>
+                <text y={r * (devShape === "diamond" ? 1.25 : 1) + 31} textAnchor="middle" fontSize="10" fill={state === "down" ? C.down : C.dim} fontFamily="JetBrains Mono, monospace" stroke={C.bg0} strokeWidth="4" strokeLinejoin="round" paintOrder="stroke">
+                  {sub}
                 </text>
                 <title>{`${s.name || ""}\n${s.host || ""}\n${STATE_TXT[state]}`}</title>
               </g>
@@ -518,6 +601,96 @@ function ShareDlg({ map, onClose }) {
           </div>
         </div>
       ))}
+    </Modal>
+  );
+}
+
+// ------------------------------------------------------------------ caixa de texto / forma: edição
+function ColorField({ label, value, onChange, allowNone }) {
+  const none = value === "transparent";
+  return (
+    <label className="flex items-center gap-2 text-xs text-slate-300">
+      <input type="color" value={none ? "#000000" : value || "#000000"} onChange={e => onChange(e.target.value)} disabled={none}
+             className="w-8 h-7 rounded border border-line bg-transparent p-0.5 cursor-pointer disabled:opacity-30" aria-label={label} />
+      <span className="flex-1">{label}</span>
+      {allowNone && <button type="button" onClick={() => onChange(none ? "#2dd4bf" : "transparent")} className="text-[10px] text-slate-500 hover:text-slate-200">{none ? "colorir" : "sem cor"}</button>}
+    </label>
+  );
+}
+
+function BoxPanel({ node, onChange }) {
+  const pill = (on) => `px-2 py-1 rounded border text-[11px] ${on ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400"}`;
+  return (
+    <div className="space-y-2.5" data-testid="av-box-panel">
+      <div className="text-sm font-semibold text-slate-100">{node.kind === "note" ? "Caixa de texto" : "Forma"}</div>
+      <textarea value={node.text || ""} onChange={e => onChange({ text: e.target.value })} rows={4} placeholder={node.kind === "note" ? "Escreva a observação…" : "Texto dentro da forma (opcional)"}
+                className="w-full rounded-md bg-sunken border border-line px-2 py-1.5 text-sm text-slate-100" data-testid="av-box-text" />
+      <div className="flex gap-1">{[["round", "arredondada"], ["rect", "retângulo"], ["ellipse", "elipse"]].map(([k, l]) => (
+        <button key={k} onClick={() => onChange({ shape: k })} className={pill((node.shape || "round") === k)}>{l}</button>))}</div>
+      <ColorField label="Preenchimento" value={node.fill} onChange={v => onChange({ fill: v })} allowNone />
+      <ColorField label="Borda" value={node.stroke} onChange={v => onChange({ stroke: v })} />
+      <ColorField label="Texto" value={node.color} onChange={v => onChange({ color: v })} />
+      <label className="block text-xs text-slate-400">Opacidade do preenchimento · {Math.round((node.opacity ?? 0.9) * 100)}%
+        <input type="range" min="0" max="1" step="0.02" value={node.opacity ?? 0.9} onChange={e => onChange({ opacity: Number(e.target.value) })} className="w-full" /></label>
+      <label className="block text-xs text-slate-400">Tamanho do texto · {node.size || 13}
+        <input type="range" min="9" max="40" step="1" value={node.size || 13} onChange={e => onChange({ size: Number(e.target.value) })} className="w-full" /></label>
+      <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={!!node.dashed} onChange={e => onChange({ dashed: e.target.checked })} /> borda tracejada</label>
+      <div className="text-[11px] text-slate-500">Arraste para mover; o quadradinho no canto muda o tamanho. Formas ficam atrás dos equipamentos — bom para marcar uma região ou POP.</div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ aparência do mapa
+function StyleDlg({ style, onChange, onClose }) {
+  const st = { ...style };
+  const P = paletteOf(st);
+  const set = (p) => onChange({ ...st, ...p });
+  const pill = (on) => `px-2.5 py-1.5 rounded border text-xs ${on ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400 hover:border-line2"}`;
+  const COLORS = [["bg0", "Fundo (bordas)"], ["bg1", "Fundo (centro)"], ["panel", "Preenchimento dos ícones"], ["line", "Grade e bordas"], ["ink", "Texto"], ["dim", "Texto secundário"],
+    ["up", "Respondendo / UP"], ["warn", "Instável"], ["down", "Sem resposta / DOWN"], ["pending", "Aguardando"]];
+  return (
+    <Modal title="Aparência do mapa" onClose={onClose} wide>
+      <div className="space-y-4" data-testid="av-style-dlg">
+        <div>
+          <div className="text-xs text-slate-400 mb-1.5">Tema</div>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(PRESETS).map(([k, p]) => (
+              <button key={k} onClick={() => { const { label, ...cols } = p; set({ ...cols, preset: k }); }} className={`${pill(st.preset === k || (!st.preset && k === "neon"))} flex items-center gap-2`} data-testid={`av-preset-${k}`}>
+                <span className="flex">{["bg1", "up", "warn", "down"].map(c => <span key={c} className="w-3 h-3 rounded-full -ml-1 first:ml-0 border border-black/30" style={{ background: p[c] }} />)}</span>{p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+          {COLORS.map(([k, l]) => <ColorField key={k} label={l} value={P[k]} onChange={v => set({ [k]: v, preset: "" })} />)}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <div className="text-xs text-slate-400 mb-1.5">Fundo</div>
+            <div className="flex flex-wrap gap-1">{[["grid", "grade"], ["dots", "pontos"], ["radar", "radar"], ["plain", "liso"]].map(([k, l]) => (
+              <button key={k} onClick={() => set({ bg: k })} className={pill((st.bg || "grid") === k)}>{l}</button>))}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-400 mb-1.5">Tamanho dos ícones · {Math.round((st.scale || 1) * 100)}%</div>
+            <input type="range" min="0.5" max="1.8" step="0.05" value={st.scale || 1} onChange={e => set({ scale: Number(e.target.value) })} className="w-full" />
+          </div>
+          <div>
+            <div className="text-xs text-slate-400 mb-1.5">Ícone dos POPs (submapas)</div>
+            <div className="flex flex-wrap gap-1">{[["hex", "hexágono"], ["circle", "círculo"], ["square", "quadrado"], ["diamond", "losango"]].map(([k, l]) => (
+              <button key={k} onClick={() => set({ sub_shape: k })} className={pill((st.sub_shape || "hex") === k)} data-testid={`av-sub-${k}`}>{l}</button>))}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-400 mb-1.5">Ícone dos equipamentos</div>
+            <div className="flex flex-wrap gap-1">{[["orb", "círculo"], ["square", "quadrado"], ["diamond", "losango"], ["dot", "ponto"], ["card", "cartão com nome"]].map(([k, l]) => (
+              <button key={k} onClick={() => set({ dev_shape: k })} className={pill((st.dev_shape || "orb") === k)} data-testid={`av-dev-${k}`}>{l}</button>))}</div>
+          </div>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={st.flow !== false} onChange={e => set({ flow: e.target.checked })} /> animação nas linhas que estão UP</label>
+        <div className="flex items-center justify-between pt-1">
+          <span className="text-[11px] text-slate-500">Vale só para este mapa. Aparece na hora; clique em Salvar no mapa para gravar.</span>
+          <Button onClick={onClose} className="bg-brand hover:bg-brand-strong">Pronto</Button>
+        </div>
+      </div>
     </Modal>
   );
 }
@@ -831,6 +1004,19 @@ export default function Availability() {
   };
   const addDevices = (ids) => { patch(d => { ids.forEach((id, i) => d.nodes.push({ id: uid(), kind: "device", device_id: id, label: "", ...centerSpot(i) })); return d; }); setDlg(null); setFitSig(s => s + 1); };
   const addSubmap = (mid, created) => { patch(d => { d.nodes.push({ id: uid(), kind: "submap", map_id: mid, label: "", ...centerSpot() }); return d; }); setDlg(null); if (created) loadList(); setFitSig(s => s + 1); };
+  const patchNode = (id, p) => setDraft(d => ({ ...d, nodes: d.nodes.map(n => (n.id === id ? { ...n, ...p } : n)) }));
+  const addBox = (kind) => {
+    const P = paletteOf(draft?.style);
+    const sp = centerSpot();
+    const id = uid();
+    patch(d => {
+      d.nodes.push(kind === "note"
+        ? { id, kind: "note", x: sp.x, y: sp.y, w: 240, h: 90, text: "Observação", fill: P.panel, stroke: P.line, color: P.ink, opacity: 0.92, size: 13, shape: "round", label: "" }
+        : { id, kind: "shape", x: sp.x - 100, y: sp.y - 60, w: 320, h: 200, text: "", fill: P.up, stroke: P.up, color: P.ink, opacity: 0.08, size: 14, shape: "round", dashed: true, label: "" });
+      return d;
+    });
+    setSelected({ id }); setTool("move"); setFitSig(s => s + 1);
+  };
   const addLabel = () => { const t = window.prompt("Texto"); if (t?.trim()) patch(d => { d.nodes.push({ id: uid(), kind: "label", label: t.trim().slice(0, 80), ...centerSpot() }); return d; }); };
   const delSel = () => {
     if (!selected) return;
@@ -864,7 +1050,7 @@ export default function Availability() {
   const roots = (list?.maps || []).filter(m => !m.parents.length);
 
   // árvore: mapas principais e, dentro, os submapas (2 níveis visíveis)
-  const Tree = ({ id, depth, seen }) => {
+  const Tree = ({ id, depth, seen, label }) => {
     const m = byId[id];
     if (!m || seen.has(id)) return null;
     const s2 = new Set(seen).add(id);
@@ -873,10 +1059,10 @@ export default function Availability() {
         <button onClick={() => open(id)} className={`w-full flex items-center gap-2 py-1.5 pr-2 text-left text-[13px] rounded ${id === mapId ? "bg-white/5 text-white" : "text-slate-300 hover:bg-white/5"}`}
                 style={{ paddingLeft: 10 + depth * 14 }} data-testid={`av-tree-${id}`}>
           <span className="w-2 h-2 rounded-full shrink-0" style={{ background: C[m.summary.state] || C.empty, boxShadow: m.summary.state === "down" ? `0 0 8px ${C.down}` : "none" }} />
-          <span className="truncate">{m.name}</span>
+          <span className="truncate">{label || m.name}</span>
           {m.summary.down > 0 && <span className="ml-auto font-mono text-[10px]" style={{ color: C.down }}>{m.summary.down}</span>}
         </button>
-        {depth < 3 && m.children.map(c => <Tree key={c} id={c} depth={depth + 1} seen={s2} />)}
+        {depth < 3 && m.children.map(c => <Tree key={c} id={c} depth={depth + 1} seen={s2} label={m.child_labels?.[c]} />)}
       </>
     );
   };
@@ -958,8 +1144,9 @@ export default function Availability() {
               <Button size="sm" variant="outline" onClick={() => setDlg("devices")} className={tb} data-testid="av-add-devices"><Plus className="w-3.5 h-3.5 mr-1" />Equipamentos</Button>
               <Button size="sm" variant="outline" onClick={() => setDlg("submap")} className={tb} data-testid="av-add-submap"><Hexagon className="w-3.5 h-3.5 mr-1" />Submapa</Button>
               <Button size="sm" variant="outline" onClick={addLabel} className={tb}><Type className="w-3.5 h-3.5 mr-1" />Texto</Button>
-              <select value={draft.bg || "grid"} onChange={e => setDraft({ ...draft, bg: e.target.value })} className="h-8 rounded-md bg-panel border border-line px-2 text-xs text-slate-200" aria-label="Fundo">
-                <option value="grid">fundo: grade</option><option value="radar">fundo: radar</option><option value="plain">fundo: liso</option></select>
+              <Button size="sm" variant="outline" onClick={() => addBox("note")} className={tb} data-testid="av-add-note"><StickyNote className="w-3.5 h-3.5 mr-1" />Caixa de texto</Button>
+              <Button size="sm" variant="outline" onClick={() => addBox("shape")} className={tb} data-testid="av-add-shape"><Shapes className="w-3.5 h-3.5 mr-1" />Forma</Button>
+              <Button size="sm" variant="outline" onClick={() => setDlg("style")} className={tb} data-testid="av-style"><Palette className="w-3.5 h-3.5 mr-1" />Aparência</Button>
               {selected && <Button size="sm" variant="outline" onClick={delSel} className={`${tb} text-red-300`}><Trash2 className="w-3.5 h-3.5 mr-1" />Tirar</Button>}
               <Button size="sm" variant="ghost" onClick={delMap} className="h-8 text-xs text-red-300">Excluir mapa</Button>
               <Button size="sm" variant="ghost" onClick={() => { setDraft(null); setSelected(null); }} className="h-8 text-xs text-slate-300">Cancelar</Button>
@@ -973,6 +1160,7 @@ export default function Availability() {
             {cur ? (
               <MapCanvasAvail map={cur} live={live} names={names} editing={editing} tool={tool} selected={selected} onSelect={setSelected} fitSignal={fitSig}
                               onEnter={enterSub}
+                              onPatchNode={patchNode}
                               onLinkPoints={(id, pts) => setDraft(d => ({ ...d, links: d.links.map(l => (l.id === id ? { ...l, points: pts || [] } : l)) }))}
                               onMove={(id, x, y) => setDraft(d => ({ ...d, nodes: d.nodes.map(n => (n.id === id ? { ...n, x, y } : n)) }))}
                               onConnect={(a, b) => { const id = uid(); patch(d => { d.links.push({ id, from: a, to: b, label: "", snmp: null }); return d; }); setSelected({ link: id }); }} />
@@ -981,7 +1169,7 @@ export default function Availability() {
                 {list ? (canEdit ? "Crie o primeiro mapa no + da lista." : "Nenhum mapa ainda.") : <Loader2 className="w-5 h-5 animate-spin" />}
               </div>
             )}
-          {(sel || selected?.link) && (
+          {((sel && (editing || (sel.kind !== "note" && sel.kind !== "shape"))) || selected?.link) && (
             <aside className="absolute top-3 right-3 w-72 max-h-[calc(100%-4.5rem)] rounded-lg border p-4 space-y-3 overflow-y-auto hidden md:block shadow-2xl" style={{ background: `${C.panel}f2`, borderColor: C.line }} data-testid="av-inspector">
               <button onClick={() => setSelected(null)} className="float-right text-slate-500 hover:text-slate-200" aria-label="Fechar"><X className="w-4 h-4" /></button>
               {selected?.link && cur.links.find(l => l.id === selected.link) && (
@@ -1012,9 +1200,10 @@ export default function Availability() {
                   <Plus className="w-3.5 h-3.5 mr-1" />Colocar equipamentos dentro</Button>}
                 <Button size="sm" onClick={() => enterSub(sel.map_id)} className="w-full h-8 bg-brand hover:bg-brand-strong text-xs" data-testid="av-sub-enter">{editing ? "Salvar e abrir o submapa" : "Abrir o submapa"}</Button>
               </>}
-              {editing && sel && sel.kind !== "label" && (
-                <label className="block text-xs text-slate-400 space-y-1 pt-2 border-t border-line">Nome mostrado no mapa (opcional)
-                  <Input value={sel.label || ""} onChange={e => setDraft(d => ({ ...d, nodes: d.nodes.map(n => (n.id === sel.id ? { ...n, label: e.target.value } : n)) }))} className="h-8 bg-sunken border-line text-sm" /></label>
+              {editing && (sel?.kind === "note" || sel?.kind === "shape") && <BoxPanel node={sel} onChange={(p) => patchNode(sel.id, p)} />}
+              {editing && sel && (sel.kind === "device" || sel.kind === "submap") && (
+                <label className="block text-xs text-slate-400 space-y-1 pt-2 border-t border-line">{sel.kind === "submap" ? "Nome do submapa (muda também no menu ao salvar)" : "Nome mostrado no mapa (opcional)"}
+                  <Input value={sel.label || (sel.kind === "submap" ? byId[sel.map_id]?.name : "") || ""} onChange={e => setDraft(d => ({ ...d, nodes: d.nodes.map(n => (n.id === sel.id ? { ...n, label: e.target.value } : n)) }))} className="h-8 bg-sunken border-line text-sm" data-testid="av-node-name" /></label>
               )}
               {editing && sel?.kind === "label" && (
                 <Input value={sel.label} onChange={e => setDraft(d => ({ ...d, nodes: d.nodes.map(n => (n.id === sel.id ? { ...n, label: e.target.value } : n)) }))} className="h-8 bg-sunken border-line text-sm" />
@@ -1030,6 +1219,7 @@ export default function Availability() {
                                                          onAddHere={addDevices} onAddedElsewhere={() => { setDlg(null); loadList(); }} onClose={() => setDlg(null)} />}
       {dlg === "submap" && cur && <AddSubmap maps={list?.maps || []} current={cur} onPick={addSubmap} onClose={() => setDlg(null)} />}
       {dlg === "share" && map && <ShareDlg map={map} onClose={() => setDlg(null)} />}
+      {dlg === "style" && draft && <StyleDlg style={draft.style || { bg: draft.bg }} onChange={(st) => setDraft(d => ({ ...d, style: st, bg: st.bg }))} onClose={() => setDlg(null)} />}
       {dlg === "dude" && <DudeImport onClose={() => setDlg(null)} onDone={async (openId) => { setDlg(null); await loadList(); api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {}); if (openId) { setTrail([]); setMapId(openId); } }} />}
       {dlg === "settings" && <SettingsDlg init={list.settings} onClose={() => setDlg(null)} onSaved={(s) => { setList(l => ({ ...l, settings: s })); setDlg(null); }} />}
     </div>

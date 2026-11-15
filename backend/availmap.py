@@ -8,11 +8,31 @@
 import os
 from typing import Dict, List, Optional, Set
 
-KINDS = ("device", "submap", "label")
+KINDS = ("device", "submap", "label", "note", "shape")     # note = caixa de texto; shape = forma (retângulo/elipse)
 STATES = ("down", "warn", "up", "pending")          # ordem de gravidade
 RANK = {s: i for i, s in enumerate(STATES)}
 DEFAULTS = {"interval_s": 30, "down_after": 2, "count": 3, "warn_loss": 34, "warn_ms": 150, "alert": True}
-BGS = ("grid", "radar", "plain")
+BGS = ("grid", "dots", "radar", "plain")
+COLOR_KEYS = ("up", "warn", "down", "pending", "bg0", "bg1", "ink", "dim", "panel", "line")
+SUB_SHAPES = ("hex", "circle", "square", "diamond")
+DEV_SHAPES = ("orb", "square", "diamond", "dot", "card")
+SHAPES = ("rect", "round", "ellipse")
+_HEX = __import__("re").compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _color(v, default=None):
+    v = str(v or "").strip()
+    return v if _HEX.match(v) or v == "transparent" else default
+
+
+def clean_style(b) -> dict:
+    """Aparência do mapa: cores (#rrggbb), fundo, formato dos POPs/equipamentos, tamanho e animação das linhas."""
+    b = b if isinstance(b, dict) else {}
+    out = {k: _color(b.get(k)) for k in COLOR_KEYS if _color(b.get(k))}
+    out.update(bg=b.get("bg") if b.get("bg") in BGS else "grid", sub_shape=b.get("sub_shape") if b.get("sub_shape") in SUB_SHAPES else "hex",
+               dev_shape=b.get("dev_shape") if b.get("dev_shape") in DEV_SHAPES else "orb", scale=round(_num(b.get("scale"), 0.5, 2, 1), 2),
+               flow=bool(b.get("flow", True)), preset=str(b.get("preset") or "")[:20])
+    return out
 
 
 class MapError(ValueError):
@@ -56,6 +76,12 @@ def clean_map(b: dict, device_ids: Set[str], map_ids: Set[str], self_id: Optiona
             if n.get("map_id") not in map_ids or n.get("map_id") == self_id:
                 continue
             nd["map_id"] = n["map_id"]
+        elif kind in ("note", "shape"):     # x, y = canto de cima à esquerda
+            nd.update(w=round(_num(n.get("w"), 20, 4000, 200)), h=round(_num(n.get("h"), 16, 4000, 80)), text=str(n.get("text") or "")[:2000],
+                      fill=_color(n.get("fill"), "#0d1d2e" if kind == "note" else "transparent"), stroke=_color(n.get("stroke"), "#2dd4bf"),
+                      color=_color(n.get("color"), "#e3eef8"), opacity=round(_num(n.get("opacity"), 0, 1, 0.9 if kind == "note" else 0.25), 2),
+                      size=int(_num(n.get("size"), 9, 48, 13)), dashed=bool(n.get("dashed")),
+                      shape=n.get("shape") if n.get("shape") in SHAPES else "round")
         elif not nd["label"]:
             continue
         seen.add(nid)
@@ -76,7 +102,7 @@ def clean_map(b: dict, device_ids: Set[str], map_ids: Set[str], self_id: Optiona
             out["snmp"] = {"device_id": sn["device_id"], "if_index": int(sn["if_index"]), "if_name": str(sn.get("if_name") or "").strip()[:80]}
         links.append(out)
     return {"name": name, "description": str(b.get("description") or "").strip()[:300], "nodes": nodes, "links": links,
-            "bg": b.get("bg") if b.get("bg") in BGS else "grid"}
+            "bg": b.get("bg") if b.get("bg") in BGS else "grid", "style": clean_style(b.get("style") or {"bg": b.get("bg")})}
 
 
 def next_state(prev: dict, ok: bool, loss: float, ms: Optional[float], cfg: dict) -> dict:
