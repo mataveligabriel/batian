@@ -1608,3 +1608,9 @@ Além do chat principal, crie outros destinos em **Automação → Grupos de ale
 - **Exclusivo**: os alertas desses equipamentos deixam de ir para o chat principal (grupo seletivo, só para aquelas pessoas).
 - **Testar** manda uma mensagem de teste. O histórico de alertas mostra o resultado por grupo.
 - Avisos do sistema (login bloqueado, backup, resumo diário…) continuam só no chat principal. Os botões de incidente (Reconhecer/Resolver) só aparecem nos grupos que usam o bot do BastiON.
+
+## 81. Fuso horário dos alertas
+
+Os containers do BastiON usam o fuso **America/Sao_Paulo** (antes ficavam em UTC e os horários nos alertas do Telegram apareciam 3 h adiantados). Vale para o texto dos alertas, o resumo diário e as horas de agendamento (backup de configuração, backup do banco, resumo diário), que passam a ser no horário local.
+
+Para outro fuso, coloque no `deploy/.env` (ex.: `TZ=America/Manaus`) e rode `sudo bash /opt/bastion/deploy/update.sh`.
