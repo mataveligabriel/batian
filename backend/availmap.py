@@ -3,7 +3,7 @@
 - Cada mapa tem nós de equipamento, de submapa (aponta para outro mapa) e de texto, e ligações entre eles.
 - O BastiON pinga (ICMP) os equipamentos que estão em algum mapa, do servidor ou do jump do equipamento.
 - Estado do equipamento: up / warn (perda ou latência alta) / down (N ciclos seguidos sem resposta) / pending.
-- Submapa herda o pior estado de tudo que está dentro dele (recursivo, sem loop infinito).
+- Submapa mostra o estado só do que está dentro dele (mapa só de submapas olha um nível abaixo).
 """
 import os
 from typing import Dict, List, Optional, Set
@@ -91,35 +91,48 @@ def next_state(prev: dict, ok: bool, loss: float, ms: Optional[float], cfg: dict
     return {"state": state, "fails": fails, "changed": changed}
 
 
-def devices_of(map_id: str, maps: Dict[str, dict], _seen: Optional[Set[str]] = None) -> Set[str]:
-    """Todos os equipamentos dentro do mapa, incluindo os dos submapas (recursivo, à prova de ciclo)."""
-    seen = _seen if _seen is not None else set()
-    if map_id in seen or map_id not in maps:
+def _direct_devices(m: dict) -> Set[str]:
+    return {n["device_id"] for n in m.get("nodes", []) if n["kind"] == "device"}
+
+
+def _direct_links(m: dict) -> Set[str]:
+    return {if_key(l["snmp"]) for l in m.get("links", []) if l.get("snmp")}
+
+
+def _scope(map_id: str, maps: Dict[str, dict], direct) -> Set[str]:
+    """O que conta para o estado do mapa: só o que está DENTRO dele (não soma submapas — no Dude os POPs apontam uns
+    para os outros e tudo virava "fora"). Mapa que só tem submapas (índice, ex.: "Rede") olha um nível abaixo."""
+    m = maps.get(map_id)
+    if not m:
         return set()
-    seen.add(map_id)
+    if any(n["kind"] == "device" for n in m.get("nodes", [])):
+        return direct(m)
     out: Set[str] = set()
-    for n in maps[map_id].get("nodes", []):
-        if n["kind"] == "device":
-            out.add(n["device_id"])
-        elif n["kind"] == "submap":
-            out |= devices_of(n["map_id"], maps, seen)
+    for n in m.get("nodes", []):
+        if n["kind"] == "submap" and n["map_id"] in maps and n["map_id"] != map_id:
+            out |= direct(maps[n["map_id"]])
     return out
+
+
+def devices_of(map_id: str, maps: Dict[str, dict]) -> Set[str]:
+    return _scope(map_id, maps, _direct_devices)
 
 
 def if_key(sn: dict) -> str:
     return f"{sn['device_id']}|{int(sn['if_index'])}"
 
 
-def links_of(map_id: str, maps: Dict[str, dict], _seen: Optional[Set[str]] = None) -> Set[str]:
-    """Interfaces (equip|índice) das ligações monitoradas por SNMP dentro do mapa e dos submapas."""
-    seen = _seen if _seen is not None else set()
-    if map_id in seen or map_id not in maps:
+def links_of(map_id: str, maps: Dict[str, dict]) -> Set[str]:
+    """Interfaces (equip|índice) das ligações monitoradas por SNMP dentro do mapa (mesma regra de devices_of)."""
+    m = maps.get(map_id)
+    if not m:
         return set()
-    seen.add(map_id)
-    out = {if_key(l["snmp"]) for l in maps[map_id].get("links", []) if l.get("snmp")}
-    for n in maps[map_id].get("nodes", []):
-        if n["kind"] == "submap":
-            out |= links_of(n["map_id"], maps, seen)
+    if any(n["kind"] == "device" for n in m.get("nodes", [])):
+        return _direct_links(m)
+    out = _direct_links(m)
+    for n in m.get("nodes", []):
+        if n["kind"] == "submap" and n["map_id"] in maps and n["map_id"] != map_id:
+            out |= _direct_links(maps[n["map_id"]])
     return out
 
 

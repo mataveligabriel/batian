@@ -26,10 +26,14 @@ def test_states():
 def test_submaps_and_summary():
     maps = {"core": {"nodes": [{"kind": "device", "device_id": "r1"}, {"kind": "submap", "map_id": "pop"}]},
             "pop": {"nodes": [{"kind": "device", "device_id": "s1"}, {"kind": "device", "device_id": "s2"}, {"kind": "submap", "map_id": "core"}]}}
-    assert A.devices_of("core", maps) == {"r1", "s1", "s2"}               # ciclo core<->pop não trava
+    assert A.devices_of("core", maps) == {"r1"}                          # só o que está dentro (não soma o submapa)
+    assert A.devices_of("pop", maps) == {"s1", "s2"}
     st = {"r1": {"state": "up"}, "s1": {"state": "down"}}
-    sm = A.summarize(A.devices_of("core", maps), st)
-    assert sm["state"] == "down" and sm["down"] == 1 and sm["up"] == 1 and sm["pending"] == 1 and sm["total"] == 3
+    assert A.summarize(A.devices_of("core", maps), st)["state"] == "up"   # queda no POP não acende o core
+    sm = A.summarize(A.devices_of("pop", maps), st)
+    assert sm["state"] == "down" and sm["down"] == 1 and sm["pending"] == 1 and sm["total"] == 2
+    index = {**maps, "rede": {"nodes": [{"kind": "submap", "map_id": "core"}, {"kind": "submap", "map_id": "pop"}]}}
+    assert A.devices_of("rede", index) == {"r1", "s1", "s2"}             # mapa só de submapas: um nível abaixo
     assert A.summarize(set(), st)["state"] == "empty"
     assert A.parents(maps) == {"pop": ["core"], "core": ["pop"]}
 
@@ -54,8 +58,8 @@ def test_links_in_summary():
     maps = {"core": {"nodes": [{"kind": "device", "device_id": "r1"}, {"kind": "submap", "map_id": "pop"}],
                      "links": [{"snmp": {"device_id": "r1", "if_index": 1}}]},
             "pop": {"nodes": [{"kind": "device", "device_id": "s1"}], "links": [{"snmp": {"device_id": "s1", "if_index": 7}}, {"snmp": None}]}}
-    keys = A.links_of("core", maps)
-    assert keys == {"r1|1", "s1|7"}
+    assert A.links_of("core", maps) == {"r1|1"} and A.links_of("pop", maps) == {"s1|7"}
+    keys = {"r1|1", "s1|7"}
     st = {"r1": {"state": "up"}, "s1": {"state": "up"}}
     assert A.summarize({"r1", "s1"}, st, keys, {"r1|1": {"oper": "up"}, "s1|7": {"oper": "up"}})["state"] == "up"
     sm = A.summarize({"r1", "s1"}, st, keys, {"r1|1": {"oper": "up"}, "s1|7": {"oper": "down"}})
