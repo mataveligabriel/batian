@@ -67,7 +67,10 @@ def clean_map(b: dict, device_ids: Set[str], map_ids: Set[str], self_id: Optiona
         if a not in seen or z not in seen or a == z or lid in lids:
             continue                                  # várias ligações entre os mesmos dois itens são permitidas (rotas)
         lids.add(lid)
-        out = {"id": lid, "from": a, "to": z, "label": str(ln.get("label") or "").strip()[:60], "snmp": None}
+        out = {"id": lid, "from": a, "to": z, "label": str(ln.get("label") or "").strip()[:60], "snmp": None,
+               "points": [{"x": round(_num(p.get("x"), -100000, 100000, 0), 1), "y": round(_num(p.get("y"), -100000, 100000, 0), 1)}
+                          for p in (ln.get("points") or [])[:100] if isinstance(p, dict)],
+               "shape": "straight" if ln.get("shape") == "straight" else "smooth"}
         sn = ln.get("snmp") or {}
         if sn.get("device_id") in device_ids and str(sn.get("if_index", "")).isdigit():
             out["snmp"] = {"device_id": sn["device_id"], "if_index": int(sn["if_index"]), "if_name": str(sn.get("if_name") or "").strip()[:80]}

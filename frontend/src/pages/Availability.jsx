@@ -46,6 +46,31 @@ function Glyph({ type, color }) {
   return <g {...p}><circle r="5.5" /><circle r="1.4" fill={color} /></g>;
 }
 
+// curva suave (Catmull-Rom) que passa por todos os pontos
+function crPt(p0, p1, p2, p3, t) {
+  const t2 = t * t, t3 = t2 * t;
+  const f = (a, b, c, d) => 0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+  return { x: f(p0.x, p1.x, p2.x, p3.x), y: f(p0.y, p1.y, p2.y, p3.y) };
+}
+function catmull(P, n = 14) {
+  const out = [P[0]];
+  for (let i = 0; i < P.length - 1; i++) {
+    const p0 = P[i - 1] || P[i], p3 = P[i + 2] || P[i + 1];
+    for (let k = 1; k <= n; k++) out.push(crPt(p0, P[i], P[i + 1], p3, k / n));
+  }
+  return out;
+}
+// ponto no meio do comprimento da linha (onde ficam o selo e o texto)
+function halfway(pts) {
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+  const L = cum[cum.length - 1], h = L / 2;
+  let i = 1;
+  while (i < pts.length - 1 && cum[i] < h) i++;
+  const seg = cum[i] - cum[i - 1] || 1, r = (h - cum[i - 1]) / seg;
+  return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * r, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * r, len: L };
+}
+
 function hexPath(r) {
   return Array.from({ length: 6 }, (_, i) => { const a = (Math.PI / 3) * i - Math.PI / 2; return `${i ? "L" : "M"}${(r * Math.cos(a)).toFixed(1)},${(r * Math.sin(a)).toFixed(1)}`; }).join(" ") + "Z";
 }
@@ -64,7 +89,7 @@ function Ring({ s, r }) {
   })}</g>;
 }
 
-export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected, onSelect, onMove, onConnect, onEnter, fitSignal }) {
+export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected, onSelect, onMove, onConnect, onEnter, onLinkPoints, fitSignal }) {
   const wrap = useRef(null), svg = useRef(null);
   const [view, setView] = useState({ tx: 0, ty: 0, k: 1 });
   const [drag, setDrag] = useState(null);
@@ -108,13 +133,30 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
     if (drag.kind === "pan") {
       setView(v => ({ ...v, tx: drag.tx + e.clientX - drag.sx, ty: drag.ty + e.clientY - drag.sy }));
       if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true;
+    } else if (drag.kind === "vertex" && editing) {
+      const w = world(e); drag.moved = true;
+      const pt = { x: Math.round(w.x / 5) * 5, y: Math.round(w.y / 5) * 5 };
+      const next = [...drag.base];
+      if (drag.insert) next.splice(drag.idx, 0, pt); else next[drag.idx] = pt;
+      onLinkPoints?.(drag.id, next);
     } else if (editing) {
       const w = world(e); drag.moved = true;
       onMove(drag.id, Math.round((w.x - drag.ox) / 10) * 10, Math.round((w.y - drag.oy) / 10) * 10);
     } else if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) drag.moved = true;
   };
   const lastClick = useRef({ id: null, t: 0 });
+  // ponto do traçado da ligação: arrastar move; insert = cria um ponto novo na posição idx
+  const startVertex = (e, l, idx, insert) => {
+    e.stopPropagation();
+    if (e.button !== 0) return;
+    setDrag({ kind: "vertex", id: l.id, idx, insert, base: (l.points || []).map(p => ({ ...p })), moved: false });
+  };
   const up = () => {
+    if (drag?.kind === "vertex") {
+      if (!drag.moved) onSelect({ link: drag.id });
+      setDrag(null);
+      return;
+    }
     if (drag?.kind === "node" && !drag.moved) {
       const n = byId[drag.id], now = Date.now();
       if (n?.kind === "submap" && lastClick.current.id === n.id && now - lastClick.current.t < 450 && !(editing && tool === "link")) {
@@ -170,13 +212,26 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
             if (!a || !b) return null;
             const par = fan[l.id] || { bend: 0 };
             const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
-            if (d < radius(a) + radius(b) + 4) return null;
-            const nx = -dy / d, ny = dx / d;
-            const cp = { x: (a.x + b.x) / 2 + nx * par.bend * 2, y: (a.y + b.y) / 2 + ny * par.bend * 2 };
+            const pts = l.points || [];
+            if (!pts.length && d < radius(a) + radius(b) + 4) return null;
             const toward = (p, q, r) => { const L = Math.hypot(q.x - p.x, q.y - p.y) || 1; return { x: p.x + ((q.x - p.x) / L) * r, y: p.y + ((q.y - p.y) / L) * r }; };
-            const p1 = toward(a, cp, radius(a)), p2 = toward(b, cp, radius(b));
-            const path = `M${p1.x.toFixed(1)},${p1.y.toFixed(1)} Q${cp.x.toFixed(1)},${cp.y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
-            const mid = { x: 0.25 * p1.x + 0.5 * cp.x + 0.25 * p2.x, y: 0.25 * p1.y + 0.5 * cp.y + 0.25 * p2.y };
+            let dense, ghosts = [];
+            if (pts.length) {                         // traçado livre: passa pelos pontos (curvo ou em segmentos retos)
+              const anchors = [{ x: a.x, y: a.y }, ...pts, { x: b.x, y: b.y }];
+              anchors[0] = toward(a, pts[0], radius(a));
+              anchors[anchors.length - 1] = toward(b, pts[pts.length - 1], radius(b));
+              const smooth = l.shape !== "straight";
+              dense = smooth ? catmull(anchors) : anchors;
+              ghosts = anchors.slice(0, -1).map((p, i) => (smooth ? crPt(anchors[i - 1] || p, p, anchors[i + 1], anchors[i + 2] || anchors[i + 1], 0.5)
+                : { x: (p.x + anchors[i + 1].x) / 2, y: (p.y + anchors[i + 1].y) / 2 }));
+            } else {
+              const nx = -dy / d, ny = dx / d;
+              const cp = { x: (a.x + b.x) / 2 + nx * par.bend * 2, y: (a.y + b.y) / 2 + ny * par.bend * 2 };
+              const p1 = toward(a, cp, radius(a)), p2 = toward(b, cp, radius(b));
+              dense = Array.from({ length: 25 }, (_, i) => { const t = i / 24, u = 1 - t; return { x: u * u * p1.x + 2 * u * t * cp.x + t * t * p2.x, y: u * u * p1.y + 2 * u * t * cp.y + t * t * p2.y }; });
+            }
+            const path = "M" + dense.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L");
+            const mid = halfway(dense);
             const ls = l.snmp ? live?.links?.[l.id] : null;
             let col, ok, bad, dashed;
             if (l.snmp) {                             // rota com interface: a cor é o estado da interface
@@ -192,7 +247,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
             }
             const isSel = selected?.link === l.id;
             const chip = l.snmp ? (ls?.state === "down" ? "DOWN" : ls?.speed_mbps ? fmtSpeed(ls.speed_mbps) : ls?.state === "up" ? "UP" : "?") : null;
-            const dur = Math.max(1.6, d / 140);
+            const dur = Math.max(1.6, mid.len / 140);
             return (
               <g key={l.id} data-testid={`av-link-${l.id}`}>
                 {isSel && <path d={path} fill="none" stroke="#fff" strokeOpacity=".3" strokeWidth="10" />}
@@ -211,6 +266,29 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
                   </g>
                 )}
                 {l.label && <text x={mid.x} y={mid.y - (chip ? 15 : 6)} textAnchor="middle" fontSize="10" fill={C.dim} stroke={C.bg0} strokeWidth="3.5" paintOrder="stroke">{l.label}</text>}
+                {editing && tool === "move" && !pts.length && isSel && (
+                  <g transform={`translate(${mid.x},${mid.y + (chip ? 18 : 0)})`} style={{ cursor: "grab" }} onPointerDown={(e) => startVertex(e, l, 0, true)} data-testid={`av-link-handle-${l.id}`}>
+                    <circle r="14" fill="transparent" />
+                    <circle r="6" fill="#fff" stroke={C.up} strokeWidth="2.5" />
+                    <title>Arraste para curvar ou desviar a linha</title>
+                  </g>
+                )}
+                {editing && tool === "move" && pts.map((p, i) => (
+                  <g key={`v${i}`} transform={`translate(${p.x},${p.y})`} style={{ cursor: "move" }} data-testid={`av-link-pt-${l.id}-${i}`}
+                     onPointerDown={(e) => startVertex(e, l, i, false)} onDoubleClick={(e) => { e.stopPropagation(); onLinkPoints?.(l.id, pts.filter((_, j) => j !== i)); }}>
+                    <circle r="12" fill="transparent" />
+                    <rect x="-5" y="-5" width="10" height="10" rx="2" fill="#fff" stroke={C.up} strokeWidth="2.2" />
+                    <title>Arraste para mover · dois cliques apagam o ponto</title>
+                  </g>
+                ))}
+                {editing && tool === "move" && isSel && ghosts.map((p, i) => (
+                  <g key={`g${i}`} transform={`translate(${p.x},${p.y})`} style={{ cursor: "copy" }} onPointerDown={(e) => startVertex(e, l, i, true)}>
+                    <circle r="11" fill="transparent" />
+                    <circle r="5.5" fill={C.up} fillOpacity=".55" stroke="#fff" strokeWidth="1.3" />
+                    <path d="M-2.6,0 H2.6 M0,-2.6 V2.6" stroke="#fff" strokeWidth="1.4" />
+                    <title>Arraste para criar mais um ponto aqui</title>
+                  </g>
+                ))}
               </g>
             );
           })}
@@ -314,6 +392,17 @@ function LinkPanel({ link, map, live, devices, names, editing, onChange }) {
         </div>
       ) : <div className="text-xs" style={{ color: C.dim }}>Sem interface escolhida: a cor segue o ping dos dois lados. Escolha uma interface para a linha mostrar UP/DOWN e a capacidade.</div>}
       {editing && <>
+        <div className="space-y-1">
+          <div className="text-xs text-slate-300">Traçado</div>
+          {(link.points || []).length ? <>
+            <div className="flex gap-1">
+              {[["smooth", "curvo"], ["straight", "retas"]].map(([k, l]) => (
+                <button key={k} onClick={() => onChange({ shape: k })} className={`px-2 py-1 rounded border text-[11px] ${(link.shape || "smooth") === k ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400"}`}>{l}</button>))}
+              <button onClick={() => onChange({ points: [] })} className="ml-auto text-[11px] text-slate-400 hover:text-slate-200">voltar a reta</button>
+            </div>
+            <div className="text-[11px]" style={{ color: C.dim }}>Arraste os quadrados; os + criam mais pontos; dois cliques num quadrado apagam.</div>
+          </> : <div className="text-[11px]" style={{ color: C.dim }}>Arraste a bolinha branca no meio da linha para curvar ou desviar de outro item.</div>}
+        </div>
         <label className="block text-xs text-slate-400 space-y-1">Texto na linha (ex.: rota 1, fibra norte)
           <Input value={link.label || ""} onChange={e => onChange({ label: e.target.value })} className="h-8 bg-sunken border-line text-sm" /></label>
         <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: C.line }}>
@@ -815,6 +904,7 @@ export default function Availability() {
             {cur ? (
               <MapCanvasAvail map={cur} live={live} names={names} editing={editing} tool={tool} selected={selected} onSelect={setSelected} fitSignal={fitSig}
                               onEnter={enterSub}
+                              onLinkPoints={(id, pts) => setDraft(d => ({ ...d, links: d.links.map(l => (l.id === id ? { ...l, points: pts || [] } : l)) }))}
                               onMove={(id, x, y) => setDraft(d => ({ ...d, nodes: d.nodes.map(n => (n.id === id ? { ...n, x, y } : n)) }))}
                               onConnect={(a, b) => { const id = uid(); patch(d => { d.links.push({ id, from: a, to: b, label: "", snmp: null }); return d; }); setSelected({ link: id }); }} />
             ) : (

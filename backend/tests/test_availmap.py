@@ -50,6 +50,10 @@ def test_clean_map():
     m = A.clean_map(body, {"r1"}, {"pop", "self"}, "self")
     assert m["name"] == "Backbone" and [n["id"] for n in m["nodes"]] == ["a", "c", "f"]
     assert [(l["id"], l["snmp"]) for l in m["links"]] == [("l1", {"device_id": "r1", "if_index": 12, "if_name": "GE0/0/1"}), ("l2", None)]
+    assert m["links"][0]["points"] == [] and m["links"][0]["shape"] == "smooth"
+    m2 = A.clean_map({"name": "x", "nodes": body["nodes"], "links": [{"id": "z", "from": "a", "to": "c", "points": [{"x": 10.04, "y": "20"}, "lixo"], "shape": "straight"}]},
+                     {"r1"}, {"pop"}, "self")
+    assert m2["links"][0]["points"] == [{"x": 10.0, "y": 20.0}] and m2["links"][0]["shape"] == "straight"
     with pytest.raises(A.MapError):
         A.clean_map({"name": ""}, set(), set())
 
