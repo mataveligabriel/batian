@@ -372,3 +372,17 @@ async def poll_counters(client, indexes: List[int]) -> Dict[int, dict]:
             "admin": OPER_STATUS.get(admin, "unknown") if isinstance(admin, int) else "unknown",
         }
     return out
+
+
+async def poll_status(client, indexes: List[int], chunk: int = 15) -> Dict[int, dict]:
+    """Só estado e capacidade (ifOperStatus, ifAdminStatus, ifHighSpeed) dos índices pedidos — leve, sem contadores."""
+    out: Dict[int, dict] = {}
+    for n in range(0, len(indexes), chunk):
+        part = indexes[n:n + chunk]
+        vals = await client.get([o for i in part for o in (f"{IF_OPER}.{i}", f"{IF_ADMIN}.{i}", f"{IF_HIGH_SPEED}.{i}")])
+        for i in part:
+            oper, admin, sp = vals.get(f"{IF_OPER}.{i}"), vals.get(f"{IF_ADMIN}.{i}"), vals.get(f"{IF_HIGH_SPEED}.{i}")
+            out[i] = {"oper": OPER_STATUS.get(oper, "unknown") if isinstance(oper, int) else None,
+                      "admin": OPER_STATUS.get(admin, "unknown") if isinstance(admin, int) else None,
+                      "speed_mbps": sp if isinstance(sp, int) else None}
+    return out

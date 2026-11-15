@@ -15,7 +15,7 @@ const ago = (iso) => {
 const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // arquivo .html para a TV (pendrive, navegador da smart TV, Chromecast…): abre o telão em tela cheia e recarrega se cair
-function tvHtml(name, url) {
+export function tvHtml(name, url) {
   return `<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(name)} · BastiON</title>

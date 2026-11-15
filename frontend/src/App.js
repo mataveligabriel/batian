@@ -16,6 +16,7 @@ import Winbox from "@/pages/Winbox";
 import TrafficEng from "@/pages/TrafficEng";
 import PublicLookingGlass from "@/pages/PublicLookingGlass";
 import TvMaps from "@/pages/TvMaps";
+import AvailPublic from "@/pages/AvailPublic";
 import Rpki from "@/pages/Rpki";
 import Rdp from "@/pages/Rdp";
 import Agents from "@/pages/Agents";
@@ -34,6 +35,7 @@ import Sla, { SlaReport } from "@/pages/Sla";
 import Maint from "@/pages/Maint";
 import Bgp from "@/pages/Bgp";
 import BgpDoc from "@/pages/BgpDoc";
+import Availability from "@/pages/Availability";
 import Gpon from "@/pages/Gpon";
 import Compliance from "@/pages/Compliance";
 import CmdPolicy from "@/pages/CmdPolicy";
@@ -70,6 +72,8 @@ function App() {
   if (window.location.pathname.replace(/\/+$/, "") === "/looking-glass") return <PublicLookingGlass />;
   const tv = window.location.pathname.match(/^\/tv\/([\w-]{20,100})\/?$/);   // telão público (link sem login)
   if (tv) return <TvMaps token={tv[1]} />;
+  const disp = window.location.pathname.match(/^\/disp\/([\w-]{20,100})\/?$/);   // mapa de disponibilidade sem login
+  if (disp) return <AvailPublic token={disp[1]} />;
   return (
     <AuthProvider>
       <BrowserRouter>
@@ -87,6 +91,7 @@ function App() {
             <Route path="/maint" element={<Maint />} />
             <Route path="/bgp-monitor" element={<Bgp />} />
             <Route path="/bgp-doc" element={<BgpDoc />} />
+            <Route path="/disponibilidade" element={<Availability />} />
             <Route path="/gpon" element={<Gpon />} />
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/soc/commands" element={<CmdPolicy />} />

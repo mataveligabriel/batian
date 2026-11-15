@@ -1,0 +1,152 @@
+"""Mapa de disponibilidade (estilo The Dude): mapas com equipamentos e submapas, cor pelo ICMP.
+
+- Cada mapa tem nós de equipamento, de submapa (aponta para outro mapa) e de texto, e ligações entre eles.
+- O BastiON pinga (ICMP) os equipamentos que estão em algum mapa, do servidor ou do jump do equipamento.
+- Estado do equipamento: up / warn (perda ou latência alta) / down (N ciclos seguidos sem resposta) / pending.
+- Submapa herda o pior estado de tudo que está dentro dele (recursivo, sem loop infinito).
+"""
+import os
+from typing import Dict, List, Optional, Set
+
+KINDS = ("device", "submap", "label")
+STATES = ("down", "warn", "up", "pending")          # ordem de gravidade
+RANK = {s: i for i, s in enumerate(STATES)}
+DEFAULTS = {"interval_s": 30, "down_after": 2, "count": 3, "warn_loss": 34, "warn_ms": 150, "alert": True}
+BGS = ("grid", "radar", "plain")
+
+
+class MapError(ValueError):
+    pass
+
+
+def new_id() -> str:
+    return os.urandom(6).hex()
+
+
+def _num(v, lo, hi, default):
+    try:
+        return max(lo, min(hi, float(v)))
+    except (TypeError, ValueError):
+        return default
+
+
+def clean_settings(b: dict) -> dict:
+    return {"interval_s": int(_num(b.get("interval_s"), 10, 600, 30)), "down_after": int(_num(b.get("down_after"), 1, 10, 2)),
+            "count": int(_num(b.get("count"), 1, 10, 3)), "warn_loss": int(_num(b.get("warn_loss"), 1, 100, 34)),
+            "warn_ms": int(_num(b.get("warn_ms"), 1, 5000, 150)), "alert": bool(b.get("alert", True))}
+
+
+def clean_map(b: dict, device_ids: Set[str], map_ids: Set[str], self_id: Optional[str] = None) -> dict:
+    name = str(b.get("name") or "").strip()[:80]
+    if not name:
+        raise MapError("Dê um nome ao mapa")
+    nodes, seen = [], set()
+    for n in (b.get("nodes") or [])[:2000]:
+        kind = n.get("kind") if n.get("kind") in KINDS else None
+        nid = str(n.get("id") or "")[:40]
+        if not kind or not nid or nid in seen:
+            continue
+        nd = {"id": nid, "kind": kind, "x": round(_num(n.get("x"), -100000, 100000, 0), 1), "y": round(_num(n.get("y"), -100000, 100000, 0), 1),
+              "label": str(n.get("label") or "").strip()[:80]}
+        if kind == "device":
+            if n.get("device_id") not in device_ids:
+                continue
+            nd["device_id"] = n["device_id"]
+        elif kind == "submap":
+            if n.get("map_id") not in map_ids or n.get("map_id") == self_id:
+                continue
+            nd["map_id"] = n["map_id"]
+        elif not nd["label"]:
+            continue
+        seen.add(nid)
+        nodes.append(nd)
+    links, lids = [], set()
+    for ln in (b.get("links") or [])[:4000]:
+        a, z = ln.get("from"), ln.get("to")
+        lid = str(ln.get("id") or new_id())[:40]
+        if a not in seen or z not in seen or a == z or lid in lids:
+            continue                                  # várias ligações entre os mesmos dois itens são permitidas (rotas)
+        lids.add(lid)
+        out = {"id": lid, "from": a, "to": z, "label": str(ln.get("label") or "").strip()[:60], "snmp": None}
+        sn = ln.get("snmp") or {}
+        if sn.get("device_id") in device_ids and str(sn.get("if_index", "")).isdigit():
+            out["snmp"] = {"device_id": sn["device_id"], "if_index": int(sn["if_index"]), "if_name": str(sn.get("if_name") or "").strip()[:80]}
+        links.append(out)
+    return {"name": name, "description": str(b.get("description") or "").strip()[:300], "nodes": nodes, "links": links,
+            "bg": b.get("bg") if b.get("bg") in BGS else "grid"}
+
+
+def next_state(prev: dict, ok: bool, loss: float, ms: Optional[float], cfg: dict) -> dict:
+    """Aplica uma leitura ao estado anterior. Devolve {state, fails, changed}."""
+    fails = 0 if ok else int(prev.get("fails") or 0) + 1
+    old = prev.get("state") or "pending"
+    if not ok:
+        state = "down" if fails >= cfg["down_after"] else (old if old != "pending" else "pending")
+    elif loss >= cfg["warn_loss"] or (ms is not None and ms >= cfg["warn_ms"]):
+        state = "warn"
+    else:
+        state = "up"
+    # transição que vale alerta: entrou ou saiu de down (warn <-> up não alarma)
+    changed = (state == "down") != (old == "down") and old != "pending"
+    return {"state": state, "fails": fails, "changed": changed}
+
+
+def devices_of(map_id: str, maps: Dict[str, dict], _seen: Optional[Set[str]] = None) -> Set[str]:
+    """Todos os equipamentos dentro do mapa, incluindo os dos submapas (recursivo, à prova de ciclo)."""
+    seen = _seen if _seen is not None else set()
+    if map_id in seen or map_id not in maps:
+        return set()
+    seen.add(map_id)
+    out: Set[str] = set()
+    for n in maps[map_id].get("nodes", []):
+        if n["kind"] == "device":
+            out.add(n["device_id"])
+        elif n["kind"] == "submap":
+            out |= devices_of(n["map_id"], maps, seen)
+    return out
+
+
+def if_key(sn: dict) -> str:
+    return f"{sn['device_id']}|{int(sn['if_index'])}"
+
+
+def links_of(map_id: str, maps: Dict[str, dict], _seen: Optional[Set[str]] = None) -> Set[str]:
+    """Interfaces (equip|índice) das ligações monitoradas por SNMP dentro do mapa e dos submapas."""
+    seen = _seen if _seen is not None else set()
+    if map_id in seen or map_id not in maps:
+        return set()
+    seen.add(map_id)
+    out = {if_key(l["snmp"]) for l in maps[map_id].get("links", []) if l.get("snmp")}
+    for n in maps[map_id].get("nodes", []):
+        if n["kind"] == "submap":
+            out |= links_of(n["map_id"], maps, seen)
+    return out
+
+
+def link_state(st: Optional[dict]) -> str:
+    """up / down pela interface (ifOperStatus); unknown sem leitura válida."""
+    if not st or st.get("oper") is None:
+        return "unknown"
+    return "up" if st["oper"] == "up" else "down"
+
+
+def summarize(dev_ids, status: Dict[str, dict], if_keys=(), if_status: Optional[Dict[str, dict]] = None) -> dict:
+    c = {s: 0 for s in STATES}
+    for d in dev_ids:
+        c[(status.get(d) or {}).get("state") or "pending"] += 1
+    total = sum(c.values())
+    links_down = sum(1 for k in if_keys if link_state((if_status or {}).get(k)) == "down")
+    worst = next((s for s in STATES if c[s]), "pending") if total else "empty"
+    if links_down:
+        worst = "down"                                 # rota caída também acende o mapa de vermelho
+    return {**c, "total": total, "links_down": links_down, "links": len(if_keys), "state": worst}
+
+
+def parents(maps: Dict[str, dict]) -> Dict[str, List[str]]:
+    """map_id -> mapas que o têm como submapa."""
+    out: Dict[str, List[str]] = {}
+    for mid, m in maps.items():
+        for n in m.get("nodes", []):
+            if n["kind"] == "submap":
+                out.setdefault(n["map_id"], []).append(mid)
+    return out

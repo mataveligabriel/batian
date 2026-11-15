@@ -1614,3 +1614,16 @@ Além do chat principal, crie outros destinos em **Automação → Grupos de ale
 Os containers do BastiON usam o fuso **America/Sao_Paulo** (antes ficavam em UTC e os horários nos alertas do Telegram apareciam 3 h adiantados). Vale para o texto dos alertas, o resumo diário e as horas de agendamento (backup de configuração, backup do banco, resumo diário), que passam a ser no horário local.
 
 Para outro fuso, coloque no `deploy/.env` (ex.: `TZ=America/Manaus`) e rode `sudo bash /opt/bastion/deploy/update.sh`.
+
+## 82. Disponibilidade: mapa estilo The Dude (equipamentos e submapas pelo ICMP)
+
+Menu **Monitoramento → Disponibilidade** (módulo `avail`; libere em Usuários para quem não é admin).
+
+- **Mapas e submapas**: crie o mapa principal (+ na lista) e, em **Editar**, coloque **Equipamentos** (escolha por grupo/tag), **Submapa** (um mapa novo ou um que já existe) e **Texto**. Com **Ligar**, clique em dois itens para desenhar a ligação. Arraste para posicionar; Delete tira o item selecionado. Um mapa pode ser submapa de vários outros.
+- **Cores**: verde-água = respondendo, âmbar = instável (perda ou latência acima do limite), vermelho pulsando = sem resposta, cinza = aguardando o primeiro ping. O submapa mostra o total de equipamentos dentro dele (inclusive dos submapas) e um anel com a fatia de cada estado; fica vermelho se qualquer equipamento lá dentro parar de responder. Duplo clique entra no submapa; o caminho aparece no topo.
+- **Ping (ICMP)**: o BastiON pinga todos os equipamentos que estão em algum mapa, a cada 30 s por padrão — do servidor, ou do jump quando o equipamento é acessado por agente. "Sem resposta" depois de 2 ciclos seguidos. Ajustes (engrenagem, admin): intervalo, pacotes, ciclos para cair, limites de instável e aviso no Telegram (segue os grupos de alerta, tipo Equipamento).
+- **Na tela**: barra de estado do mapa, eventos recentes no rodapé, painel do item clicado (latência, perda, há quanto tempo, de onde é pingado), **Pingar agora**, tela cheia e som de alarme opcional (apita quando aumenta o número de equipamentos sem resposta).
+- **Lixeira**: excluir mapa manda para a lixeira (fim da lista), de onde dá para restaurar.
+- O ping é ICMP de verdade (diferente do ping automático da Automação, que testa a porta SSH), então funciona para MikroTik sem SSH. Se os dois avisos no Telegram ficarem duplicados, desligue um deles.
+- **Rotas (ligações com interface)**: dá para desenhar várias ligações entre os mesmos dois itens (abrem em leque). Em Editar, clique numa ligação e escolha o equipamento e a **interface (SNMP)**: a linha passa a mostrar UP/DOWN e a capacidade (ex.: 10G), fica **verde** com a interface up e **vermelha tracejada** quando cai, com aviso no Telegram (tipo Interface) e evento no rodapé. Sem interface escolhida, a cor segue o ping das duas pontas. Rota caída também acende de vermelho o submapa onde ela está ("N rota fora"). Lido a cada ciclo (mesmo intervalo do ping); só estado e velocidade, sem tráfego.
+- **Link do mapa (sem login)**: botão **Link do mapa** gera um endereço `/disp/<código>` que abre o mapa e todos os submapas dele em qualquer navegador (PC, TV), só para ver, atualizando a cada 10 s, com entrada nos submapas, relógio e eventos. Também baixa como **.html**. Opções por link: mostrar IPs, ativo, trocar endereço (invalida o anterior) e apagar.

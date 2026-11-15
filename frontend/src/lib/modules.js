@@ -7,6 +7,7 @@ export const MODULES = [
   { key: "gpon", label: "GPON", path: "/gpon", desc: "sinal e estado das ONUs, queda em massa, busca do cliente" },
   { key: "bgpmon", label: "Monitor BGP", path: "/bgp-monitor", desc: "sessões BGP e sequestro/vazamento dos prefixos" },
   { key: "bgpdoc", label: "Documentação BGP", path: "/bgp-doc", desc: "grupos, communities, prefixos, pares e config BGP padrão" },
+  { key: "avail", label: "Mapa de disponibilidade", path: "/disponibilidade", desc: "mapas e submapas que ficam vermelhos quando o equipamento para de responder ao ping" },
   { key: "maint", label: "Janelas de manutenção", path: "/maint", desc: "manutenção programada com pré/pós-check" },
   { key: "sla", label: "SLA e disponibilidade", path: "/sla", desc: "disponibilidade por enlace/POP/cliente e relatório mensal" },
   { key: "probes", label: "Sondas ativas", path: "/probes", desc: "ping, DNS, HTTP e TCP do servidor e dos jumps" },

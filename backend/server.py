@@ -86,6 +86,7 @@ import oltfh
 import oltmig
 import bgpdoc
 import ifauto
+import availmap
 import alertroutes
 import cmdpolicy
 import siem as siemmod
@@ -223,6 +224,12 @@ async def startup():
     await db.dashboards.create_index("owner_id")
     await db.if_monitors.create_index([("device_id", 1), ("if_index", 1)], unique=True)
     await db.if_auto.create_index("device_id", unique=True)
+    await db.avail_maps.create_index("id", unique=True)
+    await db.avail_status.create_index("device_id", unique=True)
+    await db.avail_events.create_index([("at", -1)])
+    await db.avail_events.create_index("device_id")
+    await db.avail_ifs.create_index("key", unique=True)
+    await db.avail_shares.create_index("token_hash", unique=True)
     await db.alert_routes.create_index("id", unique=True)
     await db.if_events.create_index([("at", -1)])
     await db.bgp_peers.create_index("key", unique=True)
@@ -259,6 +266,7 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(_virt_loop()))
     _bg_tasks.append(asyncio.create_task(_vb_loop()))
     _bg_tasks.append(asyncio.create_task(_ifauto_loop()))
+    _bg_tasks.append(asyncio.create_task(_avail_loop()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
@@ -4980,6 +4988,420 @@ async def alert_routes_find_chats(body: dict, _: dict = Depends(require_admin)):
         if c.get("id") is not None:
             chats[c["id"]] = {"chat_id": str(c["id"]), "title": c.get("title") or c.get("username") or c.get("first_name") or "", "type": c.get("type", "")}
     return {"chats": list(chats.values())}
+
+
+# ---------- Mapa de disponibilidade (estilo The Dude): equipamentos e submapas, cor pelo ICMP ----------
+_avail_kick = asyncio.Event()
+_avail_info: dict = {"last_cycle": None, "duration_s": None, "devices": 0}
+
+
+async def _avail_cfg() -> dict:
+    doc = await db.config.find_one({"key": "avail"}, {"_id": 0}) or {}
+    return {**availmap.DEFAULTS, **{k: doc[k] for k in availmap.DEFAULTS if k in doc}}
+
+
+async def _avail_all_maps() -> Dict[str, dict]:
+    return {m["id"]: m for m in await db.avail_maps.find({}, {"_id": 0}).to_list(2000)}
+
+
+async def _avail_map(map_id: str) -> dict:
+    m = await db.avail_maps.find_one({"id": map_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Mapa não encontrado")
+    return m
+
+
+async def _avail_poll(dev_ids: List[str], cfg: dict):
+    """Um ciclo de ICMP: do servidor para quem não tem jump; pelo jump (um script por agente) para quem tem."""
+    devs = await db.devices.find({"id": {"$in": dev_ids}}, {"_id": 0, "id": 1, "name": 1, "host": 1, "agent_id": 1}).to_list(5000)
+    prev = {x["device_id"]: x async for x in db.avail_status.find({"device_id": {"$in": dev_ids}}, {"_id": 0})}
+    res: Dict[str, dict] = {}
+    sem = asyncio.Semaphore(40)
+
+    async def local(d):
+        async with sem:
+            res[d["id"]] = await probemod.ping_local(d["host"], count=cfg["count"], timeout=1.5, spacing=0.25)
+
+    by_agent: Dict[str, list] = {}
+    tasks = []
+    for d in devs:
+        if d.get("agent_id"):
+            by_agent.setdefault(d["agent_id"], []).append((d["id"], {"type": "ping", "target": d["host"], "count": cfg["count"], "timeout_s": 3}))
+        else:
+            tasks.append(local(d))
+
+    async def remote(agent_id, items):
+        for k, v in (await _probe_on_agent(agent_id, items)).items():
+            res[k] = v
+
+    tasks += [remote(a, items) for a, items in by_agent.items()]
+    await asyncio.gather(*tasks)
+    now = datetime.now(timezone.utc).isoformat()
+    events = []
+    for d in devs:
+        r = res.get(d["id"]) or {}
+        if r.get("skipped"):                       # jump fora do ar / sem ping: não dá para afirmar que o equipamento caiu
+            await db.avail_status.update_one({"device_id": d["id"]}, {"$set": {"device_id": d["id"], "error": r.get("error", ""), "checked_at": now}}, upsert=True)
+            continue
+        ok = bool(r.get("ok")) or r.get("received", 0) > 0
+        loss = float(r.get("loss") or (0 if ok else 100))
+        ms = r.get("ms") if r.get("ms") is not None else r.get("median")
+        p = prev.get(d["id"]) or {}
+        st = availmap.next_state(p, ok, loss, ms, cfg)
+        upd = {"device_id": d["id"], "state": st["state"], "fails": st["fails"], "ms": ms, "loss": loss, "checked_at": now,
+               "error": "" if ok else (r.get("error") or "sem resposta")}
+        if st["state"] != p.get("state"):
+            upd["since"] = now
+        await db.avail_status.update_one({"device_id": d["id"]}, {"$set": upd}, upsert=True)
+        if st["changed"]:
+            events.append({"id": availmap.new_id(), "device_id": d["id"], "device_name": d["name"], "host": d["host"],
+                           "state": st["state"], "at": now, "prev_since": p.get("since")})
+    if events:
+        await db.avail_events.insert_many([dict(e) for e in events])
+        if cfg.get("alert"):
+            for e in events:
+                down = e["state"] == "down"
+                dur = ""
+                if not down and e.get("prev_since"):
+                    secs = int((datetime.now(timezone.utc) - datetime.fromisoformat(e["prev_since"])).total_seconds())
+                    dur = f"\nFicou fora {secs // 3600}h{(secs % 3600) // 60:02d}" if secs >= 3600 else f"\nFicou fora {max(1, secs // 60)} min"
+                try:
+                    await automation.send_alert(db, f"{'🔴' if down else '🟢'} {e['device_name']} {'sem resposta ao ping' if down else 'voltou a responder'}",
+                                                f"{e['host']} · mapa de disponibilidade (ICMP){dur}\n{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+                                                push_url="/disponibilidade", push_tag=f"avail-{e['device_id']}", device_id=e["device_id"], kind="device")
+                except Exception as ex:
+                    logger.warning(f"alerta do mapa de disponibilidade: {ex}")
+
+
+async def _avail_poll_links(maps: Dict[str, dict], cfg: dict):
+    """Ligações com interface escolhida: lê por SNMP só UP/DOWN e a capacidade; avisa quando a rota cai ou volta."""
+    refs: Dict[str, dict] = {}
+    for m in maps.values():
+        nodes = {n["id"]: n for n in m.get("nodes", [])}
+        for l in m.get("links", []):
+            if l.get("snmp"):
+                k = availmap.if_key(l["snmp"])
+                r = refs.setdefault(k, {**l["snmp"], "names": []})
+                r["names"].append(l.get("label") or m["name"])
+    if not refs:
+        return
+    by_dev: Dict[str, list] = {}
+    for k, r in refs.items():
+        by_dev.setdefault(r["device_id"], []).append(r["if_index"])
+    devs = {d["id"]: d for d in await db.devices.find({"id": {"$in": list(by_dev)}}, {"_id": 0}).to_list(5000)}
+    prev = {x["key"]: x async for x in db.avail_ifs.find({"key": {"$in": list(refs)}}, {"_id": 0})}
+    now = datetime.now(timezone.utc).isoformat()
+    sem = asyncio.Semaphore(10)
+    events = []
+
+    async def one(dev_id, idxs):
+        dev = devs.get(dev_id)
+        if not dev:
+            return
+        async with sem:
+            try:
+                vals = await asyncio.wait_for(snmp_service.poll_status(await _snmp_client(dev), sorted(set(idxs))), timeout=25)
+                err = ""
+            except Exception as e:
+                vals, err = {}, ("SNMP sem resposta" if isinstance(e, asyncio.TimeoutError) else f"SNMP: {e}")[:150]
+        for i in set(idxs):
+            k = f"{dev_id}|{i}"
+            v = vals.get(i) or {}
+            p = prev.get(k) or {}
+            upd = {"key": k, "device_id": dev_id, "if_index": i, "checked_at": now, "error": err}
+            if v.get("oper") is not None:
+                upd.update(oper=v["oper"], admin=v.get("admin"), speed_mbps=v.get("speed_mbps") or p.get("speed_mbps"))
+                old, new = availmap.link_state(p), availmap.link_state(v)
+                if old != new:
+                    upd["since"] = now
+                    if old != "unknown":
+                        events.append((k, new, dev, refs[k], p.get("since")))
+            elif err and p.get("oper") is not None and (datetime.now(timezone.utc) - datetime.fromisoformat(p.get("checked_ok") or now)).total_seconds() > 600:
+                upd["oper"] = None                     # 10 min sem conseguir ler: estado desconhecido (cinza)
+            if v.get("oper") is not None:
+                upd["checked_ok"] = now
+            await db.avail_ifs.update_one({"key": k}, {"$set": upd}, upsert=True)
+
+    await asyncio.gather(*[one(d, i) for d, i in by_dev.items()])
+    if cfg.get("alert"):
+        for k, new, dev, ref, since in events:
+            down = new == "down"
+            name = ref.get("if_name") or f"if{ref['if_index']}"
+            where = ", ".join(dict.fromkeys(ref["names"]))[:120]
+            try:
+                await automation.send_alert(db, f"{'🔴' if down else '🟢'} Rota {'caiu' if down else 'voltou'}: {dev['name']} · {name}",
+                                            f"{where} · mapa de disponibilidade\n{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+                                            push_url="/disponibilidade", push_tag=f"avail-if-{k}", device_id=dev["id"], kind="interface")
+            except Exception as ex:
+                logger.warning(f"alerta de rota: {ex}")
+        if events:
+            await db.avail_events.insert_many([{"id": availmap.new_id(), "device_id": dev["id"], "device_name": f"{dev['name']} · {ref.get('if_name') or ref['if_index']}",
+                                                "host": "", "state": new, "at": now, "link": True} for k, new, dev, ref, _ in events])
+
+
+async def _avail_loop():
+    await asyncio.sleep(20)
+    while True:
+        cfg = await _avail_cfg()
+        t0 = time.monotonic()
+        try:
+            maps = await _avail_all_maps()
+            ids = sorted({n["device_id"] for m in maps.values() for n in m.get("nodes", []) if n["kind"] == "device"})
+            jobs = []
+            if ids:
+                jobs.append(_avail_poll(ids, cfg))
+            jobs.append(_avail_poll_links(maps, cfg))
+            await asyncio.wait_for(asyncio.gather(*jobs), timeout=max(60, cfg["interval_s"] * 3))
+            _avail_info.update(last_cycle=datetime.now(timezone.utc).isoformat(), duration_s=round(time.monotonic() - t0, 1), devices=len(ids))
+            await db.avail_events.delete_many({"at": {"$lt": (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()}})
+        except Exception as e:
+            logger.warning(f"mapa de disponibilidade: {e}")
+        _avail_kick.clear()
+        try:
+            await asyncio.wait_for(_avail_kick.wait(), timeout=max(5, cfg["interval_s"] - (time.monotonic() - t0)))
+        except asyncio.TimeoutError:
+            pass
+
+
+def _avail_summary_row(m: dict, maps: dict, status: dict, par: dict, ifst: dict) -> dict:
+    return {"id": m["id"], "name": m["name"], "description": m.get("description", ""), "updated_at": m.get("updated_at"),
+            "parents": par.get(m["id"], []), "children": [n["map_id"] for n in m.get("nodes", []) if n["kind"] == "submap"],
+            "summary": availmap.summarize(availmap.devices_of(m["id"], maps), status, availmap.links_of(m["id"], maps), ifst)}
+
+
+@api.get("/avail/maps")
+async def avail_list(user: dict = Depends(get_current_user)):
+    maps = await _avail_all_maps()
+    status = {x["device_id"]: x async for x in db.avail_status.find({}, {"_id": 0, "device_id": 1, "state": 1})}
+    par = availmap.parents(maps)
+    ifst = {x["key"]: x async for x in db.avail_ifs.find({}, {"_id": 0, "key": 1, "oper": 1})}
+    rows = sorted((_avail_summary_row(m, maps, status, par, ifst) for m in maps.values()), key=lambda r: r["name"].lower())
+    trash = await db.avail_maps_trash.find({}, {"_id": 0, "id": 1, "name": 1, "deleted_at": 1, "deleted_by": 1}).sort("deleted_at", -1).to_list(50)
+    return {"maps": rows, "trash": trash, "can_edit": not _is_viewer(user), "info": _avail_info, "settings": await _avail_cfg()}
+
+
+@api.post("/avail/maps")
+async def avail_create(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    name = str(body.get("name") or "").strip()[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="Dê um nome ao mapa")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": availmap.new_id(), "name": name, "description": "", "nodes": [], "links": [], "bg": "grid",
+           "created_at": now, "updated_at": now, "created_by": user.get("email")}
+    await db.avail_maps.insert_one(dict(doc))
+    parent = body.get("parent_id")
+    if parent:     # já entra como submapa no mapa de cima
+        p = await db.avail_maps.find_one({"id": parent}, {"_id": 0, "nodes": 1})
+        if p:
+            xs = [n["x"] for n in p.get("nodes", [])] or [0]
+            await db.avail_maps.update_one({"id": parent}, {"$push": {"nodes": {"id": availmap.new_id(), "kind": "submap", "map_id": doc["id"], "label": "",
+                                                                               "x": round(max(xs) + 160, 1), "y": 0}}, "$set": {"updated_at": now}})
+    return doc
+
+
+@api.get("/avail/maps/{map_id}")
+async def avail_get(map_id: str, user: dict = Depends(get_current_user)):
+    return await _avail_map(map_id)
+
+
+@api.put("/avail/maps/{map_id}")
+async def avail_update(map_id: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _avail_map(map_id)
+    dev_ids = {d["id"] for d in await db.devices.find({}, {"_id": 0, "id": 1}).to_list(20000)}
+    map_ids = {m["id"] for m in await db.avail_maps.find({}, {"_id": 0, "id": 1}).to_list(2000)}
+    try:
+        doc = availmap.clean_map(body, dev_ids, map_ids, map_id)
+    except availmap.MapError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.avail_maps.update_one({"id": map_id}, {"$set": doc})
+    _avail_kick.set()                 # equipamento novo no mapa: pinga já
+    return await _avail_map(map_id)
+
+
+@api.delete("/avail/maps/{map_id}")
+async def avail_delete(map_id: str, user: dict = Depends(get_current_user)):
+    """Vai para a lixeira (dá para restaurar); some dos mapas que o tinham como submapa."""
+    _no_viewer(user)
+    m = await _avail_map(map_id)
+    await db.avail_maps_trash.insert_one({**m, "deleted_at": datetime.now(timezone.utc).isoformat(), "deleted_by": user.get("email")})
+    await db.avail_maps.delete_one({"id": map_id})
+    refs = await db.avail_maps.find({"nodes.map_id": map_id}, {"_id": 0, "id": 1, "nodes": 1, "links": 1}).to_list(2000)
+    for r in refs:
+        gone = {n["id"] for n in r["nodes"] if n.get("map_id") == map_id}
+        await db.avail_maps.update_one({"id": r["id"]}, {"$set": {"nodes": [n for n in r["nodes"] if n["id"] not in gone],
+                                                                 "links": [l for l in r.get("links", []) if l["from"] not in gone and l["to"] not in gone]}})
+    return {"deleted": 1, "unlinked": len(refs)}
+
+
+@api.post("/avail/trash/{map_id}/restore")
+async def avail_restore(map_id: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    m = await db.avail_maps_trash.find_one({"id": map_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Não está na lixeira")
+    if await db.avail_maps.find_one({"id": map_id}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=409, detail="Já existe")
+    for k in ("deleted_at", "deleted_by"):
+        m.pop(k, None)
+    await db.avail_maps.insert_one(dict(m))
+    await db.avail_maps_trash.delete_many({"id": map_id})
+    return m
+
+
+async def _avail_live_data(map_id: str, maps: Dict[str, dict], show_hosts: bool = True) -> dict:
+    m = maps[map_id]
+    inside = availmap.devices_of(map_id, maps)
+    if_inside = availmap.links_of(map_id, maps)
+    direct = {n["device_id"] for n in m["nodes"] if n["kind"] == "device"} | {l["snmp"]["device_id"] for l in m.get("links", []) if l.get("snmp")}
+    status = {x["device_id"]: x async for x in db.avail_status.find({"device_id": {"$in": list(inside)}}, {"_id": 0})}
+    ifst = {x["key"]: x async for x in db.avail_ifs.find({"key": {"$in": list(if_inside)}}, {"_id": 0})}
+    devs = {d["id"]: d for d in await db.devices.find({"id": {"$in": list(direct)}}, {"_id": 0, "id": 1, "name": 1, "host": 1, "device_type": 1,
+                                                                                       "tags": 1, "agent_id": 1}).to_list(5000)}
+    nodes = {}
+    for n in m["nodes"]:
+        if n["kind"] == "device":
+            d, st = devs.get(n["device_id"]) or {}, status.get(n["device_id"]) or {}
+            nodes[n["id"]] = {"state": st.get("state") or "pending", "ms": st.get("ms"), "loss": st.get("loss"), "since": st.get("since"),
+                              "checked_at": st.get("checked_at"), "error": st.get("error", "") if show_hosts else "", "name": d.get("name") or "(equipamento removido)",
+                              "host": d.get("host", "") if show_hosts else "", "type": d.get("device_type", ""), "tags": d.get("tags", []), "via_jump": bool(d.get("agent_id"))}
+        elif n["kind"] == "submap":
+            sub = maps.get(n["map_id"])
+            sub_devs = availmap.devices_of(n["map_id"], maps)
+            nodes[n["id"]] = {**availmap.summarize(sub_devs, status, availmap.links_of(n["map_id"], maps), ifst),
+                              "name": sub["name"] if sub else "(mapa removido)", "down_names": []}
+            down = [x for x in sub_devs if (status.get(x) or {}).get("state") == "down"][:8]
+            if down:
+                names = {d["id"]: d["name"] for d in await db.devices.find({"id": {"$in": down}}, {"_id": 0, "id": 1, "name": 1}).to_list(20)}
+                nodes[n["id"]]["down_names"] = [names.get(x, "?") for x in down]
+    links = {}
+    for l in m.get("links", []):
+        if not l.get("snmp"):
+            continue
+        st = ifst.get(availmap.if_key(l["snmp"])) or {}
+        links[l["id"]] = {"state": availmap.link_state(st), "oper": st.get("oper"), "admin": st.get("admin"), "speed_mbps": st.get("speed_mbps"),
+                          "since": st.get("since"), "checked_at": st.get("checked_at"), "error": st.get("error", "") if show_hosts else ("SNMP sem resposta" if st.get("error") else ""),
+                          "if_name": l["snmp"].get("if_name") or f"if{l['snmp']['if_index']}",
+                          "device_name": (devs.get(l["snmp"]["device_id"]) or {}).get("name", "")}
+    events = await db.avail_events.find({"device_id": {"$in": list(inside | {k.split("|")[0] for k in if_inside})}}, {"_id": 0}).sort("at", -1).to_list(40)
+    if not show_hosts:
+        for e in events:
+            e["host"] = ""
+    return {"nodes": nodes, "links": links, "summary": availmap.summarize(inside, status, if_inside, ifst), "events": events, "info": _avail_info}
+
+
+@api.get("/avail/maps/{map_id}/live")
+async def avail_live(map_id: str, user: dict = Depends(get_current_user)):
+    maps = await _avail_all_maps()
+    if map_id not in maps:
+        raise HTTPException(status_code=404, detail="Mapa não encontrado")
+    return await _avail_live_data(map_id, maps)
+
+
+@api.post("/avail/ping-now")
+async def avail_ping_now(user: dict = Depends(get_current_user)):
+    _avail_kick.set()
+    return {"ok": True}
+
+
+# ----- link sem login do mapa de disponibilidade (TV / outro PC): o mapa e os submapas dele, só leitura -----
+def _avs_out(d: dict) -> dict:
+    try:
+        token = vault.decrypt(d["token_enc"])
+    except Exception:
+        token = ""
+    return {k: d.get(k) for k in ("id", "map_id", "name", "show_hosts", "enabled", "created_at", "last_seen", "last_ip")} | {"token": token}
+
+
+@api.get("/avail/shares")
+async def avs_list(map_id: str = "", user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    q = {"map_id": map_id} if map_id else {}
+    return [_avs_out(d) for d in await db.avail_shares.find(q, {"_id": 0}).sort("created_at", 1).to_list(200)]
+
+
+@api.post("/avail/shares")
+async def avs_create(body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    m = await _avail_map(str(body.get("map_id") or ""))
+    token = secrets.token_urlsafe(32)
+    doc = {"id": availmap.new_id(), "map_id": m["id"], "name": (str(body.get("name") or "").strip() or m["name"])[:80],
+           "show_hosts": bool(body.get("show_hosts")), "enabled": True, "token_hash": _tv_hash(token), "token_enc": vault.encrypt(token),
+           "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user.get("email"), "last_seen": None, "last_ip": ""}
+    await db.avail_shares.insert_one(dict(doc))
+    return _avs_out(doc)
+
+
+@api.put("/avail/shares/{sid}")
+async def avs_update(sid: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    upd = {k: bool(body[k]) for k in ("show_hosts", "enabled") if k in body}
+    if body.get("name"):
+        upd["name"] = str(body["name"]).strip()[:80]
+    if body.get("new_link"):
+        token = secrets.token_urlsafe(32)
+        upd.update(token_hash=_tv_hash(token), token_enc=vault.encrypt(token))
+    r = await db.avail_shares.update_one({"id": sid}, {"$set": upd})
+    if not r.matched_count:
+        raise HTTPException(status_code=404, detail="Link não encontrado")
+    return _avs_out(await db.avail_shares.find_one({"id": sid}, {"_id": 0}))
+
+
+@api.delete("/avail/shares/{sid}")
+async def avs_delete(sid: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    return {"deleted": (await db.avail_shares.delete_one({"id": sid})).deleted_count}
+
+
+async def _avs_share(token: str, request: Request) -> tuple:
+    if not token or len(token) > 100:
+        raise HTTPException(status_code=404, detail="Link inválido")
+    d = await db.avail_shares.find_one({"token_hash": _tv_hash(token)}, {"_id": 0})
+    if not d or not d.get("enabled"):
+        raise HTTPException(status_code=404, detail="Link do mapa inválido ou desativado")
+    maps = await _avail_all_maps()
+    if d["map_id"] not in maps:
+        raise HTTPException(status_code=404, detail="O mapa deste link foi excluído")
+    allowed, stack = set(), [d["map_id"]]          # o mapa do link e tudo que está abaixo dele
+    while stack:
+        mid = stack.pop()
+        if mid in allowed or mid not in maps:
+            continue
+        allowed.add(mid)
+        stack += [n["map_id"] for n in maps[mid]["nodes"] if n["kind"] == "submap"]
+    now = datetime.now(timezone.utc)
+    if not d.get("last_seen") or (now - datetime.fromisoformat(d["last_seen"])).total_seconds() > 60:
+        await db.avail_shares.update_one({"id": d["id"]}, {"$set": {"last_seen": now.isoformat(), "last_ip": security.client_ip(request)}})
+    return d, maps, allowed
+
+
+@api.get("/public/avail/{token}")
+async def avs_public(token: str, request: Request):
+    d, maps, allowed = await _avs_share(token, request)
+    out = {}
+    for mid in allowed:
+        m = maps[mid]
+        out[mid] = {"id": mid, "name": m["name"], "bg": m.get("bg", "grid"), "nodes": m["nodes"],
+                    "links": [{**l, "snmp": {"if_name": l["snmp"].get("if_name")} if l.get("snmp") else None} for l in m.get("links", [])]}
+    return {"name": d["name"], "root": d["map_id"], "maps": out}
+
+
+@api.get("/public/avail/{token}/live/{map_id}")
+async def avs_public_live(token: str, map_id: str, request: Request):
+    d, maps, allowed = await _avs_share(token, request)
+    if map_id not in allowed:
+        raise HTTPException(status_code=404, detail="Mapa não faz parte deste link")
+    return await _avail_live_data(map_id, maps, show_hosts=bool(d.get("show_hosts")))
+
+
+@api.put("/avail/settings")
+async def avail_settings(body: dict, _: dict = Depends(require_admin)):
+    cfg = availmap.clean_settings(body)
+    await db.config.update_one({"key": "avail"}, {"$set": {"key": "avail", **cfg}}, upsert=True)
+    _avail_kick.set()
+    return cfg
 
 
 async def _ifauto_loop():
