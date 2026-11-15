@@ -268,7 +268,7 @@ export default function Devices() {
       <VendorScanDialog open={scanOpen} onOpenChange={setScanOpen} agents={agents} onDone={load} />
       <ExportDevicesDialog open={exportOpen} onOpenChange={setExportOpen} total={devices.length} filteredIds={filteredIds} selectedIds={selectedIds} />
       <TransferDialog open={sendOpen} onOpenChange={setSendOpen} preset={{ device_ids: [...selected], tab: "devices" }} />
-      <BulkEditDevicesDialog open={bulkOpen} onOpenChange={setBulkOpen} deviceIds={selectedIds} agents={agents} deviceTypes={DEVICE_TYPES} onDone={load} />
+      <BulkEditDevicesDialog open={bulkOpen} onOpenChange={setBulkOpen} deviceIds={selectedIds} agents={agents} vpns={vpns} deviceTypes={DEVICE_TYPES} onDone={load} />
 
       <div className="flex gap-3 mb-4 flex-wrap">
         <div className="relative w-full md:w-auto">

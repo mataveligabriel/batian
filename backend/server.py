@@ -1486,11 +1486,14 @@ async def bulk_update_devices(payload: DeviceBulkUpdate, user: dict = Depends(ge
     q = {"id": {"$in": payload.device_ids}, **_scope(user)}
     setf: dict = {}
     if payload.agent_id is not None:
-        if payload.agent_id:
+        if payload.agent_id.startswith("vpn:"):          # acesso pela VPN do servidor, sem jump
+            await _get_vpn_for(user, payload.agent_id[4:])
+            setf["agent_id"], setf["vpn_id"] = None, payload.agent_id[4:]
+        elif payload.agent_id:
             await _get_agent_for(user, payload.agent_id)
-            setf["agent_id"] = payload.agent_id
+            setf["agent_id"], setf["vpn_id"] = payload.agent_id, None
         else:
-            setf["agent_id"] = None
+            setf["agent_id"], setf["vpn_id"] = None, None
     if payload.device_type:
         if payload.device_type not in DEVICE_TYPES:
             raise HTTPException(status_code=400, detail="Tipo de equipamento inválido")

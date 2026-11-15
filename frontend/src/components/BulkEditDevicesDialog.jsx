@@ -13,7 +13,7 @@ const empty = { add_tags: "", remove_tags: "", agent_id: KEEP, device_type: KEEP
 const splitTags = (s) => s.split(/[,;]/).map(t => t.trim()).filter(Boolean);
 
 /** Edita vários equipamentos de uma vez. Campos em "manter" não são alterados. */
-export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, deviceTypes, onDone }) {
+export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, vpns = [], deviceTypes, onDone }) {
   const [f, setF] = useState(empty);
   const [busy, setBusy] = useState(false);
   useEffect(() => { if (open) setF(empty); }, [open]);
@@ -76,6 +76,8 @@ export function BulkEditDevicesDialog({ open, onOpenChange, deviceIds, agents, d
                 <SelectItem value={KEEP}>— manter —</SelectItem>
                 <SelectItem value="none">Sem agente (conexão direta)</SelectItem>
                 {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.name}{a.location ? ` · ${a.location}` : ""}</SelectItem>)}
+                {vpns.length > 0 && <div className="px-2 pt-2 pb-1 text-[10px] text-slate-500 border-t border-line mt-1">VPN conectada no servidor</div>}
+                {vpns.map(v => <SelectItem key={v.id} value={`vpn:${v.id}`} data-testid={`bulk-vpn-${v.id}`}>VPN {String(v.type || "").toUpperCase()} · {v.name}{v.status?.state === "up" ? " (conectada)" : ""}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
