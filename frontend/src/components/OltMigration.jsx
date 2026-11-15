@@ -3,6 +3,7 @@ import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
+import { DeviceSelect } from "@/components/TagSelect";
 import { AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, ChevronRight, Copy, Download, FileText, FolderOpen, Loader2, RefreshCw, RotateCcw, ScanSearch, Send, Trash2, Undo2, XCircle } from "lucide-react";
 
 const VENDOR = { zte: "ZTE", huawei: "Huawei", fiberhome: "FiberHome" };
@@ -321,10 +322,10 @@ export function OltMigration({ devices }) {
 
       <Step n={1} title="Origem: de onde saem as ONUs">
         <div className="flex flex-wrap items-center gap-2">
-          <select value={src.device_id} onChange={e => setSrc({ ...src, device_id: e.target.value })} className={`${sel} w-72`} data-testid="mig-src-device" aria-label="OLT de origem">
+          <DeviceSelect value={src.device_id} onChange={e => setSrc({ ...src, device_id: e.target.value })} className={`${sel} w-[30rem] max-w-full`} data-testid="mig-src-device" aria-label="OLT de origem"
+                        devices={olts} label={d => `${d.name} · ${VENDOR[d.device_type]}`}>
             <option value="">{src.mode === "csv" ? "Sem OLT (só a planilha)" : "OLT de origem…"}</option>
-            {olts.map(d => <option key={d.id} value={d.id}>{d.name} · {VENDOR[d.device_type]}</option>)}
-          </select>
+          </DeviceSelect>
           <div className="flex gap-1 p-0.5 bg-sunken border border-line rounded-md text-xs">
             {[["backup", "Último backup"], ["live", "Ler agora da OLT"], ["csv", "Planilha"]].map(([k, l]) => (
               <button key={k} onClick={() => setSrc({ ...src, mode: k })} className={`px-2.5 h-8 rounded ${src.mode === k ? "bg-brand/20 text-brand-soft" : "text-slate-400 hover:text-slate-200"}`} data-testid={`mig-mode-${k}`}>{l}</button>
@@ -404,10 +405,10 @@ export function OltMigration({ devices }) {
         <Step n={3} title="Destino">
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
             <label className="text-xs text-slate-400 space-y-1">OLT de destino
-              <select value={dst.device_id} onChange={e => setDst({ ...dst, device_id: e.target.value, kind: "" })} className={`${sel} w-full`} data-testid="mig-dst-device">
+              <DeviceSelect value={dst.device_id} onChange={e => setDst({ ...dst, device_id: e.target.value, kind: "" })} className={`${sel} w-full`} data-testid="mig-dst-device"
+                            devices={olts} label={d => `${d.name} · ${VENDOR[d.device_type]}`}>
                 <option value="">escolha…</option>
-                {olts.map(d => <option key={d.id} value={d.id}>{d.name} · {VENDOR[d.device_type]}</option>)}
-              </select>
+              </DeviceSelect>
             </label>
             <label className="text-xs text-slate-400 space-y-1">Modelo / CLI
               <select value={kind} onChange={e => setDst({ ...dst, kind: e.target.value })} disabled={!dstDev} className={`${sel} w-full`} data-testid="mig-kind">

@@ -7,6 +7,7 @@ import { tvHtml } from "@/components/maps/TvShares";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
+import { DeviceSelect } from "@/components/TagSelect";
 import {
   ChevronRight, Hexagon, Link2, Loader2, Maximize2, MousePointer2, Pencil, Plus, RotateCcw, Save, Search, Settings2,
   Trash2, Type, Upload, Volume2, VolumeX, X, Zap,
@@ -407,11 +408,10 @@ function LinkPanel({ link, map, live, devices, names, editing, onChange }) {
           <Input value={link.label || ""} onChange={e => onChange({ label: e.target.value })} className="h-8 bg-sunken border-line text-sm" /></label>
         <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: C.line }}>
           <div className="text-xs text-slate-300">Interface monitorada por SNMP</div>
-          <select value={devId} onChange={e => setDevId(e.target.value)} className="w-full h-8 rounded-md bg-sunken border border-line px-2 text-xs text-slate-100" aria-label="Equipamento da interface">
+          <DeviceSelect value={devId} onChange={e => setDevId(e.target.value)} className="w-full h-8 rounded-md bg-sunken border border-line px-2 text-xs text-slate-100" aria-label="Equipamento da interface" devices={devices}>
             <option value="">escolha o equipamento…</option>
             {ends.length > 0 && <optgroup label="Pontas da ligação">{ends.map(id => <option key={id} value={id}>{names[id] || id}</option>)}</optgroup>}
-            <optgroup label="Todos">{devices.filter(d => !ends.includes(d.id)).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</optgroup>
-          </select>
+          </DeviceSelect>
           {devId && <InterfacePicker deviceId={devId} mode="single" value={link.snmp?.device_id === devId ? link.snmp.if_index : undefined} height="h-56"
                                      onPick={(i) => onChange({ snmp: { device_id: devId, if_index: i.index, if_name: i.name } })} />}
           {link.snmp && <button onClick={() => onChange({ snmp: null })} className="text-[11px] text-red-300 hover:underline">tirar a interface desta linha</button>}

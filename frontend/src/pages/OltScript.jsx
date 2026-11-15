@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { TagOptions } from "@/components/TagSelect";
+import { DeviceSelect } from "@/components/TagSelect";
 import { OltMigration } from "@/components/OltMigration";
 import { Cpu, Copy, Download, Loader2, Plus, Trash2, ScanSearch, AlertTriangle, RotateCcw, Router, Search, Unplug, CheckCircle2, XCircle, Send, PowerOff, History, ArrowLeftRight } from "lucide-react";
 
@@ -145,11 +145,10 @@ function ApplyBar({ apply, ready }) {
   return (
     <div className="px-4 py-2.5 border-b border-line space-y-2" data-testid="oltgen-apply">
       <div className="flex flex-wrap items-center gap-2">
-        <select value={dev} onChange={e => { setDev(e.target.value); setConfirm(false); }} data-testid="oltgen-apply-device"
-          className="h-8 min-w-0 flex-1 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100">
+        <DeviceSelect value={dev} onChange={e => { setDev(e.target.value); setConfirm(false); }} data-testid="oltgen-apply-device"
+          className="h-8 min-w-0 flex-1 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100" devices={apply.devices} label={d => `${d.name} · ${d.host}`}>
           <option value="">{apply.devices.length ? "Enviar para qual OLT?" : `Nenhuma OLT ${{ huawei: "Huawei", fiberhome: "FiberHome" }[apply.vendor] || "ZTE"} cadastrada`}</option>
-          <TagOptions devices={apply.devices} label={d => `${d.name} · ${d.host}`} />
-        </select>
+</DeviceSelect>
         {!confirm ? (
           <Button size="sm" onClick={() => setConfirm(true)} disabled={!ready || !dev || sending || sig === doneSig} className="h-8 bg-emerald-700 hover:bg-emerald-600" data-testid="oltgen-apply-btn">
             {sending ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Send className="w-3.5 h-3.5 mr-1.5" />}{sending ? "Aplicando…" : "Enviar para a OLT"}
@@ -300,11 +299,10 @@ function OltActivation() {
             <div className="flex flex-wrap items-end gap-2 pt-1">
               <div className="flex-1 min-w-[200px]">
                 <Field label="Ler placas de uma OLT cadastrada (show card)">
-                  <select value={devId} onChange={e => setDevId(e.target.value)} data-testid="oltgen-device"
-                    className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+                  <DeviceSelect value={devId} onChange={e => setDevId(e.target.value)} data-testid="oltgen-device"
+                    className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100" devices={devices} label={d => `${d.name} · ${d.host}`}>
                     <option value="">{devices.length ? "Escolha a OLT…" : "Nenhum equipamento ZTE cadastrado"}</option>
-                    <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
-                  </select>
+</DeviceSelect>
                 </Field>
               </div>
               <Button onClick={readCards} disabled={reading || !devId} variant="outline" className="border-line bg-transparent h-9" data-testid="oltgen-read">
@@ -552,11 +550,10 @@ function OnuAuthorize({ meta, devices }) {
           <div className="flex flex-wrap items-end gap-2">
             <div className="flex-1 min-w-[200px]">
               <Field label="Buscar ONUs esperando autorização numa OLT cadastrada">
-                <select value={devId} onChange={e => setDevId(e.target.value)} data-testid="onu-device"
-                  className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+                <DeviceSelect value={devId} onChange={e => setDevId(e.target.value)} data-testid="onu-device"
+                  className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100" devices={devices} label={d => `${d.name} · ${d.host}`}>
                   <option value="">{devices.length ? "Escolha a OLT…" : "Nenhum equipamento ZTE cadastrado"}</option>
-                  <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
-                </select>
+</DeviceSelect>
               </Field>
             </div>
             <Button onClick={search} disabled={searching || !devId} variant="outline" className="border-line bg-transparent h-9" data-testid="onu-search">
@@ -761,11 +758,10 @@ function OnuRemove({ meta, devices }) {
             </div>
             <div className="flex-1 min-w-[180px]">
               <Field label="Em qual OLT">
-                <select value={macDev} onChange={e => setMacDev(e.target.value)} data-testid="onumac-device"
-                  className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+                <DeviceSelect value={macDev} onChange={e => setMacDev(e.target.value)} data-testid="onumac-device"
+                  className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100" devices={devices} label={d => `${d.name} · ${d.host}`}>
                   <option value="all">Todas as OLTs ZTE ({devices.length})</option>
-                  <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
-                </select>
+</DeviceSelect>
               </Field>
             </div>
             <Button onClick={findMac} disabled={macBusy || !devices.length} variant="outline" className="border-line bg-transparent h-9" data-testid="onumac-go">
@@ -840,11 +836,10 @@ function OnuRemove({ meta, devices }) {
           <div className="flex flex-wrap items-end gap-2">
             <div className="flex-1 min-w-[200px]">
               <Field label="Conferir na OLT quem é cada ONU antes de remover (só leitura)">
-                <select value={devId} onChange={e => { setDevId(e.target.value); setInfo(null); }} data-testid="onurm-device"
-                  className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+                <DeviceSelect value={devId} onChange={e => { setDevId(e.target.value); setInfo(null); }} data-testid="onurm-device"
+                  className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100" devices={devices} label={d => `${d.name} · ${d.host}`}>
                   <option value="">{devices.length ? "Escolha a OLT…" : "Nenhum equipamento ZTE cadastrado"}</option>
-                  <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
-                </select>
+</DeviceSelect>
               </Field>
             </div>
             <Button onClick={check} disabled={checking || !devId || !filled.length} variant="outline" className="border-line bg-transparent h-9" data-testid="onurm-check">
@@ -972,10 +967,9 @@ function OnuClean({ devices, vendor = "zte" }) {
         <div className="text-sm text-slate-300">Procura as ONUs <b>off</b> (LOS, DyingGasp, OffLine) e há quantos dias cada uma caiu, pela hora da própria OLT. Nada é removido sem você escolher e confirmar.</div>
         <div className="grid grid-cols-1 md:grid-cols-[1fr_8rem_12rem_auto] gap-3 items-end">
           <Field label="OLT">
-            <select value={devId} onChange={e => setDevId(e.target.value)} data-testid="clean-device" className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100">
+            <DeviceSelect value={devId} onChange={e => setDevId(e.target.value)} data-testid="clean-device" className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100" devices={devices} label={d => `${d.name} (${d.host})`}>
               <option value="">— escolha —</option>
-              <TagOptions devices={devices} label={d => `${d.name} (${d.host})`} />
-            </select>
+</DeviceSelect>
           </Field>
           <Field label="Off há mais de (dias)"><Input type="number" min={1} value={days} onChange={e => setDays(e.target.value)} className={inp} data-testid="clean-days" /></Field>
           <Field label="Só estas PONs (opcional)"><Input value={pons} onChange={e => setPons(e.target.value)} placeholder={hw ? "0/1/0, 0/1/1" : "2/1, 2/2"} className={inp} data-testid="clean-pons" /></Field>
@@ -1096,11 +1090,10 @@ function useLiveScript(url, body, ready, deps) {
 
 function DevSelect({ devices, value, onChange, testid, empty = "Nenhuma OLT Huawei cadastrada" }) {
   return (
-    <select value={value} onChange={e => onChange(e.target.value)} data-testid={testid}
-      className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+    <DeviceSelect value={value} onChange={e => onChange(e.target.value)} data-testid={testid}
+      className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100" devices={devices} label={d => `${d.name} · ${d.host}`}>
       <option value="">{devices.length ? "Escolha a OLT…" : empty}</option>
-      <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
-    </select>
+</DeviceSelect>
   );
 }
 
@@ -1382,10 +1375,9 @@ function HwRemove({ devices }) {
             <div className="w-56"><Field label="Serial (ou MAC do cliente)">
               <Input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && find()} placeholder="HWTC-A1B2C3D4" className={inp} data-testid="hw-find-q" /></Field></div>
             <div className="flex-1 min-w-[180px]"><Field label="Em qual OLT">
-              <select value={qDev} onChange={e => setQDev(e.target.value)} className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100" data-testid="hw-find-dev">
+              <DeviceSelect value={qDev} onChange={e => setQDev(e.target.value)} className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-slate-100" data-testid="hw-find-dev" devices={devices} label={d => `${d.name} · ${d.host}`}>
                 <option value="all">Todas as OLTs Huawei ({devices.length})</option>
-                <TagOptions devices={devices} label={d => `${d.name} · ${d.host}`} />
-              </select></Field></div>
+</DeviceSelect></Field></div>
             <Button onClick={find} disabled={qBusy || !devices.length} variant="outline" className="border-line bg-transparent h-9" data-testid="hw-find-go">
               {qBusy ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}Procurar
             </Button>

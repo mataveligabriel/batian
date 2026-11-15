@@ -10,7 +10,7 @@ import {
   Siren, ShieldAlert, Search, Plus, Eye, CheckCircle2, RotateCcw, UserCheck, MessageSquare, TerminalSquare, ExternalLink, X, Loader2,
   Clock, Repeat, ChevronDown, ChevronRight,
 } from "lucide-react";
-import { TagOptions } from "@/components/TagSelect";
+import { DeviceSelect } from "@/components/TagSelect";
 import { useTerminal } from "@/context/TerminalContext";
 import { useAuth } from "@/context/AuthContext";
 import { OncallPanel } from "@/components/OncallPanel";
@@ -78,10 +78,9 @@ function NewIncident({ open, onClose, onCreated }) {
             <select value={f.severity} onChange={e => setF({ ...f, severity: e.target.value })} className="h-9 rounded-md bg-sunken border border-line px-2 text-slate-100" data-testid="inc-new-sev">
               {Object.entries(SEV).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
             </select>
-            <select value={f.device_id} onChange={e => setF({ ...f, device_id: e.target.value })} className="h-9 rounded-md bg-sunken border border-line px-2 text-slate-100">
+            <DeviceSelect value={f.device_id} onChange={e => setF({ ...f, device_id: e.target.value })} className="h-9 rounded-md bg-sunken border border-line px-2 text-slate-100" devices={devs}>
               <option value="">— equipamento (opcional) —</option>
-              <TagOptions devices={devs} />
-            </select>
+</DeviceSelect>
           </div>
           <textarea value={f.description} onChange={e => setF({ ...f, description: e.target.value })} rows={4} placeholder="detalhes"
                     className="w-full rounded-md bg-sunken border border-line p-2 text-slate-100" />

@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Wrench, Plus, Pencil, Trash2, Loader2, Play, Square, Ban, ArrowLeft, ClipboardCheck, ChevronDown, ChevronRight, BellOff, AlertTriangle, CheckCircle2 } from "lucide-react";
-import { TagOptions } from "@/components/TagSelect";
+import { TagSelect } from "@/components/TagSelect";
 import { useAuth } from "@/context/AuthContext";
 import { SEV } from "@/pages/Incidents";
 
@@ -58,8 +58,8 @@ function WindowDialog({ win, devices, probes, isAdmin, onClose, onSaved }) {
           <div className="text-sm text-slate-200 mb-2">Escopo — os alarmes disto ficam em silêncio durante a janela</div>
           {isAdmin && <label className="flex items-center gap-2 text-sm text-slate-300 mb-2"><Switch checked={f.all} onCheckedChange={v => set("all", v)} /> Rede toda</label>}
           {!f.all && <div className="grid sm:grid-cols-2 gap-3">
-            <div><label className={lbl}>Equipamentos (Ctrl/⌘ para vários)</label>
-              <select multiple value={f.device_ids} onChange={e => set("device_ids", [...e.target.selectedOptions].map(o => o.value))} className="w-full h-32 rounded-md bg-sunken border border-line p-1 text-sm text-slate-200" data-testid="maint-devs"><TagOptions devices={devices} /></select></div>
+            <div><label className={lbl}>Equipamentos (por grupo)</label>
+              <TagSelect devices={devices} selected={f.device_ids} onChange={ids => set("device_ids", ids)} testid="maint-devs" maxHeight="max-h-48" /></div>
             <div><label className={lbl}>Grupos (tags)</label>
               <div className="flex flex-wrap gap-1.5">{allTags.length === 0 && <span className="text-xs text-slate-500">Nenhuma tag nos equipamentos.</span>}
                 {allTags.map(t => <button key={t} onClick={() => set("tags", f.tags.includes(t) ? f.tags.filter(x => x !== t) : [...f.tags, t])}
@@ -78,7 +78,7 @@ function WindowDialog({ win, devices, probes, isAdmin, onClose, onSaved }) {
           <label className="flex items-center gap-2 text-sm text-slate-200"><Switch checked={f.auto_checks} onCheckedChange={v => set("auto_checks", v)} data-testid="maint-auto" /> Pré-check no início e pós-check no fim (automático)</label>
           <p className="text-[11px] text-slate-500 mt-1">Também dá para rodar na mão na tela da janela. Lê vizinhos OSPF, sessões BGP, rotas, LDP/l2vc e interfaces e compara depois.</p>
           <label className={`${lbl} mt-2`}>Rodar o check em {f.check_device_ids.length ? "" : `(padrão: os ${scopeDevs.length} equipamento(s) do escopo)`}</label>
-          <select multiple value={f.check_device_ids} onChange={e => set("check_device_ids", [...e.target.selectedOptions].map(o => o.value))} className="w-full h-24 rounded-md bg-sunken border border-line p-1 text-sm text-slate-200" data-testid="maint-checkdevs"><TagOptions devices={devices} /></select>
+          <TagSelect devices={devices} selected={f.check_device_ids} onChange={ids => set("check_device_ids", ids)} testid="maint-checkdevs" maxHeight="max-h-40" />
           <button onClick={() => setShowCmds(v => !v)} className="text-xs text-brand-soft mt-2 flex items-center gap-1">{showCmds ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />} Comandos por fabricante ({vendors.map(v => VENDOR[v] || v).join(", ") || "—"})</button>
           {showCmds && tpl && vendors.map(vt => (
             <div key={vt} className="mt-2">

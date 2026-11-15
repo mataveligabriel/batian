@@ -3,6 +3,7 @@ import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
+import { DeviceSelect } from "@/components/TagSelect";
 import { BookMarked, Copy, Download, FileCode2, Import, Layers, Loader2, Pencil, Plus, Save, Tags, Trash2, Users, X } from "lucide-react";
 
 const sel = "h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100 min-w-0";
@@ -266,8 +267,8 @@ function PeerForm({ meta, group, devices, peer, onClose, onSaved }) {
             <Field label="IP do vizinho (IPv6)"><Input value={f.peer_ipv6} onChange={e => set({ peer_ipv6: e.target.value.trim() })} className={`${inp} font-mono`} placeholder="xxxx:xxxx::x" /></Field>
             <Field label="IP local (IPv4)"><Input value={f.local_ipv4} onChange={e => set({ local_ipv4: e.target.value.trim() })} className={`${inp} font-mono`} /></Field>
             <Field label="IP local (IPv6)"><Input value={f.local_ipv6} onChange={e => set({ local_ipv6: e.target.value.trim() })} className={`${inp} font-mono`} /></Field>
-            <Field label="Roteador"><select value={f.device_id} onChange={e => set({ device_id: e.target.value })} className={`${sel} w-full`}><option value="">—</option>
-              {devices.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></Field>
+            <Field label="Roteador"><DeviceSelect value={f.device_id} onChange={e => set({ device_id: e.target.value })} className={`${sel} w-full`} devices={devices}><option value="">—</option>
+              </DeviceSelect></Field>
             <Field label="Interface / VLAN"><div className="flex gap-1"><Input value={f.interface} onChange={e => set({ interface: e.target.value })} className={inp} /><Input value={f.vlan} onChange={e => set({ vlan: e.target.value })} className={`${inp} w-20`} placeholder="vlan" aria-label="VLAN" /></div></Field>
             <Field label="Banda contratada (Mbps)"><Input value={f.bandwidth_mbps ?? ""} onChange={e => set({ bandwidth_mbps: e.target.value.replace(/\D/g, "") })} className={`${inp} font-mono`} /></Field>
             <Field label="Circuito / designação"><Input value={f.circuit} onChange={e => set({ circuit: e.target.value })} className={inp} /></Field>

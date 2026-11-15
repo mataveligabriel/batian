@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import { ShieldCheck, Plus, Pencil, Trash2, RotateCcw, FlaskConical, CheckCircle2, XCircle, Loader2, ArrowUp, ArrowDown, RefreshCw, Clock } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { DeviceSelect } from "@/components/TagSelect";
 
 const ACT = {
   block: ["Bloquear", "text-red-300 border-red-500/40 bg-red-500/10"],
@@ -221,7 +222,7 @@ function Rules() {
           <textarea value={test.commands} onChange={e => setTest({ ...test, commands: e.target.value })} rows={4} className="rounded-md bg-sunken border border-line p-2 font-mono text-sm text-slate-200" data-testid="cp-test-cmds" />
           <div className="space-y-2">
             <select value={test.user_id} onChange={e => setTest({ ...test, user_id: e.target.value })} className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200"><option value="">como eu</option>{users.map(u => <option key={u.id} value={u.id}>{u.email}</option>)}</select>
-            <select value={test.device_id} onChange={e => setTest({ ...test, device_id: e.target.value })} className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200"><option value="">qualquer equipamento</option>{devices.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select>
+            <DeviceSelect value={test.device_id} onChange={e => setTest({ ...test, device_id: e.target.value })} className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200" devices={devices}><option value="">qualquer equipamento</option></DeviceSelect>
             <select value={test.channel} onChange={e => setTest({ ...test, channel: e.target.value })} className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200">{CHANNELS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
             <Button size="sm" onClick={runTest} variant="outline" className="w-full border-line bg-transparent" data-testid="cp-test-run">Simular</Button>
           </div>

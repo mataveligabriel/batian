@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import { DeviceSelect } from "@/components/TagSelect";
 import { FolderUp, Plus, Trash2, Copy, Download, Upload, Folder, FileText, RefreshCw, Loader2, Save, CheckCircle2, XCircle, AlertTriangle, Eye, EyeOff, Clock, ChevronRight, Pencil, ArrowUp } from "lucide-react";
 
 const lbl = "text-xs text-slate-400 mb-1 block";
@@ -265,8 +266,8 @@ function DeviceXfer() {
       <Card className="bg-surface border-line p-4 space-y-3">
         <div className="grid gap-2 sm:grid-cols-[16rem_1fr_auto] items-end">
           <div><label className={lbl}>Equipamento</label>
-            <select value={dev} onChange={e => pick(e.target.value)} className={`${sel} w-full`} data-testid="ftp-dev-sel">
-              <option value="">— escolha —</option>{devs.map(x => <option key={x.id} value={x.id}>{x.name} ({x.host})</option>)}</select></div>
+            <DeviceSelect value={dev} onChange={e => pick(e.target.value)} className={`${sel} w-full`} data-testid="ftp-dev-sel" devices={devs} label={x => `${x.name} (${x.host})`}>
+              <option value="">— escolha —</option></DeviceSelect></div>
           <div><label className={lbl}>Caminho no equipamento (arquivo ou pasta)</label>
             <Input value={path} onChange={e => setPath(e.target.value)} onKeyDown={e => e.key === "Enter" && dev && list(path)} placeholder="/datadisk0/DATA0/startrun.dat" className="bg-sunken border-line h-9 font-mono" data-testid="ftp-dev-path" /></div>
           <div className="flex gap-1">

@@ -93,3 +93,40 @@ export function TagOptions({ devices, label }) {
     </optgroup>
   ));
 }
+
+const LAYOUT = /^((sm|md|lg|xl):)?(w-|flex-|min-w-|max-w-|shrink|grow|basis-|col-span|self-|m[lrxy]?-|order-)/;
+const tagsOf = (d) => ((d.tags || []).length ? d.tags : ["Sem tag"]);
+
+/** Escolha de UM equipamento em dois passos: primeiro o grupo (tag), depois o equipamento daquele grupo.
+ *  Mesmo uso de um <select> comum (value, onChange(e), className, disabled, data-testid…); os <option> passados
+ *  como filhos (ex.: "— escolha —") vêm antes da lista. Com uma tag só, mostra só a lista de equipamentos. */
+export function DeviceSelect({ devices, label, children, className = "", value, groupTestId, ...rest }) {
+  const list = devices || [];
+  const groups = useMemo(() => {
+    const c = new Map();
+    list.forEach(d => tagsOf(d).forEach(t => c.set(t, (c.get(t) || 0) + 1)));
+    return [...c.entries()].sort((a, b) => (a[0] === "Sem tag") - (b[0] === "Sem tag") || a[0].localeCompare(b[0], "pt-BR", { numeric: true }));
+  }, [list]);
+  const cur = list.find(d => d.id === value);
+  const [g, setG] = useState(() => (cur ? tagsOf(cur)[0] : ""));
+  const layout = className.split(/\s+/).filter(c => LAYOUT.test(c)).join(" ");
+  const look = className.split(/\s+/).filter(c => c && !LAYOUT.test(c)).join(" ");
+  const name = (d) => (label ? label(d) : d.name);
+  if (groups.length < 2) {
+    return <select value={value} className={className} {...rest}>{children}<TagOptions devices={list} label={label} /></select>;
+  }
+  const shown = g ? list.filter(d => tagsOf(d).includes(g)).sort((a, b) => a.name.localeCompare(b.name, "pt-BR", { numeric: true })) : null;
+  return (
+    <div className={`flex gap-1 min-w-0 ${layout || "inline-flex"}`}>
+      <select value={g} onChange={e => setG(e.target.value)} className={`${look} w-[40%] max-w-[11rem] shrink-0`} aria-label="Grupo" data-testid={groupTestId}>
+        <option value="">Todos os grupos</option>
+        {groups.map(([t, n]) => <option key={t} value={t}>{t} ({n})</option>)}
+      </select>
+      <select value={value} className={`${look} flex-1 min-w-0`} {...rest}>
+        {children}
+        {g && cur && !tagsOf(cur).includes(g) && <option value={cur.id}>{name(cur)}</option>}
+        {shown ? shown.map(d => <option key={d.id} value={d.id}>{name(d)}</option>) : <TagOptions devices={list} label={label} />}
+      </select>
+    </div>
+  );
+}

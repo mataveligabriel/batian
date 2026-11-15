@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { Cable, Search, Loader2, RefreshCw, ArrowLeft, Radio, AlertTriangle, Settings2, X } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { TagOptions } from "@/components/TagSelect";
+import { TagSelect } from "@/components/TagSelect";
 
 const ago = (iso) => { if (!iso) return "—"; const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000); const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return d ? `${d}d ${h}h` : h ? `${h}h ${m}min` : `${m}min`; };
 const rxCls = (v, bad) => (v == null ? "text-slate-500" : v < bad ? "text-red-300" : v < bad + 2 ? "text-amber-300" : "text-emerald-300");
@@ -131,10 +131,8 @@ function Configure({ settings, devices, onSaved }) {
   const others = devices.filter(d => !zte.includes(d) && (d.device_type === "huawei" || d.device_type === "fiberhome"));
   return (
     <Card className="bg-surface border-line p-4" data-testid="gpon-config">
-      <label className={lbl}>OLTs acompanhadas (ZTE, Huawei e FiberHome — Ctrl/⌘ para várias)</label>
-      <select multiple value={c.olts} onChange={e => set("olts", [...e.target.selectedOptions].map(o => o.value))} className="w-full h-32 rounded-md bg-sunken border border-line p-1 text-sm text-slate-200" data-testid="gpon-olts">
-        <TagOptions devices={zte.length ? [...zte, ...others] : devices} />
-      </select>
+      <label className={lbl}>OLTs acompanhadas (ZTE, Huawei e FiberHome — por grupo)</label>
+      <TagSelect devices={zte.length ? [...zte, ...others] : devices} selected={c.olts} onChange={ids => set("olts", ids)} testid="gpon-olts" maxHeight="max-h-48" />
       <p className="text-[11px] text-slate-500 mt-1">Nome, serial, descrição e usuário PPPoE vêm do último backup de configuração da OLT (deixe o backup ligado). A senha do PPPoE não é guardada.</p>
       <div className="grid sm:grid-cols-4 gap-3 mt-3">
         <div><label className={lbl}>Estado das ONUs a cada (min)</label><Input type="number" value={c.state_interval_min} onChange={e => set("state_interval_min", e.target.value)} className="bg-sunken border-line" /></div>

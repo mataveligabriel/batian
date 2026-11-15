@@ -11,7 +11,7 @@ import {
   ScrollText, Search, Pause, Play, Plus, Pencil, Trash2, FlaskConical, RotateCcw, Copy, Loader2, ChevronDown, ChevronRight,
   Siren, Link2, Radio,
 } from "lucide-react";
-import { TagOptions } from "@/components/TagSelect";
+import { TagSelect, DeviceSelect } from "@/components/TagSelect";
 import { useAuth } from "@/context/AuthContext";
 import { SEV as INC_SEV } from "@/pages/Incidents";
 
@@ -111,11 +111,10 @@ function Messages({ devices, rules, isAdmin }) {
           <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
           <Input value={q} onChange={e => setQ(e.target.value)} placeholder="buscar no texto (ex.: BGP, ge-0/0/1, LOS)…" className="pl-8 bg-sunken border-line h-9" data-testid="logs-q" />
         </div>
-        <select value={dev} onChange={e => setDev(e.target.value)} className={`${sel} max-w-[14rem]`} data-testid="logs-dev">
+        <DeviceSelect value={dev} onChange={e => setDev(e.target.value)} className={`${sel} max-w-[24rem]`} data-testid="logs-dev" devices={devices}>
           <option value="">todos os equipamentos</option>
           <option value="none">— origem sem equipamento —</option>
-          <TagOptions devices={devices} />
-        </select>
+</DeviceSelect>
         <select value={kind} onChange={e => setKind(e.target.value)} className={sel} data-testid="logs-kind">
           <option value="">syslog e traps</option><option value="syslog">só syslog</option><option value="trap">só traps</option>
         </select>
@@ -220,10 +219,8 @@ function RuleDialog({ rule, devices, onClose, onSaved }) {
             <select value={f.max_severity} onChange={e => set("max_severity", Number(e.target.value))} className={`${sel} w-full`}>
               {SYS_SEV.map(([n], i) => <option key={n} value={i}>{i} — {n}{i === 7 ? " (todas)" : ""}</option>)}
             </select></div>
-          <div className="sm:col-span-2"><label className={lbl}>Só destes equipamentos (nenhum marcado = todos) — Ctrl/⌘ para marcar vários</label>
-            <select multiple value={f.device_ids} onChange={e => set("device_ids", [...e.target.selectedOptions].map(o => o.value))} className="w-full h-28 rounded-md bg-sunken border border-line p-1 text-sm text-slate-200">
-              <TagOptions devices={devices} />
-            </select></div>
+          <div className="sm:col-span-2"><label className={lbl}>Só destes equipamentos (nenhum marcado = todos)</label>
+            <TagSelect devices={devices} selected={f.device_ids} onChange={ids => set("device_ids", ids)} testid="logrule-devs" maxHeight="max-h-40" /></div>
           <div className="sm:col-span-2"><label className={lbl}>Título do incidente — {"{rule} {group} {device} {count} {host}"}</label>
             <Input value={f.title} onChange={e => set("title", e.target.value)} placeholder="{rule}: {group} — {device}" className="bg-sunken border-line font-mono text-xs" /></div>
           <label className="flex items-center gap-2 text-sm text-slate-200"><Switch checked={f.enabled} onCheckedChange={v => set("enabled", v)} /> Ativa</label>
@@ -342,10 +339,9 @@ function Sources({ devices }) {
                 <td className="px-3 py-2 font-mono text-xs text-slate-200">{s.ip}</td>
                 <td className="px-3 py-2 font-mono text-xs text-slate-400">{s.host_name || "—"}</td>
                 <td className="px-3 py-2">
-                  <select value={s.linked_device_id || ""} onChange={e => link(s.ip, e.target.value)} className={`${sel} h-8 text-xs max-w-[15rem]`}>
+                  <DeviceSelect value={s.linked_device_id || ""} onChange={e => link(s.ip, e.target.value)} className={`${sel} h-8 text-xs max-w-[15rem]`} devices={devices}>
                     <option value="">{s.device_name ? `automático: ${s.device_name}` : "— não identificado —"}</option>
-                    <TagOptions devices={devices} />
-                  </select>
+</DeviceSelect>
                 </td>
                 <td className="px-3 py-2 text-xs text-slate-400">{(s.kinds || []).join(" + ")}</td>
                 <td className="px-3 py-2 text-right text-xs text-slate-300 tabular">{s.count || 0}{s.dropped > 0 && <span className="text-amber-300 block">{s.dropped} descartadas</span>}</td>

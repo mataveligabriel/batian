@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { Share2, RefreshCw, Loader2, Plus, X, Pencil, ShieldAlert, ShieldCheck, Globe2, AlertTriangle } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { TagOptions } from "@/components/TagSelect";
+import { DeviceSelect } from "@/components/TagSelect";
 
 const sel = "h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-200";
 const ago = (iso) => {
@@ -145,7 +145,8 @@ function Configure({ data, devices, reload }) {
           ))}
         </div>
         <div className="flex gap-2">
-          <select value={add} onChange={e => setAdd(e.target.value)} className={`${sel} flex-1`} data-testid="bgp-add-router"><option value="">adicionar roteador…</option><TagOptions devices={devices.filter(d => !c.routers.some(r => r.device_id === d.id))} /></select>
+          <DeviceSelect value={add} onChange={e => setAdd(e.target.value)} className={`${sel} flex-1`} data-testid="bgp-add-router" devices={devices.filter(d => !c.routers.some(r => r.device_id === d.id))}><option value="">adicionar roteador…</option>
+</DeviceSelect>
           <Button size="sm" variant="ghost" disabled={!add} onClick={() => { set("routers", [...c.routers, { device_id: add, mode: "snmp", cli_prefixes: false }]); setAdd(""); }} className="h-9 text-slate-200"><Plus className="w-4 h-4 mr-1" /> Adicionar</Button>
         </div>
         <div className="grid sm:grid-cols-4 gap-3 mt-3">

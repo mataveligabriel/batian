@@ -8,7 +8,7 @@ import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import { TagOptions } from "@/components/TagSelect";
+import { DeviceSelect } from "@/components/TagSelect";
 import { Play, Plus, Pencil, Trash2, Loader2, ArrowUp, ArrowDown, CheckCircle2, XCircle, SkipForward, Send, X, History } from "lucide-react";
 
 const EMPTY = () => ({ name: "", description: "", telegram: true, shared: false, save: false, steps: [{ device_id: "", commands: "" }] });
@@ -58,11 +58,10 @@ function Editor({ value, devices, onCancel, onSaved }) {
           <div key={i} className="rounded-md border border-line bg-sunken/40 p-3 space-y-2" data-testid={`rb-step-${i}`}>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-mono text-slate-400 w-14">passo {i + 1}</span>
-              <select value={s.device_id} onChange={e => setStep(i, { device_id: e.target.value })} data-testid={`rb-step-${i}-dev`}
-                className="h-9 flex-1 min-w-[200px] rounded-md bg-sunken border border-line px-2 text-sm text-slate-100">
+              <DeviceSelect value={s.device_id} onChange={e => setStep(i, { device_id: e.target.value })} data-testid={`rb-step-${i}-dev`}
+                className="h-9 flex-1 min-w-[200px] rounded-md bg-sunken border border-line px-2 text-sm text-slate-100" devices={sorted} label={d => `${d.name} · ${d.host}`}>
                 <option value="">Equipamento…</option>
-                <TagOptions devices={sorted} label={d => `${d.name} · ${d.host}`} />
-              </select>
+</DeviceSelect>
               <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 text-slate-500 hover:text-slate-200 disabled:opacity-30" title="Subir"><ArrowUp className="w-4 h-4" /></button>
               <button onClick={() => move(i, 1)} disabled={i === f.steps.length - 1} className="p-1 text-slate-500 hover:text-slate-200 disabled:opacity-30" title="Descer"><ArrowDown className="w-4 h-4" /></button>
               {f.steps.length > 1 && <button onClick={() => setF({ ...f, steps: f.steps.filter((_, j) => j !== i) })} className="p-1 text-slate-500 hover:text-red-300" title="Remover passo" data-testid={`rb-step-${i}-del`}><Trash2 className="w-4 h-4" /></button>}
