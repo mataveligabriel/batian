@@ -96,6 +96,7 @@ class DeviceCreate(BaseModel):
     device_type: str = "linux"
     tags: List[str] = []
     agent_id: Optional[str] = None  # reference to Agent for ProxyJump
+    vpn_id: Optional[str] = None  # alcançado pela VPN (PPTP/L2TP/...) conectada no servidor, sem jump
     description: str = ""
     backup_enabled: bool = True
     backup_command: Optional[str] = None  # overrides the per-type default

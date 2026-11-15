@@ -1237,6 +1237,8 @@ Write-Host "Agente {a['name']} iniciado -> {suser}@{host}:{sport} (túnel {TUNNE
 def _normalize_device(data: dict, user: Optional[dict] = None) -> dict:
     if data.get("agent_id") == "":
         data["agent_id"] = None
+    if not data.get("vpn_id") or data.get("agent_id"):     # é um ou outro: pelo jump ou pela VPN do servidor
+        data["vpn_id"] = None
     if data.get("device_type") not in DEVICE_TYPES:
         data["device_type"] = "other"
     if data.get("protocol") not in ("ssh", "telnet"):
@@ -1295,6 +1297,8 @@ async def create_device(payload: DeviceCreateRequest, user: dict = Depends(get_c
         data["password"] = src.get("password", "")
     if data.get("agent_id"):
         await _get_agent_for(user, data["agent_id"])
+    if data.get("vpn_id"):
+        await _get_vpn_for(user, data["vpn_id"])
     doc = Device(**data).model_dump()
     await db.devices.insert_one(doc)
     return _public(doc)
@@ -1370,6 +1374,8 @@ async def update_device(device_id: str, payload: DeviceCreate, user: dict = Depe
         data.pop("no_alert", None)
     if data.get("agent_id") and data["agent_id"] != existing.get("agent_id"):
         await _get_agent_for(user, data["agent_id"])
+    if data.get("vpn_id") and data["vpn_id"] != existing.get("vpn_id"):
+        await _get_vpn_for(user, data["vpn_id"])
     data["owner_id"] = existing.get("owner_id") or user["id"]
     if (data.get("snmp_community") or "") != (existing.get("snmp_community") or "") or \
             int(data.get("snmp_port") or 161) != int(existing.get("snmp_port") or 161):
@@ -1831,12 +1837,22 @@ async def _get_ssh_key():
     return doc.get("private_key", ""), doc.get("default_username", "root"), vault.decrypt(doc.get("default_password", ""))
 
 
+async def _vpn_required(vpn_id: str, what: str):
+    st = await db.vpn_status.find_one({"_id": vpn_id}, {"_id": 0, "state": 1}) or {}
+    if st.get("state") != "up":
+        prof = await db.vpn_profiles.find_one({"id": vpn_id}, {"_id": 0, "name": 1}) or {}
+        raise VpnDown(f"VPN '{prof.get('name', '?')}' desconectada — {what} depende dela. "
+                      "Conecte em Agentes Remotos → VPNs (ou no indicador VPN do menu).")
+
+
 async def _device_hops(dev: dict):
     priv, default_user, default_pw = await _get_ssh_key()
     hops: List[Hop] = []
     if dev.get("agent_id"):
         for ag in await _agent_chain(dev["agent_id"]):
             hops.append(_agent_hop(ag, priv))
+    elif dev.get("vpn_id"):          # sem jump: o servidor alcança pelo túnel da VPN (rota para o IP do equipamento)
+        await _vpn_required(dev["vpn_id"], f"o equipamento {dev['name']}")
     dtype = dev.get("device_type") or "linux"
     pw = vault.decrypt(dev.get("password", "")) or default_pw
     use_key = priv and (dtype == "linux" or not pw)
@@ -12371,10 +12387,14 @@ async def list_vpns(user: dict = Depends(get_current_user)):
     items = await db.vpn_profiles.find(_scope(user), {"_id": 0}).sort("name", 1).to_list(100)
     st = {s["_id"]: s async for s in db.vpn_status.find({"_id": {"$in": [p["id"] for p in items]}})}
     agents = await db.agents.find({**_scope(user), "vpn_id": {"$in": [p["id"] for p in items]}}, {"_id": 0, "name": 1, "vpn_id": 1}).to_list(500)
+    dcount: Dict[str, int] = {}
+    async for d in db.devices.find({**_scope(user), "vpn_id": {"$in": [p["id"] for p in items]}}, {"_id": 0, "vpn_id": 1}):
+        dcount[d["vpn_id"]] = dcount.get(d["vpn_id"], 0) + 1
     out = []
     for p in items:
         o = _vpn_public(p, st.get(p["id"]))
         o["agents"] = [a["name"] for a in agents if a.get("vpn_id") == p["id"]]
+        o["devices"] = dcount.get(p["id"], 0)
         out.append(o)
     d = await db.vpn_status.find_one({"_id": "_daemon"}, {"_id": 0, "caps": 1}) or {}
     return {"items": out, "daemon": await _vpn_daemon_ok(), "caps": d.get("caps") or {},
@@ -12417,6 +12437,7 @@ async def delete_vpn(vid: str, user: dict = Depends(get_current_user)):
     await _get_vpn_for(user, vid)
     await db.vpn_profiles.delete_one({"id": vid})
     await db.agents.update_many({"vpn_id": vid}, {"$set": {"vpn_id": None}})
+    await db.devices.update_many({"vpn_id": vid}, {"$set": {"vpn_id": None}})
     return {"ok": True}
 
 

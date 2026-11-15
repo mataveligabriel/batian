@@ -1632,3 +1632,12 @@ Menu **Monitoramento → Disponibilidade** (módulo `avail`; libere em Usuários
 ## 83. Equipamento online pelo ping (ICMP)
 
 O ping automático (Automação) e o botão **Ping** de Equipamentos consideram o equipamento **online se responder ao ping (ICMP)** — do servidor, ou do jump quando ele é acessado por agente. Só quando o ICMP não responde (bloqueado no firewall, por exemplo) é testada a porta de acesso (SSH/Telnet). Assim, MikroTik e outros equipamentos sem SSH liberado deixam de aparecer offline. A latência mostrada passa a ser a do ping. O alerta de "caiu" só sai quando o equipamento não responde nem ao ping nem à porta.
+
+## 84. Equipamento acessado por VPN (PPTP, L2TP…) sem jump
+
+No cadastro do equipamento, o campo **Agente Proxy** também lista as **VPNs** configuradas em Agentes Remotos → VPNs (PPTP, L2TP e as demais). Escolhendo uma VPN, o servidor do BastiON acessa o equipamento direto pelo túnel, sem jump:
+
+- a rota para o IP do equipamento entra sozinha na VPN quando ela está conectada (cadastre o equipamento pelo IP, não por nome DNS);
+- SSH, Telnet, backup, execução em lote, SNMP e ping passam pela VPN;
+- com a VPN desconectada, as ações avisam que ela precisa ser conectada; o ping marca o equipamento como offline;
+- a coluna Agente da lista mostra `VPN · nome`. Excluir a VPN volta esses equipamentos para conexão direta.

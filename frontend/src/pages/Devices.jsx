@@ -64,11 +64,13 @@ export default function Devices() {
   const [snmpBusy, setSnmpBusy] = useState(() => new Set());
   const [snmpAll, setSnmpAll] = useState(false);
   const lastClicked = useRef(null);
+  const [vpns, setVpns] = useState([]);
   const nav = useNavigate();
 
   const load = async () => {
     const [d, a] = await Promise.all([api.get("/devices"), api.get("/agents")]);
     setDevices(d.data); setAgents(a.data);
+    api.get("/vpns").then(r => setVpns(r.data?.items || [])).catch(() => setVpns([]));
     // descarta da seleção o que não existe mais
     const ids = new Set(d.data.map(x => x.id));
     setSelected(prev => new Set([...prev].filter(id => ids.has(id))));
@@ -76,7 +78,7 @@ export default function Devices() {
   useEffect(() => { load(); }, []);
 
   const openNew = () => { setEditing(null); setCloneOf(null); setForm(emptyDevice); setOpen(true); };
-  const toForm = (d) => ({ ...emptyDevice, ...d, tags: (d.tags || []).join(", "), agent_id: d.agent_id || "", protocol: d.protocol || "ssh", owner_id: d.owner_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "", description: d.description || "", username: d.username || "", snmp_community: d.snmp_community || "", snmp_port: d.snmp_port || 161, no_alert: !!d.no_alert });
+  const toForm = (d) => ({ ...emptyDevice, ...d, tags: (d.tags || []).join(", "), agent_id: d.vpn_id ? `vpn:${d.vpn_id}` : d.agent_id || "", protocol: d.protocol || "ssh", owner_id: d.owner_id || "", password: "", clear_password: false, device_type: d.device_type || "linux", backup_enabled: d.backup_enabled !== false, backup_command: d.backup_command || "", description: d.description || "", username: d.username || "", snmp_community: d.snmp_community || "", snmp_port: d.snmp_port || 161, no_alert: !!d.no_alert });
   const openEdit = (d) => { setEditing(d); setCloneOf(null); setForm(toForm(d)); setOpen(true); };
   // Duplicar: mesmo formulário do "novo", pré-preenchido; a senha é copiada no servidor
   const openClone = (d) => {
@@ -96,7 +98,8 @@ export default function Devices() {
       clear_password: !!form.clear_password,
       device_type: form.device_type || "linux",
       tags: form.tags.split(",").map(t => t.trim()).filter(Boolean),
-      agent_id: form.agent_id || null,
+      agent_id: form.agent_id && !form.agent_id.startsWith("vpn:") ? form.agent_id : null,
+      vpn_id: form.agent_id?.startsWith("vpn:") ? form.agent_id.slice(4) : null,
       description: form.description || "",
       backup_enabled: form.backup_enabled !== false,
       backup_command: (form.backup_command || "").trim() || null,
@@ -234,6 +237,7 @@ export default function Devices() {
   const batchSelected = () => nav("/batch", { state: { deviceIds: selectedIds } });
 
   const agentName = (id) => agents.find(a => a.id === id)?.name || "—";
+  const viaName = (d) => (d.vpn_id ? `VPN · ${vpns.find(v => v.id === d.vpn_id)?.name || "?"}` : agentName(d.agent_id));
 
   return (
     <div className="p-4 md:p-6 flex-1 overflow-y-auto" data-testid="devices-page">
@@ -389,7 +393,7 @@ export default function Devices() {
                       {d.has_password && <KeyRound className="w-3 h-3 text-amber-400" title="senha própria" />}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-slate-400 text-xs">{agentName(d.agent_id)}</td>
+                  <td className="px-4 py-3 text-slate-400 text-xs">{viaName(d)}</td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
                       {(d.tags || []).map(t => <Badge key={t} className="bg-panel border border-line text-slate-300 text-[10px]">{t}</Badge>)}
@@ -498,9 +502,12 @@ export default function Devices() {
                 </SelectTrigger>
                 <SelectContent className="bg-surface border-line text-slate-100">
                   <SelectItem value="none">Sem agente (conexão direta)</SelectItem>
-                  {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.name} · {a.location}</SelectItem>)}
+                  {agents.map(a => <SelectItem key={a.id} value={a.id}>{a.name}{a.location ? ` · ${a.location}` : ""}</SelectItem>)}
+                  {vpns.length > 0 && <div className="px-2 pt-2 pb-1 text-[10px] text-slate-500 border-t border-line mt-1">VPN conectada no servidor</div>}
+                  {vpns.map(v => <SelectItem key={v.id} value={`vpn:${v.id}`} data-testid={`device-form-vpn-${v.id}`}>VPN {String(v.type || "").toUpperCase()} · {v.name}{v.status?.state === "up" ? " (conectada)" : ""}</SelectItem>)}
                 </SelectContent>
               </Select>
+              {form.agent_id?.startsWith("vpn:") && <div className="text-[11px] text-slate-500 mt-1">Acesso direto do servidor pelo túnel da VPN. Ela precisa estar conectada; a rota para o IP deste equipamento entra sozinha (use o IP, não nome DNS).</div>}
             </div>
             <div>
               <Label>Tags (separadas por vírgula)</Label>
