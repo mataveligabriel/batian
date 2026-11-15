@@ -1551,13 +1551,57 @@ async def _ping_device(dev: dict) -> Optional[float]:
         return None
 
 
+async def _reach_many(devs: List[dict]) -> Dict[str, Optional[float]]:
+    """Equipamento online = responde ao ping (ICMP) OU à porta de acesso (SSH/Telnet).
+    ICMP primeiro (do servidor, ou do jump num script só por agente); quem não respondeu tenta a porta."""
+    res: Dict[str, Optional[float]] = {d["id"]: None for d in devs}
+    sem = asyncio.Semaphore(40)
+
+    async def icmp_local(d):
+        async with sem:
+            try:
+                r = await probemod.ping_local(d["host"], count=2, timeout=1.5, spacing=0.2)
+            except Exception:
+                return
+        if r.get("ok"):
+            res[d["id"]] = r.get("ms") if r.get("ms") is not None else 0.0
+
+    by_agent: Dict[str, list] = {}
+    tasks = []
+    for d in devs:
+        if d.get("agent_id"):
+            by_agent.setdefault(d["agent_id"], []).append((d["id"], {"type": "ping", "target": d["host"], "count": 2, "timeout_s": 3}))
+        else:
+            tasks.append(icmp_local(d))
+
+    async def icmp_agent(agent_id, items):
+        try:
+            out = await _probe_on_agent(agent_id, items)
+        except Exception:
+            return
+        for k, r in out.items():
+            if r.get("ok"):
+                res[k] = r.get("ms") if r.get("ms") is not None else 0.0
+
+    tasks += [icmp_agent(a, it) for a, it in by_agent.items()]
+    await asyncio.gather(*tasks)
+    tsem = asyncio.Semaphore(20)
+
+    async def tcp(d):
+        async with tsem:
+            res[d["id"]] = await _ping_device(d)
+
+    await asyncio.gather(*[tcp(d) for d in devs if res[d["id"]] is None])   # sem ICMP (bloqueado): tenta a porta SSH
+    return res
+
+
 @api.post("/devices/{device_id}/ping")
 async def ping_device(device_id: str, user: dict = Depends(get_current_user)):
     d = await _get_device_for(user, device_id)
-    lat = await _ping_device(d)
+    lat = (await _reach_many([d]))[d["id"]]
     status = "online" if lat is not None else "offline"
     now = datetime.now(timezone.utc).isoformat()
-    await db.devices.update_one({"id": device_id}, {"$set": {"status": status, "latency_ms": lat, "last_seen": now if lat else d.get("last_seen")}})
+    await db.devices.update_one({"id": device_id}, {"$set": {"status": status, "latency_ms": lat, "last_seen": now if lat is not None else d.get("last_seen")}})
     return {"device_id": device_id, "status": status, "latency_ms": lat}
 
 
@@ -1567,16 +1611,14 @@ async def ping_all_devices(payload: Optional[DeviceIdsPayload] = None, user: dic
     if payload and payload.device_ids:
         q["id"] = {"$in": payload.device_ids}
     devs = await db.devices.find(q, {"_id": 0}).to_list(5000)
+    lats = await _reach_many(devs)
     results = []
-    sem = asyncio.Semaphore(20)
-
-    async def _one(dv):
-        async with sem:
-            lat = await _ping_device(dv)
+    now = datetime.now(timezone.utc).isoformat()
+    for dv in devs:
+        lat = lats.get(dv["id"])
         st = "online" if lat is not None else "offline"
-        await db.devices.update_one({"id": dv["id"]}, {"$set": {"status": st, "latency_ms": lat}})
+        await db.devices.update_one({"id": dv["id"]}, {"$set": {"status": st, "latency_ms": lat, "last_seen": now if lat is not None else dv.get("last_seen")}})
         results.append({"device_id": dv["id"], "status": st, "latency_ms": lat})
-    await asyncio.gather(*[_one(dv) for dv in devs])
     return results
 
 
@@ -3997,15 +4039,15 @@ async def _ping_everything() -> List[dict]:
     await asyncio.gather(*[_ag(a) for a in agents])
 
     devs = await db.devices.find({}, {"_id": 0}).to_list(5000)
+    lats = await _reach_many(devs)
 
     async def _dv(d):
-        async with sem:
-            lat = await _ping_device(d)
+        lat = lats.get(d["id"])
         st = "online" if lat is not None else "offline"
-        await db.devices.update_one({"id": d["id"]}, {"$set": {"status": st, "latency_ms": lat, "last_seen": now if lat else d.get("last_seen")}})
+        await db.devices.update_one({"id": d["id"]}, {"$set": {"status": st, "latency_ms": lat, "last_seen": now if lat is not None else d.get("last_seen")}})
         if d.get("status") in ("online", "offline") and d.get("status") != st:
             transitions.append({"kind": "device", "id": d["id"], "host": d["host"], "name": d["name"], "status": st,
-                                "detail": f"{d['host']}:{d.get('port', 22)}"})
+                                "detail": f"{d['host']} (ping e porta {d.get('port', 22)})" if st == "offline" else d["host"]})
     await asyncio.gather(*[_dv(d) for d in devs])
     return transitions
 
