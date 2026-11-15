@@ -113,8 +113,16 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
       onMove(drag.id, Math.round((w.x - drag.ox) / 10) * 10, Math.round((w.y - drag.oy) / 10) * 10);
     } else if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) drag.moved = true;
   };
+  const lastClick = useRef({ id: null, t: 0 });
   const up = () => {
-    if (drag?.kind === "node" && !drag.moved) onSelect({ id: drag.id });
+    if (drag?.kind === "node" && !drag.moved) {
+      const n = byId[drag.id], now = Date.now();
+      if (n?.kind === "submap" && lastClick.current.id === n.id && now - lastClick.current.t < 450 && !(editing && tool === "link")) {
+        lastClick.current = { id: null, t: 0 }; setDrag(null); return onEnter(n.map_id);
+      }
+      lastClick.current = { id: drag.id, t: now };
+      onSelect({ id: drag.id });
+    }
     if (drag?.kind === "pan" && !drag.moved) onSelect(null);
     setDrag(null);
   };
@@ -223,7 +231,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
             }
             if (n.kind === "submap") {
               return (
-                <g key={n.id} transform={`translate(${n.x},${n.y})`} onPointerDown={(e) => down(e, n)} onDoubleClick={() => !editing && onEnter(n.map_id)}
+                <g key={n.id} transform={`translate(${n.x},${n.y})`} onPointerDown={(e) => down(e, n)}
                    style={{ cursor }} data-testid={`av-node-${n.id}`}>
                   {state === "down" && <circle r={R_SUB + 14} fill={C.down} opacity=".18" filter="url(#av-glow)" />}
                   {state === "down" && !reduced && <circle className="av-shock" r={R_SUB} fill="none" stroke={C.down} strokeWidth="2" />}
@@ -233,7 +241,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
                   <text y="2" textAnchor="middle" fontSize="17" fontWeight="700" fill={C.ink} fontFamily="JetBrains Mono, monospace">{s.total ?? "–"}</text>
                   <text y="15" textAnchor="middle" fontSize="8.5" fill={C.dim}>{s.down ? <tspan fill={C.down}>{s.down} fora</tspan> : s.links_down ? <tspan fill={C.down}>{s.links_down} rota fora</tspan> : "equip."}</text>
                   <text y={R_SUB + 26} textAnchor="middle" fontSize="12.5" fontWeight="600" fill={C.ink} stroke={C.bg0} strokeWidth="4" strokeLinejoin="round" paintOrder="stroke">{n.label || s.name || names[n.map_id] || "submapa"}</text>
-                  <title>{`${s.name || ""}\n${s.up || 0} respondendo · ${s.warn || 0} instável · ${s.down || 0} sem resposta\nDuplo clique para entrar`}</title>
+                  <title>{`${s.name || ""}\n${s.up || 0} respondendo · ${s.warn || 0} instável · ${s.down || 0} sem resposta\nDois cliques para abrir`}</title>
                 </g>
               );
             }
@@ -381,9 +389,20 @@ function Modal({ title, onClose, children, wide }) {
   );
 }
 
-function AddDevices({ devices, inMap, onAdd, onClose }) {
+function AddDevices({ devices, current, maps, names, initialTarget, onAddHere, onAddedElsewhere, onClose }) {
   const [q, setQ] = useState("");
   const [pick, setPick] = useState(() => new Set());
+  const [target, setTarget] = useState(initialTarget || current.id);
+  const [other, setOther] = useState(null);          // nós do mapa de destino quando não é o mapa aberto
+  const [busy, setBusy] = useState(false);
+  const subIds = current.nodes.filter(n => n.kind === "submap").map(n => n.map_id);
+  useEffect(() => {
+    setPick(new Set());
+    if (target === current.id) { setOther(null); return; }
+    setOther(undefined);
+    api.get(`/avail/maps/${target}`).then(r => setOther(r.data)).catch(e => { toast.error(formatApiError(e)); setOther(null); });
+  }, [target]); // eslint-disable-line react-hooks/exhaustive-deps
+  const inMap = useMemo(() => new Set(((target === current.id ? current : other) || { nodes: [] }).nodes.filter(n => n.kind === "device").map(n => n.device_id)), [target, current, other]);
   const groups = useMemo(() => {
     const ql = q.toLowerCase(), g = {};
     devices.filter(d => !ql || `${d.name} ${d.host} ${(d.tags || []).join(" ")}`.toLowerCase().includes(ql))
@@ -391,11 +410,30 @@ function AddDevices({ devices, inMap, onAdd, onClose }) {
     return Object.entries(g).sort((a, b) => (a[0] === "Sem grupo") - (b[0] === "Sem grupo") || a[0].localeCompare(b[0], "pt-BR"));
   }, [devices, q]);
   const set = (ids, on) => setPick(p => { const n = new Set(p); ids.forEach(i => (on ? n.add(i) : n.delete(i))); return n; });
+  const go = async () => {
+    if (target === current.id) return onAddHere([...pick]);
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/avail/maps/${target}/add-devices`, { device_ids: [...pick] });
+      toast.success(`${data.added} equipamento(s) colocado(s) em ${data.map}`);
+      onAddedElsewhere();
+    } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
+  };
+  const tName = target === current.id ? current.name : names[target] || "mapa";
   return (
-    <Modal title="Colocar equipamentos no mapa" onClose={onClose} wide>
+    <Modal title="Colocar equipamentos" onClose={onClose} wide>
+      <label className="block text-xs text-slate-400 mb-3 space-y-1">Colocar em
+        <select value={target} onChange={e => setTarget(e.target.value)} className="w-full h-9 rounded-md bg-sunken border border-line px-2 text-sm text-slate-100" data-testid="av-add-target">
+          <option value={current.id}>Este mapa · {current.name}</option>
+          {subIds.length > 0 && <optgroup label="Submapas deste mapa">{subIds.map(id => <option key={id} value={id}>{names[id] || id}</option>)}</optgroup>}
+          {maps.filter(m => m.id !== current.id && !subIds.includes(m.id)).length > 0 && (
+            <optgroup label="Outros mapas">{maps.filter(m => m.id !== current.id && !subIds.includes(m.id)).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</optgroup>)}
+        </select>
+      </label>
       <div className="relative mb-2"><Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
         <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nome, IP ou grupo" className="pl-8 h-9 bg-sunken border-line" autoFocus /></div>
-      <div className="max-h-[55vh] overflow-y-auto border border-line rounded" data-testid="av-add-list">
+      {other === undefined ? <div className="p-6 flex justify-center"><Loader2 className="w-5 h-5 animate-spin text-slate-400" /></div> : (
+      <div className="max-h-[50vh] overflow-y-auto border border-line rounded" data-testid="av-add-list">
         {groups.map(([g, ds]) => {
           const free = ds.filter(d => !inMap.has(d.id)).map(d => d.id), n = free.filter(i => pick.has(i)).length;
           return (
@@ -406,16 +444,17 @@ function AddDevices({ devices, inMap, onAdd, onClose }) {
               {ds.map(d => (
                 <label key={d.id} className={`flex items-center gap-2 pl-7 pr-3 py-1 text-sm cursor-pointer hover:bg-slate-800/40 ${inMap.has(d.id) ? "opacity-40" : ""}`}>
                   <input type="checkbox" disabled={inMap.has(d.id)} checked={pick.has(d.id) || inMap.has(d.id)} onChange={e => set([d.id], e.target.checked)} />
-                  <span className="text-slate-100 truncate">{d.name}</span><span className="ml-auto font-mono text-xs text-slate-500">{d.host}</span>
+                  <span className="text-slate-100 truncate">{d.name}</span><span className="ml-auto font-mono text-xs text-slate-500">{inMap.has(d.id) ? "já está lá" : d.host}</span>
                 </label>
               ))}
             </div>
           );
         })}
-      </div>
+      </div>)}
       <div className="flex items-center justify-between mt-3">
         <span className="text-xs text-slate-400">{pick.size} selecionado(s)</span>
-        <Button onClick={() => onAdd([...pick])} disabled={!pick.size} className="bg-brand hover:bg-brand-strong" data-testid="av-add-confirm">Colocar {pick.size || ""} no mapa</Button>
+        <Button onClick={go} disabled={!pick.size || busy} className="bg-brand hover:bg-brand-strong" data-testid="av-add-confirm">
+          {busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}Colocar {pick.size || ""} em {tName}</Button>
       </div>
     </Modal>
   );
@@ -529,6 +568,14 @@ export default function Availability() {
     return () => { alive = false; clearInterval(t); };
   }, [mapId, sound]);
 
+  // duplo clique no submapa abre tudo que tem dentro (editando: salva antes)
+  const enterSub = async (id) => {
+    if (draft) {
+      try { const { data } = await api.put(`/avail/maps/${draft.id}`, draft); setMap(data); setDraft(null); loadList(); }
+      catch (e) { return toast.error(formatApiError(e)); }
+    }
+    setTrail(t => [...t.slice(0, t.indexOf(mapId) + 1), id]); setMapId(id);
+  };
   const open = (id, push) => { if (editing && !window.confirm("Sair sem salvar as alterações?")) return; setTrail(t => (push ? [...t.slice(0, t.indexOf(mapId) + 1), id] : pathTo(id, list?.maps))); setMapId(id); };
   const byId = useMemo(() => Object.fromEntries((list?.maps || []).map(m => [m.id, m])), [list]);
   const names = useMemo(() => ({ ...Object.fromEntries(devices.map(d => [d.id, d.name])), ...Object.fromEntries((list?.maps || []).map(m => [m.id, m.name])) }), [devices, list]);
@@ -686,7 +733,7 @@ export default function Availability() {
           <div className="flex-1 min-w-0 relative">
             {cur ? (
               <MapCanvasAvail map={cur} live={live} names={names} editing={editing} tool={tool} selected={selected} onSelect={setSelected} fitSignal={fitSig}
-                              onEnter={(id) => open(id, true)}
+                              onEnter={enterSub}
                               onMove={(id, x, y) => setDraft(d => ({ ...d, nodes: d.nodes.map(n => (n.id === id ? { ...n, x, y } : n)) }))}
                               onConnect={(a, b) => { const id = uid(); patch(d => { d.links.push({ id, from: a, to: b, label: "", snmp: null }); return d; }); setSelected({ link: id }); }} />
             ) : (
@@ -721,7 +768,9 @@ export default function Availability() {
                   {["up", "warn", "down", "pending"].map(k => <React.Fragment key={k}><dt className="text-slate-500">{STATE_TXT[k]}</dt><dd className="font-mono" style={{ color: selLive[k] ? C[k] : undefined }}>{selLive[k]}</dd></React.Fragment>)}
                 </dl>
                 {selLive.down_names?.length > 0 && <div className="text-xs space-y-0.5" style={{ color: C.down }}>{selLive.down_names.map(n => <div key={n}>• {n}</div>)}</div>}
-                {!editing && <Button size="sm" onClick={() => open(sel.map_id, true)} className="w-full h-8 bg-brand hover:bg-brand-strong text-xs">Entrar no submapa</Button>}
+                {editing && <Button size="sm" variant="outline" onClick={() => setDlg({ devicesTo: sel.map_id })} className="w-full h-8 border-line bg-transparent text-xs" data-testid="av-sub-add">
+                  <Plus className="w-3.5 h-3.5 mr-1" />Colocar equipamentos dentro</Button>}
+                <Button size="sm" onClick={() => enterSub(sel.map_id)} className="w-full h-8 bg-brand hover:bg-brand-strong text-xs" data-testid="av-sub-enter">{editing ? "Salvar e abrir o submapa" : "Abrir o submapa"}</Button>
               </>}
               {editing && sel && sel.kind !== "label" && (
                 <label className="block text-xs text-slate-400 space-y-1 pt-2 border-t border-line">Nome mostrado no mapa (opcional)
@@ -750,7 +799,8 @@ export default function Availability() {
         )}
       </div>
 
-      {dlg === "devices" && cur && <AddDevices devices={devices} inMap={new Set(cur.nodes.filter(n => n.kind === "device").map(n => n.device_id))} onAdd={addDevices} onClose={() => setDlg(null)} />}
+      {(dlg === "devices" || dlg?.devicesTo) && cur && <AddDevices devices={devices} current={cur} maps={list?.maps || []} names={names} initialTarget={dlg?.devicesTo}
+                                                         onAddHere={addDevices} onAddedElsewhere={() => { setDlg(null); loadList(); }} onClose={() => setDlg(null)} />}
       {dlg === "submap" && cur && <AddSubmap maps={list?.maps || []} current={cur} onPick={addSubmap} onClose={() => setDlg(null)} />}
       {dlg === "share" && map && <ShareDlg map={map} onClose={() => setDlg(null)} />}
       {dlg === "settings" && <SettingsDlg init={list.settings} onClose={() => setDlg(null)} onSaved={(s) => { setList(l => ({ ...l, settings: s })); setDlg(null); }} />}

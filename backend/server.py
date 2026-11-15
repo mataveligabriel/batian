@@ -5221,6 +5221,25 @@ async def avail_update(map_id: str, body: dict, user: dict = Depends(get_current
     return await _avail_map(map_id)
 
 
+@api.post("/avail/maps/{map_id}/add-devices")
+async def avail_add_devices(map_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """Coloca equipamentos direto num mapa (ex.: dentro de um submapa sem precisar abrir), em grade abaixo do que já existe."""
+    _no_viewer(user)
+    m = await _avail_map(map_id)
+    have = {n.get("device_id") for n in m["nodes"] if n["kind"] == "device"}
+    want = [d for d in dict.fromkeys(body.get("device_ids") or []) if d not in have][:500]
+    valid = {d["id"] for d in await db.devices.find({"id": {"$in": want}}, {"_id": 0, "id": 1}).to_list(500)}
+    want = [d for d in want if d in valid]
+    xs = [n["x"] for n in m["nodes"]] or [0]
+    y0 = max([n["y"] for n in m["nodes"]] or [-150]) + 150
+    new = [{"id": availmap.new_id(), "kind": "device", "device_id": d, "label": "", "x": round((min(xs) + (i % 6) * 150) / 10) * 10,
+            "y": round((y0 + (i // 6) * 130) / 10) * 10} for i, d in enumerate(want)]
+    if new:
+        await db.avail_maps.update_one({"id": map_id}, {"$push": {"nodes": {"$each": new}}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}})
+        _avail_kick.set()
+    return {"added": len(new), "skipped": len(body.get("device_ids") or []) - len(new), "map": m["name"]}
+
+
 @api.delete("/avail/maps/{map_id}")
 async def avail_delete(map_id: str, user: dict = Depends(get_current_user)):
     """Vai para a lixeira (dá para restaurar); some dos mapas que o tinham como submapa."""
