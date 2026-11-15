@@ -87,6 +87,7 @@ import oltmig
 import bgpdoc
 import ifauto
 import availmap
+import dudeimport
 import alertroutes
 import cmdpolicy
 import siem as siemmod
@@ -5323,6 +5324,106 @@ async def avail_live(map_id: str, user: dict = Depends(get_current_user)):
 async def avail_ping_now(user: dict = Depends(get_current_user)):
     _avail_kick.set()
     return {"ok": True}
+
+
+# ----- importar mapas do MikroTik The Dude -----
+_dude_imports: Dict[str, dict] = {}
+
+
+@api.post("/avail/import/dude")
+async def avail_dude_upload(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Recebe o .tgz do `/dude export-db` (ou o dude.db), lê os mapas e devolve a prévia. Nada é gravado ainda."""
+    _no_viewer(user)
+    tmp = tempfile.mkdtemp(prefix="dude-")
+    try:
+        raw = os.path.join(tmp, "upload.bin")
+        size = 0
+        with open(raw, "wb") as f:
+            while True:
+                chunk = await file.read(1 << 20)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > dudeimport.MAX_DB:
+                    raise HTTPException(status_code=413, detail="Arquivo grande demais")
+                f.write(chunk)
+        try:
+            dbp = await asyncio.to_thread(dudeimport.extract_db, raw, os.path.join(tmp, "dude.db"))
+            parsed = await asyncio.to_thread(dudeimport.parse_db, dbp)
+        except dudeimport.DudeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if not parsed["maps"]:
+        raise HTTPException(status_code=400, detail="Nenhum mapa encontrado no arquivo do Dude")
+    existing = {d["host"].strip(): d for d in await db.devices.find({}, {"_id": 0, "id": 1, "name": 1, "host": 1}).to_list(50000)}
+    iid = os.urandom(8).hex()
+    for k in [k for k, v in _dude_imports.items() if time.time() - v["at"] > 3600]:
+        _dude_imports.pop(k, None)
+    _dude_imports[iid] = {"owner": user["id"], "parsed": parsed, "at": time.time(), "file": file.filename}
+    return {"import_id": iid, **dudeimport.preview(parsed, existing)}
+
+
+@api.post("/avail/import/dude/{iid}/apply")
+async def avail_dude_apply(iid: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    job = _dude_imports.get(iid)
+    if not job or job["owner"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Importação expirou: envie o arquivo de novo")
+    parsed = job["parsed"]
+    now = datetime.now(timezone.utc).isoformat()
+    existing = {d["host"].strip(): d for d in await db.devices.find({}, {"_id": 0, "id": 1, "name": 1, "host": 1}).to_list(50000)}
+    tr = dudeimport.tree(parsed)
+    used = {n["ref"] for m in parsed["maps"].values() for n in m["nodes"] if n["kind"] == "device" and n["ref"] in parsed["devices"]}
+    dev_ids, created, reused = {}, 0, 0
+    tag = str(body.get("tag") or "").strip()[:40]
+    if body.get("create_missing", True) and not tag:
+        raise HTTPException(status_code=400, detail="Informe a tag dos equipamentos novos (ex.: HELP ou FLEX)")
+    new_docs = []
+    for did in used:
+        d = parsed["devices"][did]
+        ex = next((existing[ip] for ip in d["ips"] if ip in existing), None)
+        if ex:                                   # já existe no BastiON com o mesmo IP: não cadastra de novo
+            dev_ids[did] = ex["id"]
+            reused += 1
+            continue
+        if not body.get("create_missing", True) or not d["ips"]:
+            continue
+        data = _normalize_device({"name": d["name"][:80], "host": d["ips"][0], "port": 22, "device_type": dudeimport.device_type(d["type"]),
+                                  "tags": [tag], "backup_enabled": False,
+                                  "description": f"Importado do The Dude ({d['type'] or 'sem tipo'})"}, user)
+        doc = Device(**data).model_dump()
+        new_docs.append(doc)
+        existing[doc["host"]] = doc               # mesmo IP repetido no Dude: um só cadastro
+        dev_ids[did] = doc["id"]
+        created += 1
+    if new_docs:
+        await db.devices.insert_many([dict(x) for x in new_docs])
+    names = {m["name"] for m in await db.avail_maps.find({}, {"_id": 0, "name": 1}).to_list(5000)}
+    map_ids = {mid: availmap.new_id() for mid in parsed["maps"]}
+    built = dudeimport.build_maps(parsed, dev_ids, map_ids)
+    all_dev = set(dev_ids.values()) | {d["id"] for d in existing.values() if d.get("id")}
+    docs = []
+    for new_id, m in built.items():
+        name = m["name"]
+        if name in names:
+            name = f"{name} (Dude)"[:80]
+        names.add(name)
+        clean = availmap.clean_map({**m, "name": name}, all_dev, set(map_ids.values()), new_id)
+        docs.append({"id": new_id, **clean, "created_at": now, "updated_at": now, "created_by": user.get("email"), "source": "dude"})
+    await db.avail_maps.insert_many([dict(x) for x in docs])
+    _dude_imports.pop(iid, None)
+    _avail_kick.set()
+    roots = [map_ids[r] for r in tr["roots"]]
+    best = max(roots, key=lambda r: len(built[r]["nodes"]), default=None)
+    for _ in range(5):                         # "Local" só com um submapa dentro: abre direto nele
+        ns = built.get(best, {}).get("nodes", []) if best else []
+        if len(ns) == 1 and ns[0]["kind"] == "submap":
+            best = ns[0]["map_id"]
+        else:
+            break
+    return {"maps": len(docs), "devices_created": created, "devices_reused": reused,
+            "nodes": sum(len(d["nodes"]) for d in docs), "links": sum(len(d["links"]) for d in docs), "open": best}
 
 
 # ----- link sem login do mapa de disponibilidade (TV / outro PC): o mapa e os submapas dele, só leitura -----

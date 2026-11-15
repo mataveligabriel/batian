@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import {
   ChevronRight, Hexagon, Link2, Loader2, Maximize2, MousePointer2, Pencil, Plus, RotateCcw, Save, Search, Settings2,
-  Trash2, Type, Volume2, VolumeX, X, Zap,
+  Trash2, Type, Upload, Volume2, VolumeX, X, Zap,
 } from "lucide-react";
 
 // Paleta própria do mapa (independe do tema do app: o mapa é sempre "sala escura")
@@ -376,6 +376,85 @@ function ShareDlg({ map, onClose }) {
   );
 }
 
+// ------------------------------------------------------------------ importar do The Dude
+function DudeImport({ onClose, onDone }) {
+  const [busy, setBusy] = useState(false);
+  const [pct, setPct] = useState(0);
+  const [pv, setPv] = useState(null);
+  const [createMissing, setCreateMissing] = useState(true);
+  const [tag, setTag] = useState("");
+  const [showNew, setShowNew] = useState(false);
+  const upload = async (file) => {
+    if (!file) return;
+    setBusy(true); setPct(0); setPv(null);
+    const fd = new FormData(); fd.append("file", file);
+    try {
+      const { data } = await api.post("/avail/import/dude", fd, { onUploadProgress: (e) => e.total && setPct(Math.round((e.loaded / e.total) * 100)) });
+      setPv(data);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
+  };
+  const apply = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/avail/import/dude/${pv.import_id}/apply`, { create_missing: createMissing, tag });
+      toast.success(`${data.maps} mapa(s) importado(s) · ${data.devices_created} equipamento(s) cadastrado(s) · ${data.devices_reused} já existiam`);
+      onDone(data.open);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
+  };
+  const Tree = ({ n, d = 0 }) => (
+    <>
+      <div className="flex items-center gap-2 py-0.5 text-xs" style={{ paddingLeft: d * 16 }}>
+        <Hexagon className="w-3 h-3 shrink-0" style={{ color: C.up }} /><span className="text-slate-200">{n.name}</span>
+        <span className="text-slate-500">{n.devices} equip. · {n.links} ligações</span>
+      </div>
+      {n.children.map((c, i) => <Tree key={i} n={c} d={d + 1} />)}
+    </>
+  );
+  return (
+    <Modal title="Importar mapas do The Dude" onClose={onClose} wide>
+      {!pv ? (
+        <div className="space-y-3">
+          <p className="text-sm text-slate-300">Mande o backup do Dude: no RouterOS, <code className="text-xs bg-sunken px-1 rounded">/dude export-db backup-file=dude.tgz</code> e baixe o arquivo pelo Winbox (Files). No Dude para Windows, o <code className="text-xs bg-sunken px-1 rounded">dude.db</code> da pasta data (com o serviço parado).</p>
+          <p className="text-xs text-slate-500">Lemos só mapas, posições, ligações, nomes e IPs. Senhas e communities do Dude são ignoradas. Nada é gravado antes da sua confirmação.</p>
+          <label className={`flex flex-col items-center justify-center gap-2 h-32 rounded-lg border-2 border-dashed cursor-pointer ${busy ? "opacity-60" : "hover:border-brand"}`} style={{ borderColor: C.line }}>
+            {busy ? <><Loader2 className="w-5 h-5 animate-spin text-slate-400" /><span className="text-xs text-slate-400">{pct < 100 ? `Enviando ${pct}%` : "Lendo os mapas…"}</span></>
+              : <><Upload className="w-5 h-5 text-slate-400" /><span className="text-sm text-slate-300">Escolher o .tgz ou dude.db</span></>}
+            <input type="file" accept=".tgz,.gz,.tar,.db" className="hidden" disabled={busy} onChange={e => upload(e.target.files?.[0])} data-testid="dude-file" />
+          </label>
+        </div>
+      ) : (
+        <div className="space-y-3" data-testid="dude-preview">
+          <div className="grid grid-cols-3 gap-2 text-center">
+            {[["mapas", pv.maps], ["equipamentos nos mapas", pv.devices_in_maps], ["ligações", pv.links]].map(([l, v]) => (
+              <div key={l} className="rounded-md border border-line py-2"><div className="text-xl font-mono text-slate-100">{v}</div><div className="text-[11px] text-slate-500">{l}</div></div>
+            ))}
+          </div>
+          <div className="max-h-56 overflow-y-auto rounded-md border border-line p-2">{pv.tree.map((n, i) => <Tree key={i} n={n} />)}</div>
+          <div className="text-sm text-slate-300">
+            <b style={{ color: C.up }}>{pv.match.length}</b> já existem no BastiON com o mesmo IP (são reaproveitados, não cadastra de novo) ·{" "}
+            <b className="text-slate-100">{pv.new.length}</b> ainda não existem
+            {pv.new.length > 0 && <button onClick={() => setShowNew(v => !v)} className="ml-2 text-xs text-brand-soft hover:underline">{showNew ? "esconder" : "ver lista"}</button>}
+          </div>
+          {showNew && <div className="max-h-40 overflow-y-auto rounded-md border border-line text-xs divide-y divide-line">
+            {pv.new.map((d, i) => <div key={i} className="flex px-2 py-1"><span className="text-slate-200 truncate">{d.name}</span><span className="ml-auto font-mono text-slate-500">{d.ip}</span></div>)}</div>}
+          {pv.new.length > 0 && (
+            <label className="flex items-start gap-2 text-sm text-slate-300">
+              <input type="checkbox" className="mt-1" checked={createMissing} onChange={e => setCreateMissing(e.target.checked)} data-testid="dude-create" />
+              <span>Cadastrar os {pv.new.length} que faltam (nome e IP, para o ping) com a tag
+                <Input value={tag} onChange={e => setTag(e.target.value.toUpperCase())} placeholder="ex.: HELP" className="inline-block w-28 h-7 mx-1.5 bg-sunken border-line text-xs" aria-label="Tag" data-testid="dude-tag" />
+                — só essa tag, sem os nomes dos POPs. Sem marcar, eles ficam fora dos mapas.</span>
+            </label>
+          )}
+          <div className="flex justify-between items-center">
+            <button onClick={() => setPv(null)} className="text-xs text-slate-400 hover:text-slate-200">escolher outro arquivo</button>
+            <Button onClick={apply} disabled={busy || (createMissing && pv.new.length > 0 && !tag.trim())} className="bg-brand hover:bg-brand-strong" data-testid="dude-apply">{busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}Importar {pv.maps} mapas</Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 // ------------------------------------------------------------------ diálogos
 function Modal({ title, onClose, children, wide }) {
   return (
@@ -652,7 +731,8 @@ export default function Availability() {
       <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-line">
         <div className="px-3 pt-4 pb-2 flex items-center">
           <h1 className="font-heading text-lg font-semibold text-slate-100">Disponibilidade</h1>
-          {canEdit && <button onClick={() => setNewName("")} className="ml-auto p-1 text-slate-400 hover:text-slate-100" aria-label="Novo mapa" data-testid="av-new"><Plus className="w-4 h-4" /></button>}
+          {canEdit && <button onClick={() => setDlg("dude")} className="ml-auto p-1 text-slate-400 hover:text-slate-100" aria-label="Importar do The Dude" title="Importar do The Dude" data-testid="av-dude"><Upload className="w-4 h-4" /></button>}
+          {canEdit && <button onClick={() => setNewName("")} className="p-1 text-slate-400 hover:text-slate-100" aria-label="Novo mapa" data-testid="av-new"><Plus className="w-4 h-4" /></button>}
         </div>
         {newName !== null && (
           <div className="px-3 pb-2 flex gap-1">
@@ -663,7 +743,8 @@ export default function Availability() {
         )}
         <div className="flex-1 overflow-y-auto px-1.5 pb-3">
           {roots.map(m => <Tree key={m.id} id={m.id} depth={0} seen={new Set()} />)}
-          {list && !list.maps.length && <div className="px-3 py-4 text-xs text-slate-500">Crie o mapa principal no + acima. Dentro dele você coloca equipamentos e os submapas de cada POP ou cidade.</div>}
+          {list && !list.maps.length && <div className="px-3 py-4 text-xs text-slate-500">Crie o mapa principal no + acima. Dentro dele você coloca equipamentos e os submapas de cada POP ou cidade.
+            {canEdit && <button onClick={() => setDlg("dude")} className="block mt-2 text-brand-soft hover:underline">Ou importe os mapas do The Dude</button>}</div>}
         </div>
         {list?.trash?.length > 0 && (
           <details className="px-3 py-2 border-t border-line text-xs text-slate-400">
@@ -803,6 +884,7 @@ export default function Availability() {
                                                          onAddHere={addDevices} onAddedElsewhere={() => { setDlg(null); loadList(); }} onClose={() => setDlg(null)} />}
       {dlg === "submap" && cur && <AddSubmap maps={list?.maps || []} current={cur} onPick={addSubmap} onClose={() => setDlg(null)} />}
       {dlg === "share" && map && <ShareDlg map={map} onClose={() => setDlg(null)} />}
+      {dlg === "dude" && <DudeImport onClose={() => setDlg(null)} onDone={async (openId) => { setDlg(null); await loadList(); api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {}); if (openId) { setTrail([]); setMapId(openId); } }} />}
       {dlg === "settings" && <SettingsDlg init={list.settings} onClose={() => setDlg(null)} onSaved={(s) => { setList(l => ({ ...l, settings: s })); setDlg(null); }} />}
     </div>
   );
