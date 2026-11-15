@@ -489,17 +489,6 @@ export function AlarmPanel({ live, mapId, onPick, onClose }) {
             </button>
           );
         })}
-        {live?.events?.length > 0 && <>
-          <div className="px-4 pt-4 pb-1 text-[11px]" style={{ color: C.dim }}>Últimos eventos</div>
-          {live.events.slice(0, 25).map(e => (
-            <div key={e.id} className="flex items-center gap-2 px-4 py-1 text-xs">
-              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: e.state === "down" ? C.down : C.up }} />
-              <span className="font-mono shrink-0" style={{ color: C.dim }}>{hhmm(e.at)}</span>
-              <span className="truncate" style={{ color: C.ink }}>{e.device_name}</span>
-              <span className="ml-auto shrink-0" style={{ color: e.state === "down" ? C.down : C.up }}>{e.state === "down" ? (e.link ? "caiu" : "sem resposta") : "voltou"}</span>
-            </div>
-          ))}
-        </>}
       </div>
     </aside>
   );
