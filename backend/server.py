@@ -5370,7 +5370,37 @@ async def _avail_live_data(map_id: str, maps: Dict[str, dict], show_hosts: bool 
     if not show_hosts:
         for e in events:
             e["host"] = ""
-    return {"nodes": nodes, "links": links, "summary": availmap.summarize(inside, status, if_inside, ifst), "events": events, "info": _avail_info}
+    # incidentes ativos do mapa (mesmo escopo da contagem): equipamento sem resposta / instável e rota (porta) DOWN
+    where_dev, where_link = {}, {}
+    for mid in [map_id] + [n["map_id"] for n in m["nodes"] if n["kind"] == "submap" and n["map_id"] in maps]:
+        mm = maps[mid]
+        for n in mm["nodes"]:
+            if n["kind"] == "device":
+                where_dev.setdefault(n["device_id"], (mid, n["id"]))
+        for l in mm.get("links", []):
+            if l.get("snmp"):
+                where_link.setdefault(availmap.if_key(l["snmp"]), (mid, l))
+    bad_dev = [d for d in inside if (status.get(d) or {}).get("state") in ("down", "warn")]
+    bad_if = [k for k in if_inside if availmap.link_state(ifst.get(k)) == "down"]
+    names = {d["id"]: d for d in await db.devices.find({"id": {"$in": bad_dev + [k.split("|")[0] for k in bad_if]}},
+                                                       {"_id": 0, "id": 1, "name": 1, "host": 1}).to_list(2000)}
+    alarms = []
+    for d in bad_dev:
+        st, (mid, nid) = status[d], where_dev.get(d, (map_id, None))
+        alarms.append({"kind": "device", "state": st["state"], "name": (names.get(d) or {}).get("name", "?"),
+                       "host": (names.get(d) or {}).get("host", "") if show_hosts else "", "since": st.get("since"),
+                       "ms": st.get("ms"), "loss": st.get("loss"), "map_id": mid, "map_name": maps[mid]["name"], "node_id": nid})
+    for k in bad_if:
+        st, (mid, l) = ifst[k], where_link.get(k, (map_id, {}))
+        dev = names.get(k.split("|")[0]) or {}
+        alarms.append({"kind": "link", "state": "down", "name": l.get("label") or dev.get("name", "?"),
+                       "if_name": (l.get("snmp") or {}).get("if_name") or k.split("|")[1], "device_name": dev.get("name", ""),
+                       "speed_mbps": st.get("speed_mbps"), "since": st.get("since"), "admin": st.get("admin"),
+                       "map_id": mid, "map_name": maps[mid]["name"], "link_id": l.get("id")})
+    rank = {"down": 0, "warn": 1}
+    alarms.sort(key=lambda a: (rank.get(a["state"], 2), a.get("since") or ""))
+    return {"nodes": nodes, "links": links, "summary": availmap.summarize(inside, status, if_inside, ifst), "events": events,
+            "alarms": alarms[:300], "info": _avail_info}
 
 
 @api.get("/avail/maps/{map_id}/live")

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { MapCanvasAvail, C, hhmm } from "@/pages/Availability";
+import { MapCanvasAvail, AlarmPanel, C } from "@/pages/Availability";
 
 // Link sem login do mapa de disponibilidade: /disp/<token>. Só lê /api/public/avail da própria origem.
 const get = async (path) => {
@@ -50,6 +50,15 @@ export default function AvailPublic({ token }) {
     (map?.nodes || []).forEach(n => { if (n.kind === "device" && live?.nodes?.[n.id]) out[n.device_id] = live.nodes[n.id].name; });
     return out;
   }, [info, map, live]);
+  const pendingSel = useRef(null);
+  const pickAlarm = (a) => {
+    const target = a.kind === "link" ? (a.link_id ? { link: a.link_id } : null) : (a.node_id ? { id: a.node_id } : null);
+    if (a.map_id === mapId) return setSel(target);
+    if (!info?.maps?.[a.map_id]) return;
+    pendingSel.current = target;
+    setTrail(t => [...t, a.map_id]); setLive(null); setFit(f => f + 1);
+  };
+  useEffect(() => { if (pendingSel.current && live) { setSel(pendingSel.current); pendingSel.current = null; } }, [live]);
   const enter = (id) => { if (info?.maps?.[id]) { setTrail(t => [...t, id]); setSel(null); setLive(null); setFit(f => f + 1); } };
   const full = () => { try { document.fullscreenElement ? document.exitFullscreen() : shell.current?.requestFullscreen(); } catch { /* ok */ } };
 
@@ -91,7 +100,8 @@ export default function AvailPublic({ token }) {
         </div>
         <button onClick={full} className="w-8 h-8 rounded-md text-sm" style={{ border: `1px solid ${C.line}`, color: C.dim }} title="Tela cheia" aria-label="Tela cheia">⛶</button>
       </div>
-      <div className="flex-1 min-h-0 relative">
+      <div className="flex-1 min-h-0 flex">
+      <div className="flex-1 min-w-0 relative">
         <MapCanvasAvail map={map} live={live} names={names} editing={false} tool="move" selected={sel} onSelect={setSel} onMove={() => {}} onConnect={() => {}} onEnter={enter} fitSignal={fit} />
         {(sl || sLink) && (
           <div className="absolute top-3 right-3 w-64 rounded-lg p-3 text-sm space-y-1 shadow-2xl" style={{ background: `${C.panel}f2`, border: `1px solid ${C.line}` }}>
@@ -113,18 +123,8 @@ export default function AvailPublic({ token }) {
           </div>
         )}
       </div>
-      {live?.events?.length > 0 && (
-        <div className="px-4 py-1.5 flex items-center gap-4 overflow-hidden whitespace-nowrap text-xs" style={{ borderTop: `1px solid ${C.line}` }}>
-          {live.events.slice(0, 10).map(e => (
-            <span key={e.id} className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: e.state === "down" ? C.down : C.up }} />
-              <span className="font-mono" style={{ color: C.dim }}>{hhmm(e.at)}</span>
-              <span>{e.device_name}</span>
-              <span style={{ color: e.state === "down" ? C.down : C.up }}>{e.state === "down" ? (e.link ? "caiu" : "parou de responder") : "voltou"}</span>
-            </span>
-          ))}
-        </div>
-      )}
+      <div className="hidden md:flex"><AlarmPanel live={live} mapId={mapId} onPick={pickAlarm} /></div>
+      </div>
     </div>
   );
 }

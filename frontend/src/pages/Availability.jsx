@@ -365,6 +365,63 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
   );
 }
 
+// ------------------------------------------------------------------ painel lateral de incidentes (sempre visível)
+export function AlarmPanel({ live, mapId, onPick, onClose }) {
+  const alarms = live?.alarms || [];
+  const down = alarms.filter(a => a.state === "down").length;
+  const spd = (m) => (!m ? "" : m >= 1000 ? `${+(m / 1000).toFixed(1)}G` : `${m}M`);
+  return (
+    <aside className="w-80 shrink-0 flex flex-col min-h-0 border-l" style={{ background: C.panel, borderColor: C.line }} data-testid="av-alarms">
+      <div className="flex items-center gap-2 px-4 py-3 border-b" style={{ borderColor: C.line }}>
+        <span className="text-sm font-semibold" style={{ color: C.ink }}>Incidentes</span>
+        <span className="min-w-[1.5rem] h-6 px-1.5 rounded-full flex items-center justify-center text-xs font-bold font-mono"
+              style={{ background: down ? C.down : alarms.length ? C.warn : `${C.up}33`, color: alarms.length ? "#fff" : C.up }}>{alarms.length}</span>
+        {onClose && <button onClick={onClose} className="ml-auto p-1" style={{ color: C.dim }} aria-label="Esconder incidentes"><X className="w-4 h-4" /></button>}
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {!live ? <div className="p-4 text-xs" style={{ color: C.dim }}>Carregando…</div> : !alarms.length ? (
+          <div className="px-4 py-6 text-center">
+            <div className="text-2xl" style={{ color: C.up }}>✓</div>
+            <div className="text-sm mt-1" style={{ color: C.ink }}>Tudo respondendo</div>
+            <div className="text-xs" style={{ color: C.dim }}>nenhum equipamento sem resposta e nenhuma porta DOWN</div>
+          </div>
+        ) : alarms.map((a, i) => {
+          const col = C[a.state] || C.down;
+          const sub = [a.kind === "link" ? a.device_name : a.host, a.map_id !== mapId ? `em ${a.map_name}` : ""].filter(Boolean).join(" · ");
+          return (
+            <button key={i} onClick={() => onPick?.(a)} className="w-full text-left flex gap-3 px-4 py-2.5 border-b hover:bg-white/[0.04]" style={{ borderColor: `${C.line}99` }}
+                    data-testid={`av-alarm-${i}`}>
+              <span className="w-1 self-stretch rounded-full shrink-0" style={{ background: col, boxShadow: a.state === "down" ? `0 0 8px ${col}` : "none" }} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold truncate" style={{ color: C.ink }}>{a.name}</span>
+                  <span className="ml-auto text-[11px] font-mono shrink-0" style={{ color: col }}>{ago(a.since)}</span>
+                </span>
+                <span className="block text-xs" style={{ color: col }}>
+                  {a.kind === "link" ? `porta DOWN · ${a.if_name}${a.speed_mbps ? ` · ${spd(a.speed_mbps)}` : ""}${a.admin === "down" ? " · shutdown" : ""}`
+                    : a.state === "down" ? "sem resposta ao ping" : `instável${a.loss ? ` · ${Math.round(a.loss)}% perda` : ""}${a.ms != null ? ` · ${Math.round(a.ms)} ms` : ""}`}
+                </span>
+                {sub && <span className="block text-[11px] truncate" style={{ color: C.dim }}>{sub}</span>}
+              </span>
+            </button>
+          );
+        })}
+        {live?.events?.length > 0 && <>
+          <div className="px-4 pt-4 pb-1 text-[11px]" style={{ color: C.dim }}>Últimos eventos</div>
+          {live.events.slice(0, 25).map(e => (
+            <div key={e.id} className="flex items-center gap-2 px-4 py-1 text-xs">
+              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: e.state === "down" ? C.down : C.up }} />
+              <span className="font-mono shrink-0" style={{ color: C.dim }}>{hhmm(e.at)}</span>
+              <span className="truncate" style={{ color: C.ink }}>{e.device_name}</span>
+              <span className="ml-auto shrink-0" style={{ color: e.state === "down" ? C.down : C.up }}>{e.state === "down" ? (e.link ? "caiu" : "sem resposta") : "voltou"}</span>
+            </div>
+          ))}
+        </>}
+      </div>
+    </aside>
+  );
+}
+
 // ------------------------------------------------------------------ painel da ligação (rota)
 function LinkPanel({ link, map, live, devices, names, editing, onChange }) {
   const nodeName = (id) => { const n = map.nodes.find(x => x.id === id); return n ? n.label || names[n.device_id] || names[n.map_id] || "?" : "?"; };
@@ -692,6 +749,8 @@ export default function Availability() {
   const [newName, setNewName] = useState(null);
   const [sound, setSound] = useState(() => ls.get("bastion_avail_sound", false));
   const [saving, setSaving] = useState(false);
+  const [alarmsOpen, setAlarmsOpen] = useState(() => ls.get("bastion_avail_alarms", true));
+  const pendingSel = useRef(null);         // item para selecionar depois de abrir o submapa (clique no incidente)
   const shell = useRef(null);
   const lastDown = useRef(null);
   const editing = !!draft;
@@ -718,7 +777,8 @@ export default function Availability() {
     ls.set("bastion_avail_map", mapId);
     if (params.get("m") !== mapId) setParams({ m: mapId }, { replace: true });
     setDraft(null); setSelected(null); setLive(null); lastDown.current = null;
-    api.get(`/avail/maps/${mapId}`).then(r => { setMap(r.data); setFitSig(s => s + 1); }).catch(e => { toast.error(formatApiError(e)); setMap(null); });
+    api.get(`/avail/maps/${mapId}`).then(r => { setMap(r.data); setFitSig(s => s + 1); if (pendingSel.current) { setSelected(pendingSel.current); pendingSel.current = null; } })
+      .catch(e => { toast.error(formatApiError(e)); setMap(null); });
   }, [mapId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (list && mapId && !trail.includes(mapId)) setTrail(pathTo(mapId, list.maps)); }, [list, mapId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -736,6 +796,13 @@ export default function Availability() {
     return () => { alive = false; clearInterval(t); };
   }, [mapId, sound]);
 
+  const pickAlarm = (a) => {
+    const target = a.kind === "link" ? (a.link_id ? { link: a.link_id } : null) : (a.node_id ? { id: a.node_id } : null);
+    if (a.map_id === mapId) return setSelected(target);
+    pendingSel.current = target;
+    open(a.map_id, true);
+  };
+  const toggleAlarms = () => { const v = !alarmsOpen; setAlarmsOpen(v); ls.set("bastion_avail_alarms", v); };
   // duplo clique no submapa abre tudo que tem dentro (editando: salva antes)
   const enterSub = async (id) => {
     if (draft) {
@@ -873,6 +940,8 @@ export default function Availability() {
           )}
           <div className="ml-auto flex items-center gap-1.5">
             {!editing && <>
+              {!alarmsOpen && <Button size="sm" variant="outline" onClick={toggleAlarms} className={`${tb} hidden md:inline-flex`} data-testid="av-alarms-open">
+                Incidentes{live?.alarms?.length ? <span className="ml-1.5 px-1.5 rounded-full text-[10px] font-bold text-white" style={{ background: live.summary?.down || live.summary?.links_down ? C.down : C.warn }}>{live.alarms.length}</span> : null}</Button>}
               <Button size="sm" variant="outline" onClick={toggleSound} className={tb} title={sound ? "Som ligado: apita quando algo para de responder" : "Ligar som de alarme"} aria-label="Som">
                 {sound ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}</Button>
               <Button size="sm" variant="outline" onClick={() => api.post("/avail/ping-now").then(() => toast.info("Pingando agora"))} className={tb}><Zap className="w-3.5 h-3.5 mr-1" />Pingar agora</Button>
@@ -953,21 +1022,8 @@ export default function Availability() {
             </aside>
           )}
           </div>
-
+          {alarmsOpen && !editing && cur && <div className="hidden md:flex"><AlarmPanel live={live} mapId={mapId} onPick={pickAlarm} onClose={toggleAlarms} /></div>}
         </div>
-
-        {live?.events?.length > 0 && !editing && (
-          <div className="border-t border-line px-3 py-1.5 flex items-center gap-4 overflow-x-auto whitespace-nowrap text-xs" data-testid="av-events">
-            {live.events.slice(0, 12).map(e => (
-              <span key={e.id} className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full" style={{ background: e.state === "down" ? C.down : C.up }} />
-                <span className="text-slate-500 font-mono">{hhmm(e.at)}</span>
-                <span className="text-slate-200">{e.device_name}</span>
-                <span style={{ color: e.state === "down" ? C.down : C.up }}>{e.state === "down" ? (e.link ? "caiu" : "parou de responder") : "voltou"}</span>
-              </span>
-            ))}
-          </div>
-        )}
       </div>
 
       {(dlg === "devices" || dlg?.devicesTo) && cur && <AddDevices devices={devices} current={cur} maps={list?.maps || []} names={names} initialTarget={dlg?.devicesTo}
