@@ -35,6 +35,9 @@ export function paletteOf(style) {
 
 export const STATE_TXT = { up: "respondendo", warn: "instável", down: "sem resposta", pending: "aguardando 1º ping", empty: "vazio" };
 const R_DEV = 22, R_SUB = 36;
+// espessura pela capacidade: 1G = base, 10G = +50%, 100G = o dobro (abaixo de 1G fica na base)
+export const capWidth = (base, mbps) => base * (1 + 0.5 * Math.min(2, Math.max(0, Math.log10((mbps || 0) / 1000) || 0)));
+export const fmtBps = (b) => (b == null ? "—" : b >= 1e9 ? `${(b / 1e9).toFixed(b >= 1e10 ? 0 : 1)} Gbps` : b >= 1e6 ? `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} Mbps` : b >= 1e3 ? `${Math.round(b / 1e3)} kbps` : `${Math.round(b)} bps`);
 const uid = () => Math.random().toString(36).slice(2, 10);
 export const ago = (iso) => {
   if (!iso) return "";
@@ -114,6 +117,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
   const K = Math.max(0.5, Math.min(2, Number(sty.scale) || 1));  // tamanho dos ícones
   const subShape = sty.sub_shape || "hex", devShape = sty.dev_shape || "orb";
   const flow = sty.flow !== false;
+  const lineW = Number(sty.line_w) || 2, lineAuto = sty.line_auto !== false, traffic = sty.traffic !== false;
   const [view, setView] = useState({ tx: 0, ty: 0, k: 1 });
   const [drag, setDrag] = useState(null);
   const [pending, setPending] = useState(null);
@@ -306,16 +310,39 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
               ok = !bad && !warn && sa !== "pending" && sb !== "pending";
               col = bad ? C.down : warn ? C.warn : ok ? C.up : C.pending; dashed = bad;
             }
+            if (!bad && l.color) col = l.color;          // cor escolhida na linha; caída continua vermelha
+            if (!dashed && l.dash && l.dash !== "solid") dashed = l.dash;
+            const w = l.width > 0 ? l.width : lineAuto && ls?.speed_mbps ? capWidth(lineW, ls.speed_mbps) : lineW;
+            const dashArr = dashed === "dotted" ? `0.1 ${w * 2.6}` : dashed ? `${w * 3} ${w * 2.4}` : undefined;
+            // tráfego (SNMP): bolinhas nos dois sentidos, mais rápidas e em maior número quanto maior o uso
+            const flows = [];
+            if (l.snmp && traffic && ok && !reduced && ls && map.links.length < 400) {
+              const fromIsDev = a.kind === "device" && a.device_id === l.snmp.device_id, toIsDev = b.kind === "device" && b.device_id === l.snmp.device_id;
+              const fwd = toIsDev && !fromIsDev ? ls.in_bps : ls.out_bps, back = toIsDev && !fromIsDev ? ls.out_bps : ls.in_bps;
+              const cap = (ls.speed_mbps || 1000) * 1e6;
+              [[fwd, false], [back, true]].forEach(([bps, rev]) => {
+                if (!(bps > 1000)) return;
+                const u = Math.min(1, bps / cap);
+                const pxs = 50 + 330 * Math.sqrt(u);
+                flows.push({ rev, dur: Math.max(0.6, mid.len / pxs), n: u > 0.6 ? 4 : u > 0.2 ? 3 : 2 });
+              });
+            }
             const isSel = selected?.link === l.id;
             const chip = l.snmp ? (ls?.state === "down" ? "DOWN" : ls?.speed_mbps ? fmtSpeed(ls.speed_mbps) : ls?.state === "up" ? "UP" : "?") : null;
             const dur = Math.max(1.6, mid.len / 140);
             return (
               <g key={l.id} data-testid={`av-link-${l.id}`}>
-                {isSel && <path d={path} fill="none" stroke="#fff" strokeOpacity=".3" strokeWidth="10" />}
-                {bad && <path d={path} fill="none" stroke={C.down} strokeOpacity=".35" strokeWidth="9" filter="url(#av-glow)" />}
-                <path d={path} fill="none" stroke={col} strokeOpacity={l.snmp ? 0.95 : ok ? 0.45 : 0.85} strokeWidth={l.snmp ? (bad ? 3 : 2.6) : bad ? 2.4 : 2} strokeDasharray={dashed ? "7 6" : undefined} />
-                {ok && flow && !reduced && map.links.length < 400 && [0, 0.5].map(o => (
-                  <circle key={o} r="2.4" fill={C.up}>
+                {isSel && <path d={path} fill="none" stroke="#fff" strokeOpacity=".3" strokeWidth={w + 8} />}
+                {bad && <path d={path} fill="none" stroke={C.down} strokeOpacity=".35" strokeWidth={w + 6} filter="url(#av-glow)" />}
+                <path d={path} fill="none" stroke={col} strokeOpacity={l.snmp || l.color ? 0.95 : ok ? 0.45 : 0.85} strokeWidth={bad ? w + 0.4 : w} strokeDasharray={dashArr} strokeLinecap="round" />
+                {flows.map(f => Array.from({ length: f.n }, (_, i) => (
+                  <circle key={`${f.rev}-${i}`} r={Math.max(2.2, w * 0.85)} fill={f.rev ? C.ink : col} stroke={C.bg0} strokeWidth="0.8">
+                    <animateMotion dur={`${f.dur}s`} begin={`${(i / f.n) * f.dur}s`} repeatCount="indefinite" path={path}
+                                   {...(f.rev ? { keyPoints: "1;0", keyTimes: "0;1", calcMode: "linear" } : {})} />
+                  </circle>
+                )))}
+                {!l.snmp && ok && flow && !reduced && map.links.length < 400 && [0, 0.5].map(o => (
+                  <circle key={o} r={Math.max(2.2, w * 0.9)} fill={col}>
                     <animateMotion dur={`${dur}s`} begin={`${o * dur}s`} repeatCount="indefinite" path={path} />
                   </circle>
                 ))}
@@ -466,7 +493,7 @@ export function AlarmPanel({ live, mapId, onPick, onClose }) {
           <div className="px-4 py-6 text-center">
             <div className="text-2xl" style={{ color: C.up }}>✓</div>
             <div className="text-sm mt-1" style={{ color: C.ink }}>Tudo respondendo</div>
-            <div className="text-xs" style={{ color: C.dim }}>nenhum equipamento sem resposta e nenhuma porta DOWN</div>
+            <div className="text-xs" style={{ color: C.dim }}>nenhum equipamento sem resposta, com perda de pacote ou porta DOWN</div>
           </div>
         ) : alarms.map((a, i) => {
           const col = C[a.state] || C.down;
@@ -482,7 +509,7 @@ export function AlarmPanel({ live, mapId, onPick, onClose }) {
                 </span>
                 <span className="block text-xs" style={{ color: col }}>
                   {a.kind === "link" ? `porta DOWN · ${a.if_name}${a.speed_mbps ? ` · ${spd(a.speed_mbps)}` : ""}${a.admin === "down" ? " · shutdown" : ""}`
-                    : a.state === "down" ? "sem resposta ao ping" : `instável${a.loss ? ` · ${Math.round(a.loss)}% perda` : ""}${a.ms != null ? ` · ${Math.round(a.ms)} ms` : ""}`}
+                    : a.state === "down" ? "sem resposta ao ping" : `${a.loss ? `perda de pacote · ${Math.round(a.loss)}%` : "instável"}${a.ms != null ? ` · ${Math.round(a.ms)} ms` : ""}`}
                 </span>
                 {sub && <span className="block text-[11px] truncate" style={{ color: C.dim }}>{sub}</span>}
               </span>
@@ -516,6 +543,13 @@ function LinkPanel({ link, map, live, devices, names, editing, onChange }) {
             {live?.speed_mbps ? <span className="ml-auto font-mono text-sm text-slate-100">{fmtSpeed(live.speed_mbps)}</span> : null}
           </div>
           <div className="text-xs text-slate-300 break-words">{live?.device_name || names[link.snmp.device_id]} · <span className="font-mono">{link.snmp.if_name || `if${link.snmp.if_index}`}</span></div>
+          {st === "up" && (live?.in_bps != null || live?.out_bps != null) && (
+            <div className="space-y-0.5 pt-1 text-xs" data-testid="av-link-traffic">
+              <div className="flex text-slate-300">↓ entrada<b className="ml-auto font-mono text-slate-100">{fmtBps(live.in_bps)}</b></div>
+              <div className="flex text-slate-300">↑ saída<b className="ml-auto font-mono text-slate-100">{fmtBps(live.out_bps)}</b></div>
+              {live.speed_mbps > 0 && <div className="text-[11px]" style={{ color: C.dim }}>uso {Math.round(100 * Math.max(live.in_bps || 0, live.out_bps || 0) / (live.speed_mbps * 1e6))}% da capacidade</div>}
+            </div>
+          )}
           {live?.since && <div className="text-[11px]" style={{ color: C.dim }}>Neste estado há {ago(live.since)}{live.admin === "down" ? " · desligada (shutdown)" : ""}</div>}
           {live?.error && <div className="text-[11px]" style={{ color: C.warn }}>{live.error}</div>}
           {!live && <div className="text-[11px]" style={{ color: C.dim }}>Salve o mapa: a interface é lida no próximo ciclo.</div>}
@@ -532,6 +566,24 @@ function LinkPanel({ link, map, live, devices, names, editing, onChange }) {
             </div>
             <div className="text-[11px]" style={{ color: C.dim }}>Arraste os quadrados; os + criam mais pontos; dois cliques num quadrado apagam.</div>
           </> : <div className="text-[11px]" style={{ color: C.dim }}>Arraste a bolinha branca no meio da linha para curvar ou desviar de outro item.</div>}
+        </div>
+        <div className="space-y-1.5" data-testid="av-link-look">
+          <div className="text-xs text-slate-300">Aparência da linha</div>
+          <div className="flex items-center gap-2 text-[11px] text-slate-400">
+            <span className="w-14 shrink-0">Espessura</span>
+            <input type="range" min="0" max="10" step="0.5" value={link.width || 0} onChange={e => onChange({ width: Number(e.target.value) })} className="flex-1" aria-label="Espessura da linha" />
+            <span className="w-10 text-right font-mono">{link.width > 0 ? `${link.width}px` : "auto"}</span>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-slate-400">
+            <span className="w-14 shrink-0">Cor</span>
+            <input type="color" value={link.color || C.up} onChange={e => onChange({ color: e.target.value })} className="w-8 h-6 rounded border border-line bg-transparent cursor-pointer" aria-label="Cor da linha" />
+            {link.color ? <button onClick={() => onChange({ color: "" })} className="hover:text-slate-200">usar a cor do estado</button> : <span>cor do estado (UP/instável)</span>}
+          </div>
+          <div className="flex gap-1">
+            {[["solid", "contínua"], ["dashed", "tracejada"], ["dotted", "pontilhada"]].map(([k, l]) => (
+              <button key={k} onClick={() => onChange({ dash: k })} className={`px-2 py-1 rounded border text-[11px] ${(link.dash || "solid") === k ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400"}`}>{l}</button>))}
+          </div>
+          <div className="text-[11px]" style={{ color: C.dim }}>Caída fica sempre vermelha tracejada. Automática: mais grossa quanto maior a capacidade (1G fina, 100G o dobro).</div>
         </div>
         <label className="block text-xs text-slate-400 space-y-1">Texto na linha (ex.: rota 1, fibra norte)
           <Input value={link.label || ""} onChange={e => onChange({ label: e.target.value })} className="h-8 bg-sunken border-line text-sm" /></label>
@@ -630,7 +682,7 @@ function BoxPanel({ node, onChange }) {
 }
 
 // ------------------------------------------------------------------ aparência do mapa
-function StyleDlg({ style, onChange, onClose }) {
+function StyleDlg({ style, onChange, onClose, toSubs, onToSubs }) {
   const st = { ...style };
   const P = paletteOf(st);
   const set = (p) => onChange({ ...st, ...p });
@@ -674,9 +726,21 @@ function StyleDlg({ style, onChange, onClose }) {
               <button key={k} onClick={() => set({ dev_shape: k })} className={pill((st.dev_shape || "orb") === k)} data-testid={`av-dev-${k}`}>{l}</button>))}</div>
           </div>
         </div>
-        <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={st.flow !== false} onChange={e => set({ flow: e.target.checked })} /> animação nas linhas que estão UP</label>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <div className="text-xs text-slate-400 mb-1.5">Espessura das linhas · {(Number(st.line_w) || 2).toFixed(1)}px</div>
+            <input type="range" min="0.5" max="6" step="0.5" value={Number(st.line_w) || 2} onChange={e => set({ line_w: Number(e.target.value) })} className="w-full" data-testid="av-line-w" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={st.line_auto !== false} onChange={e => set({ line_auto: e.target.checked })} /> mais grossa quanto maior a capacidade (1G a 100G)</label>
+            <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={st.traffic !== false} onChange={e => set({ traffic: e.target.checked })} /> animação de tráfego nas linhas com SNMP</label>
+            <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={st.flow !== false} onChange={e => set({ flow: e.target.checked })} /> animação nas linhas sem SNMP que estão UP</label>
+          </div>
+        </div>
+        <label className="flex items-start gap-2 text-sm text-slate-300"><input type="checkbox" className="mt-1" checked={toSubs} onChange={e => onToSubs(e.target.checked)} data-testid="av-style-subs" />
+          <span>Aplicar também a todos os submapas dentro deste<span className="block text-[11px] text-slate-500">e aos submapas deles, ao salvar. Desmarque para mudar só este mapa.</span></span></label>
         <div className="flex items-center justify-between pt-1">
-          <span className="text-[11px] text-slate-500">Vale só para este mapa. Aparece na hora; clique em Salvar no mapa para gravar.</span>
+          <span className="text-[11px] text-slate-500">Aparece na hora; clique em Salvar no mapa para gravar.</span>
           <Button onClick={onClose} className="bg-brand hover:bg-brand-strong">Pronto</Button>
         </div>
       </div>
@@ -1208,7 +1272,8 @@ export default function Availability() {
                                                          onAddHere={addDevices} onAddedElsewhere={() => { setDlg(null); loadList(); }} onClose={() => setDlg(null)} />}
       {dlg === "submap" && cur && <AddSubmap maps={list?.maps || []} current={cur} onPick={addSubmap} onClose={() => setDlg(null)} />}
       {dlg === "share" && map && <ShareDlg map={map} onClose={() => setDlg(null)} />}
-      {dlg === "style" && draft && <StyleDlg style={draft.style || { bg: draft.bg }} onChange={(st) => setDraft(d => ({ ...d, style: st, bg: st.bg }))} onClose={() => setDlg(null)} />}
+      {dlg === "style" && draft && <StyleDlg style={draft.style || { bg: draft.bg }} onChange={(st) => setDraft(d => ({ ...d, style: st, bg: st.bg, style_to_subs: d.style_to_subs ?? true }))}
+        toSubs={draft.style_to_subs ?? true} onToSubs={(v) => setDraft(d => ({ ...d, style_to_subs: v }))} onClose={() => setDlg(null)} />}
       {dlg === "dude" && <DudeImport onClose={() => setDlg(null)} onDone={async (openId) => { setDlg(null); await loadList(); api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {}); if (openId) { setTrail([]); setMapId(openId); } }} />}
       {dlg === "settings" && <SettingsDlg init={list.settings} onClose={() => setDlg(null)} onSaved={(s) => { setList(l => ({ ...l, settings: s })); setDlg(null); }} />}
     </div>

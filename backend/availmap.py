@@ -29,7 +29,8 @@ def clean_style(b) -> dict:
     """Aparência do mapa: cores (#rrggbb), fundo, formato dos POPs/equipamentos, tamanho e animação das linhas."""
     b = b if isinstance(b, dict) else {}
     out = {k: _color(b.get(k)) for k in COLOR_KEYS if _color(b.get(k))}
-    out.update(bg=b.get("bg") if b.get("bg") in BGS else "grid", sub_shape=b.get("sub_shape") if b.get("sub_shape") in SUB_SHAPES else "hex",
+    out.update(line_w=round(_num(b.get("line_w"), 0.5, 8, 2), 1), line_auto=bool(b.get("line_auto", True)), traffic=bool(b.get("traffic", True)),
+               bg=b.get("bg") if b.get("bg") in BGS else "grid", sub_shape=b.get("sub_shape") if b.get("sub_shape") in SUB_SHAPES else "hex",
                dev_shape=b.get("dev_shape") if b.get("dev_shape") in DEV_SHAPES else "orb", scale=round(_num(b.get("scale"), 0.5, 2, 1), 2),
                flow=bool(b.get("flow", True)), preset=str(b.get("preset") or "")[:20])
     return out
@@ -96,7 +97,9 @@ def clean_map(b: dict, device_ids: Set[str], map_ids: Set[str], self_id: Optiona
         out = {"id": lid, "from": a, "to": z, "label": str(ln.get("label") or "").strip()[:60], "snmp": None,
                "points": [{"x": round(_num(p.get("x"), -100000, 100000, 0), 1), "y": round(_num(p.get("y"), -100000, 100000, 0), 1)}
                           for p in (ln.get("points") or [])[:100] if isinstance(p, dict)],
-               "shape": "straight" if ln.get("shape") == "straight" else "smooth"}
+               "shape": "straight" if ln.get("shape") == "straight" else "smooth",
+               "width": round(_num(ln.get("width"), 0, 12, 0), 1),            # 0 = automático (pela capacidade)
+               "color": _color(ln.get("color"), ""), "dash": ln.get("dash") if ln.get("dash") in ("solid", "dashed", "dotted") else "solid"}
         sn = ln.get("snmp") or {}
         if sn.get("device_id") in device_ids and str(sn.get("if_index", "")).isdigit():
             out["snmp"] = {"device_id": sn["device_id"], "if_index": int(sn["if_index"]), "if_name": str(sn.get("if_name") or "").strip()[:80]}
@@ -192,3 +195,23 @@ def parents(maps: Dict[str, dict]) -> Dict[str, List[str]]:
             if n["kind"] == "submap":
                 out.setdefault(n["map_id"], []).append(mid)
     return out
+
+
+def descendants(map_id: str, maps: Dict[str, dict]) -> Set[str]:
+    """Todos os mapas abaixo deste (submapas, submapas dos submapas...), sem ele mesmo."""
+    out: Set[str] = set()
+    todo = [map_id]
+    while todo:
+        m = maps.get(todo.pop())
+        for n in (m or {}).get("nodes", []):
+            if n["kind"] == "submap" and n["map_id"] != map_id and n["map_id"] not in out:
+                out.add(n["map_id"])
+                todo.append(n["map_id"])
+    return out
+
+
+def rate_bps(old, new, dt_s) -> Optional[float]:
+    """bits/s entre duas leituras de contador; None sem leitura anterior, contador zerado (reboot) ou intervalo inválido."""
+    if not isinstance(old, int) or not isinstance(new, int) or not dt_s or dt_s <= 0 or new < old:
+        return None
+    return round((new - old) * 8 / dt_s, 1)

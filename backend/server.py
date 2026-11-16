@@ -5114,6 +5114,7 @@ async def _avail_poll(dev_ids: List[str], cfg: dict):
                "error": "" if ok else (r.get("error") or "sem resposta")}
         if st["state"] != p.get("state"):
             upd["since"] = now
+        upd["loss_since"] = (p.get("loss_since") or now) if ok and loss > 0 else None   # desde quando está perdendo pacote
         await db.avail_status.update_one({"device_id": d["id"]}, {"$set": upd}, upsert=True)
         if st["changed"]:
             events.append({"id": availmap.new_id(), "device_id": d["id"], "device_name": d["name"], "host": d["host"],
@@ -5136,7 +5137,7 @@ async def _avail_poll(dev_ids: List[str], cfg: dict):
 
 
 async def _avail_poll_links(maps: Dict[str, dict], cfg: dict):
-    """Ligações com interface escolhida: lê por SNMP só UP/DOWN e a capacidade; avisa quando a rota cai ou volta."""
+    """Ligações com interface escolhida: lê por SNMP UP/DOWN, capacidade e contadores (tráfego); avisa quando a rota cai ou volta."""
     refs: Dict[str, dict] = {}
     for m in maps.values():
         nodes = {n["id"]: n for n in m.get("nodes", [])}
@@ -5173,6 +5174,14 @@ async def _avail_poll_links(maps: Dict[str, dict], cfg: dict):
             upd = {"key": k, "device_id": dev_id, "if_index": i, "checked_at": now, "error": err}
             if v.get("oper") is not None:
                 upd.update(oper=v["oper"], admin=v.get("admin"), speed_mbps=v.get("speed_mbps") or p.get("speed_mbps"))
+                if v.get("in_octets") is not None or v.get("out_octets") is not None:     # tráfego para a animação das linhas
+                    try:
+                        dt = (datetime.fromisoformat(now) - datetime.fromisoformat(p["octets_at"])).total_seconds() if p.get("octets_at") else 0
+                    except ValueError:
+                        dt = 0
+                    upd.update(in_bps=availmap.rate_bps(p.get("in_octets"), v.get("in_octets"), dt),
+                               out_bps=availmap.rate_bps(p.get("out_octets"), v.get("out_octets"), dt),
+                               in_octets=v.get("in_octets"), out_octets=v.get("out_octets"), octets_at=now)
                 old, new = availmap.link_state(p), availmap.link_state(v)
                 if old != new:
                     upd["since"] = now
@@ -5286,6 +5295,11 @@ async def avail_update(map_id: str, body: dict, user: dict = Depends(get_current
             await db.avail_maps.update_many({"nodes": {"$elemMatch": {"kind": "submap", "map_id": n["map_id"]}}, "id": {"$ne": map_id}},
                                             {"$set": {"nodes.$[x].label": ""}}, array_filters=[{"x.kind": "submap", "x.map_id": n["map_id"]}])
             n["label"] = ""
+    if body.get("style_to_subs"):      # tema do mapa vale para todos os submapas abaixo dele
+        allm = await _avail_all_maps()
+        subs = availmap.descendants(map_id, allm)
+        if subs:
+            await db.avail_maps.update_many({"id": {"$in": sorted(subs)}}, {"$set": {"style": doc["style"], "bg": doc["style"]["bg"]}})
     await db.avail_maps.update_one({"id": map_id}, {"$set": doc})
     _avail_kick.set()                 # equipamento novo no mapa: pinga já
     return await _avail_map(map_id)
@@ -5371,6 +5385,7 @@ async def _avail_live_data(map_id: str, maps: Dict[str, dict], show_hosts: bool 
             continue
         st = ifst.get(availmap.if_key(l["snmp"])) or {}
         links[l["id"]] = {"state": availmap.link_state(st), "oper": st.get("oper"), "admin": st.get("admin"), "speed_mbps": st.get("speed_mbps"),
+                          "in_bps": st.get("in_bps") if st.get("oper") == "up" else None, "out_bps": st.get("out_bps") if st.get("oper") == "up" else None,
                           "since": st.get("since"), "checked_at": st.get("checked_at"), "error": st.get("error", "") if show_hosts else ("SNMP sem resposta" if st.get("error") else ""),
                           "if_name": l["snmp"].get("if_name") or f"if{l['snmp']['if_index']}",
                           "device_name": (devs.get(l["snmp"]["device_id"]) or {}).get("name", "")}
@@ -5388,15 +5403,20 @@ async def _avail_live_data(map_id: str, maps: Dict[str, dict], show_hosts: bool 
         for l in mm.get("links", []):
             if l.get("snmp"):
                 where_link.setdefault(availmap.if_key(l["snmp"]), (mid, l))
-    bad_dev = [d for d in inside if (status.get(d) or {}).get("state") in ("down", "warn")]
+    def _bad(st):        # sem resposta, instável, ou respondendo mas com perda de pacote
+        return st.get("state") in ("down", "warn") or (st.get("state") == "up" and (st.get("loss") or 0) > 0)
+    bad_dev = [d for d in inside if _bad(status.get(d) or {})]
     bad_if = [k for k in if_inside if availmap.link_state(ifst.get(k)) == "down"]
     names = {d["id"]: d for d in await db.devices.find({"id": {"$in": bad_dev + [k.split("|")[0] for k in bad_if]}},
                                                        {"_id": 0, "id": 1, "name": 1, "host": 1}).to_list(2000)}
     alarms = []
     for d in bad_dev:
         st, (mid, nid) = status[d], where_dev.get(d, (map_id, None))
-        alarms.append({"kind": "device", "state": st["state"], "name": (names.get(d) or {}).get("name", "?"),
-                       "host": (names.get(d) or {}).get("host", "") if show_hosts else "", "since": st.get("since"),
+        partial = st["state"] != "down" and (st.get("loss") or 0) > 0
+        alarms.append({"kind": "device", "state": "warn" if partial else st["state"], "loss_only": partial and st["state"] == "up",
+                       "name": (names.get(d) or {}).get("name", "?"),
+                       "host": (names.get(d) or {}).get("host", "") if show_hosts else "",
+                       "since": (st.get("loss_since") or st.get("since")) if partial else st.get("since"),
                        "ms": st.get("ms"), "loss": st.get("loss"), "map_id": mid, "map_name": maps[mid]["name"], "node_id": nid})
     for k in bad_if:
         st, (mid, l) = ifst[k], where_link.get(k, (map_id, {}))

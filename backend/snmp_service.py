@@ -374,15 +374,18 @@ async def poll_counters(client, indexes: List[int]) -> Dict[int, dict]:
     return out
 
 
-async def poll_status(client, indexes: List[int], chunk: int = 15) -> Dict[int, dict]:
-    """Só estado e capacidade (ifOperStatus, ifAdminStatus, ifHighSpeed) dos índices pedidos — leve, sem contadores."""
+async def poll_status(client, indexes: List[int], chunk: int = 10) -> Dict[int, dict]:
+    """Estado, capacidade e contadores de 64 bits (ifOperStatus, ifAdminStatus, ifHighSpeed, ifHCIn/OutOctets)."""
     out: Dict[int, dict] = {}
     for n in range(0, len(indexes), chunk):
         part = indexes[n:n + chunk]
-        vals = await client.get([o for i in part for o in (f"{IF_OPER}.{i}", f"{IF_ADMIN}.{i}", f"{IF_HIGH_SPEED}.{i}")])
+        vals = await client.get([o for i in part for o in (f"{IF_OPER}.{i}", f"{IF_ADMIN}.{i}", f"{IF_HIGH_SPEED}.{i}", f"{IF_HC_IN}.{i}", f"{IF_HC_OUT}.{i}")])
         for i in part:
             oper, admin, sp = vals.get(f"{IF_OPER}.{i}"), vals.get(f"{IF_ADMIN}.{i}"), vals.get(f"{IF_HIGH_SPEED}.{i}")
+            vin, vout = vals.get(f"{IF_HC_IN}.{i}"), vals.get(f"{IF_HC_OUT}.{i}")
             out[i] = {"oper": OPER_STATUS.get(oper, "unknown") if isinstance(oper, int) else None,
                       "admin": OPER_STATUS.get(admin, "unknown") if isinstance(admin, int) else None,
-                      "speed_mbps": sp if isinstance(sp, int) else None}
+                      "speed_mbps": sp if isinstance(sp, int) else None,
+                      "in_octets": vin if isinstance(vin, int) and not isinstance(vin, bool) else None,
+                      "out_octets": vout if isinstance(vout, int) and not isinstance(vout, bool) else None}
     return out

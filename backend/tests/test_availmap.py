@@ -82,3 +82,22 @@ def test_style_and_annotations():
     assert n1["w"] == 20 and n1["h"] == 4000 and n1["fill"] == "#112233" and n1["stroke"] == "#2dd4bf" and n1["text"].startswith("obs")
     assert s1["shape"] == "ellipse" and s1["opacity"] == 1 and s1["fill"] == "transparent"
     assert m["style"]["bg"] == "grid"
+
+
+def test_descendants():
+    maps = {"a": {"nodes": [{"kind": "submap", "map_id": "b"}]}, "b": {"nodes": [{"kind": "submap", "map_id": "c"}, {"kind": "submap", "map_id": "a"}]},
+            "c": {"nodes": [{"kind": "submap", "map_id": "b"}]}, "d": {"nodes": []}}
+    assert A.descendants("a", maps) == {"b", "c"}
+    assert A.descendants("d", maps) == set()
+
+
+def test_rate_and_line_style():
+    assert A.rate_bps(1000, 2000, 8) == 1000.0
+    assert A.rate_bps(None, 2000, 8) is None and A.rate_bps(5000, 10, 8) is None and A.rate_bps(1, 2, 0) is None
+    st = A.clean_style({"line_w": 99, "traffic": False})
+    assert st["line_w"] == 8 and st["line_auto"] is True and st["traffic"] is False
+    m = A.clean_map({"name": "x", "nodes": [{"id": "a", "kind": "label", "label": "A"}, {"id": "b", "kind": "label", "label": "B"}],
+                     "links": [{"from": "a", "to": "b", "width": 4, "color": "#ff0000", "dash": "dotted"}, {"from": "a", "to": "b", "color": "red", "dash": "x"}]},
+                    set(), set())
+    assert (m["links"][0]["width"], m["links"][0]["color"], m["links"][0]["dash"]) == (4, "#ff0000", "dotted")
+    assert (m["links"][1]["width"], m["links"][1]["color"], m["links"][1]["dash"]) == (0, "", "solid")
