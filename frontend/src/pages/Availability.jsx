@@ -182,6 +182,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
   };
   const move = (e) => {
     if (!drag) return;
+    if (drag.kind === "pinch") return;
     if (drag.kind === "pan") {
       setView(v => ({ ...v, tx: drag.tx + e.clientX - drag.sx, ty: drag.ty + e.clientY - drag.sy }));
       if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true;
@@ -200,6 +201,39 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
     } else if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) drag.moved = true;
   };
   const lastClick = useRef({ id: null, t: 0 });
+  // dois dedos (celular/tablet): pinça para zoom, e arrastar com os dois move o mapa
+  const touches = useRef(new Map());
+  const pinchOf = () => {
+    const [a, b] = [...touches.current.values()];
+    return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+  };
+  const tDown = (e) => {
+    if (e.pointerType !== "touch") return;
+    const r = wrap.current.getBoundingClientRect();
+    touches.current.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
+    if (touches.current.size === 2) {
+      e.stopPropagation();
+      const p = pinchOf();
+      setDrag({ kind: "pinch", d0: p.d, mx0: p.mx, my0: p.my, v0: view, moved: true });
+    }
+  };
+  const tMove = (e) => {
+    if (e.pointerType !== "touch" || !touches.current.has(e.pointerId)) return;
+    const r = wrap.current.getBoundingClientRect();
+    touches.current.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
+    if (drag?.kind === "pinch" && touches.current.size >= 2) {
+      e.stopPropagation();
+      const p = pinchOf(), v0 = drag.v0;
+      const k = Math.max(0.2, Math.min(3, v0.k * (p.d / drag.d0)));
+      const wx = (drag.mx0 - v0.tx) / v0.k, wy = (drag.my0 - v0.ty) / v0.k;   // ponto do mapa que estava entre os dedos
+      setView({ k, tx: p.mx - wx * k, ty: p.my - wy * k });
+    }
+  };
+  const tUp = (e) => {
+    if (e.pointerType !== "touch") return;
+    touches.current.delete(e.pointerId);
+    if (drag?.kind === "pinch") { e.stopPropagation(); if (touches.current.size < 2) setDrag(null); }
+  };
   // ponto do traçado da ligação: arrastar move; insert = cria um ponto novo na posição idx
   const startVertex = (e, l, idx, insert) => {
     e.stopPropagation();
@@ -242,7 +276,9 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
 
   return (
     <div ref={wrap} className="relative w-full h-full overflow-hidden select-none" style={{ background: `radial-gradient(ellipse at 50% 40%, ${C.bg1} 0%, ${C.bg0} 70%)`, touchAction: "none" }}
-         onPointerMove={move} onPointerUp={up} onPointerLeave={() => setDrag(null)} data-testid="avail-canvas">
+         onPointerMove={move} onPointerUp={up} onPointerLeave={(e) => { if (e.pointerType !== "touch") setDrag(null); }}
+         onPointerDownCapture={tDown} onPointerMoveCapture={tMove} onPointerUpCapture={tUp} onPointerCancelCapture={(e) => { tUp(e); setDrag(null); }}
+         data-testid="avail-canvas">
       <style>{CSS}</style>
       <svg ref={svg} className={`w-full h-full ${drag?.kind === "pan" ? "cursor-grabbing" : "cursor-grab"}`} onPointerDown={(e) => down(e, null)}>
         <defs>
