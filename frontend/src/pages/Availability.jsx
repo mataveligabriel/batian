@@ -33,6 +33,30 @@ export function paletteOf(style) {
   return p;
 }
 
+/** Aparência que vale para o mapa: a própria (mapa principal ou "aparência própria") ou a do mapa de cima mais próximo
+ *  que tenha a sua — primeiro pelo caminho aberto (trail), depois subindo pelos pais. maps: {id: {style, parents?, nodes?}} */
+// aparência própria: marcada como tal, ou (gravada antes de existir a opção) com alguma coisa mudada
+export const styleOwn = (st) => (!st ? false : st.own !== undefined ? !!st.own
+  : ["up", "warn", "down", "pending", "bg0", "bg1", "ink", "dim", "panel", "line"].some(k => st[k]) || (st.preset || "neon") !== "neon"
+    || (st.bg || "grid") !== "grid" || (st.sub_shape || "hex") !== "hex" || (st.dev_shape || "orb") !== "orb");
+export function effectiveStyle(id, maps, trail = []) {
+  const parentsOf = {};
+  const hasParents = Object.values(maps).some(m => m.parents);
+  if (!hasParents) Object.values(maps).forEach(m => (m.nodes || []).forEach(n => { if (n.kind === "submap") (parentsOf[n.map_id] ||= []).push(m.id); }));
+  const par = (x) => (hasParents ? maps[x]?.parents || [] : parentsOf[x] || []);
+  const final = (x) => styleOwn(maps[x]?.style) || !par(x).length;
+  if (!maps[id] || final(id)) return maps[id]?.style || {};
+  const seen = new Set([id]);
+  const queue = [...trail.slice(0, Math.max(0, trail.indexOf(id))).reverse(), ...par(id)];
+  while (queue.length) {
+    const x = queue.shift();
+    if (seen.has(x) || !maps[x]) continue;
+    seen.add(x);
+    if (final(x)) return maps[x].style || {};
+    queue.push(...par(x));
+  }
+  return maps[id].style || {};
+}
 export const STATE_TXT = { up: "respondendo", warn: "instável", down: "sem resposta", pending: "aguardando 1º ping", empty: "vazio" };
 const R_DEV = 22, R_SUB = 36;
 // espessura pela capacidade: 1G = base, 10G = +50%, 100G = o dobro (abaixo de 1G fica na base)
@@ -682,7 +706,7 @@ function BoxPanel({ node, onChange }) {
 }
 
 // ------------------------------------------------------------------ aparência do mapa
-function StyleDlg({ style, onChange, onClose, toSubs, onToSubs }) {
+function StyleDlg({ style, onChange, onClose, toSubs, onToSubs, isSub, own, onOwn }) {
   const st = { ...style };
   const P = paletteOf(st);
   const set = (p) => onChange({ ...st, ...p });
@@ -692,6 +716,12 @@ function StyleDlg({ style, onChange, onClose, toSubs, onToSubs }) {
   return (
     <Modal title="Aparência do mapa" onClose={onClose} wide>
       <div className="space-y-4" data-testid="av-style-dlg">
+        {isSub && (
+          <label className="flex items-start gap-2 rounded-md border border-line p-2.5 text-sm text-slate-200" data-testid="av-style-follow">
+            <input type="checkbox" className="mt-1" checked={!own} onChange={e => onOwn(!e.target.checked)} />
+            <span>Seguir a aparência do mapa de cima<span className="block text-[11px] text-slate-500">Marcado, este submapa fica igual ao mapa principal (muda junto). Mexer em qualquer opção abaixo dá a ele uma aparência própria.</span></span>
+          </label>
+        )}
         <div>
           <div className="text-xs text-slate-400 mb-1.5">Tema</div>
           <div className="flex flex-wrap gap-1.5">
@@ -1101,6 +1131,9 @@ export default function Availability() {
   const selLive = sel && live?.nodes?.[sel.id];
   const sum = live?.summary;
   const roots = (list?.maps || []).filter(m => !m.parents.length);
+  const isSub = !!(cur && (byId[cur.id]?.parents || []).length);
+  const viewStyle = !cur ? {} : (!isSub || styleOwn(cur.style)) ? (cur.style || { bg: cur.bg }) : effectiveStyle(cur.id, byId, trail);
+  const viewMap = cur && cur.style !== viewStyle ? { ...cur, style: viewStyle } : cur;
 
   // árvore: mapas principais e, dentro, os submapas (2 níveis visíveis)
   const Tree = ({ id, depth, seen, label }) => {
@@ -1211,7 +1244,7 @@ export default function Availability() {
         <div className="flex-1 min-h-0 flex">
           <div className="flex-1 min-w-0 relative">
             {cur ? (
-              <MapCanvasAvail map={cur} live={live} names={names} editing={editing} tool={tool} selected={selected} onSelect={setSelected} fitSignal={fitSig}
+              <MapCanvasAvail map={viewMap} live={live} names={names} editing={editing} tool={tool} selected={selected} onSelect={setSelected} fitSignal={fitSig}
                               onEnter={enterSub}
                               onPatchNode={patchNode}
                               onLinkPoints={(id, pts) => setDraft(d => ({ ...d, links: d.links.map(l => (l.id === id ? { ...l, points: pts || [] } : l)) }))}
@@ -1272,7 +1305,9 @@ export default function Availability() {
                                                          onAddHere={addDevices} onAddedElsewhere={() => { setDlg(null); loadList(); }} onClose={() => setDlg(null)} />}
       {dlg === "submap" && cur && <AddSubmap maps={list?.maps || []} current={cur} onPick={addSubmap} onClose={() => setDlg(null)} />}
       {dlg === "share" && map && <ShareDlg map={map} onClose={() => setDlg(null)} />}
-      {dlg === "style" && draft && <StyleDlg style={draft.style || { bg: draft.bg }} onChange={(st) => setDraft(d => ({ ...d, style: st, bg: st.bg, style_to_subs: d.style_to_subs ?? true }))}
+      {dlg === "style" && draft && <StyleDlg style={viewStyle} isSub={isSub} own={styleOwn(draft.style)}
+        onOwn={(v) => setDraft(d => ({ ...d, style: { ...(v ? viewStyle : d.style), own: v } }))}
+        onChange={(st) => setDraft(d => ({ ...d, style: { ...st, own: isSub ? true : st.own }, bg: st.bg, style_to_subs: d.style_to_subs ?? true }))}
         toSubs={draft.style_to_subs ?? true} onToSubs={(v) => setDraft(d => ({ ...d, style_to_subs: v }))} onClose={() => setDlg(null)} />}
       {dlg === "dude" && <DudeImport onClose={() => setDlg(null)} onDone={async (openId) => { setDlg(null); await loadList(); api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {}); if (openId) { setTrail([]); setMapId(openId); } }} />}
       {dlg === "settings" && <SettingsDlg init={list.settings} onClose={() => setDlg(null)} onSaved={(s) => { setList(l => ({ ...l, settings: s })); setDlg(null); }} />}

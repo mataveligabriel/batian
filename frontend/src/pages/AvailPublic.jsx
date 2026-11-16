@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { MapCanvasAvail, AlarmPanel, C } from "@/pages/Availability";
+import { MapCanvasAvail, AlarmPanel, C as C0, effectiveStyle, paletteOf } from "@/pages/Availability";
 
 // Link sem login do mapa de disponibilidade: /disp/<token>. Só lê /api/public/avail da própria origem.
 const get = async (path) => {
@@ -29,7 +29,9 @@ export default function AvailPublic({ token }) {
     return () => clearInterval(t);
   }, [token]);
   const mapId = trail[trail.length - 1];
-  const map = info?.maps?.[mapId];
+  const raw = info?.maps?.[mapId];
+  const map = useMemo(() => (raw ? { ...raw, style: effectiveStyle(mapId, info.maps, trail) } : raw), [raw, info, mapId, trail]);
+  const C = useMemo(() => (map ? paletteOf(map.style) : C0), [map]);     // topo da tela com as cores do mapa
 
   useEffect(() => {
     if (!mapId) return;
@@ -136,6 +138,7 @@ function hhmmAgo(iso) {
 }
 
 function Center({ title, text }) {
+  const C = C0;
   return (
     <div className="fixed inset-0 flex flex-col items-center justify-center gap-2 p-6 text-center" style={{ background: C.bg0, color: C.ink }}>
       <div className="text-2xl font-semibold">{title}</div><div className="text-sm max-w-md" style={{ color: C.dim }}>{text}</div>

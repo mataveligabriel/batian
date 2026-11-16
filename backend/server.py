@@ -5238,6 +5238,7 @@ def _avail_summary_row(m: dict, maps: dict, status: dict, par: dict, ifst: dict)
     return {"id": m["id"], "name": m["name"], "description": m.get("description", ""), "updated_at": m.get("updated_at"),
             "parents": par.get(m["id"], []), "children": [n["map_id"] for n in m.get("nodes", []) if n["kind"] == "submap"],
             "child_labels": {n["map_id"]: n["label"] for n in m.get("nodes", []) if n["kind"] == "submap" and n.get("label")},
+            "style": m.get("style") or {"bg": m.get("bg", "grid")},
             "summary": availmap.summarize(availmap.devices_of(m["id"], maps), status, availmap.links_of(m["id"], maps), ifst)}
 
 
@@ -5299,7 +5300,7 @@ async def avail_update(map_id: str, body: dict, user: dict = Depends(get_current
         allm = await _avail_all_maps()
         subs = availmap.descendants(map_id, allm)
         if subs:
-            await db.avail_maps.update_many({"id": {"$in": sorted(subs)}}, {"$set": {"style": doc["style"], "bg": doc["style"]["bg"]}})
+            await db.avail_maps.update_many({"id": {"$in": sorted(subs)}}, {"$set": {"style": {**doc["style"], "own": False}, "bg": doc["style"]["bg"]}})
     await db.avail_maps.update_one({"id": map_id}, {"$set": doc})
     _avail_kick.set()                 # equipamento novo no mapa: pinga já
     return await _avail_map(map_id)
