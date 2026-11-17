@@ -133,6 +133,7 @@ _MOD_RULES = [
     ("*", r"/api/winbox(/.*)?", ("winbox",)),
     ("*", r"/api/(maps|analysis|mpls)(/.*)?", ("maps",)),
     ("*", r"/api/maps-tv(/.*)?", ("maps",)),
+    ("*", r"/api/kmz(/.*)?", ("maps",)),
     ("*", r"/api/te(/.*)?", ("te",)),
     ("*", r"/api/(monitor|optics)(/.*)?", ("maps", "dashboards")),
     ("*", r"/api/dashboards(/.*)?", ("dashboards",)),

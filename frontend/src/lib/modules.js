@@ -33,7 +33,7 @@ export const MODULES = [
   { key: "assistant", label: "Assistente IA", path: null, desc: "chat e voz (consulta e propõe comandos)" },
 ];
 export const ALL_KEYS = MODULES.map(m => m.key);
-export const PATH_MODULE = { ...Object.fromEntries(MODULES.filter(m => m.path).map(m => [m.path, m.key])), "/soc/incidents": "incidents" };
+export const PATH_MODULE = { ...Object.fromEntries(MODULES.filter(m => m.path).map(m => [m.path, m.key])), "/soc/incidents": "incidents", "/kmz": "maps" };
 
 // combinações prontas para começar
 export const PRESETS = [

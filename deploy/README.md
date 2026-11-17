@@ -1651,3 +1651,12 @@ No cadastro do equipamento, o campo **Agente Proxy** também lista as **VPNs** c
 - SSH, Telnet, backup, execução em lote, SNMP e ping passam pela VPN;
 - com a VPN desconectada, as ações avisam que ela precisa ser conectada; o ping marca o equipamento como offline;
 - a coluna Agente da lista mostra `VPN · nome`. Excluir a VPN volta esses equipamentos para conexão direta.
+
+## 85. Mapas KMZ (Google Earth)
+**Monitoramento → Mapas KMZ** (mesma permissão de *Mapas de rede*). Importe o `.kml` ou `.kmz` exportado do Google Earth (até 40 MB) e escolha a **empresa (tag)**:
+- As **pastas** do KML viram camadas (botão de camadas): ligar/desligar e escolher o **tipo** da pasta quando o automático errar (POP, Equipamento, Caixa/CTO, Ponto, Ocultar).
+- **Pontos**: marcador com o **nome** ou um **IP** (no nome, descrição ou dados do marcador) de um equipamento da tag vira o equipamento, com o estado ao vivo (do mapa de Disponibilidade quando ele está lá; senão o do cadastro) — sem resposta pisca em vermelho. CTO/CEO/caixa/poste (no nome ou na pasta) viram **caixas**, que só aparecem ao aproximar (zoom configurável); POP/OLT/torre/site viram **POPs**.
+- **Linhas** viram rotas com a cor do KML (clareada para aparecer no fundo escuro) ou uma cor por pasta, e o comprimento em km; **polígonos** viram áreas.
+- Fundo escuro, claro, satélite ou ruas; nomes pelo zoom sem se sobrepor; busca por nome/IP; clique mostra descrição, dados, coordenada e atalho para o Google Maps. No celular, zoom com dois dedos.
+- **Atualizar** (ícone ↻) troca o conteúdo por um arquivo novo mantendo nome, aparência e o tipo das pastas. Trocar a tag no topo casa os pontos de novo com os equipamentos da outra empresa.
+- O arquivo é só lido (sem DOCTYPE/ENTITY); traçados são simplificados (~1 m) e guardados comprimidos (limites: 60 mil pontos, 25 mil linhas, 1,5 milhão de coordenadas).

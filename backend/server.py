@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse, RedirectResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -88,6 +88,7 @@ import bgpdoc
 import ifauto
 import availmap
 import dudeimport
+import kmzmap
 import alertroutes
 import cmdpolicy
 import siem as siemmod
@@ -162,6 +163,8 @@ async def startup():
     await db.users.create_index("email", unique=True)
     await db.devices.create_index("name")
     await db.agents.create_index("name")
+    await db.kmz_maps.create_index("id", unique=True)
+    await db.kmz_data.create_index("map_id", unique=True)
     await seed_admin()
     await seed_sample_data()
     await db.backups.create_index([("device_id", 1), ("created_at", -1)])
@@ -4379,6 +4382,143 @@ async def devices_snmp_test_all(payload: DeviceIdsPayload, user: dict = Depends(
             r = await _snmp_check(d, own_only=True)
             return {"id": d["id"], "name": d["name"], **r}
     return await asyncio.gather(*[one(d) for d in devs])
+
+
+# ----- mapas KMZ (Google Earth) -----
+def _kmz_meta(m: dict) -> dict:
+    return {k: m.get(k) for k in ("id", "name", "tag", "source", "folders", "summary", "bbox", "match", "created_at", "updated_at", "style")}
+
+
+async def _kmz_for(user: dict, map_id: str) -> dict:
+    m = await db.kmz_maps.find_one({"id": map_id, **_scope(user)}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Mapa KMZ não encontrado")
+    return m
+
+
+async def _kmz_devices(user: dict, tag: str) -> List[dict]:
+    q = {**_scope(user)}
+    if tag:
+        q["tags"] = tag
+    return await db.devices.find(q, {"_id": 0, "id": 1, "name": 1, "host": 1}).to_list(20000)
+
+
+def _kmz_style(b) -> dict:
+    b = b if isinstance(b, dict) else {}
+    return {"base": b.get("base") if b.get("base") in ("dark", "satellite", "streets", "light") else "dark",
+            "labels": b.get("labels") if b.get("labels") in ("auto", "always", "never") else "auto",
+            "boxes_zoom": int(min(19, max(10, float(b.get("boxes_zoom") or 15)))),
+            "glow": bool(b.get("glow", True)), "route_w": round(min(8, max(1, float(b.get("route_w") or 2.5))), 1),
+            "colors": "folder" if b.get("colors") == "folder" else "kml"}
+
+
+@api.get("/kmz")
+async def kmz_list(user: dict = Depends(get_current_user)):
+    rows = await db.kmz_maps.find(_scope(user), {"_id": 0}).sort("name", 1).to_list(500)
+    return [_kmz_meta(m) for m in rows]
+
+
+@api.post("/kmz/import")
+async def kmz_import(file: UploadFile = File(...), name: str = Form(""), tag: str = Form(""), map_id: str = Form(""),
+                     user: dict = Depends(get_current_user)):
+    """Lê o KML/KMZ, separa pastas, pontos, rotas e áreas e casa os pontos com os equipamentos da tag.
+    map_id = reimportar (troca o conteúdo e mantém nome, tag e aparência)."""
+    _no_viewer(user)
+    raw = await file.read(kmzmap.MAX_UPLOAD + 1)
+    try:
+        text = await asyncio.to_thread(kmzmap.read_upload, raw)
+        data = await asyncio.to_thread(kmzmap.parse, text)
+    except kmzmap.KmzError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    old = await _kmz_for(user, map_id) if map_id else None
+    tag = (old["tag"] if old and not tag else tag).strip()[:60]
+    match = kmzmap.classify(data, await _kmz_devices(user, tag))
+    blob = await asyncio.to_thread(kmzmap.pack, data)
+    if len(blob) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Mapa grande demais depois de convertido; divida o KML em partes")
+    now = datetime.now(timezone.utc).isoformat()
+    folders = data["folders"]
+    if old:                                     # reimportação: mantém o tipo/visível das pastas com o mesmo caminho
+        prev = {f["path"]: f for f in old.get("folders", [])}
+        folders = [{**f, "kind": prev.get(f["path"], {}).get("kind", "auto"), "visible": prev.get(f["path"], {}).get("visible", True)}
+                   for f in data["folders"]]
+    meta = {"name": (name.strip() or (old or {}).get("name") or data["name"] or (file.filename or "Mapa KMZ").rsplit(".", 1)[0])[:80],
+            "tag": tag, "source": (file.filename or "")[:120], "folders": folders, "summary": kmzmap.summary(data),
+            "bbox": kmzmap.bbox(data), "match": match, "updated_at": now}
+    if old:
+        mid = old["id"]
+        await db.kmz_maps.update_one({"id": mid}, {"$set": meta})
+    else:
+        mid = os.urandom(8).hex()
+        await db.kmz_maps.insert_one({"id": mid, "owner_id": user["id"], "created_at": now, "style": _kmz_style({}), **meta})
+    await db.kmz_data.update_one({"map_id": mid}, {"$set": {"map_id": mid, "blob": blob}}, upsert=True)
+    return _kmz_meta(await _kmz_for(user, mid))
+
+
+@api.get("/kmz/{map_id}")
+async def kmz_get(map_id: str, user: dict = Depends(get_current_user)):
+    return _kmz_meta(await _kmz_for(user, map_id))
+
+
+@api.get("/kmz/{map_id}/data")
+async def kmz_data(map_id: str, user: dict = Depends(get_current_user)):
+    """Pontos, rotas e áreas (JSON já comprimido em gzip — o navegador descomprime)."""
+    await _kmz_for(user, map_id)
+    d = await db.kmz_data.find_one({"map_id": map_id}, {"_id": 0, "blob": 1})
+    if not d:
+        raise HTTPException(status_code=404, detail="Conteúdo do mapa não encontrado; importe o arquivo de novo")
+    return Response(content=bytes(d["blob"]), media_type="application/json", headers={"Content-Encoding": "gzip", "Cache-Control": "no-store"})
+
+
+@api.put("/kmz/{map_id}")
+async def kmz_update(map_id: str, body: dict, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    m = await _kmz_for(user, map_id)
+    upd = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if "name" in body:
+        upd["name"] = str(body.get("name") or "").strip()[:80] or m["name"]
+    if "folders" in body:
+        upd["folders"] = kmzmap.clean_folders(body.get("folders"), m.get("folders") or [])
+    if "style" in body:
+        upd["style"] = _kmz_style(body.get("style"))
+    if "tag" in body and str(body.get("tag") or "").strip()[:60] != m.get("tag", ""):
+        upd["tag"] = str(body.get("tag") or "").strip()[:60]           # outra empresa: casa os pontos de novo
+        d = await db.kmz_data.find_one({"map_id": map_id}, {"_id": 0, "blob": 1})
+        if d:
+            data = await asyncio.to_thread(kmzmap.unpack, bytes(d["blob"]))
+            data["folders"] = m.get("folders") or []
+            upd["match"] = kmzmap.classify(data, await _kmz_devices(user, upd["tag"]))
+            upd["summary"] = {**(m.get("summary") or {}), **kmzmap.summary({**data, "folders": data["folders"]})}
+            await db.kmz_data.update_one({"map_id": map_id}, {"$set": {"blob": await asyncio.to_thread(kmzmap.pack, data)}})
+    await db.kmz_maps.update_one({"id": map_id}, {"$set": upd})
+    return _kmz_meta(await _kmz_for(user, map_id))
+
+
+@api.delete("/kmz/{map_id}")
+async def kmz_delete(map_id: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    await _kmz_for(user, map_id)
+    await db.kmz_maps.delete_one({"id": map_id})
+    await db.kmz_data.delete_one({"map_id": map_id})
+    return {"ok": True}
+
+
+@api.get("/kmz/{map_id}/live")
+async def kmz_live(map_id: str, user: dict = Depends(get_current_user)):
+    """Estado dos equipamentos casados no mapa: o do mapa de disponibilidade (ICMP) quando houver, senão o do cadastro."""
+    await _kmz_for(user, map_id)
+    d = await db.kmz_data.find_one({"map_id": map_id}, {"_id": 0, "blob": 1})
+    ids = sorted({p["device_id"] for p in (await asyncio.to_thread(kmzmap.unpack, bytes(d["blob"])))["points"] if p.get("device_id")}) if d else []
+    devs = await db.devices.find({"id": {"$in": ids}, **_scope(user)}, {"_id": 0, "id": 1, "name": 1, "host": 1, "status": 1, "latency_ms": 1, "device_type": 1}).to_list(len(ids) + 1)
+    st = {x["device_id"]: x async for x in db.avail_status.find({"device_id": {"$in": ids}}, {"_id": 0, "device_id": 1, "state": 1, "ms": 1, "since": 1})}
+    out = {}
+    for dv in devs:
+        a = st.get(dv["id"]) or {}
+        state = a.get("state") if a.get("state") in ("up", "warn", "down", "ignored") else \
+            ("up" if dv.get("status") == "online" else "down" if dv.get("status") == "offline" else "pending")
+        out[dv["id"]] = {"name": dv["name"], "host": dv.get("host", ""), "type": dv.get("device_type", ""), "state": state,
+                         "ms": a.get("ms") if a.get("ms") is not None else dv.get("latency_ms"), "since": a.get("since")}
+    return {"devices": out}
 
 
 # ----- mapas -----
