@@ -5217,7 +5217,13 @@ async def _avail_loop():
         t0 = time.monotonic()
         try:
             maps = await _avail_all_maps()
-            ids = sorted({n["device_id"] for m in maps.values() for n in m.get("nodes", []) if n["kind"] == "device"})
+            nowi = datetime.now(timezone.utc).isoformat()
+            # "ignorar" com prazo vencido: volta a pingar (estado pending → a 1ª leitura não gera alerta)
+            await db.avail_status.update_many({"state": availmap.IGNORED, "ignored_until": {"$ne": None, "$lt": nowi}},
+                                              {"$set": {"state": "pending", "fails": 0, "since": nowi},
+                                               "$unset": {"ignored_until": "", "ignored_by": "", "ignored_reason": "", "ignored_at": ""}})
+            ignored = set(await db.avail_status.distinct("device_id", {"state": availmap.IGNORED}))
+            ids = sorted({n["device_id"] for m in maps.values() for n in m.get("nodes", []) if n["kind"] == "device"} - ignored)
             jobs = []
             if ids:
                 jobs.append(_avail_poll(ids, cfg))
@@ -5368,7 +5374,10 @@ async def _avail_live_data(map_id: str, maps: Dict[str, dict], show_hosts: bool 
     for n in m["nodes"]:
         if n["kind"] == "device":
             d, st = devs.get(n["device_id"]) or {}, status.get(n["device_id"]) or {}
-            nodes[n["id"]] = {"state": st.get("state") or "pending", "ms": st.get("ms"), "loss": st.get("loss"), "since": st.get("since"),
+            ign = st.get("state") == availmap.IGNORED
+            nodes[n["id"]] = {"state": st.get("state") or "pending", "ms": None if ign else st.get("ms"), "loss": None if ign else st.get("loss"), "since": st.get("since"),
+                              "ignored_until": st.get("ignored_until"), "ignored_reason": st.get("ignored_reason", "") if show_hosts else "",
+                              "ignored_by": st.get("ignored_by", "") if show_hosts else "",
                               "checked_at": st.get("checked_at"), "error": st.get("error", "") if show_hosts else "", "name": d.get("name") or "(equipamento removido)",
                               "host": d.get("host", "") if show_hosts else "", "type": d.get("device_type", ""), "tags": d.get("tags", []), "via_jump": bool(d.get("agent_id"))}
         elif n["kind"] == "submap":
@@ -5408,7 +5417,8 @@ async def _avail_live_data(map_id: str, maps: Dict[str, dict], show_hosts: bool 
         return st.get("state") in ("down", "warn") or (st.get("state") == "up" and (st.get("loss") or 0) > 0)
     bad_dev = [d for d in inside if _bad(status.get(d) or {})]
     bad_if = [k for k in if_inside if availmap.link_state(ifst.get(k)) == "down"]
-    names = {d["id"]: d for d in await db.devices.find({"id": {"$in": bad_dev + [k.split("|")[0] for k in bad_if]}},
+    ign_dev = [d for d in inside if (status.get(d) or {}).get("state") == availmap.IGNORED]
+    names = {d["id"]: d for d in await db.devices.find({"id": {"$in": bad_dev + ign_dev + [k.split("|")[0] for k in bad_if]}},
                                                        {"_id": 0, "id": 1, "name": 1, "host": 1}).to_list(2000)}
     alarms = []
     for d in bad_dev:
@@ -5428,8 +5438,14 @@ async def _avail_live_data(map_id: str, maps: Dict[str, dict], show_hosts: bool 
                        "map_id": mid, "map_name": maps[mid]["name"], "link_id": l.get("id")})
     rank = {"down": 0, "warn": 1}
     alarms.sort(key=lambda a: (rank.get(a["state"], 2), a.get("since") or ""))
+    ignored = []
+    for d in ign_dev:
+        st, (mid, nid) = status[d], where_dev.get(d, (map_id, None))
+        ignored.append({"device_id": d, "name": (names.get(d) or {}).get("name", "?"), "until": st.get("ignored_until"),
+                        "reason": st.get("ignored_reason", "") if show_hosts else "", "map_id": mid, "map_name": maps[mid]["name"], "node_id": nid})
+    ignored.sort(key=lambda x: x["name"].lower())
     return {"nodes": nodes, "links": links, "summary": availmap.summarize(inside, status, if_inside, ifst), "events": events,
-            "alarms": alarms[:300], "info": _avail_info}
+            "alarms": alarms[:300], "ignored": ignored[:300], "info": _avail_info}
 
 
 @api.get("/avail/maps/{map_id}/live")
@@ -5438,6 +5454,36 @@ async def avail_live(map_id: str, user: dict = Depends(get_current_user)):
     if map_id not in maps:
         raise HTTPException(status_code=404, detail="Mapa não encontrado")
     return await _avail_live_data(map_id, maps)
+
+
+@api.post("/avail/ignore")
+async def avail_ignore(body: dict, user: dict = Depends(get_current_user)):
+    """Para de pingar um equipamento por um tempo (ou até reativar): não alarma, não acende o mapa, não entra em incidentes."""
+    _no_viewer(user)
+    did = str(body.get("device_id") or "")
+    d = await db.devices.find_one({"id": did}, {"_id": 0, "id": 1, "name": 1})
+    if not d:
+        raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+    now = datetime.now(timezone.utc)
+    try:
+        until = availmap.ignore_until(body.get("minutes"), now)
+    except availmap.MapError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    upd = {"device_id": did, "state": availmap.IGNORED, "fails": 0, "since": now.isoformat(), "ignored_at": now.isoformat(), "ignored_until": until,
+           "ignored_by": user.get("email", ""), "ignored_reason": str(body.get("reason") or "").strip()[:120], "loss_since": None, "error": ""}
+    await db.avail_status.update_one({"device_id": did}, {"$set": upd}, upsert=True)
+    return {"ok": True, "device": d["name"], "until": until}
+
+
+@api.delete("/avail/ignore/{device_id}")
+async def avail_unignore(device_id: str, user: dict = Depends(get_current_user)):
+    _no_viewer(user)
+    now = datetime.now(timezone.utc).isoformat()
+    r = await db.avail_status.update_one({"device_id": device_id, "state": availmap.IGNORED},
+                                         {"$set": {"state": "pending", "fails": 0, "since": now},
+                                          "$unset": {"ignored_until": "", "ignored_by": "", "ignored_reason": "", "ignored_at": ""}})
+    _avail_kick.set()                   # pinga já
+    return {"ok": True, "changed": r.modified_count}
 
 
 @api.post("/avail/ping-now")
@@ -10476,33 +10522,8 @@ async def tac_test(body: TacTestIn, _: dict = Depends(require_admin)):
 
 
 # ---------- WebSocket Terminal ----------
-@app.websocket("/api/ws/terminal/{device_id}")
-async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
-    await ws.accept()
-    try:
-        payload = decode_token(token)
-    except HTTPException:
-        await ws.send_json({"type": "error", "message": "Token inválido"})
-        await ws.close()
-        return
-    user_id = payload["sub"]
-    user_email = payload["email"]
-    u = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1, "token_version": 1, "modules": 1})
-    if u and int(payload.get("tv", 0)) != int(u.get("token_version", 0)):
-        await ws.send_json({"type": "error", "message": "Sessão encerrada — entre novamente"})
-        await ws.close()
-        return
-    if not u or u.get("role") == "viewer" or not auth_mod.has_module(u, "terminal"):
-        await ws.send_json({"type": "error", "message": "Seu perfil não tem acesso ao terminal"})
-        await ws.close()
-        return
-
-    dev = await db.devices.find_one({"id": device_id, "owner_id": user_id}, {"_id": 0})
-    if not dev:
-        await ws.send_json({"type": "error", "message": "Equipamento não encontrado"})
-        await ws.close()
-        return
-
+async def _terminal_session(ws: WebSocket, user_id: str, user_email: str, u: dict, dev: dict, connect):
+    """Sessão de terminal no navegador (equipamento ou jump): grava, aplica a política de comandos e registra em Sessões."""
     session_id = os.urandom(8).hex()
     started = datetime.now(timezone.utc)
     await db.sessions.insert_one({
@@ -10517,7 +10538,7 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
     rcfg = await _rec_settings()
     try:
         await ws.send_json({"type": "status", "message": f"Conectando em {dev['name']} ({dev['host']}:{dev.get('port',22)}) via {dev.get('protocol','ssh').upper()}..."})
-        wrapper = await _connect_device(dev)
+        wrapper = await connect()
         if rcfg["enabled"]:
             try:
                 rec = recording.Recorder(session_id, 120, 32, f"{dev['name']} — {user_email}", rcfg["input"], rcfg["max_mb"])
@@ -10606,6 +10627,88 @@ async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
             await ws.close()
         except Exception:
             pass
+
+
+@app.websocket("/api/ws/terminal/{device_id}")
+async def ws_terminal(ws: WebSocket, device_id: str, token: str = Query(...)):
+    await ws.accept()
+    try:
+        payload = decode_token(token)
+    except HTTPException:
+        await ws.send_json({"type": "error", "message": "Token inválido"})
+        await ws.close()
+        return
+    user_id = payload["sub"]
+    user_email = payload["email"]
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1, "token_version": 1, "modules": 1})
+    if u and int(payload.get("tv", 0)) != int(u.get("token_version", 0)):
+        await ws.send_json({"type": "error", "message": "Sessão encerrada — entre novamente"})
+        await ws.close()
+        return
+    if not u or u.get("role") == "viewer" or not auth_mod.has_module(u, "terminal"):
+        await ws.send_json({"type": "error", "message": "Seu perfil não tem acesso ao terminal"})
+        await ws.close()
+        return
+
+    dev = await db.devices.find_one({"id": device_id, "owner_id": user_id}, {"_id": 0})
+    if not dev:
+        await ws.send_json({"type": "error", "message": "Equipamento não encontrado"})
+        await ws.close()
+        return
+
+    await _terminal_session(ws, user_id, user_email, u, dev, lambda: _connect_device(dev))
+
+
+async def _ws_user(ws: WebSocket, token: str):
+    """Valida o token do WebSocket do terminal; devolve (user_id, email, usuário) ou None (já avisou e fechou)."""
+    try:
+        payload = decode_token(token)
+    except HTTPException:
+        await ws.send_json({"type": "error", "message": "Token inválido"})
+        await ws.close()
+        return None
+    u = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "role": 1, "token_version": 1, "modules": 1})
+    if u and int(payload.get("tv", 0)) != int(u.get("token_version", 0)):
+        await ws.send_json({"type": "error", "message": "Sessão encerrada — entre novamente"})
+        await ws.close()
+        return None
+    if not u or u.get("role") == "viewer" or not auth_mod.has_module(u, "terminal"):
+        await ws.send_json({"type": "error", "message": "Seu perfil não tem acesso ao terminal"})
+        await ws.close()
+        return None
+    return payload["sub"], payload["email"], u
+
+
+@app.websocket("/api/ws/agent-terminal/{agent_id}")
+async def ws_agent_terminal(ws: WebSocket, agent_id: str, token: str = Query(...)):
+    """Shell no próprio jump (agente Linux), pela mesma cadeia que o BastiON usa (chave do BastiON / senha do agente).
+    Só administrador: é um shell no servidor que dá acesso à rede."""
+    await ws.accept()
+    who = await _ws_user(ws, token)
+    if not who:
+        return
+    user_id, user_email, u = who
+    if u.get("role") != "admin":
+        await ws.send_json({"type": "error", "message": "Só administrador abre o terminal do jump"})
+        await ws.close()
+        return
+    ag = await db.agents.find_one({"id": agent_id, **_scope({"id": user_id, "role": u.get("role")})}, {"_id": 0})
+    if not ag:
+        await ws.send_json({"type": "error", "message": "Agente não encontrado"})
+        await ws.close()
+        return
+    reverse = ag.get("mode") == "reverse"
+    dev = {"id": f"agent:{agent_id}", "name": f"Jump {ag['name']}", "device_type": "linux", "protocol": "ssh",
+           "host": "túnel reverso" if reverse else ag.get("host", ""), "port": ag.get("tunnel_port") if reverse else ag.get("port") or 22}
+
+    async def connect():
+        priv, _, _ = await _get_ssh_key()
+        hops = [_agent_hop(x, priv) for x in await _agent_chain(agent_id)]
+        hops[-1].shared = False             # o shell é uma conexão própria (os saltos anteriores vêm do pool)
+        w = SSHClientWrapper(hops, device_type="linux")
+        await w.connect()
+        return w
+    await _terminal_session(ws, user_id, user_email, u, dev, connect)
 
 
 # ---------- Análise de rede (OSPF / BGP / interfaces / cenários) ----------

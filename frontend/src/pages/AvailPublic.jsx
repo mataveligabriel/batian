@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { MapCanvasAvail, AlarmPanel, C as C0, effectiveStyle, paletteOf } from "@/pages/Availability";
+import { MapCanvasAvail, AlarmPanel, C as C0, effectiveStyle, paletteOf, ignoredTxt } from "@/pages/Availability";
 
 // Link sem login do mapa de disponibilidade: /disp/<token>. Só lê /api/public/avail da própria origem.
 const get = async (path) => {
@@ -110,7 +110,7 @@ export default function AvailPublic({ token }) {
             <button onClick={() => setSel(null)} className="float-right" style={{ color: C.dim }} aria-label="Fechar">×</button>
             {sl && selNode.kind === "device" && <>
               <div className="font-semibold">{sl.name}</div>{sl.host && <div className="font-mono text-xs" style={{ color: C.dim }}>{sl.host}</div>}
-              <div style={{ color: C[sl.state] }}>{sl.state === "down" ? `sem resposta há ${hhmmAgo(sl.since)}` : sl.ms != null ? `${sl.ms} ms${sl.loss ? ` · ${Math.round(sl.loss)}% perda` : ""}` : "aguardando"}</div>
+              <div style={{ color: C[sl.state] }}>{sl.state === "ignored" ? ignoredTxt(sl.ignored_until) : sl.state === "down" ? `sem resposta há ${hhmmAgo(sl.since)}` : sl.ms != null ? `${sl.ms} ms${sl.loss ? ` · ${Math.round(sl.loss)}% perda` : ""}` : "aguardando"}</div>
             </>}
             {sl && selNode.kind === "submap" && <>
               <div className="font-semibold">{sl.name}</div>

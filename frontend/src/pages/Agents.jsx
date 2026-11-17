@@ -11,7 +11,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { Plus, Radio, Zap, Trash2, Pencil, Copy, Terminal as TerminalIco, Settings2, ShieldCheck, ArrowDownRight, Laptop, Route } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import { useTerminal } from "@/context/TerminalContext";
 import { VpnSection, VpnState, useVpns } from "@/components/VpnPanel";
 
 const empty = { name: "", location: "", mode: "direct", host: "", port: 22, tunnel_port: "", username: "", password: "", clear_password: false, parent_agent_id: "", vpn_id: "", owner_id: "", description: "" };
@@ -40,6 +41,14 @@ export default function Agents() {
   const [testing, setTesting] = useState(null);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const nav = useNavigate();
+  const { openTab } = useTerminal();
+  // shell no próprio jump, pela mesma cadeia do BastiON (abre como uma aba do Terminal)
+  const openShell = (a) => {
+    openTab({ id: `agent:${a.id}`, name: `Jump ${a.name}`, protocol: "ssh", host: a.mode === "reverse" ? "túnel reverso" : a.host,
+              port: a.mode === "reverse" ? a.tunnel_port : a.port || 22, username: a.username || "root", ws_path: `/ws/agent-terminal/${a.id}` });
+    nav("/terminal");
+  };
   const [vpnData, reloadVpns] = useVpns(true);
   const [params, setParams] = useSearchParams();
   // quando uma VPN acaba de conectar, testa na hora os jumps que dependem dela (o status não fica "offline" velho)
@@ -221,6 +230,12 @@ export default function Agents() {
                       className="border-line bg-panel text-slate-200 hover:bg-slate-800 flex-1">
                 <ShieldCheck className="w-3.5 h-3.5 mr-1.5" /> {testing === a.id ? "…" : "Testar SSH"}
               </Button>
+              {isAdmin && (
+                <Button size="sm" variant="outline" onClick={() => openShell(a)} data-testid={`shell-agent-${a.id}`} title="Abrir um terminal SSH no jump"
+                        className="border-line bg-panel text-slate-200 hover:bg-slate-800 flex-1">
+                  <TerminalIco className="w-3.5 h-3.5 mr-1.5" /> Terminal
+                </Button>
+              )}
               <Button size="sm" variant="outline" onClick={() => showScript(a)} data-testid={`script-agent-${a.id}`}
                       className="border-line bg-panel text-slate-200 hover:bg-slate-800 flex-1">
                 <TerminalIco className="w-3.5 h-3.5 mr-1.5" /> Instalar

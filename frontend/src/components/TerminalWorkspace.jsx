@@ -443,7 +443,7 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
       }
       if (dead) return;
       const token = localStorage.getItem("bastion_token");
-      ws = new WebSocket(`${wsUrl(`/ws/terminal/${device.id}`)}?token=${encodeURIComponent(token)}`);
+      ws = new WebSocket(`${wsUrl(device.ws_path || `/ws/terminal/${device.id}`)}?token=${encodeURIComponent(token)}`);
       wsRef.current = ws;
       registerWs?.(device.id, ws);
       setStatus("connecting");

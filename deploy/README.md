@@ -67,6 +67,9 @@ onde o sshd do VPS entrega os túneis reversos dos agentes.
    sua máquina. Em ~1 min o card fica **online**.
 2. **Novo Agente**, modo **Direto**: `jump-vpn` com o IP do jump host da VPN, usuário/senha ou chave,
    **agente pai = gw-minha-maquina**. Clique **Testar SSH** → deve mostrar `gw-minha-maquina → jump-vpn`.
+   O botão **Terminal** do card (só administrador) abre um shell SSH no próprio jump, como uma aba do Terminal, pela
+   mesma cadeia (chave do BastiON ou senha do agente). Útil para instalar o `snmp`, testar ping/rota e ver logs; a sessão
+   aparece em **Sessões** e é gravada como as dos equipamentos.
 3. **Equipamentos → Importar CSV** (modelo disponível no botão "Baixar modelo") com a coluna
    `agent=jump-vpn`, tipo (`cisco`, `huawei`, `mikrotik`, ...) e credenciais — ou deixe a senha vazia
    e configure a **senha padrão RADIUS/TACACS** em **Chave SSH Global**.
@@ -1633,6 +1636,7 @@ Menu **Monitoramento → Disponibilidade** (módulo `avail`; libere em Usuários
 - **Link do mapa (sem login)**: botão **Link do mapa** gera um endereço `/disp/<código>` que abre o mapa e todos os submapas dele em qualquer navegador (PC, TV), só para ver, atualizando a cada 10 s, com entrada nos submapas, relógio e eventos. Também baixa como **.html**. Opções por link: mostrar IPs, ativo, trocar endereço (invalida o anterior) e apagar.
 - **Aparência** (em Editar): tema pronto (Neon, Claro, Grafite, Alto contraste, Oceano) ou cada cor separada (fundo, ícones, textos, UP, instável, DOWN, aguardando), fundo em grade, pontos, radar ou liso, **ícone dos POPs** (hexágono, círculo, quadrado, losango), **ícone dos equipamentos** (círculo, quadrado, losango, ponto ou cartão com o nome dentro), tamanho dos ícones e animação nas linhas. Os submapas **seguem a aparência do mapa de cima** automaticamente (inclusive no link sem login). Para um submapa ter visual próprio, abra-o, Aparência, e mude alguma opção (ou desmarque "Seguir a aparência do mapa de cima"). **Aplicar também a todos os submapas** faz todos voltarem a seguir este mapa ao salvar. Aparece também no link sem login.
 - **Caixa de texto** e **Forma** (em Editar): para observações e para marcar uma região no mapa. Arraste para mover e use o quadradinho do canto para mudar o tamanho; no painel, texto, formato (arredondada, retângulo, elipse), cores de preenchimento, borda e texto, opacidade, tamanho da letra e borda tracejada. Ficam atrás dos equipamentos.
+- **Ignorar equipamento** (clique no equipamento → *Ignorar este equipamento…*): para equipamento de evento, que liga e desliga, ou desligado de propósito. Escolha 1 h, 4 h, 12 h, 24 h, 7 dias ou *até eu reativar*, com um motivo opcional. Enquanto ignorado: não é pingado, não manda alerta, não entra nos incidentes nem na contagem/cor do mapa, e aparece apagado com "ignorado até HH:MM". No fim do prazo volta a ser pingado sozinho (sem alerta na volta); *Voltar a monitorar agora* reativa na hora. A lista fica em Incidentes → *Ignorados*.
 - **Nome do submapa**: renomear o submapa no mapa (painel do item, em Editar) renomeia o próprio mapa ao salvar — o menu lateral, o caminho do topo e o link sem login mostram o mesmo nome.
 
 ## 83. Equipamento online pelo ping (ICMP)

@@ -101,3 +101,25 @@ def test_rate_and_line_style():
                     set(), set())
     assert (m["links"][0]["width"], m["links"][0]["color"], m["links"][0]["dash"]) == (4, "#ff0000", "dotted")
     assert (m["links"][1]["width"], m["links"][1]["color"], m["links"][1]["dash"]) == (0, "", "solid")
+
+
+def test_style_own():
+    assert A.clean_style({})["own"] is False and A.clean_style({"bg": "grid"})["own"] is False
+    assert A.clean_style({"preset": "ocean", "up": "#38bdf8"})["own"] is True      # gravado antes do "own"
+    assert A.clean_style({"preset": "ocean", "own": False})["own"] is False
+
+
+def test_ignored():
+    from datetime import datetime, timezone
+    st = {"a": {"state": "down"}, "b": {"state": "ignored"}, "c": {"state": "up"}}
+    s = A.summarize({"a", "b", "c"}, st)
+    assert (s["total"], s["ignored"], s["down"], s["state"]) == (2, 1, 1, "down")
+    assert A.summarize({"b"}, st)["state"] == "empty"
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert A.ignore_until(60, now) == "2026-01-01T01:00:00+00:00" and A.ignore_until(0, now) is None
+    assert A.ignore_until(10 ** 9, now).startswith("2026-04-01")
+    try:
+        A.ignore_until(-5, now)
+        assert False
+    except A.MapError:
+        pass

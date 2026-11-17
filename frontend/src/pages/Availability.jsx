@@ -9,13 +9,13 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { DeviceSelect } from "@/components/TagSelect";
 import {
-  ChevronRight, Hexagon, Link2, Loader2, Maximize2, MousePointer2, Pencil, Plus, RotateCcw, Save, Search, Settings2,
+  ChevronDown, ChevronRight, Hexagon, Link2, Loader2, Maximize2, MousePointer2, Pencil, Plus, RotateCcw, Save, Search, Settings2,
   Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap,
 } from "lucide-react";
 
 // Paleta própria do mapa (independe do tema do app: o mapa é sempre "sala escura")
 export const C = { bg0: "#06111d", bg1: "#0b2034", grid: "rgba(96,165,250,0.07)", ink: "#e3eef8", dim: "#7f9bb3", panel: "#0d1d2e",
-  up: "#2dd4bf", warn: "#f5b544", down: "#ff4d5e", pending: "#5b6f86", empty: "#3a4b5e", line: "#1d3a55" };
+  up: "#2dd4bf", warn: "#f5b544", down: "#ff4d5e", pending: "#5b6f86", empty: "#3a4b5e", line: "#1d3a55", ignored: "#5b6f86" };
 // temas prontos da aparência do mapa (cada cor pode ser trocada depois)
 export const PRESETS = {
   neon: { label: "Neon (padrão)", bg0: "#06111d", bg1: "#0b2034", ink: "#e3eef8", dim: "#7f9bb3", panel: "#0d1d2e", line: "#1d3a55", up: "#2dd4bf", warn: "#f5b544", down: "#ff4d5e", pending: "#5b6f86" },
@@ -30,6 +30,7 @@ export function paletteOf(style) {
   const p = { ...C, ...Object.fromEntries(Object.entries(style || {}).filter(([k, v]) => k in C && /^#[0-9a-f]{6}$/i.test(v || ""))) };
   p.grid = hexA(p.line, 0.45) || C.grid;
   p.empty = hexA(p.pending, 0.6) || C.empty;
+  p.ignored = p.pending;
   return p;
 }
 
@@ -57,7 +58,14 @@ export function effectiveStyle(id, maps, trail = []) {
   }
   return maps[id].style || {};
 }
-export const STATE_TXT = { up: "respondendo", warn: "instável", down: "sem resposta", pending: "aguardando 1º ping", empty: "vazio" };
+export const STATE_TXT = { up: "respondendo", warn: "instável", down: "sem resposta", pending: "aguardando 1º ping", empty: "vazio", ignored: "ignorado" };
+// "ignorado até 14:30" / "ignorado até 18/11 09:00" / "ignorado"
+export const ignoredTxt = (until) => {
+  if (!until) return "ignorado";
+  const d = new Date(until), now = new Date();
+  const hm = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === now.toDateString() ? `ignorado até ${hm}` : `ignorado até ${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} ${hm}`;
+};
 const R_DEV = 22, R_SUB = 36;
 // espessura pela capacidade: 1G = base, 10G = +50%, 100G = o dobro (abaixo de 1G fica na base)
 export const capWidth = (base, mbps) => base * (1 + 0.5 * Math.min(2, Math.max(0, Math.log10((mbps || 0) / 1000) || 0)));
@@ -475,11 +483,11 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
               );
             }
             const nm = (n.label || s.name || names[n.device_id] || "").slice(0, 26);
-            const sub = state === "down" ? `sem resposta · ${ago(s.since)}` : state === "pending" ? "aguardando" : s.ms != null ? `${s.ms < 10 ? s.ms.toFixed(1) : Math.round(s.ms)} ms${s.loss ? ` · ${Math.round(s.loss)}% perda` : ""}` : "";
+            const sub = state === "ignored" ? ignoredTxt(s.ignored_until) : state === "down" ? `sem resposta · ${ago(s.since)}` : state === "pending" ? "aguardando" : s.ms != null ? `${s.ms < 10 ? s.ms.toFixed(1) : Math.round(s.ms)} ms${s.loss ? ` · ${Math.round(s.loss)}% perda` : ""}` : "";
             if (devShape === "card") {                 // cartão com nome dentro (estilo Dude, mais moderno)
               const W = Math.max(120, nm.length * 7.8 + 50), H = 40;
               return (
-                <g key={n.id} transform={`translate(${n.x},${n.y}) scale(${K})`} onPointerDown={(e) => down(e, n)} style={{ cursor }} data-testid={`av-node-${n.id}`}>
+                <g key={n.id} transform={`translate(${n.x},${n.y}) scale(${K})`} onPointerDown={(e) => down(e, n)} style={{ cursor }} opacity={state === "ignored" ? 0.5 : 1} data-testid={`av-node-${n.id}`}>
                   {state === "down" && <rect x={-W / 2 - 6} y={-H / 2 - 6} width={W + 12} height={H + 12} rx="12" fill={C.down} opacity=".25" filter="url(#av-glow)" />}
                   <rect x={-W / 2} y={-H / 2} width={W} height={H} rx="9" fill={C.panel} stroke={isPend ? C.warn : isSel ? "#fff" : col} strokeWidth={isSel || isPend ? 2.6 : 1.8} />
                   <rect x={-W / 2} y={-H / 2} width="5" height={H} rx="2" fill={col} />
@@ -494,12 +502,12 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
             const body = devShape === "square" ? <rect x={-r} y={-r} width={r * 2} height={r * 2} rx="7" />
               : devShape === "diamond" ? <path d={`M0,${-r * 1.25} L${r * 1.25},0 L0,${r * 1.25} L${-r * 1.25},0 Z`} /> : <circle r={r} />;
             return (
-              <g key={n.id} transform={`translate(${n.x},${n.y}) scale(${K})`} onPointerDown={(e) => down(e, n)} style={{ cursor }} data-testid={`av-node-${n.id}`}>
+              <g key={n.id} transform={`translate(${n.x},${n.y}) scale(${K})`} onPointerDown={(e) => down(e, n)} style={{ cursor }} opacity={state === "ignored" ? 0.5 : 1} data-testid={`av-node-${n.id}`}>
                 {state === "down" && <circle r={r + 10} fill={C.down} opacity=".22" filter="url(#av-glow)" />}
                 {state === "down" && !reduced && <circle className="av-shock" r={r} fill="none" stroke={C.down} strokeWidth="2" />}
                 {state !== "down" && devShape !== "dot" && <circle r={r + 6} fill={col} opacity={state === "pending" ? 0.05 : 0.1} />}
                 {React.cloneElement(body, devShape === "dot" ? { fill: col, stroke: isPend ? C.warn : isSel ? "#fff" : C.panel, strokeWidth: 2.5 }
-                  : { fill: C.panel, stroke: isPend ? C.warn : col, strokeWidth: isSel || isPend ? 3 : 2.2 })}
+                  : { fill: C.panel, stroke: isPend ? C.warn : col, strokeWidth: isSel || isPend ? 3 : 2.2, strokeDasharray: state === "ignored" ? "4 3" : undefined })}
                 {isSel && <circle r={r + 6} fill="none" stroke="#fff" strokeOpacity=".7" strokeWidth="1.2" strokeDasharray="3 3" />}
                 {devShape !== "dot" && <Glyph type={s.type} color={col} />}
                 <text y={r * (devShape === "diamond" ? 1.25 : 1) + 17} textAnchor="middle" fontSize="12" fontWeight="600" fill={C.ink} stroke={C.bg0} strokeWidth="4" strokeLinejoin="round" paintOrder="stroke">{nm}</text>
@@ -538,6 +546,8 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
 // ------------------------------------------------------------------ painel lateral de incidentes (sempre visível)
 export function AlarmPanel({ live, mapId, onPick, onClose }) {
   const alarms = live?.alarms || [];
+  const ignored = live?.ignored || [];
+  const [showIgn, setShowIgn] = useState(false);
   const down = alarms.filter(a => a.state === "down").length;
   const spd = (m) => (!m ? "" : m >= 1000 ? `${+(m / 1000).toFixed(1)}G` : `${m}M`);
   return (
@@ -576,8 +586,61 @@ export function AlarmPanel({ live, mapId, onPick, onClose }) {
             </button>
           );
         })}
+        {ignored.length > 0 && (
+          <div className="border-t" style={{ borderColor: C.line }} data-testid="av-ignored">
+            <button onClick={() => setShowIgn(v => !v)} className="w-full flex items-center gap-2 px-4 py-2 text-xs" style={{ color: C.dim }} aria-expanded={showIgn}>
+              {showIgn ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              Ignorados ({ignored.length}) <span className="ml-auto text-[10px]">sem ping, sem alarme</span>
+            </button>
+            {showIgn && ignored.map(g => (
+              <button key={g.device_id} onClick={() => onPick?.({ kind: "device", ...g })} className="w-full text-left px-4 py-1.5 hover:bg-white/[0.04]">
+                <span className="block text-[13px] truncate" style={{ color: C.ink, opacity: 0.75 }}>{g.name}</span>
+                <span className="block text-[11px] truncate" style={{ color: C.dim }}>{[ignoredTxt(g.until), g.reason, g.map_id !== mapId ? `em ${g.map_name}` : ""].filter(Boolean).join(" · ")}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </aside>
+  );
+}
+
+// ------------------------------------------------------------------ ignorar equipamento (eventos, desligado de propósito)
+const IGN_OPTS = [[60, "1 hora"], [240, "4 horas"], [720, "12 horas"], [1440, "24 horas"], [10080, "7 dias"], [0, "até eu reativar"]];
+function IgnoreBox({ deviceId, live, canEdit, onDone }) {
+  const [mins, setMins] = useState(240);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ignored = live?.state === "ignored";
+  const run = async (fn, msg) => {
+    setBusy(true);
+    try { await fn(); toast.success(msg); onDone?.(); } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
+  };
+  if (ignored) {
+    return (
+      <div className="rounded-md border border-line p-2.5 space-y-2 text-xs" data-testid="av-ignore">
+        <div className="text-slate-200">{ignoredTxt(live.ignored_until)}{live.ignored_reason ? ` · ${live.ignored_reason}` : ""}</div>
+        <div className="text-[11px] text-slate-500">Sem ping, sem alarme, fora dos incidentes e da contagem do mapa.{live.ignored_by ? ` Por ${live.ignored_by}.` : ""}</div>
+        {canEdit && <Button size="sm" disabled={busy} onClick={() => run(() => api.delete(`/avail/ignore/${deviceId}`), "Voltou a ser monitorado")}
+                            className="w-full h-8 bg-brand hover:bg-brand-strong text-xs" data-testid="av-unignore">Voltar a monitorar agora</Button>}
+      </div>
+    );
+  }
+  if (!canEdit) return null;
+  return (
+    <details className="rounded-md border border-line text-xs group" data-testid="av-ignore">
+      <summary className="px-2.5 py-2 cursor-pointer text-slate-300 select-none">Ignorar este equipamento…</summary>
+      <div className="px-2.5 pb-2.5 space-y-2">
+        <div className="text-[11px] text-slate-500">Para equipamento de evento ou desligado de propósito: para de pingar, não alarma e não acende o mapa.</div>
+        <div className="grid grid-cols-3 gap-1">
+          {IGN_OPTS.map(([m, l]) => (
+            <button key={m} onClick={() => setMins(m)} className={`px-1.5 py-1 rounded border text-[11px] ${mins === m ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400"}`}>{l}</button>))}
+        </div>
+        <Input value={reason} onChange={e => setReason(e.target.value)} maxLength={120} placeholder="motivo (opcional), ex.: evento" className="h-8 bg-sunken border-line text-xs" />
+        <Button size="sm" disabled={busy} onClick={() => run(() => api.post("/avail/ignore", { device_id: deviceId, minutes: mins, reason }), mins ? "Ignorado por um tempo" : "Ignorado até reativar")}
+                variant="outline" className="w-full h-8 border-line bg-transparent text-xs" data-testid="av-ignore-go">Ignorar {IGN_OPTS.find(o => o[0] === mins)?.[1]}</Button>
+      </div>
+    </details>
   );
 }
 
@@ -1088,6 +1151,7 @@ export default function Availability() {
     return () => { alive = false; clearInterval(t); };
   }, [mapId, sound]);
 
+  const refreshLive = () => { if (mapId) api.get(`/avail/maps/${mapId}/live`).then(r => setLive(r.data)).catch(() => {}); loadList().catch(() => {}); };
   const pickAlarm = (a) => {
     const target = a.kind === "link" ? (a.link_id ? { link: a.link_id } : null) : (a.node_id ? { id: a.node_id } : null);
     if (a.map_id === mapId) return setSelected(target);
@@ -1311,6 +1375,7 @@ export default function Availability() {
                 </dl>
                 {selLive.error && selLive.state !== "up" && <div className="text-xs" style={{ color: C.warn }}>{selLive.error}</div>}
                 {!!selLive.tags?.length && <div className="flex flex-wrap gap-1">{selLive.tags.map(t => <span key={t} className="text-[10px] px-1.5 py-0.5 rounded border border-line text-slate-400">{t}</span>)}</div>}
+                <IgnoreBox key={sel.device_id} deviceId={sel.device_id} live={selLive} canEdit={canEdit} onDone={refreshLive} />
               </>}
               {sel?.kind === "submap" && selLive && <>
                 <div className="text-base font-semibold text-slate-100">{selLive.name}</div>

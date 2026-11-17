@@ -11,6 +11,8 @@ from typing import Dict, List, Optional, Set
 KINDS = ("device", "submap", "label", "note", "shape")     # note = caixa de texto; shape = forma (retângulo/elipse)
 STATES = ("down", "warn", "up", "pending")          # ordem de gravidade
 RANK = {s: i for i, s in enumerate(STATES)}
+IGNORED = "ignored"                                  # ping pausado pelo usuário (fora de STATES: não entra na contagem)
+IGNORE_MAX_MIN = 60 * 24 * 90
 DEFAULTS = {"interval_s": 30, "down_after": 2, "count": 3, "warn_loss": 34, "warn_ms": 150, "alert": True}
 BGS = ("grid", "dots", "radar", "plain")
 COLOR_KEYS = ("up", "warn", "down", "pending", "bg0", "bg1", "ink", "dim", "panel", "line")
@@ -25,6 +27,12 @@ def _color(v, default=None):
     return v if _HEX.match(v) or v == "transparent" else default
 
 
+def _custom(b: dict) -> bool:
+    """Aparência gravada antes de existir "own": conta como própria se alguém mexeu em algo."""
+    return bool(any(_color(b.get(k)) for k in COLOR_KEYS) or (b.get("preset") or "neon") != "neon" or (b.get("bg") or "grid") != "grid"
+                or (b.get("sub_shape") or "hex") != "hex" or (b.get("dev_shape") or "orb") != "orb")
+
+
 def clean_style(b) -> dict:
     """Aparência do mapa: cores (#rrggbb), fundo, formato dos POPs/equipamentos, tamanho e animação das linhas."""
     b = b if isinstance(b, dict) else {}
@@ -32,7 +40,8 @@ def clean_style(b) -> dict:
     out.update(line_w=round(_num(b.get("line_w"), 0.5, 8, 2), 1), line_auto=bool(b.get("line_auto", True)), traffic=bool(b.get("traffic", True)),
                bg=b.get("bg") if b.get("bg") in BGS else "grid", sub_shape=b.get("sub_shape") if b.get("sub_shape") in SUB_SHAPES else "hex",
                dev_shape=b.get("dev_shape") if b.get("dev_shape") in DEV_SHAPES else "orb", scale=round(_num(b.get("scale"), 0.5, 2, 1), 2),
-               flow=bool(b.get("flow", True)), preset=str(b.get("preset") or "")[:20])
+               flow=bool(b.get("flow", True)), preset=str(b.get("preset") or "")[:20],
+               own=bool(b["own"]) if "own" in b else _custom(b))   # False = submapa segue a aparência do mapa de cima
     return out
 
 
@@ -177,14 +186,19 @@ def link_state(st: Optional[dict]) -> str:
 
 def summarize(dev_ids, status: Dict[str, dict], if_keys=(), if_status: Optional[Dict[str, dict]] = None) -> dict:
     c = {s: 0 for s in STATES}
+    ignored = 0
     for d in dev_ids:
-        c[(status.get(d) or {}).get("state") or "pending"] += 1
+        s = (status.get(d) or {}).get("state") or "pending"
+        if s == IGNORED:                # ignorado (evento, desligado de propósito): não conta nem acende o mapa
+            ignored += 1
+            continue
+        c[s if s in c else "pending"] += 1
     total = sum(c.values())
     links_down = sum(1 for k in if_keys if link_state((if_status or {}).get(k)) == "down")
     worst = next((s for s in STATES if c[s]), "pending") if total else "empty"
     if links_down:
         worst = "down"                                 # rota caída também acende o mapa de vermelho
-    return {**c, "total": total, "links_down": links_down, "links": len(if_keys), "state": worst}
+    return {**c, "total": total, "ignored": ignored, "links_down": links_down, "links": len(if_keys), "state": worst}
 
 
 def parents(maps: Dict[str, dict]) -> Dict[str, List[str]]:
@@ -215,3 +229,15 @@ def rate_bps(old, new, dt_s) -> Optional[float]:
     if not isinstance(old, int) or not isinstance(new, int) or not dt_s or dt_s <= 0 or new < old:
         return None
     return round((new - old) * 8 / dt_s, 1)
+
+
+def ignore_until(minutes, now) -> Optional[str]:
+    """Fim do "ignorar": minutos a partir de agora (até 90 dias); 0/vazio = até reativar (None)."""
+    from datetime import timedelta
+    try:
+        m = int(float(minutes or 0))
+    except (TypeError, ValueError):
+        raise MapError("Tempo inválido")
+    if m < 0:
+        raise MapError("Tempo inválido")
+    return (now + timedelta(minutes=min(m, IGNORE_MAX_MIN))).isoformat() if m else None
