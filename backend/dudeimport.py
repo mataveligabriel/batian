@@ -77,6 +77,116 @@ def extract_db(raw_path: str, out_path: str) -> str:
     return out_path
 
 
+# ------------------------------------------------------------------ formato M2 (Dude 6.x/7.x do RouterOS)
+# Cada objeto começa com b"M2" e segue com campos [id 3 bytes LE][tipo 1 byte][valor]. Só os campos abaixo são lidos;
+# os demais (inclusive usuário/senha/community dos equipamentos) são pulados sem decodificar.
+M2_TYPE, M2_NAME = 0xFF0001, 0xFE0010
+M2_MAP = 10                     # mapa de rede
+M2_ELEM = 74                    # elemento desenhado num mapa (equipamento, submapa, texto, rede ou linha)
+M2_DEVICE = 15
+M2_DEVTYPE = 14
+M2_NETWORK = 16
+E_MAP, E_ISLINK, E_KIND, E_ITEM, E_X, E_Y, E_FROM, E_TO = 0x105DC0, 0x105DC2, 0x105DC3, 0x105DC4, 0x105DC5, 0x105DC6, 0x105DDB, 0x105DDC
+D_IPS, D_TYPE = 0x101F40, 0x101F4C
+M2_WANT = {M2_TYPE, M2_NAME, E_MAP, E_ISLINK, E_KIND, E_ITEM, E_X, E_Y, E_FROM, E_TO, D_IPS, D_TYPE}
+NONE32 = 0xFFFFFFFF
+
+
+def _m2(b: bytes, want=M2_WANT) -> Dict[int, object]:
+    i, n, out = 2, len(b), {}
+    while i + 4 <= n:
+        fid = b[i] | b[i + 1] << 8 | b[i + 2] << 16
+        t = b[i + 3]
+        i += 4
+        base, short = t & 0xF8, t & 1
+        v = None
+        if base == 0x00:
+            v = bool(short)
+        elif base == 0x08:
+            if short:
+                v, i = b[i], i + 1
+            else:
+                v, i = int.from_bytes(b[i:i + 4], "little"), i + 4
+        elif base == 0x10:
+            v, i = int.from_bytes(b[i:i + 8], "little"), i + 8
+        elif base == 0x18:
+            i += 16
+        elif base in (0x20, 0x28, 0x30):
+            if short:
+                ln, i = b[i], i + 1
+            else:
+                ln, i = int.from_bytes(b[i:i + 2], "little"), i + 2
+            if fid in want and base == 0x20:
+                v = _s(b[i:i + ln])
+            i += ln
+        elif base in (0x88, 0x90, 0x98, 0xA0, 0xA8, 0xB0):
+            cnt, i = int.from_bytes(b[i:i + 2], "little"), i + 2
+            if base == 0x88:
+                v = [int.from_bytes(b[i + 4 * k:i + 4 * k + 4], "little") for k in range(cnt)]
+                i += 4 * cnt
+            elif base == 0x90:
+                i += 8 * cnt
+            elif base == 0x98:
+                i += 16 * cnt
+            else:
+                for _ in range(cnt):
+                    ln = int.from_bytes(b[i:i + 2], "little")
+                    i += 2 + ln
+        else:
+            raise DudeError("campo desconhecido")
+        if i > n:
+            raise DudeError("objeto truncado")
+        if fid in want:
+            out[fid] = v
+    return out
+
+
+def _parse_m2(rows) -> dict:
+    objs = {}
+    for oid, b in rows:
+        try:
+            d = _m2(bytes(b))
+        except Exception:
+            continue
+        ty = d.get(M2_TYPE) or [None]
+        objs[oid] = (ty[0] if ty else None, d)
+    kind_of = lambda o: objs.get(o, (None, {}))[0]
+    maps, devices, types = {}, {}, {}
+    for oid, (ty, d) in objs.items():
+        if ty == M2_MAP:
+            maps[oid] = {"id": oid, "name": (d.get(M2_NAME) or "").strip() or f"Mapa {oid}", "nodes": [], "links": []}
+        elif ty == M2_DEVTYPE:
+            types[oid] = (d.get(M2_NAME) or "").strip()
+    for oid, (ty, d) in objs.items():
+        if ty == M2_DEVICE:
+            ips = [socket.inet_ntoa(int(v).to_bytes(4, "little")) for v in (d.get(D_IPS) or []) if v]
+            devices[oid] = {"id": oid, "name": (d.get(M2_NAME) or "").strip() or (ips[0] if ips else f"dude-{oid}"), "ips": ips,
+                            "type": types.get(d.get(D_TYPE), "")}
+    signed = lambda v: v - (1 << 32) if isinstance(v, int) and v >= 1 << 31 else (v or 0)
+    for oid, (ty, d) in objs.items():
+        if ty != M2_ELEM or d.get(E_MAP) not in maps:
+            continue
+        m = maps[d[E_MAP]]
+        if d.get(E_ISLINK) == 1:                              # linha: de um elemento para outro no mesmo mapa
+            a, z = d.get(E_FROM), d.get(E_TO)
+            if a not in (None, NONE32) and z not in (None, NONE32):
+                m["links"].append({"id": oid, "from": a, "to": z})
+            continue
+        item, k = d.get(E_ITEM), d.get(E_KIND)
+        x, y = signed(d.get(E_X)), signed(d.get(E_Y))
+        if k == 0 and kind_of(item) == M2_DEVICE:
+            m["nodes"].append({"id": oid, "kind": "device", "ref": item, "x": x, "y": y, "label": ""})
+        elif k == 2 and item in maps:
+            m["nodes"].append({"id": oid, "kind": "submap", "ref": item, "x": x, "y": y, "label": ""})
+        elif k == 3 and (d.get(M2_NAME) or "").strip():
+            m["nodes"].append({"id": oid, "kind": "label", "ref": -1, "x": x, "y": y, "label": d[M2_NAME].strip()[:80]})
+        elif k == 1 and kind_of(item) == M2_NETWORK:          # "rede" (nuvem) do Dude: vira texto com o nome
+            nm = (objs[item][1].get(M2_NAME) or "").strip()
+            if nm:
+                m["nodes"].append({"id": oid, "kind": "label", "ref": -1, "x": x, "y": y, "label": nm[:80]})
+    return {"maps": maps, "devices": devices}
+
+
 def parse_db(path: str) -> dict:
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
@@ -85,6 +195,8 @@ def parse_db(path: str) -> dict:
         raise DudeError(f"Não parece um banco do Dude ({e})")
     finally:
         con.close()
+    if sum(1 for _, b in rows[:200] if bytes(b[:2]) == b"M2") > min(len(rows), 200) // 2:
+        return _parse_m2(rows)                                 # Dude novo (RouterOS 6.4x / 7)
     objs = {}
     for oid, b in rows:
         try:
@@ -135,22 +247,27 @@ def tree(parsed: dict) -> dict:
     roots = [m for m in maps if maps[m]["name"].lower() == "local"] or []
     roots += [m for m in maps if m not in incoming and m not in roots]
     parent, order, seen = {}, [], set()
-    queue = list(roots)
-    while queue:
-        m = queue.pop(0)
-        if m in seen:
-            continue
-        seen.add(m)
-        order.append(m)
-        for r in refs[m]:
-            if r not in seen and r not in parent:
-                parent[r] = m
-                queue.append(r)
-    for m in maps:                                         # sobrou (ciclo fechado sem raiz): vira raiz também
-        if m not in seen:
-            roots.append(m)
-            order.append(m)
+
+    def bfs(start):
+        queue = [start]
+        while queue:
+            m = queue.pop(0)
+            if m in seen:
+                continue
             seen.add(m)
+            order.append(m)
+            for r in refs[m]:
+                if r not in seen and r not in parent:
+                    parent[r] = m
+                    queue.append(r)
+    for r in roots:
+        bfs(r)
+    # sobrou (todos apontam uns para os outros, ex.: PRINCIPAL ↔ POPs): o que tem mais submapas vira raiz e desce a partir dele
+    while len(seen) < len(maps):
+        left = [m for m in maps if m not in seen]
+        r = max(left, key=lambda m: (len({x for x in refs[m] if x not in seen}), -left.index(m)))
+        roots.append(r)
+        bfs(r)
 
     def ancestors(m):
         out, c = set(), m

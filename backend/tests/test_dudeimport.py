@@ -75,3 +75,52 @@ def test_parse_tree_and_build():
     assert rede["nodes"][0]["x"] == 160                                  # 100 * 1.6
     assert len(out["m30"]["links"]) == 1 and len(out["m30"]["nodes"]) == 2
     assert D.device_type("MikroTik Device") == "mikrotik" and D.device_type("Bridge") == "other"
+
+
+def m2(**fields):
+    """Objeto no formato M2 (Dude do RouterOS 6.4x/7): campo = (id, valor)."""
+    out = b"M2"
+    for fid, v in fields.values():
+        h = fid.to_bytes(3, "little")
+        if isinstance(v, bool):
+            out += h + bytes([0x01 if v else 0x00])
+        elif isinstance(v, int):
+            out += h + bytes([0x08]) + (v & 0xFFFFFFFF).to_bytes(4, "little")
+        elif isinstance(v, str):
+            b = v.encode()
+            out += h + bytes([0x21, len(b)]) + b
+        elif isinstance(v, list):
+            out += h + bytes([0x88]) + len(v).to_bytes(2, "little") + b"".join(int(x).to_bytes(4, "little") for x in v)
+    return out
+
+
+def test_m2_format():
+    T, N = D.M2_TYPE, D.M2_NAME
+    ip = int.from_bytes(socket.inet_aton("10.9.0.2"), "little")
+    rows = {
+        1: m2(t=(T, [10]), n=(N, "PRINCIPAL")), 2: m2(t=(T, [10]), n=(N, "pop-a")),
+        5: m2(t=(T, [14]), n=(N, "Router")),
+        7: m2(t=(T, [15]), n=(N, "sw-1"), ips=(D.D_IPS, [ip]), ty=(D.D_TYPE, 5), user=(0x101F46, "admin"), pw=(0x101F47, "segredo")),
+        8: m2(t=(T, [15]), n=(N, "sw-2"), ips=(D.D_IPS, [])),
+        20: m2(t=(T, [74]), m=(D.E_MAP, 1), l=(D.E_ISLINK, 0), k=(D.E_KIND, 2), i=(D.E_ITEM, 2), x=(D.E_X, 100), y=(D.E_Y, -5)),
+        21: m2(t=(T, [74]), m=(D.E_MAP, 2), l=(D.E_ISLINK, 0), k=(D.E_KIND, 2), i=(D.E_ITEM, 1), x=(D.E_X, 0), y=(D.E_Y, 0)),   # volta
+        22: m2(t=(T, [74]), m=(D.E_MAP, 2), l=(D.E_ISLINK, 0), k=(D.E_KIND, 0), i=(D.E_ITEM, 7), x=(D.E_X, 10), y=(D.E_Y, 20)),
+        23: m2(t=(T, [74]), m=(D.E_MAP, 2), l=(D.E_ISLINK, 0), k=(D.E_KIND, 0), i=(D.E_ITEM, 8), x=(D.E_X, 50), y=(D.E_Y, 20)),
+        24: m2(t=(T, [74]), m=(D.E_MAP, 2), l=(D.E_ISLINK, 0), k=(D.E_KIND, 3), i=(D.E_ITEM, -1), x=(D.E_X, 5), y=(D.E_Y, 5), n=(N, "Torre")),
+        25: m2(t=(T, [74]), m=(D.E_MAP, 2), l=(D.E_ISLINK, 1), k=(D.E_KIND, 0), i=(D.E_ITEM, -1), f=(D.E_FROM, 22), z=(D.E_TO, 23)),
+    }
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "dude.db")
+        con = sqlite3.connect(p)
+        con.execute("create table objs (id integer primary key, obj blob)")
+        con.executemany("insert into objs values (?, ?)", list(rows.items()))
+        con.commit(); con.close()
+        r = D.parse_db(p)
+    assert {m["name"] for m in r["maps"].values()} == {"PRINCIPAL", "pop-a"}
+    assert r["devices"][7] == {"id": 7, "name": "sw-1", "ips": ["10.9.0.2"], "type": "Router"}
+    assert all("segredo" not in str(v) and "admin" not in str(v) for v in r["devices"].values())
+    pop = r["maps"][2]
+    assert sorted(n["kind"] for n in pop["nodes"]) == ["device", "device", "label", "submap"]
+    assert pop["links"] == [{"id": 25, "from": 22, "to": 23}] and r["maps"][1]["nodes"][0]["y"] == -5
+    pv = D.preview(r, {})
+    assert [t["name"] for t in pv["tree"]] == ["PRINCIPAL"] and pv["tree"][0]["children"][0]["name"] == "pop-a"   # ciclo PRINCIPAL ↔ pop-a
