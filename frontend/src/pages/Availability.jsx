@@ -1235,23 +1235,65 @@ export default function Availability() {
   const viewStyle = !cur ? {} : (!isSub || styleOwn(cur.style)) ? (cur.style || { bg: cur.bg }) : effectiveStyle(cur.id, byId, trail);
   const viewMap = cur && cur.style !== viewStyle ? { ...cur, style: viewStyle } : cur;
 
-  // árvore: mapas principais e, dentro, os submapas (2 níveis visíveis)
-  const Tree = ({ id, depth, seen, label }) => {
+  // grupos (o que vai no seletor do menu): os mapas de cima; um "Local" (contêiner do Dude) abre nos mapas de dentro
+  const groups = useMemo(() => {
+    const out = [];
+    roots.forEach(r => {
+      if (r.name.trim().toLowerCase() === "local" && r.children.length) r.children.forEach(c => byId[c] && !out.includes(c) && out.push(c));
+      else if (!out.includes(r.id)) out.push(r.id);
+    });
+    return out;
+  }, [list]); // eslint-disable-line react-hooks/exhaustive-deps
+  const under = (gid) => {                          // o grupo e tudo que está abaixo dele
+    const seen = new Set([gid]), q = [gid];
+    while (q.length) (byId[q.shift()]?.children || []).forEach(c => { if (!seen.has(c)) { seen.add(c); q.push(c); } });
+    return seen;
+  };
+  const [group, setGroupRaw] = useState(() => ls.get("bastion_avail_group", ""));
+  const setGroup = (g) => { setGroupRaw(g); ls.set("bastion_avail_group", g); };
+  const groupOk = group && groups.includes(group);
+  const groupSet = useMemo(() => (groupOk ? under(group) : null), [group, groupOk, list]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (groupSet && mapId && !groupSet.has(mapId) && byId[mapId]) setGroupRaw(""); }, [mapId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // nós abertos na árvore (o caminho do mapa aberto abre sozinho)
+  const [openSet, setOpenSet] = useState(() => new Set(ls.get("bastion_avail_open", [])));
+  const flip = (k) => setOpenSet(o => { const n = new Set(o); n.has(k) ? n.delete(k) : n.add(k); ls.set("bastion_avail_open", [...n].slice(-300)); return n; });
+  const trailKeys = useMemo(() => new Set(trail.slice(0, -1).map((t, i) => trail.slice(0, i + 1).join(">"))), [trail]);
+
+  // árvore: cada mapa com seus submapas; abre e fecha pela setinha
+  const Tree = ({ id, depth, seen, label, path }) => {
     const m = byId[id];
     if (!m || seen.has(id)) return null;
     const s2 = new Set(seen).add(id);
+    const key = path ? `${path}>${id}` : id;
+    const kids = m.children.filter(c => byId[c] && !s2.has(c));
+    const isOpen = depth === 0 ? !openSet.has(`-${key}`) : openSet.has(key) || trailKeys.has(key);
     return (
       <>
-        <button onClick={() => open(id)} className={`w-full flex items-center gap-2 py-1.5 pr-2 text-left text-[13px] rounded ${id === mapId ? "bg-white/5 text-white" : "text-slate-300 hover:bg-white/5"}`}
-                style={{ paddingLeft: 10 + depth * 14 }} data-testid={`av-tree-${id}`}>
-          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: C[m.summary.state] || C.empty, boxShadow: m.summary.state === "down" ? `0 0 8px ${C.down}` : "none" }} />
-          <span className="truncate">{label || m.name}</span>
-          {m.summary.down > 0 && <span className="ml-auto font-mono text-[10px]" style={{ color: C.down }}>{m.summary.down}</span>}
-        </button>
-        {depth < 3 && m.children.map(c => <Tree key={c} id={c} depth={depth + 1} seen={s2} label={m.child_labels?.[c]} />)}
+        <div className={`flex items-center rounded ${id === mapId ? "bg-white/5 text-white" : "text-slate-300 hover:bg-white/5"}`} style={{ paddingLeft: 2 + depth * 14 }}>
+          {kids.length ? (
+            <button onClick={() => flip(depth === 0 ? `-${key}` : key)} className="w-5 h-6 shrink-0 inline-flex items-center justify-center text-slate-500 hover:text-slate-200" aria-expanded={isOpen} aria-label={isOpen ? "Fechar" : "Abrir"}>
+              {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+            </button>
+          ) : <span className="w-5 shrink-0" />}
+          <button onClick={() => open(id)} className="flex-1 min-w-0 flex items-center gap-2 py-1.5 pr-2 text-left text-[13px]" data-testid={`av-tree-${id}`}>
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: C[m.summary.state] || C.empty, boxShadow: m.summary.state === "down" ? `0 0 8px ${C.down}` : "none" }} />
+            <span className="truncate">{label || m.name}</span>
+            {!isOpen && kids.length > 0 && <span className="text-[10px] text-slate-600">{kids.length}</span>}
+            {m.summary.down > 0 && <span className="ml-auto font-mono text-[10px]" style={{ color: C.down }}>{m.summary.down}</span>}
+          </button>
+        </div>
+        {isOpen && depth < 6 && kids.map(c => <Tree key={c} id={c} depth={depth + 1} seen={s2} label={m.child_labels?.[c]} path={key} />)}
       </>
     );
   };
+  const GroupChip = ({ id, name, st, down }) => (
+    <button onClick={() => setGroup(id)} data-testid={`av-group-${id || "all"}`}
+      className={`max-w-full inline-flex items-center gap-1.5 h-7 px-2 rounded-full border text-[12px] ${(id ? groupOk && group === id : !groupOk) ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400 hover:text-slate-100"}`}>
+      {st && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: C[st] || C.empty }} />}
+      <span className="truncate">{name}</span>
+      {down > 0 && <span className="font-mono text-[10px]" style={{ color: C.down }}>{down}</span>}
+    </button>
+  );
 
   const tb = "h-8 px-2.5 text-xs border-line bg-panel text-slate-200 hover:bg-slate-800";
   return (
@@ -1269,8 +1311,15 @@ export default function Availability() {
             <Button size="sm" onClick={createMap} disabled={!newName.trim()} className="h-8 bg-brand hover:bg-brand-strong">Criar</Button>
           </div>
         )}
+        {groups.length > 1 && (
+          <div className="px-3 pb-2 flex flex-wrap gap-1" role="group" aria-label="Mostrar só os mapas de" data-testid="av-groups">
+            <GroupChip id="" name="Todos" />
+            {groups.map(g => <GroupChip key={g} id={g} name={byId[g].name} st={byId[g].summary.state} down={byId[g].summary.down} />)}
+          </div>
+        )}
         <div className="flex-1 overflow-y-auto px-1.5 pb-3">
-          {roots.map(m => <Tree key={m.id} id={m.id} depth={0} seen={new Set()} />)}
+          {groupOk ? <Tree key={group} id={group} depth={0} seen={new Set()} />
+            : roots.map(m => <Tree key={m.id} id={m.id} depth={0} seen={new Set()} />)}
           {list && !list.maps.length && <div className="px-3 py-4 text-xs text-slate-500">Crie o mapa principal no + acima. Dentro dele você coloca equipamentos e os submapas de cada POP ou cidade.
             {canEdit && <button onClick={() => setDlg("dude")} className="block mt-2 text-brand-soft hover:underline">Ou importe os mapas do The Dude</button>}</div>}
         </div>
