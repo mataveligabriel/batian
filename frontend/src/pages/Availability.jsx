@@ -170,6 +170,12 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
 
   const world = (e) => { const r = svg.current.getBoundingClientRect(); return { x: (e.clientX - r.left - view.tx) / view.k, y: (e.clientY - r.top - view.ty) / view.k }; };
   const zoomAt = (mx, my, f) => setView(v => { const k = Math.max(0.2, Math.min(3, v.k * f)); return { k, tx: mx - ((mx - v.tx) / v.k) * k, ty: my - ((my - v.ty) / v.k) * k }; });
+  // zoom exato (em %), pelo centro da tela: campo, botões de 1% e barra
+  const zoomTo = (pct) => setView(v => {
+    const mx = (wrap.current?.clientWidth || 0) / 2, my = (wrap.current?.clientHeight || 0) / 2;
+    const k = Math.max(0.2, Math.min(3, Math.round(pct) / 100));
+    return { k, tx: mx - ((mx - v.tx) / v.k) * k, ty: my - ((my - v.ty) / v.k) * k };
+  });
   useEffect(() => {
     const el = svg.current;
     const wheel = (e) => { e.preventDefault(); const r = el.getBoundingClientRect(); zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.12 : 1 / 1.12); };
@@ -533,17 +539,44 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
           </div>
         </div>
       )}
-      <div className="absolute bottom-3 right-3 flex items-center gap-1 rounded px-2 py-1 text-xs" style={{ background: `${C.panel}e6`, border: `1px solid ${C.line}`, color: C.dim }}>
-        <button className="px-1.5 hover:text-white" onClick={() => zoomAt((wrap.current?.clientWidth || 0) / 2, (wrap.current?.clientHeight || 0) / 2, 1.25)} aria-label="Aproximar">+</button>
-        <span className="w-9 text-center font-mono text-[10px]">{Math.round(view.k * 100)}%</span>
-        <button className="px-1.5 hover:text-white" onClick={() => zoomAt((wrap.current?.clientWidth || 0) / 2, (wrap.current?.clientHeight || 0) / 2, 0.8)} aria-label="Afastar">−</button>
-        <button className="px-1.5 border-l ml-1 hover:text-white" style={{ borderColor: C.line }} onClick={fit}>ajustar</button>
-      </div>
+      <ZoomBox pct={Math.round(view.k * 100)} onZoom={zoomTo} onFit={fit} C={C} />
     </div>
   );
 }
 
 // ------------------------------------------------------------------ painel lateral de incidentes (sempre visível)
+// controle de zoom: digitar a %, 1% por clique (segurar acelera), roda do mouse em cima = 1%, barra de 20% a 300%
+function ZoomBox({ pct, onZoom, onFit, C }) {
+  const [txt, setTxt] = useState(null);
+  const cur = useRef(pct); cur.current = pct;
+  const hold = useRef(null);
+  const stop = () => { clearTimeout(hold.current); hold.current = null; };
+  const press = (d) => {
+    onZoom(cur.current + d);
+    let n = 0;
+    const rep = () => { n += 1; onZoom(cur.current + d * (n > 15 ? 5 : n > 6 ? 2 : 1)); hold.current = setTimeout(rep, 70); };
+    hold.current = setTimeout(rep, 380);
+  };
+  useEffect(() => stop, []);
+  const apply = () => { const v = parseFloat(String(txt).replace(",", ".")); if (Number.isFinite(v)) onZoom(v); setTxt(null); };
+  const btn = "w-6 h-6 inline-flex items-center justify-center rounded hover:bg-white/10 hover:text-white select-none";
+  return (
+    <div className="absolute bottom-3 right-3 flex items-center gap-1 rounded px-1.5 py-1 text-xs" style={{ background: `${C.panel}e6`, border: `1px solid ${C.line}`, color: C.dim }}
+         onWheel={(e) => { e.stopPropagation(); onZoom(cur.current + (e.deltaY < 0 ? 1 : -1)); }} onPointerDown={e => e.stopPropagation()} data-testid="av-zoom">
+      <button className={btn} onPointerDown={() => press(-1)} onPointerUp={stop} onPointerLeave={stop} onKeyDown={e => e.key === "Enter" && onZoom(pct - 1)} aria-label="Afastar 1%" title="Afastar 1% (segure para ir mais rápido)">−</button>
+      <input type="range" min="20" max="300" step="1" value={pct} onChange={e => onZoom(Number(e.target.value))} className="hidden sm:block w-24 accent-current" aria-label="Zoom" style={{ accentColor: C.up }} />
+      <button className={btn} onPointerDown={() => press(1)} onPointerUp={stop} onPointerLeave={stop} onKeyDown={e => e.key === "Enter" && onZoom(pct + 1)} aria-label="Aproximar 1%" title="Aproximar 1% (segure para ir mais rápido)">+</button>
+      <label className="flex items-center font-mono text-[11px]">
+        <input value={txt ?? pct} onChange={e => setTxt(e.target.value)} onFocus={e => { setTxt(String(pct)); e.target.select(); }} onBlur={apply}
+               onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setTxt(null); e.currentTarget.blur(); }
+                                 if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); onZoom(pct + (e.key === "ArrowUp" ? 1 : -1)); setTxt(null); } }}
+               inputMode="numeric" className="w-9 bg-transparent text-right outline-none focus:text-white" aria-label="Zoom em porcentagem" data-testid="av-zoom-pct" />%
+      </label>
+      <button className="px-1.5 border-l ml-1 hover:text-white" style={{ borderColor: C.line }} onClick={onFit}>ajustar</button>
+    </div>
+  );
+}
+
 export function AlarmPanel({ live, mapId, onPick, onClose }) {
   const alarms = live?.alarms || [];
   const ignored = live?.ignored || [];
