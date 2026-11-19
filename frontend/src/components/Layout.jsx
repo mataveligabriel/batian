@@ -28,6 +28,7 @@ const MENU = [
     { to: "/maps", icon: Network, label: "Mapas de rede", testid: "nav-maps" },
     { to: "/disponibilidade", icon: Radar, label: "Disponibilidade", testid: "nav-avail" },
     { to: "/kmz", icon: Globe, label: "Mapas KMZ", testid: "nav-kmz" },
+    { to: "/servidor", icon: Cpu, label: "Servidor do BastiON", adminOnly: true, testid: "nav-server" },
     { to: "/dashboards", icon: Gauge, label: "Dashboards", testid: "nav-dashboards" },
     { to: "/probes", icon: Activity, label: "Sondas ativas", testid: "nav-probes" },
     { to: "/logs", icon: ScrollText, label: "Syslog e Traps", testid: "nav-logs" },

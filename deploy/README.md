@@ -1661,3 +1661,13 @@ No cadastro do equipamento, o campo **Agente Proxy** também lista as **VPNs** c
 - Fundo escuro, claro, satélite ou ruas; nomes pelo zoom sem se sobrepor; busca por nome/IP; clique mostra descrição, dados, coordenada e atalho para o Google Maps. No celular, zoom com dois dedos.
 - **Atualizar** (ícone ↻) troca o conteúdo por um arquivo novo mantendo nome, aparência e o tipo das pastas. Trocar a tag no topo casa os pontos de novo com os equipamentos da outra empresa.
 - O arquivo é só lido (sem DOCTYPE/ENTITY); traçados são simplificados (~1 m) e guardados comprimidos (limites: 60 mil pontos, 25 mil linhas, 1,5 milhão de coordenadas).
+
+## 86. Servidor do BastiON (saúde do servidor)
+**Monitoramento → Servidor do BastiON** (só administrador). Atualiza a cada 10 s e guarda a última hora (some ao reiniciar o backend):
+- CPU (uso, iowait, carga), memória (respeita o limite do contêiner) e swap, rede do servidor, discos.
+- **Atraso do backend**: quanto o processo demora para atender; perto de 0 é o normal, centenas de ms = alguma rotina segurando.
+- **Rotinas de fundo**: tempo da última e da maior rodada do ping de status dos equipamentos e da Disponibilidade, com a quantidade de itens.
+- **Banco**: tempo de resposta, tamanho, memória, conexões e as maiores coleções.
+- No topo, um resumo do que está pesando em linguagem direta.
+
+Com milhares de equipamentos: o status (online/offline) agora é gravado de uma vez, a tentativa pela porta SSH dos equipamentos atrás de jump é feita no próprio jump em lote (antes abria uma conexão SSH por equipamento) e os pings no jump vão em lotes de 150. Também foram criados índices em equipamentos (id, dono, jump, tag, IP) e jumps — antes cada busca por equipamento lia a coleção inteira.

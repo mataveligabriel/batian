@@ -37,6 +37,7 @@ import Bgp from "@/pages/Bgp";
 import BgpDoc from "@/pages/BgpDoc";
 import Availability from "@/pages/Availability";
 import KmzMaps from "@/pages/KmzMaps";
+import ServerHealth from "@/pages/ServerHealth";
 import Gpon from "@/pages/Gpon";
 import Compliance from "@/pages/Compliance";
 import CmdPolicy from "@/pages/CmdPolicy";
@@ -94,6 +95,7 @@ function App() {
             <Route path="/bgp-doc" element={<BgpDoc />} />
             <Route path="/disponibilidade" element={<Availability />} />
             <Route path="/kmz" element={<KmzMaps />} />
+            <Route path="/servidor" element={<ProtectedRoute adminOnly><ServerHealth /></ProtectedRoute>} />
             <Route path="/gpon" element={<Gpon />} />
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/soc/commands" element={<CmdPolicy />} />

@@ -89,6 +89,8 @@ import ifauto
 import availmap
 import dudeimport
 import kmzmap
+import syshealth
+from pymongo import UpdateOne
 import alertroutes
 import cmdpolicy
 import siem as siemmod
@@ -162,6 +164,14 @@ async def startup():
             await asyncio.sleep(2)
     await db.users.create_index("email", unique=True)
     await db.devices.create_index("name")
+    # buscas por id/dono/jump/tag em toda tela e rotina: sem índice cada uma lia a coleção inteira (pesava com milhares)
+    for col, keys in ((db.devices, ("id", "owner_id", "agent_id", "tags", "host")), (db.agents, ("id", "owner_id")),
+                      (db.users, ("id",))):
+        for k in keys:
+            try:
+                await col.create_index(k)
+            except Exception as e:
+                logger.warning("índice %s.%s: %s", col.name, k, e)
     await db.agents.create_index("name")
     await db.kmz_maps.create_index("id", unique=True)
     await db.kmz_data.create_index("map_id", unique=True)
@@ -271,6 +281,7 @@ async def startup():
     _bg_tasks.append(asyncio.create_task(_vb_loop()))
     _bg_tasks.append(asyncio.create_task(_ifauto_loop()))
     _bg_tasks.append(asyncio.create_task(_avail_loop()))
+    _bg_tasks.append(asyncio.create_task(syshealth.sampler()))
     _bg_tasks.append(asyncio.create_task(dbbackup.auto_loop(db, vault.decrypt, _db_cloud_upload, _db_alert)))
     assistant.start()
     net_monitor.start()
@@ -1286,7 +1297,7 @@ async def list_devices(user: dict = Depends(get_current_user)):
         ids = await _viewer_device_ids(user)
         return await db.devices.find({"id": {"$in": list(ids)}}, {"_id": 0, "id": 1, "name": 1, "host": 1, "status": 1,
                                                                    "latency_ms": 1, "device_type": 1}).to_list(5000)
-    docs = await db.devices.find(_scope(user), {"_id": 0}).to_list(5000)
+    docs = await db.devices.find(_scope(user), {"_id": 0}).to_list(50000)
     return [_public(d) for d in docs]
 
 
@@ -1582,29 +1593,57 @@ async def _reach_many(devs: List[dict]) -> Dict[str, Optional[float]]:
     tasks = []
     for d in devs:
         if d.get("agent_id"):
-            by_agent.setdefault(d["agent_id"], []).append((d["id"], {"type": "ping", "target": d["host"], "count": 2, "timeout_s": 3}))
+            by_agent.setdefault(d["agent_id"], []).append(d)
         else:
             tasks.append(icmp_local(d))
 
-    async def icmp_agent(agent_id, items):
-        try:
-            out = await _probe_on_agent(agent_id, items)
-        except Exception:
-            return
-        for k, r in out.items():
-            if r.get("ok"):
-                res[k] = r.get("ms") if r.get("ms") is not None else 0.0
+    async def on_agent(agent_id, items):
+        """No jump, em lotes (um script e uma conexão por lote, 2 lotes por vez): ICMP e, para quem não respondeu,
+        a porta de acesso — antes era uma conexão SSH nova por equipamento, o que pesava com milhares de equipamentos."""
+        lsem = asyncio.Semaphore(2)
 
-    tasks += [icmp_agent(a, it) for a, it in by_agent.items()]
+        async def batch(part):
+            async with lsem:
+                try:
+                    return await _probe_on_agent(agent_id, part)
+                except Exception:
+                    return {}
+        chunks = [items[i:i + REACH_BATCH] for i in range(0, len(items), REACH_BATCH)]
+        for out in await asyncio.gather(*[batch(c) for c in chunks]):
+            for k, r in out.items():
+                if r.get("ok"):
+                    res[k] = r.get("ms") if r.get("ms") is not None else 0.0
+
+    async def via_agent(agent_id, ds):
+        await on_agent(agent_id, [(d["id"], {"type": "ping", "target": d["host"], "count": 2, "timeout_s": 3}) for d in ds])
+        left = [d for d in ds if res[d["id"]] is None]
+        if left:
+            await on_agent(agent_id, [(d["id"], {"type": "tcp", "target": d["host"], "port": int(d.get("port") or 22), "timeout_s": 3}) for d in left])
+
+    tasks += [via_agent(a, ds) for a, ds in by_agent.items()]
     await asyncio.gather(*tasks)
-    tsem = asyncio.Semaphore(20)
+    tsem = asyncio.Semaphore(40)
 
     async def tcp(d):
         async with tsem:
-            res[d["id"]] = await _ping_device(d)
+            res[d["id"]] = await tcp_ping(d["host"], int(d.get("port") or 22))
 
-    await asyncio.gather(*[tcp(d) for d in devs if res[d["id"]] is None])   # sem ICMP (bloqueado): tenta a porta SSH
+    await asyncio.gather(*[tcp(d) for d in devs if res[d["id"]] is None and not d.get("agent_id")])   # sem ICMP: tenta a porta
     return res
+
+
+REACH_BATCH = 150
+
+
+async def _save_reach(devs: List[dict], lats: Dict[str, Optional[float]], now: str):
+    """Grava o estado de todos de uma vez (bulk) em vez de um update por equipamento."""
+    ops = []
+    for d in devs:
+        lat = lats.get(d["id"])
+        ops.append(UpdateOne({"id": d["id"]}, {"$set": {"status": "online" if lat is not None else "offline", "latency_ms": lat,
+                                                        "last_seen": now if lat is not None else d.get("last_seen")}}))
+    for i in range(0, len(ops), 1000):
+        await db.devices.bulk_write(ops[i:i + 1000], ordered=False)
 
 
 @api.post("/devices/{device_id}/ping")
@@ -1622,16 +1661,10 @@ async def ping_all_devices(payload: Optional[DeviceIdsPayload] = None, user: dic
     q = dict(_scope(user))
     if payload and payload.device_ids:
         q["id"] = {"$in": payload.device_ids}
-    devs = await db.devices.find(q, {"_id": 0}).to_list(5000)
+    devs = await db.devices.find(q, {"_id": 0, "id": 1, "host": 1, "port": 1, "agent_id": 1, "last_seen": 1}).to_list(20000)
     lats = await _reach_many(devs)
-    results = []
-    now = datetime.now(timezone.utc).isoformat()
-    for dv in devs:
-        lat = lats.get(dv["id"])
-        st = "online" if lat is not None else "offline"
-        await db.devices.update_one({"id": dv["id"]}, {"$set": {"status": st, "latency_ms": lat, "last_seen": now if lat is not None else dv.get("last_seen")}})
-        results.append({"device_id": dv["id"], "status": st, "latency_ms": lat})
-    return results
+    await _save_reach(devs, lats, datetime.now(timezone.utc).isoformat())
+    return [{"device_id": d["id"], "status": "online" if lats.get(d["id"]) is not None else "offline", "latency_ms": lats.get(d["id"])} for d in devs]
 
 
 # ---------- SSH Key ----------
@@ -4060,17 +4093,15 @@ async def _ping_everything() -> List[dict]:
                                 "detail": f"{a.get('location', '')} · {'túnel reverso porta ' + str(a.get('tunnel_port')) if a.get('mode') == 'reverse' else a.get('host', '')}"})
     await asyncio.gather(*[_ag(a) for a in agents])
 
-    devs = await db.devices.find({}, {"_id": 0}).to_list(5000)
-    lats = await _reach_many(devs)
-
-    async def _dv(d):
-        lat = lats.get(d["id"])
-        st = "online" if lat is not None else "offline"
-        await db.devices.update_one({"id": d["id"]}, {"$set": {"status": st, "latency_ms": lat, "last_seen": now if lat is not None else d.get("last_seen")}})
+    devs = await db.devices.find({}, {"_id": 0, "id": 1, "name": 1, "host": 1, "port": 1, "agent_id": 1, "status": 1, "last_seen": 1}).to_list(50000)
+    async with syshealth.job("Ping dos equipamentos (status)", len(devs)):
+        lats = await _reach_many(devs)
+        await _save_reach(devs, lats, now)
+    for d in devs:
+        st = "online" if lats.get(d["id"]) is not None else "offline"
         if d.get("status") in ("online", "offline") and d.get("status") != st:
             transitions.append({"kind": "device", "id": d["id"], "host": d["host"], "name": d["name"], "status": st,
                                 "detail": f"{d['host']} (ping e porta {d.get('port', 22)})" if st == "offline" else d["host"]})
-    await asyncio.gather(*[_dv(d) for d in devs])
     return transitions
 
 
@@ -5233,8 +5264,13 @@ async def _avail_poll(dev_ids: List[str], cfg: dict):
             tasks.append(local(d))
 
     async def remote(agent_id, items):
-        for k, v in (await _probe_on_agent(agent_id, items)).items():
-            res[k] = v
+        lsem = asyncio.Semaphore(2)                         # lotes de REACH_BATCH, 2 por vez por jump
+
+        async def part(chunk):
+            async with lsem:
+                for k, v in (await _probe_on_agent(agent_id, chunk)).items():
+                    res[k] = v
+        await asyncio.gather(*[part(items[i:i + REACH_BATCH]) for i in range(0, len(items), REACH_BATCH)])
 
     tasks += [remote(a, items) for a, items in by_agent.items()]
     await asyncio.gather(*tasks)
@@ -5368,7 +5404,8 @@ async def _avail_loop():
             if ids:
                 jobs.append(_avail_poll(ids, cfg))
             jobs.append(_avail_poll_links(maps, cfg))
-            await asyncio.wait_for(asyncio.gather(*jobs), timeout=max(60, cfg["interval_s"] * 3))
+            async with syshealth.job("Disponibilidade (ICMP + SNMP das linhas)", len(ids)):
+                await asyncio.wait_for(asyncio.gather(*jobs), timeout=max(60, cfg["interval_s"] * 3))
             _avail_info.update(last_cycle=datetime.now(timezone.utc).isoformat(), duration_s=round(time.monotonic() - t0, 1), devices=len(ids))
             await db.avail_events.delete_many({"at": {"$lt": (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()}})
         except Exception as e:
@@ -6904,6 +6941,42 @@ async def _db_settings() -> dict:
             "last_auto_at": s.get("last_auto_at"), "last_auto_ok": s.get("last_auto_ok"),
             "last_auto_error": s.get("last_auto_error") or "", "last_cloud_ok": s.get("last_cloud_ok"),
             "last_cloud_error": s.get("last_cloud_error") or ""}
+
+
+@api.get("/system/health")
+async def system_health(user: dict = Depends(get_current_user)):
+    """Saúde do servidor: CPU, memória, disco, rede, processo, atraso do loop, banco e rotinas de fundo (só administrador)."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Só administrador")
+    t0 = time.monotonic()
+    try:
+        await db.command("ping")
+        db_ms = round((time.monotonic() - t0) * 1000, 1)
+        st = await db.command("dbStats")
+        ss = await db.command("serverStatus")
+        mongo = {"ping_ms": db_ms, "data": st.get("dataSize"), "storage": st.get("storageSize"), "indexes": st.get("indexSize"),
+                 "objects": st.get("objects"), "collections": st.get("collections"),
+                 "connections": (ss.get("connections") or {}).get("current"), "resident_mb": (ss.get("mem") or {}).get("resident"),
+                 "ops": {k: v for k, v in (ss.get("opcounters") or {}).items()}, "uptime_s": ss.get("uptime"), "version": ss.get("version")}
+    except Exception as e:
+        mongo = {"error": str(e)[:200]}
+    big = []
+    try:
+        for name in await db.list_collection_names():
+            try:
+                c = await db.command("collStats", name)
+                big.append({"name": name, "count": c.get("count"), "size": c.get("size"), "storage": c.get("storageSize")})
+            except Exception:
+                pass
+        big.sort(key=lambda x: -(x.get("storage") or 0))
+    except Exception:
+        pass
+    counts = {"devices": await db.devices.count_documents({}), "agents": await db.agents.count_documents({}),
+              "avail_maps": await db.avail_maps.count_documents({}), "users": await db.users.count_documents({})}
+    cur = syshealth.HIST[-1] if syshealth.HIST else syshealth.sample()
+    return {"now": cur, "history": list(syshealth.HIST), "step": syshealth.STEP, "disks": syshealth.disks(),
+            "cpus": os.cpu_count(), "uptime_s": syshealth.uptime_s(), "jobs": sorted(syshealth.JOBS.values(), key=lambda j: -(j.get("last_s") or 0)),
+            "tasks": len(asyncio.all_tasks()), "mongo": mongo, "collections": big[:12], "counts": counts, "avail": _avail_info}
 
 
 @api.get("/system/db")
