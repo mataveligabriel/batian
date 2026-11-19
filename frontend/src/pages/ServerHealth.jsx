@@ -69,7 +69,10 @@ export default function ServerHealth() {
     if (ioAvg >= 20) out.push(["bad", `Muito tempo esperando o disco (iowait ${ioAvg.toFixed(0)}%) — disco lento ou cheio de escrita.`]);
     if (load1 > cpus * 1.5) out.push(["warn", `Carga ${load1} para ${cpus} núcleo(s): tem mais trabalho do que CPU.`]);
     if (pct(memUsed, memTotal) >= 90) out.push(["bad", `Memória quase cheia (${pct(memUsed, memTotal).toFixed(0)}%).`]);
-    if (mem.swap_used > 256e6) out.push(["warn", `Usando ${fmtB(mem.swap_used)} de swap — o servidor está sem memória livre e fica lento.`]);
+    // swap ocupado sozinho não é problema (o Linux guarda lá o que está parado); lento é quando ele fica trocando páginas
+    const swapIo = avg(x => x.swap_io);
+    if (swapIo >= 200) out.push(["bad", `O servidor está trocando memória com o disco (swap) o tempo todo (${Math.round(swapIo)} páginas/s) — falta memória e isso deixa tudo lento.`]);
+    else if (pct(memUsed, memTotal) >= 85 && mem.swap_used > 256e6) out.push(["warn", `Memória em ${pct(memUsed, memTotal).toFixed(0)}% e ${fmtB(mem.swap_used)} no swap: está perto do limite.`]);
     (d.disks || []).forEach(k => { if (pct(k.used, k.total) >= 90) out.push(["bad", `Disco ${k.path} com ${pct(k.used, k.total).toFixed(0)}% usado.`]); });
     if (lagAvg >= 300) out.push(["bad", `O backend está demorando ${Math.round(lagAvg)} ms para atender (deveria ficar perto de 0): alguma rotina está segurando o processo.`]);
     else if (lagAvg >= 80) out.push(["warn", `O backend está com ${Math.round(lagAvg)} ms de atraso médio.`]);
@@ -106,7 +109,7 @@ export default function ServerHealth() {
             <Spark series={[H.map(x => x.cpu?.used), H.map(x => x.cpu?.iowait)]} max={100} unit="%" colors={["#2dd4bf", "#f59e0b"]} />
           </Card>
           <Card icon={MemoryStick} title={mem.limit ? "Memória (limite do contêiner)" : "Memória"} value={`${pct(memUsed, memTotal).toFixed(0)}%`} color={tone(pct(memUsed, memTotal), 80, 90)}
-                sub={`${fmtB(memUsed)} de ${fmtB(memTotal)}${mem.swap_total ? ` · swap ${fmtB(mem.swap_used)}` : ""}`}>
+                sub={`${fmtB(memUsed)} de ${fmtB(memTotal)}${mem.swap_total ? ` · swap ${fmtB(mem.swap_used)}${now.swap_io != null ? (now.swap_io >= 1 ? `, trocando ${Math.round(now.swap_io)} pág/s` : ", parado") : ""}` : ""}`}>
             <Spark series={[H.map(x => pct(x.mem?.limit ? x.mem.limit_used : x.mem?.used, x.mem?.limit || x.mem?.total))]} max={100} unit="%" colors={["#a78bfa"]} />
           </Card>
           <Card icon={Timer} title="Atraso do backend" value={now.lag_ms == null ? "—" : `${Math.round(now.lag_ms)} ms`} color={tone(now.lag_ms || 0, 80, 300)}

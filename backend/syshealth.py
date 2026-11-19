@@ -69,6 +69,16 @@ def meminfo() -> dict:
     return out
 
 
+def vmstat_swap() -> tuple:
+    """Páginas trocadas com o swap desde o boot (entrando, saindo)."""
+    v = {}
+    for ln in _read("/proc/vmstat").splitlines():
+        k, _, n = ln.partition(" ")
+        if k in ("pswpin", "pswpout"):
+            v[k] = int(n)
+    return v.get("pswpin", 0), v.get("pswpout", 0)
+
+
 def loadavg() -> list:
     p = _read("/proc/loadavg").split()
     try:
@@ -134,19 +144,21 @@ def uptime_s() -> Optional[float]:
 def sample(lag_ms: Optional[float] = None) -> dict:
     """Uma leitura; taxas (CPU, rede, CPU do processo) contra a leitura anterior."""
     now = time.time()
-    ct, (rx, tx), me = cpu_times(), net_bytes(), proc_self()
+    ct, (rx, tx), me, (si, so) = cpu_times(), net_bytes(), proc_self(), vmstat_swap()
     s = {"t": round(now), "cpu": None, "load": loadavg(), "mem": meminfo(), "lag_ms": lag_ms, "rx_bps": None, "tx_bps": None,
-         "proc": {k: me.get(k) for k in ("rss", "threads", "fds")}, "proc_cpu": None}
+         "proc": {k: me.get(k) for k in ("rss", "threads", "fds")}, "proc_cpu": None, "swap_io": None}
     if _prev:
         dt = now - _prev["t"]
         s["cpu"] = cpu_pct(_prev.get("ct"), ct)
         if dt > 0:
             s["rx_bps"] = round(max(0, rx - _prev["rx"]) * 8 / dt)
             s["tx_bps"] = round(max(0, tx - _prev["tx"]) * 8 / dt)
+            if "si" in _prev:                     # páginas/s indo e voltando do swap: isso é o que deixa lento
+                s["swap_io"] = round((max(0, si - _prev["si"]) + max(0, so - _prev["so"])) / dt, 1)
             if me.get("cpu_ticks") is not None and _prev.get("pt") is not None:
                 hz = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
                 s["proc_cpu"] = round(100 * (me["cpu_ticks"] - _prev["pt"]) / hz / dt, 1)    # % de 1 núcleo
-    _prev.update(t=now, ct=ct, rx=rx, tx=tx, pt=me.get("cpu_ticks"))
+    _prev.update(t=now, ct=ct, rx=rx, tx=tx, pt=me.get("cpu_ticks"), si=si, so=so)
     return s
 
 

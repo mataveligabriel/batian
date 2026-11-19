@@ -177,6 +177,29 @@ export default function Devices() {
     return matchQ && matchTag && matchStatus;
   }), [devices, q, tagFilter, statusFilter]);
 
+  // ---- desenho em partes: com milhares de equipamentos, montar todas as linhas de uma vez travava a tela ----
+  const PAGE = 150;
+  const [limit, setLimit] = useState(PAGE);
+  useEffect(() => { setLimit(PAGE); }, [q, tagFilter, statusFilter]);
+  const shown = useMemo(() => filtered.slice(0, limit), [filtered, limit]);
+  const more = filtered.length - shown.length;
+  const sentinel = useRef(null);
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el || more <= 0 || typeof IntersectionObserver === "undefined") return undefined;
+    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting) setLimit(l => l + PAGE); }, { rootMargin: "600px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [more, shown.length]);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia?.("(max-width: 767px)").matches);
+  useEffect(() => {
+    const mq = window.matchMedia?.("(max-width: 767px)");
+    if (!mq) return undefined;
+    const f = () => setIsMobile(mq.matches);
+    mq.addEventListener?.("change", f);
+    return () => mq.removeEventListener?.("change", f);
+  }, []);
+
   // ---- seleção ----
   const filteredIds = filtered.map(d => d.id);
   const selectedIds = [...selected];
@@ -326,9 +349,9 @@ export default function Devices() {
       )}
 
       {/* celular: lista em cartões — tocar abre o terminal */}
-      <div className="md:hidden space-y-2" data-testid="devices-mobile-list">
+      {isMobile && <div className="md:hidden space-y-2" data-testid="devices-mobile-list">
         {filtered.length === 0 && <div className="text-center py-10 text-slate-500 font-mono text-sm">Nenhum equipamento encontrado</div>}
-        {filtered.map(d => (
+        {shown.map(d => (
           <div key={d.id} className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 ${selected.has(d.id) ? "border-brand/60 bg-brand/10" : "border-line bg-surface"}`}>
             <button className="flex-1 min-w-0 text-left" onClick={() => nav(`/terminal/${d.id}`)} data-testid={`mobile-device-${d.id}`}>
               <div className="flex items-center gap-2">
@@ -345,9 +368,10 @@ export default function Devices() {
             <Button size="sm" variant="ghost" onClick={() => openEdit(d)} className="h-9 w-9 p-0 text-slate-300" title="Editar"><Pencil className="w-4 h-4" /></Button>
           </div>
         ))}
-      </div>
+        {more > 0 && <div ref={sentinel} className="py-3 text-center text-xs text-slate-500">carregando mais… ({shown.length} de {filtered.length})</div>}
+      </div>}
 
-      <Card className="hidden md:block bg-surface border-line overflow-hidden">
+      {!isMobile && <Card className="hidden md:block bg-surface border-line overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="text-xs text-slate-500 bg-panel">
@@ -371,7 +395,7 @@ export default function Devices() {
               {filtered.length === 0 && (
                 <tr><td colSpan={10} className="text-center py-10 text-slate-500 font-mono">Nenhum equipamento encontrado</td></tr>
               )}
-              {filtered.map(d => (
+              {shown.map(d => (
                 <tr key={d.id} data-testid={`device-row-${d.id}`} className={selected.has(d.id) ? "bg-brand/10" : "hover:bg-slate-900/40"}>
                   <td className="pl-4 pr-1 py-3" onClick={(e) => { e.preventDefault(); toggleRow(d.id, e.shiftKey); }}>
                     <Checkbox checked={selected.has(d.id)} data-testid={`select-device-${d.id}`} aria-label={`Selecionar ${d.name}`} className="border-slate-500" />
@@ -433,7 +457,14 @@ export default function Devices() {
             </tbody>
           </table>
         </div>
-      </Card>
+        {more > 0 && (
+          <div ref={sentinel} className="flex items-center justify-center gap-3 py-3 text-xs text-slate-500 border-t border-line" data-testid="devices-more">
+            Mostrando {shown.length} de {filtered.length}
+            <button onClick={() => setLimit(l => l + PAGE * 4)} className="text-brand-soft hover:underline">mostrar mais</button>
+            <button onClick={() => setLimit(filtered.length)} className="text-slate-400 hover:text-slate-200">mostrar todos</button>
+          </div>
+        )}
+      </Card>}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="bg-surface border-line text-slate-100 max-w-lg max-h-[92vh] overflow-y-auto">
