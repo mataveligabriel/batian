@@ -90,6 +90,7 @@ import availmap
 import dudeimport
 import kmzmap
 import syshealth
+import mapxfer
 from pymongo import UpdateOne
 import alertroutes
 import cmdpolicy
@@ -4659,6 +4660,131 @@ async def duplicate_map(map_id: str, user: dict = Depends(get_current_user)):
     return m
 
 
+# ----- exportar / importar mapas entre BastiONs -----
+async def _xfer_devices(user: dict, ids) -> Dict[str, dict]:
+    return {d["id"]: d for d in await db.devices.find({"id": {"$in": list(ids)}, **_scope(user)},
+                                                      {"_id": 0, **{k: 1 for k in ("id",) + mapxfer.DEV_FIELDS}}).to_list(len(ids) + 1)}
+
+
+def _xfer_download(data: dict, name: str):
+    fn = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{name or 'mapa'}").strip("-")[:60] or "mapa"
+    return Response(content=json.dumps(data, ensure_ascii=False, indent=1), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="bastion-{data["kind"]}-{fn}.json"'})
+
+
+async def _xfer_prepare(user: dict, body: dict, kind: str):
+    """Lê o arquivo, casa os equipamentos pelo IP e, com create_missing, cadastra os que faltam (sem senha)."""
+    try:
+        data = mapxfer.check(body.get("data"))
+    except mapxfer.XferError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if data["kind"] != kind:
+        raise HTTPException(status_code=400, detail="Este arquivo é de " + ("Disponibilidade" if data["kind"] == "availability" else "Mapas de rede") + "; importe na tela certa")
+    entries = data.get("devices") or []
+    existing = await db.devices.find(_scope(user), {"_id": 0, "id": 1, "host": 1, "port": 1}).to_list(100000)
+    match = mapxfer.match_devices(entries, existing)
+    tag = str(body.get("tag") or "").strip()[:60]
+    new_rows = mapxfer.new_device_rows(entries, match, tag)
+    preview = {"kind": kind, "name": data.get("name", ""), "maps": len(data.get("maps") or [1]), "devices": len(entries),
+               "matched": sum(1 for v in match.values() if v), "missing": [{"name": r["name"], "host": r["host"]} for r in new_rows][:500],
+               "missing_count": len(new_rows)}
+    created = 0
+    if body.get("apply") and body.get("create_missing") and new_rows:
+        agent_id = str(body.get("agent_id") or "") or None
+        if agent_id:
+            await _get_agent_for(user, agent_id)
+        docs = []
+        for r in new_rows:
+            ref = r.pop("ref")
+            doc = Device(**_normalize_device({**r, "port": int(r["port"]) if str(r["port"]).isdigit() else 22, "username": "", "password": "",
+                                              "agent_id": agent_id, "backup_enabled": False}, user)).model_dump()
+            docs.append(doc)
+            match[ref] = doc["id"]
+        await db.devices.insert_many(docs)
+        created = len(docs)
+    return data, match, preview, created
+
+
+@api.get("/maps/{map_id}/export")
+async def map_export(map_id: str, user: dict = Depends(get_current_user)):
+    """Arquivo do mapa de topologia para levar a outro BastiON (sem usuário, senha, community ou jump)."""
+    m = await _map_for(user, map_id)
+    devs = await _xfer_devices(user, {n.get("device_id") for n in m.get("nodes", []) if n.get("device_id")})
+    return _xfer_download(mapxfer.export_topology(m, devs), m.get("name", ""))
+
+
+@api.post("/maps/import")
+async def map_import(body: dict, user: dict = Depends(get_current_user)):
+    """apply=false: só mostra o que vai acontecer. apply=true: cria o mapa (equipamento que não existe vira nuvem, ou é
+    cadastrado sem senha com create_missing)."""
+    _no_viewer(user)
+    data, match, preview, created = await _xfer_prepare(user, body, "topology")
+    if not body.get("apply"):
+        return preview
+    built = mapxfer.build_topology(data, match)
+    names = {m["name"] async for m in db.maps.find({"owner_id": user["id"]}, {"_id": 0, "name": 1})}
+    name = built["name"] if built["name"] not in names else f"{built['name']} (importado)"
+    now = datetime.now(timezone.utc).isoformat()
+    mid = os.urandom(8).hex()
+    await db.maps.insert_one({"id": mid, "owner_id": user["id"], "name": name, "description": built["description"], "nodes": [], "links": [],
+                              "created_at": now, "updated_at": now})
+    try:
+        upd = MapUpdate(name=name, description=built["description"], nodes=built["nodes"], links=built["links"],
+                        geo=built["geo"] if isinstance(built.get("geo"), dict) else None)
+        await update_map(mid, upd, user)
+    except Exception as e:
+        await db.maps.delete_one({"id": mid})
+        raise HTTPException(status_code=400, detail=f"Mapa inválido no arquivo: {str(e)[:200]}")
+    return {**preview, "map_id": mid, "name": name, "created_devices": created}
+
+
+@api.get("/avail/maps/{map_id}/export")
+async def avail_export(map_id: str, submaps: bool = True, user: dict = Depends(get_current_user)):
+    """Arquivo do mapa de disponibilidade (com os submapas, por padrão) para levar a outro BastiON."""
+    maps = await _avail_all_maps()
+    if map_id not in maps:
+        raise HTTPException(status_code=404, detail="Mapa não encontrado")
+    mids = mapxfer.descendants(map_id, maps) if submaps else [map_id]
+    ids = {n.get("device_id") for mid in mids for n in maps[mid].get("nodes", []) if n.get("device_id")}
+    ids |= {(l.get("snmp") or {}).get("device_id") for mid in mids for l in maps[mid].get("links", []) if l.get("snmp")}
+    devs = await _xfer_devices(user, ids - {None})
+    return _xfer_download(mapxfer.export_avail(map_id, maps, devs, submaps), maps[map_id].get("name", ""))
+
+
+@api.post("/avail/import")
+async def avail_import(body: dict, user: dict = Depends(get_current_user)):
+    """Mesmo esquema de /maps/import para Disponibilidade; os mapas entram como mapas principais (ou dentro de parent_id)."""
+    _no_viewer(user)
+    data, match, preview, created = await _xfer_prepare(user, body, "availability")
+    if not body.get("apply"):
+        return preview
+    built = mapxfer.build_avail(data, match)
+    allm = await _avail_all_maps()
+    names = {m["name"] for m in allm.values()}
+    dev_ids = set(await _my_device_ids(user))
+    map_ids = set(allm) | {b["id"] for b in built.values()}
+    now = datetime.now(timezone.utc).isoformat()
+    docs = []
+    for ref, b in built.items():
+        try:
+            doc = availmap.clean_map(b["body"], dev_ids, map_ids, b["id"])
+        except availmap.MapError as e:
+            raise HTTPException(status_code=400, detail=f"Mapa inválido no arquivo: {e}")
+        if ref == data.get("root") and doc["name"] in names:
+            doc["name"] = f"{doc['name']} (importado)"[:80]
+        docs.append({"id": b["id"], **doc, "created_at": now, "updated_at": now, "created_by": user.get("email")})
+    if docs:
+        await db.avail_maps.insert_many(docs)
+    root = built.get(str(data.get("root")), {}).get("id")
+    parent = body.get("parent_id")
+    if root and parent and parent in allm:
+        xs = [n["x"] for n in allm[parent].get("nodes", [])] or [0]
+        await db.avail_maps.update_one({"id": parent}, {"$push": {"nodes": {"id": availmap.new_id(), "kind": "submap", "map_id": root, "label": "",
+                                                                           "x": round(max(xs) + 160, 1), "y": 0}}, "$set": {"updated_at": now}})
+    _avail_kick.set()
+    return {**preview, "map_id": root, "maps_created": len(docs), "created_devices": created}
+
+
 class AutoMapIn(BaseModel):
     device_ids: List[str]
     sample_sec: int = 10
@@ -7322,7 +7448,7 @@ async def backups_summary(user: dict = Depends(get_current_user)):
 
 
 async def _my_device_ids(user: dict) -> List[str]:
-    return [d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(10000)]
+    return [d["id"] for d in await db.devices.find(_scope(user), {"_id": 0, "id": 1}).to_list(100000)]
 
 
 async def _backup_for(user: dict, backup_id: str) -> dict:

@@ -1671,3 +1671,9 @@ No cadastro do equipamento, o campo **Agente Proxy** também lista as **VPNs** c
 - No topo, um resumo do que está pesando em linguagem direta.
 
 Com milhares de equipamentos: o status (online/offline) agora é gravado de uma vez, a tentativa pela porta SSH dos equipamentos atrás de jump é feita no próprio jump em lote (antes abria uma conexão SSH por equipamento) e os pings no jump vão em lotes de 150. Também foram criados índices em equipamentos (id, dono, jump, tag, IP) e jumps — antes cada busca por equipamento lia a coleção inteira.
+
+## 87. Exportar e importar mapas entre BastiONs
+- **Mapas de rede**: botão **Exportar** no mapa aberto baixa um `.json`; no outro BastiON, **Importar mapa** (abaixo de "Mapa automático").
+- **Disponibilidade**: **Exportar** na barra do mapa (leva o mapa e todos os submapas dele); no outro BastiON, ícone de importar ao lado do "+" no menu, escolhendo se entra como mapa principal ou dentro de outro.
+- O arquivo leva o desenho (posições, ligações, traçados, satélite, aparência, interfaces SNMP das linhas) e só nome, IP, porta, tipo, tags e descrição dos equipamentos — **nunca** usuário, senha, community ou jump.
+- Na importação, cada equipamento é casado pelo IP (e porta) com um já cadastrado. Antes de gravar aparece quantos casaram e a lista dos que não existem: ou viram texto/nuvem com o nome no mesmo lugar, ou são cadastrados sem senha e com backup desligado (escolhendo a tag e o jump).

@@ -15,7 +15,9 @@ import { toast } from "sonner";
 import {
   Network, Plus, Pencil, Save, X, Trash2, Copy, Cable, Cloud, Type, Server, Loader2, MousePointer2,
   TerminalSquare, BellRing, Settings2, RefreshCw, Search, Maximize, RotateCcw, Send, Eye, Stethoscope, Wand2, Satellite, MapPin, Spline, Tv,
+  FileDown, FileUp,
 } from "lucide-react";
+import { ImportMapDialog, downloadMap } from "@/components/MapTransfer";
 import { MapCanvas } from "@/components/maps/MapCanvas";
 import { BASES, GEO_DEFAULTS, geoCenterOf, geoLayers, parseLatLon, project, toGeoView, unproject } from "@/components/maps/geo";
 import { LinkDialog } from "@/components/maps/LinkDialog";
@@ -218,6 +220,7 @@ export default function Maps() {
   const [sendOpen, setSendOpen] = useState(false);
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [autoOpen, setAutoOpen] = useState(null);       // null | "new" | "current"
+  const [importOpen, setImportOpen] = useState(false);
   const [tvPre, setTvPre] = useState(null);             // mapa já marcado ao abrir a aba Link do mapa
   const [tab, setTab] = useState("maps");
   const [maps, setMaps] = useState([]);
@@ -394,6 +397,8 @@ export default function Maps() {
         </div>
       </div>
 
+      {importOpen && <ImportMapDialog kind="topology" onClose={() => setImportOpen(false)}
+        onDone={async (id) => { setImportOpen(false); await loadMaps(); if (id) openMap(id); }} />}
       {autoOpen && <AutoMapDialog devices={devices} maps={maps} current={autoOpen === "current" ? current : null} onClose={() => setAutoOpen(null)}
                                    onDone={async (id) => { setAutoOpen(null); await loadMaps(); openMap(id); }} />}
       {tab === "alarms" && <div className="p-4 md:p-6 pt-4 overflow-y-auto flex-1"><MonitorTab devices={devices} /></div>}
@@ -412,6 +417,12 @@ export default function Maps() {
             {!readOnly && (
               <button onClick={() => setAutoOpen("new")} className="mx-3 mt-2 mb-1 h-8 rounded-md border border-brand/50 text-brand-soft text-xs flex items-center justify-center gap-1.5 hover:bg-brand/10" data-testid="automap-open">
                 <Wand2 className="w-3.5 h-3.5" /> Mapa automático
+              </button>
+            )}
+            {!readOnly && (
+              <button onClick={() => setImportOpen(true)} className="mx-3 mb-1 h-8 rounded-md border border-line text-slate-300 text-xs flex items-center justify-center gap-1.5 hover:bg-white/5" data-testid="map-import-open"
+                      title="Importar um mapa exportado de outro BastiON (.json)">
+                <FileUp className="w-3.5 h-3.5" /> Importar mapa
               </button>
             )}
             <div className="flex-1 overflow-y-auto divide-y divide-line">
@@ -448,6 +459,8 @@ export default function Maps() {
                           title="Descobrir os enlaces dos equipamentos deste mapa (e de outros que você escolher) e acrescentar o que faltar"><Wand2 className="w-3.5 h-3.5 mr-1.5" /> Descobrir enlaces</Button>
                   <Button size="sm" variant="outline" onClick={startEdit} className={tb} data-testid="map-edit" title="Editar"><Pencil className="w-3.5 h-3.5 md:mr-1.5" /><span className="hidden md:inline">Editar</span></Button>
                   <Button size="sm" variant="outline" onClick={duplicate} className={`${tb} hidden md:inline-flex`}><Copy className="w-3.5 h-3.5 mr-1.5" /> Duplicar</Button>
+                  <Button size="sm" variant="outline" onClick={() => downloadMap(`/maps/${current.id}/export`, current.name)} className={`${tb} hidden md:inline-flex`} data-testid="map-export"
+                          title="Baixar este mapa para importar em outro BastiON"><FileDown className="w-3.5 h-3.5 mr-1.5" /> Exportar</Button>
                   <Button size="sm" variant="outline" onClick={() => { setTvPre({ id: current.id, name: current.name }); setTab("tv"); }} className={`${tb} hidden md:inline-flex`} data-testid="map-tv"
                           title="Link sem login para abrir este mapa em qualquer PC ou TV"><Tv className="w-3.5 h-3.5 mr-1.5" /> Link do mapa</Button>
                   <Button size="sm" variant="outline" onClick={() => setSendOpen(true)} className={`${tb} hidden md:inline-flex`} data-testid="map-send" title="Enviar este mapa (com os equipamentos) para outro usuário"><Send className="w-3.5 h-3.5 mr-1.5" /> Enviar</Button>

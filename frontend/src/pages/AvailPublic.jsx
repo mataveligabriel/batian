@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { MapCanvasAvail, AlarmPanel, C as C0, effectiveStyle, paletteOf, ignoredTxt } from "@/pages/Availability";
+import { MapCanvasAvail, AlarmPanel, MobileAlarms, C as C0, effectiveStyle, paletteOf, ignoredTxt } from "@/pages/Availability";
 
 // Link sem login do mapa de disponibilidade: /disp/<token>. Só lê /api/public/avail da própria origem.
 const get = async (path) => {
@@ -126,6 +126,7 @@ export default function AvailPublic({ token }) {
         )}
       </div>
       <div className="hidden md:flex"><AlarmPanel live={live} mapId={mapId} onPick={pickAlarm} /></div>
+      <MobileAlarms live={live} mapId={mapId} onPick={pickAlarm} />
       </div>
     </div>
   );

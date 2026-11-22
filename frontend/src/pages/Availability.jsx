@@ -10,8 +10,9 @@ import { toast } from "sonner";
 import { DeviceSelect } from "@/components/TagSelect";
 import {
   ChevronDown, ChevronRight, Hexagon, Link2, Loader2, Maximize2, MousePointer2, Pencil, Plus, RotateCcw, Save, Search, Settings2,
-  Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap,
+  Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap, FileDown, FileUp,
 } from "lucide-react";
+import { ImportMapDialog, downloadMap } from "@/components/MapTransfer";
 
 // Paleta própria do mapa (independe do tema do app: o mapa é sempre "sala escura")
 export const C = { bg0: "#06111d", bg1: "#0b2034", grid: "rgba(96,165,250,0.07)", ink: "#e3eef8", dim: "#7f9bb3", panel: "#0d1d2e",
@@ -577,14 +578,40 @@ function ZoomBox({ pct, onZoom, onFit, C }) {
   );
 }
 
-export function AlarmPanel({ live, mapId, onPick, onClose }) {
+// celular: botão flutuante "Incidentes N" que abre a mesma lista numa gaveta de baixo para cima
+export function MobileAlarms({ live, mapId, onPick }) {
+  const [open, setOpen] = useState(false);
+  const alarms = live?.alarms || [];
+  const down = alarms.filter(a => a.state === "down").length;
+  const bg = down ? C.down : alarms.length ? C.warn : C.panel;
+  return (
+    <div className="md:hidden">
+      <button onClick={() => setOpen(true)} data-testid="av-alarms-mobile"
+        className="fixed z-40 left-3 bottom-4 h-10 pl-3 pr-3.5 rounded-full shadow-2xl flex items-center gap-2 text-sm font-semibold"
+        style={{ background: bg, color: alarms.length ? "#fff" : C.up, border: `1px solid ${alarms.length ? bg : C.line}` }}>
+        <span className={`w-2 h-2 rounded-full ${down ? "animate-pulse" : ""}`} style={{ background: alarms.length ? "#fff" : C.up }} />
+        Incidentes <span className="font-mono">{alarms.length}</span>
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end" role="dialog" aria-modal="true" aria-label="Incidentes">
+          <button className="absolute inset-0 bg-black/60" onClick={() => setOpen(false)} aria-label="Fechar" />
+          <div className="relative h-[75vh] flex rounded-t-2xl overflow-hidden shadow-2xl">
+            <AlarmPanel live={live} mapId={mapId} wide onClose={() => setOpen(false)} onPick={(a) => { setOpen(false); onPick?.(a); }} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function AlarmPanel({ live, mapId, onPick, onClose, wide }) {
   const alarms = live?.alarms || [];
   const ignored = live?.ignored || [];
   const [showIgn, setShowIgn] = useState(false);
   const down = alarms.filter(a => a.state === "down").length;
   const spd = (m) => (!m ? "" : m >= 1000 ? `${+(m / 1000).toFixed(1)}G` : `${m}M`);
   return (
-    <aside className="w-80 shrink-0 flex flex-col min-h-0 border-l" style={{ background: C.panel, borderColor: C.line }} data-testid="av-alarms">
+    <aside className={`${wide ? "w-full" : "w-80 border-l"} shrink-0 flex flex-col min-h-0`} style={{ background: C.panel, borderColor: C.line }} data-testid="av-alarms">
       <div className="flex items-center gap-2 px-4 py-3 border-b" style={{ borderColor: C.line }}>
         <span className="text-sm font-semibold" style={{ color: C.ink }}>Incidentes</span>
         <span className="min-w-[1.5rem] h-6 px-1.5 rounded-full flex items-center justify-center text-xs font-bold font-mono"
@@ -1335,6 +1362,7 @@ export default function Availability() {
         <div className="px-3 pt-4 pb-2 flex items-center">
           <h1 className="font-heading text-lg font-semibold text-slate-100">Disponibilidade</h1>
           {canEdit && <button onClick={() => setDlg("dude")} className="ml-auto p-1 text-slate-400 hover:text-slate-100" aria-label="Importar do The Dude" title="Importar do The Dude" data-testid="av-dude"><Upload className="w-4 h-4" /></button>}
+          {canEdit && <button onClick={() => setDlg("import")} className="p-1 text-slate-400 hover:text-slate-100" aria-label="Importar mapa de outro BastiON" title="Importar mapa de outro BastiON (.json)" data-testid="av-import"><FileUp className="w-4 h-4" /></button>}
           {canEdit && <button onClick={() => setNewName("")} className="p-1 text-slate-400 hover:text-slate-100" aria-label="Novo mapa" data-testid="av-new"><Plus className="w-4 h-4" /></button>}
         </div>
         {newName !== null && (
@@ -1401,6 +1429,8 @@ export default function Availability() {
               <Button size="sm" variant="outline" onClick={() => api.post("/avail/ping-now").then(() => toast.info("Pingando agora"))} className={tb}><Zap className="w-3.5 h-3.5 mr-1" />Pingar agora</Button>
               <Button size="sm" variant="outline" onClick={full} className={tb} aria-label="Tela cheia"><Maximize2 className="w-3.5 h-3.5" /></Button>
               {canEdit && map && <Button size="sm" variant="outline" onClick={() => setDlg("share")} className={tb} data-testid="av-share"><Link2 className="w-3.5 h-3.5 mr-1" />Link do mapa</Button>}
+              {map && <Button size="sm" variant="outline" onClick={() => downloadMap(`/avail/maps/${map.id}/export`, map.name)} className={`${tb} hidden md:inline-flex`} data-testid="av-export"
+                              title="Baixar este mapa (com os submapas) para importar em outro BastiON"><FileDown className="w-3.5 h-3.5 mr-1" />Exportar</Button>}
               {list?.can_edit && list?.settings && <Button size="sm" variant="outline" onClick={() => setDlg("settings")} className={tb} aria-label="Ajustes do ping"><Settings2 className="w-3.5 h-3.5" /></Button>}
               {canEdit && map && <Button size="sm" onClick={startEdit} className="h-8 bg-brand hover:bg-brand-strong text-xs" data-testid="av-edit"><Pencil className="w-3.5 h-3.5 mr-1" />Editar</Button>}
             </>}
@@ -1481,6 +1511,7 @@ export default function Availability() {
           )}
           </div>
           {alarmsOpen && !editing && cur && <div className="hidden md:flex"><AlarmPanel live={live} mapId={mapId} onPick={pickAlarm} onClose={toggleAlarms} /></div>}
+          {!editing && cur && <MobileAlarms live={live} mapId={mapId} onPick={pickAlarm} />}
         </div>
       </div>
 
@@ -1492,6 +1523,8 @@ export default function Availability() {
         onOwn={(v) => setDraft(d => ({ ...d, style: { ...(v ? viewStyle : d.style), own: v } }))}
         onChange={(st) => setDraft(d => ({ ...d, style: { ...st, own: isSub ? true : st.own }, bg: st.bg, style_to_subs: d.style_to_subs ?? true }))}
         toSubs={draft.style_to_subs ?? true} onToSubs={(v) => setDraft(d => ({ ...d, style_to_subs: v }))} onClose={() => setDlg(null)} />}
+      {dlg === "import" && <ImportMapDialog kind="availability" parents={list?.maps || []} onClose={() => setDlg(null)}
+        onDone={async (openId) => { setDlg(null); await loadList(); api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {}); if (openId) { setTrail([]); setMapId(openId); } }} />}
       {dlg === "dude" && <DudeImport onClose={() => setDlg(null)} onDone={async (openId) => { setDlg(null); await loadList(); api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {}); if (openId) { setTrail([]); setMapId(openId); } }} />}
       {dlg === "settings" && <SettingsDlg init={list.settings} onClose={() => setDlg(null)} onSaved={(s) => { setList(l => ({ ...l, settings: s })); setDlg(null); }} />}
     </div>
