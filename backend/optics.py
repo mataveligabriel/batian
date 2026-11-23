@@ -21,11 +21,13 @@ DEFAULT_COMMANDS: Dict[str, List[str]] = {
     "huawei": ["display interface {ifname} transceiver verbose", "display transceiver interface {ifname} verbose"],
     "juniper": ["show interfaces diagnostics optics {ifname}"],
     "cisco": ["show interfaces {ifname} transceiver detail", "show interfaces {ifname} transceiver", "show controllers {ifname} phy"],
-    "datacom": ["show interface transceiver {ifname} detail", "show interface {ifname} transceiver"],
+    # DmOS: "show interface transceiver <interface>" (sem "detail" — o DmOS recusa com "syntax error: unknown argument")
+    "datacom": ["show interface transceiver {ifname}", "show interface transceiver {ifname} detail"],
     "zte": ["show transceiver information {ifname}", "show optical-module-info {ifname}"],
     "mikrotik": ["/interface ethernet monitor {ifname} once"],
     "linux": [], "ubiquiti": [], "other": [],
 }
+_OLD_DEFAULTS = {"datacom": [["show interface transceiver {ifname} detail", "show interface {ifname} transceiver"]]}
 DEFAULTS = {"optics_enabled": True, "optics_interval_sec": 300, "optics_commands": {}}
 
 NUM = r"[-+]?\d+(?:\.\d+)?"
@@ -187,6 +189,8 @@ def parse_optics(text: str) -> dict:
 
 def commands_for(device_type: str, settings: dict) -> List[str]:
     custom = (settings.get("optics_commands") or {}).get(device_type)
+    if custom and [c.strip() for c in custom if c.strip()] in _OLD_DEFAULTS.get(device_type, []):
+        custom = None                    # salvo com o padrão antigo (errado): usa o padrão atual
     if custom:
         return [c for c in custom if c.strip()]
     return DEFAULT_COMMANDS.get(device_type or "other", [])
