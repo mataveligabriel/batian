@@ -193,7 +193,7 @@ function OpticsSettingsTab() {
         </Button>
         <div className="text-xs text-slate-400 border-t border-line pt-3 space-y-1.5">
           <div>Lê pela CLI (SSH) as interfaces dos <b>links dos mapas</b> e dos <b>gráficos ópticos</b> dos dashboards.</div>
-          <div>Os comandos são tentados em ordem até um deles trazer valores. Use <code>{"{ifname}"}</code> onde entra o nome da interface.</div>
+          <div>Os comandos são tentados em ordem até um deles trazer valores. Use <code>{"{ifname}"}</code> onde entra o nome da interface, ou <code>{"{ifname_sp}"}</code> para o nome com espaço antes do número (DmOS: <code>ten-gigabit-ethernet 1/1/1</code>).</div>
           <div>Nos gráficos, o botão <b>Testar leitura</b> mostra a saída bruta — use para ajustar o comando ao seu firmware.</div>
         </div>
       </Card>

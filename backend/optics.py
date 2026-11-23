@@ -21,13 +21,19 @@ DEFAULT_COMMANDS: Dict[str, List[str]] = {
     "huawei": ["display interface {ifname} transceiver verbose", "display transceiver interface {ifname} verbose"],
     "juniper": ["show interfaces diagnostics optics {ifname}"],
     "cisco": ["show interfaces {ifname} transceiver detail", "show interfaces {ifname} transceiver", "show controllers {ifname} phy"],
-    # DmOS: "show interface transceiver <interface>" (sem "detail" — o DmOS recusa com "syntax error: unknown argument")
-    "datacom": ["show interface transceiver {ifname}", "show interface transceiver {ifname} detail"],
+    # DmOS: "show interface transceivers ten-gigabit-ethernet 1/1/1" — "transceivers" no plural e o número separado do tipo
+    "datacom": ["show interface transceivers {ifname_sp}", "show interface transceivers {ifname}"],
     "zte": ["show transceiver information {ifname}", "show optical-module-info {ifname}"],
     "mikrotik": ["/interface ethernet monitor {ifname} once"],
     "linux": [], "ubiquiti": [], "other": [],
 }
-_OLD_DEFAULTS = {"datacom": [["show interface transceiver {ifname} detail", "show interface {ifname} transceiver"]]}
+_OLD_DEFAULTS = {"datacom": [["show interface transceiver {ifname} detail", "show interface {ifname} transceiver"],
+                             ["show interface transceiver {ifname}", "show interface transceiver {ifname} detail"]]}
+
+
+def ifname_spaced(ifname: str) -> str:
+    """'ten-gigabit-ethernet-1/1/1' -> 'ten-gigabit-ethernet 1/1/1' (o nome que o SNMP do DmOS dá vs. o que a CLI pede)."""
+    return re.sub(r"-(\d+(?:/\d+)+(?:\.\d+)?)$", r" \1", ifname or "")
 DEFAULTS = {"optics_enabled": True, "optics_interval_sec": 300, "optics_commands": {}}
 
 NUM = r"[-+]?\d+(?:\.\d+)?"
@@ -204,7 +210,7 @@ async def read_optics(session, device_type: str, ifname: str, settings: dict) ->
     if not cmds:
         return {"lanes": [], "rx_min": None, "ok": False}, "", "Sem comando de óptica para este tipo de equipamento."
     for tpl in cmds:
-        cmd = tpl.replace("{ifname}", ifname)
+        cmd = tpl.replace("{ifname_sp}", ifname_spaced(ifname)).replace("{ifname}", ifname)
         try:
             out = await session.run(cmd, timeout=45, idle=2.5)
         except Exception as e:
