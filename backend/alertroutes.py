@@ -1,14 +1,15 @@
 """Grupos de alerta do Telegram.
 
 Além do chat principal (Automação), dá para criar outros destinos: outro grupo com o mesmo bot do BastiON ou com outro
-bot. Cada destino escolhe o que recebe: todos os equipamentos, os de algumas tags ou só equipamentos específicos, e de
-quais tipos de alerta. Marcando "exclusivo", os alertas desses equipamentos deixam de ir para o chat principal.
+bot. Cada destino escolhe o que recebe: todos os equipamentos, os de algumas tags, só equipamentos específicos ou o que está
+em mapas de Disponibilidade (com ou sem os submapas), e de quais tipos de alerta. Marcando "exclusivo", os alertas desses equipamentos deixam de ir para o chat principal.
 
 Só alertas ligados a um equipamento passam por aqui; avisos do sistema (login, backup do banco…) continuam no principal.
 """
 import os
 import re
-from typing import List, Optional
+import time
+from typing import Dict, List, Optional, Set
 
 import vault
 
@@ -32,7 +33,8 @@ def clean(b: dict, existing: Optional[dict] = None) -> dict:
         raise RouteError("Chat ID inválido. Grupos começam com - (ex.: -1001234567890); mande /id no grupo para descobrir")
     bot = "custom" if b.get("bot") == "custom" else "default"
     out = {"name": name, "chat_id": chat, "bot": bot, "enabled": bool(b.get("enabled", True)),
-           "scope": b.get("scope") if b.get("scope") in ("all", "tags", "devices") else "all",
+           "scope": b.get("scope") if b.get("scope") in ("all", "tags", "devices", "maps") else "all",
+           "map_ids": list(dict.fromkeys(str(m) for m in (b.get("map_ids") or [])))[:500], "submaps": bool(b.get("submaps", True)),
            "tags": sorted({str(t).strip() for t in (b.get("tags") or []) if str(t).strip()})[:100],
            "device_ids": list(dict.fromkeys(str(d) for d in (b.get("device_ids") or [])))[:2000],
            "kinds": [k for k in (b.get("kinds") or []) if k in KINDS],
@@ -46,6 +48,8 @@ def clean(b: dict, existing: Optional[dict] = None) -> dict:
         raise RouteError("Escolha pelo menos uma tag")
     if out["scope"] == "devices" and not out["device_ids"]:
         raise RouteError("Escolha pelo menos um equipamento")
+    if out["scope"] == "maps" and not out["map_ids"]:
+        raise RouteError("Escolha pelo menos um mapa de disponibilidade")
     if out["scope"] == "all":
         out["exclusive"] = False          # "todos" exclusivo esvaziaria o chat principal sem querer
     token = str(b.get("token") or "").strip()
@@ -69,7 +73,37 @@ def public(r: dict) -> dict:
     return out
 
 
-def matches(r: dict, dev: Optional[dict], kind: Optional[str]) -> bool:
+def map_devices(map_ids, maps: Dict[str, dict], submaps: bool = True) -> Set[str]:
+    """Equipamentos que estão nos mapas escolhidos (nós e interfaces das linhas), descendo pelos submapas se pedido."""
+    seen, todo, out = set(), [m for m in map_ids if m in maps], set()
+    while todo:
+        mid = todo.pop()
+        if mid in seen:
+            continue
+        seen.add(mid)
+        m = maps[mid]
+        for n in m.get("nodes", []):
+            if n.get("kind") == "device" and n.get("device_id"):
+                out.add(n["device_id"])
+            elif submaps and n.get("kind") == "submap" and n.get("map_id") in maps:
+                todo.append(n["map_id"])
+        for l in m.get("links", []):
+            if (l.get("snmp") or {}).get("device_id"):
+                out.add(l["snmp"]["device_id"])
+    return out
+
+
+_maps_cache = {"t": 0.0, "maps": None}
+
+
+async def _avail_maps(db) -> Dict[str, dict]:
+    if _maps_cache["maps"] is None or time.monotonic() - _maps_cache["t"] > 30:
+        _maps_cache["maps"] = {m["id"]: m async for m in db.avail_maps.find({}, {"_id": 0, "id": 1, "nodes": 1, "links": 1})}
+        _maps_cache["t"] = time.monotonic()
+    return _maps_cache["maps"]
+
+
+def matches(r: dict, dev: Optional[dict], kind: Optional[str], maps: Optional[Dict[str, dict]] = None) -> bool:
     if not r.get("enabled") or not dev:
         return False
     if r.get("kinds") and kind not in r["kinds"]:
@@ -78,6 +112,8 @@ def matches(r: dict, dev: Optional[dict], kind: Optional[str]) -> bool:
         return bool(set(dev.get("tags") or []) & set(r.get("tags") or []))
     if r.get("scope") == "devices":
         return dev.get("id") in (r.get("device_ids") or [])
+    if r.get("scope") == "maps":
+        return dev.get("id") in map_devices(r.get("map_ids") or [], maps or {}, r.get("submaps", True))
     return True
 
 
@@ -86,7 +122,9 @@ async def targets(db, device_id: Optional[str], kind: Optional[str]) -> dict:
     if not device_id:
         return {"routes": [], "skip_main": False}
     dev = await db.devices.find_one({"id": device_id}, {"_id": 0, "id": 1, "tags": 1})
-    hit: List[dict] = [r async for r in db.alert_routes.find({"enabled": True}, {"_id": 0}) if matches(r, dev, kind)]
+    routes = [r async for r in db.alert_routes.find({"enabled": True}, {"_id": 0})]
+    maps = await _avail_maps(db) if any(r.get("scope") == "maps" for r in routes) else None
+    hit: List[dict] = [r for r in routes if matches(r, dev, kind, maps)]
     return {"routes": hit, "skip_main": any(r.get("exclusive") for r in hit)}
 
 

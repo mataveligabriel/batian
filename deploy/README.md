@@ -1677,3 +1677,7 @@ Com milhares de equipamentos: o status (online/offline) agora é gravado de uma 
 - **Disponibilidade**: **Exportar** na barra do mapa (leva o mapa e todos os submapas dele); no outro BastiON, ícone de importar ao lado do "+" no menu, escolhendo se entra como mapa principal ou dentro de outro.
 - O arquivo leva o desenho (posições, ligações, traçados, satélite, aparência, interfaces SNMP das linhas) e só nome, IP, porta, tipo, tags e descrição dos equipamentos — **nunca** usuário, senha, community ou jump.
 - Na importação, cada equipamento é casado pelo IP (e porta) com um já cadastrado. Antes de gravar aparece quantos casaram e a lista dos que não existem: ou viram texto/nuvem com o nome no mesmo lugar, ou são cadastrados sem senha e com backup desligado (escolhendo a tag e o jump).
+
+## 88. Telegram por mapa de disponibilidade
+Em **Configurações → Automação e alertas → Grupos de alerta do Telegram**, o grupo pode receber de **mapas de disponibilidade**: escolha um ou mais mapas e se inclui os submapas (marcando o mapa principal, alarma todos os POPs dentro dele). Ele recebe só os alarmes dos equipamentos e das linhas com SNMP que estão nesses mapas — tirar o equipamento do mapa tira o alarme daquele grupo. Com **exclusivo**, esses alarmes deixam de ir para o chat principal. Atalho: botão **Telegram** na barra do mapa (administrador) já abre o grupo com o mapa preenchido; falta só o chat ID.
+

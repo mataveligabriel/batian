@@ -54,3 +54,18 @@ def test_routes():
     assert "token_enc" not in pub and pub["has_token"]
     # editar sem digitar o token de novo mantém o que estava
     assert R.clean({"name": "Outro bot", "chat_id": "-100999", "bot": "custom"}, c)["token_enc"] == c["token_enc"]
+
+
+def test_route_by_avail_map():
+    maps = {"P": {"nodes": [{"kind": "device", "device_id": "a"}, {"kind": "submap", "map_id": "S"}], "links": [{"snmp": {"device_id": "z"}}]},
+            "S": {"nodes": [{"kind": "device", "device_id": "b"}, {"kind": "submap", "map_id": "P"}], "links": []}}
+    assert R.map_devices(["P"], maps) == {"a", "b", "z"}            # desce pelos submapas (sem loop)
+    assert R.map_devices(["P"], maps, submaps=False) == {"a", "z"}
+    r = {**R.clean({"name": "POP", "chat_id": "-1001234", "scope": "maps", "map_ids": ["P"], "submaps": False}), "enabled": True}
+    assert R.matches(r, {"id": "a"}, "device", maps) and R.matches(r, {"id": "z"}, "interface", maps)
+    assert not R.matches(r, {"id": "b"}, "device", maps) and not R.matches(r, {"id": "x"}, "device", maps)
+    try:
+        R.clean({"name": "x", "chat_id": "-1001234", "scope": "maps", "map_ids": []})
+        assert False
+    except R.RouteError:
+        pass

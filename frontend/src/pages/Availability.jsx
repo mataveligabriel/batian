@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { useAuth } from "@/context/AuthContext";
 import { api, formatApiError } from "@/lib/api";
 import { fmtSpeed } from "@/lib/netfmt";
 import { InterfacePicker } from "@/components/maps/InterfacePicker";
@@ -10,7 +11,7 @@ import { toast } from "sonner";
 import { DeviceSelect } from "@/components/TagSelect";
 import {
   ChevronDown, ChevronRight, Hexagon, Link2, Loader2, Maximize2, MousePointer2, Pencil, Plus, RotateCcw, Save, Search, Settings2,
-  Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap, FileDown, FileUp,
+  Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap, FileDown, FileUp, Send,
 } from "lucide-react";
 import { ImportMapDialog, downloadMap } from "@/components/MapTransfer";
 
@@ -1231,6 +1232,9 @@ export default function Availability() {
   const byId = useMemo(() => Object.fromEntries((list?.maps || []).map(m => [m.id, m])), [list]);
   const names = useMemo(() => ({ ...Object.fromEntries(devices.map(d => [d.id, d.name])), ...Object.fromEntries((list?.maps || []).map(m => [m.id, m.name])) }), [devices, list]);
   const canEdit = !!list?.can_edit;
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const nav = useNavigate();
 
   // ---- edição
   const patch = (fn) => setDraft(d => fn(JSON.parse(JSON.stringify(d))));
@@ -1429,6 +1433,8 @@ export default function Availability() {
               <Button size="sm" variant="outline" onClick={() => api.post("/avail/ping-now").then(() => toast.info("Pingando agora"))} className={tb}><Zap className="w-3.5 h-3.5 mr-1" />Pingar agora</Button>
               <Button size="sm" variant="outline" onClick={full} className={tb} aria-label="Tela cheia"><Maximize2 className="w-3.5 h-3.5" /></Button>
               {canEdit && map && <Button size="sm" variant="outline" onClick={() => setDlg("share")} className={tb} data-testid="av-share"><Link2 className="w-3.5 h-3.5 mr-1" />Link do mapa</Button>}
+              {isAdmin && map && <Button size="sm" variant="outline" onClick={() => nav(`/settings?tab=automacao&grupo_mapa=${map.id}`)} className={`${tb} hidden md:inline-flex`} data-testid="av-telegram"
+                              title="Criar um grupo do Telegram que recebe só os alarmes deste mapa (e dos submapas)"><Send className="w-3.5 h-3.5 mr-1" />Telegram</Button>}
               {map && <Button size="sm" variant="outline" onClick={() => downloadMap(`/avail/maps/${map.id}/export`, map.name)} className={`${tb} hidden md:inline-flex`} data-testid="av-export"
                               title="Baixar este mapa (com os submapas) para importar em outro BastiON"><FileDown className="w-3.5 h-3.5 mr-1" />Exportar</Button>}
               {list?.can_edit && list?.settings && <Button size="sm" variant="outline" onClick={() => setDlg("settings")} className={tb} aria-label="Ajustes do ping"><Settings2 className="w-3.5 h-3.5" /></Button>}
