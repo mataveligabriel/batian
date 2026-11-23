@@ -53,7 +53,7 @@ export function AIAssistantCard() {
         api_key: apiKey || null, clear_api_key: clearKey,
       });
       setS(data); pick(data, data.ai_provider);
-      toast.success("Assistente salvo");
+      toast.success("Sentinela salvo");
     } catch (e) { toast.error(formatApiError(e)); }
     finally { setBusy(false); }
   };
@@ -84,12 +84,12 @@ export function AIAssistantCard() {
       <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
         <div className="flex items-center gap-2">
           <Bot className="w-4 h-4 text-brand-soft" />
-          <div className="text-xs text-slate-400">Assistente IA — chat no sistema e Telegram</div>
+          <div className="text-xs text-slate-400">Sentinela (assistente IA) — chat no sistema e Telegram</div>
         </div>
         <div className="text-[11px] font-mono">bot do Telegram: <span className={statusColor} data-testid="ai-bot-status">{s.bot_status}</span></div>
       </div>
       <p className="text-xs text-slate-400 mb-4 max-w-3xl">
-        Converse em linguagem natural pelo botão <b>Assistente</b> (canto inferior direito de qualquer tela) ou pelo bot do Telegram.
+        Converse em linguagem natural com o <b>Sentinela</b> (o bonequinho no canto inferior direito de qualquer tela) ou pelo bot do Telegram.
         Consultas rodam direto; <b>qualquer alteração exige clique em Confirmar</b>. Cada usuário só enxerga os próprios equipamentos.
         Para começar sem custo use <b>Groq</b> ou <b>Gemini</b> (chave grátis) ou o <b>Ollama</b> no próprio servidor.
       </p>

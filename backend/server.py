@@ -5649,6 +5649,39 @@ async def avail_delete(map_id: str, user: dict = Depends(get_current_user)):
     return {"deleted": 1, "unlinked": len(refs)}
 
 
+async def _avail_trash(ids, user: dict) -> int:
+    """Manda vários mapas para a lixeira de uma vez e tira os nós que apontavam para eles nos mapas que ficam."""
+    ids = list(ids)
+    if not ids:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    docs = await db.avail_maps.find({"id": {"$in": ids}}, {"_id": 0}).to_list(len(ids) + 1)
+    if docs:
+        await db.avail_maps_trash.insert_many([{**m, "deleted_at": now, "deleted_by": user.get("email")} for m in docs])
+        await db.avail_maps.delete_many({"id": {"$in": ids}})
+    gone_ids = set(ids)
+    async for r in db.avail_maps.find({"nodes.map_id": {"$in": ids}}, {"_id": 0, "id": 1, "nodes": 1, "links": 1}):
+        gone = {n["id"] for n in r["nodes"] if n.get("map_id") in gone_ids}
+        await db.avail_maps.update_one({"id": r["id"]}, {"$set": {"nodes": [n for n in r["nodes"] if n["id"] not in gone],
+                                                                 "links": [l for l in r.get("links", []) if l["from"] not in gone and l["to"] not in gone]}})
+    return len(docs)
+
+
+@api.post("/avail/maps/delete")
+async def avail_delete_many(body: dict, user: dict = Depends(get_current_user)):
+    """Exclusão em lote (vai para a lixeira). with_submaps: leva junto os submapas que só são usados por eles."""
+    _no_viewer(user)
+    maps = await _avail_all_maps()
+    out = availmap.delete_set([str(i) for i in (body.get("ids") or [])][:5000], maps, bool(body.get("with_submaps")))
+    if not out:
+        raise HTTPException(status_code=400, detail="Nenhum mapa selecionado")
+    if body.get("dry_run"):
+        return {"count": len(out), "names": sorted(maps[i]["name"] for i in out)[:50]}
+    n = await _avail_trash(out, user)
+    _avail_kick.set()
+    return {"deleted": n}
+
+
 @api.post("/avail/trash/{map_id}/restore")
 async def avail_restore(map_id: str, user: dict = Depends(get_current_user)):
     _no_viewer(user)
@@ -5880,10 +5913,19 @@ async def avail_dude_apply(iid: str, body: dict, user: dict = Depends(get_curren
         names.add(name)
         clean = availmap.clean_map({**m, "name": name}, all_dev, set(map_ids.values()), new_id)
         docs.append({"id": new_id, **clean, "created_at": now, "updated_at": now, "created_by": user.get("email"), "source": "dude"})
+    roots = [map_ids[r] for r in tr["roots"]]
+    folder = None
+    if len(roots) > 1:                         # tudo numa pasta só: um mapa que agrupa os mapas de cima do arquivo
+        base = (str(body.get("folder") or "").strip() or f"Dude {os.path.splitext(job.get('file') or 'importado')[0]}")[:70]
+        fname, k = base, 2
+        while fname in names:
+            fname, k = f"{base} ({k})", k + 1
+        folder = availmap.new_id()
+        docs.append({"id": folder, **availmap.clean_map({"name": fname, "nodes": availmap.folder_nodes(roots)}, set(), set(roots), folder),
+                     "created_at": now, "updated_at": now, "created_by": user.get("email"), "source": "dude"})
     await db.avail_maps.insert_many([dict(x) for x in docs])
     _dude_imports.pop(iid, None)
     _avail_kick.set()
-    roots = [map_ids[r] for r in tr["roots"]]
     best = max(roots, key=lambda r: len(built[r]["nodes"]), default=None)
     for _ in range(5):                         # "Local" só com um submapa dentro: abre direto nele
         ns = built.get(best, {}).get("nodes", []) if best else []
@@ -5891,7 +5933,7 @@ async def avail_dude_apply(iid: str, body: dict, user: dict = Depends(get_curren
             best = ns[0]["map_id"]
         else:
             break
-    return {"maps": len(docs), "devices_created": created, "devices_reused": reused,
+    return {"maps": len(docs) - (1 if folder else 0), "devices_created": created, "devices_reused": reused, "folder": folder,
             "nodes": sum(len(d["nodes"]) for d in docs), "links": sum(len(d["links"]) for d in docs), "open": best}
 
 

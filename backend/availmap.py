@@ -241,3 +241,32 @@ def ignore_until(minutes, now) -> Optional[str]:
     if m < 0:
         raise MapError("Tempo inválido")
     return (now + timedelta(minutes=min(m, IGNORE_MAX_MIN))).isoformat() if m else None
+
+
+def folder_nodes(child_ids: List[str], cols: int = 6, dx: float = 220, dy: float = 200) -> List[dict]:
+    """Nós de submapa em grade para uma "pasta" (mapa que só agrupa outros)."""
+    return [{"id": new_id(), "kind": "submap", "map_id": cid, "label": "", "x": round((i % cols) * dx, 1), "y": round((i // cols) * dy, 1)}
+            for i, cid in enumerate(child_ids)]
+
+
+def delete_set(ids, maps: Dict[str, dict], with_submaps: bool = False) -> Set[str]:
+    """Mapas que saem numa exclusão em lote. Com with_submaps, saem também os submapas abaixo deles, menos os que
+    continuam alcançáveis por algum mapa que fica (ex.: um POP que também está dentro de outro mapa)."""
+    sel = {i for i in ids if i in maps}
+    if not with_submaps or not sel:
+        return sel
+
+    def reach(start, stop):
+        seen, q = set(), list(start)
+        while q:
+            mid = q.pop()
+            for n in maps.get(mid, {}).get("nodes", []):
+                c = n.get("map_id")
+                if n.get("kind") == "submap" and c in maps and c not in seen and c not in stop:
+                    seen.add(c)
+                    q.append(c)
+        return seen
+    below = reach(sel, set()) - sel
+    outside = set(maps) - sel - below
+    kept = reach(outside, sel)                    # o que os mapas que ficam ainda alcançam (sem passar pelos que saem)
+    return sel | (below - kept)

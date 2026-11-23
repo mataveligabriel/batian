@@ -1681,3 +1681,7 @@ Com milhares de equipamentos: o status (online/offline) agora é gravado de uma 
 ## 88. Telegram por mapa de disponibilidade
 Em **Configurações → Automação e alertas → Grupos de alerta do Telegram**, o grupo pode receber de **mapas de disponibilidade**: escolha um ou mais mapas e se inclui os submapas (marcando o mapa principal, alarma todos os POPs dentro dele). Ele recebe só os alarmes dos equipamentos e das linhas com SNMP que estão nesses mapas — tirar o equipamento do mapa tira o alarme daquele grupo. Com **exclusivo**, esses alarmes deixam de ir para o chat principal. Atalho: botão **Telegram** na barra do mapa (administrador) já abre o grupo com o mapa preenchido; falta só o chat ID.
 
+## 89. Excluir vários mapas e importação numa pasta só
+- **Excluir em lote** (Disponibilidade): ícone de lixeira no topo do menu → marque os mapas (nos botões dos mapas principais ou na lista) → **Excluir**. Com *levar junto os submapas deles*, saem também os submapas que só eles usavam (um POP que também está em outro mapa que fica é mantido). Antes de excluir aparece a lista do que vai sair; tudo vai para a Lixeira e dá para restaurar.
+- **Importação do Dude numa pasta**: quando o arquivo tem mais de um mapa de cima, tudo entra dentro de um mapa-pasta (nome sugerido "Dude <arquivo>", editável na prévia). No menu aparece um botão só para aquela importação. A importação de mapa de outro BastiON já entra num mapa só (o exportado).
+

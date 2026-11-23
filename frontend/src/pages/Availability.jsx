@@ -945,9 +945,11 @@ function DudeImport({ onClose, onDone }) {
   const [pv, setPv] = useState(null);
   const [createMissing, setCreateMissing] = useState(true);
   const [tag, setTag] = useState("");
+  const [folder, setFolder] = useState("");
   const [showNew, setShowNew] = useState(false);
   const upload = async (file) => {
     if (!file) return;
+    setFolder(`Dude ${file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ")}`.slice(0, 70));
     setBusy(true); setPct(0); setPv(null);
     const fd = new FormData(); fd.append("file", file);
     try {
@@ -958,9 +960,9 @@ function DudeImport({ onClose, onDone }) {
   const apply = async () => {
     setBusy(true);
     try {
-      const { data } = await api.post(`/avail/import/dude/${pv.import_id}/apply`, { create_missing: createMissing, tag });
-      toast.success(`${data.maps} mapa(s) importado(s) · ${data.devices_created} equipamento(s) cadastrado(s) · ${data.devices_reused} já existiam`);
-      onDone(data.open);
+      const { data } = await api.post(`/avail/import/dude/${pv.import_id}/apply`, { create_missing: createMissing, tag, folder });
+      toast.success(`${data.maps} mapa(s) importado(s)${data.folder ? " numa pasta só" : ""} · ${data.devices_created} equipamento(s) cadastrado(s) · ${data.devices_reused} já existiam`);
+      onDone(data.folder || data.open);
     } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
   };
   const Tree = ({ n, d = 0 }) => (
@@ -992,6 +994,12 @@ function DudeImport({ onClose, onDone }) {
             ))}
           </div>
           <div className="max-h-56 overflow-y-auto rounded-md border border-line p-2">{pv.tree.map((n, i) => <Tree key={i} n={n} />)}</div>
+          {pv.tree.length > 1 && (
+            <label className="block text-sm text-slate-300 space-y-1">
+              <span>Tudo vai para dentro de uma pasta (um mapa que agrupa os {pv.tree.length} mapas de cima do arquivo):</span>
+              <Input value={folder} onChange={e => setFolder(e.target.value)} maxLength={70} placeholder="ex.: Dude HELP" className="h-8 bg-sunken border-line text-sm" data-testid="dude-folder" />
+            </label>
+          )}
           <div className="text-sm text-slate-300">
             <b style={{ color: C.up }}>{pv.match.length}</b> já existem no BastiON com o mesmo IP (são reaproveitados, não cadastra de novo) ·{" "}
             <b className="text-slate-100">{pv.new.length}</b> ainda não existem
@@ -1324,6 +1332,30 @@ export default function Availability() {
   const trailKeys = useMemo(() => new Set(trail.slice(0, -1).map((t, i) => trail.slice(0, i + 1).join(">"))), [trail]);
 
   // árvore: cada mapa com seus submapas; abre e fecha pela setinha
+  // ---- seleção em lote (excluir vários mapas) ----
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState(() => new Set());
+  const [withSubs, setWithSubs] = useState(true);
+  const [delBusy, setDelBusy] = useState(false);
+  const togglePick = (id) => setPicked(o => { const n = new Set(o); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const stopPicking = () => { setPicking(false); setPicked(new Set()); };
+  const deletePicked = async () => {
+    const ids = [...picked];
+    if (!ids.length) return;
+    setDelBusy(true);
+    try {
+      const { data: pv } = await api.post("/avail/maps/delete", { ids, with_submaps: withSubs, dry_run: true });
+      const list10 = pv.names.slice(0, 12).join("\n• ");
+      if (!window.confirm(`Mandar ${pv.count} mapa(s) para a lixeira?\n\n• ${list10}${pv.count > 12 ? `\n… e mais ${pv.count - 12}` : ""}\n\nDá para restaurar pela Lixeira.`)) return;
+      const { data } = await api.post("/avail/maps/delete", { ids, with_submaps: withSubs });
+      toast.success(`${data.deleted} mapa(s) na lixeira`);
+      stopPicking();
+      const fresh = await loadList();
+      if (fresh && !fresh.maps.some(m => m.id === mapId)) { setTrail([]); setMapId(fresh.maps[0]?.id || ""); }
+      if (group && !(fresh?.maps || []).some(m => m.id === group)) setGroup("");
+    } catch (e) { toast.error(formatApiError(e)); } finally { setDelBusy(false); }
+  };
+
   const Tree = ({ id, depth, seen, label, path }) => {
     const m = byId[id];
     if (!m || seen.has(id)) return null;
@@ -1339,7 +1371,8 @@ export default function Availability() {
               {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
             </button>
           ) : <span className="w-5 shrink-0" />}
-          <button onClick={() => open(id)} className="flex-1 min-w-0 flex items-center gap-2 py-1.5 pr-2 text-left text-[13px]" data-testid={`av-tree-${id}`}>
+          {picking && <input type="checkbox" checked={picked.has(id)} onChange={() => togglePick(id)} className="accent-brand w-3.5 h-3.5 mr-1.5 shrink-0" aria-label={`Selecionar ${m.name}`} data-testid={`av-pick-${id}`} />}
+          <button onClick={() => (picking ? togglePick(id) : open(id))} className="flex-1 min-w-0 flex items-center gap-2 py-1.5 pr-2 text-left text-[13px]" data-testid={`av-tree-${id}`}>
             <span className="w-2 h-2 rounded-full shrink-0" style={{ background: C[m.summary.state] || C.empty, boxShadow: m.summary.state === "down" ? `0 0 8px ${C.down}` : "none" }} />
             <span className="truncate">{label || m.name}</span>
             {!isOpen && kids.length > 0 && <span className="text-[10px] text-slate-600">{kids.length}</span>}
@@ -1351,8 +1384,9 @@ export default function Availability() {
     );
   };
   const GroupChip = ({ id, name, st, down }) => (
-    <button onClick={() => setGroup(id)} data-testid={`av-group-${id || "all"}`}
-      className={`max-w-full inline-flex items-center gap-1.5 h-7 px-2 rounded-full border text-[12px] ${(id ? groupOk && group === id : !groupOk) ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400 hover:text-slate-100"}`}>
+    <button onClick={() => (picking && id ? togglePick(id) : setGroup(id))} data-testid={`av-group-${id || "all"}`}
+      className={`max-w-full inline-flex items-center gap-1.5 h-7 px-2 rounded-full border text-[12px] ${picking && id ? (picked.has(id) ? "border-red-400 bg-red-500/20 text-slate-100" : "border-line text-slate-400 hover:text-slate-100") : (id ? groupOk && group === id : !groupOk) ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400 hover:text-slate-100"}`}>
+      {picking && id && <span className={`w-3 h-3 rounded-sm border shrink-0 ${picked.has(id) ? "bg-red-400 border-red-400" : "border-slate-500"}`} />}
       {st && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: C[st] || C.empty }} />}
       <span className="truncate">{name}</span>
       {down > 0 && <span className="font-mono text-[10px]" style={{ color: C.down }}>{down}</span>}
@@ -1368,7 +1402,20 @@ export default function Availability() {
           {canEdit && <button onClick={() => setDlg("dude")} className="ml-auto p-1 text-slate-400 hover:text-slate-100" aria-label="Importar do The Dude" title="Importar do The Dude" data-testid="av-dude"><Upload className="w-4 h-4" /></button>}
           {canEdit && <button onClick={() => setDlg("import")} className="p-1 text-slate-400 hover:text-slate-100" aria-label="Importar mapa de outro BastiON" title="Importar mapa de outro BastiON (.json)" data-testid="av-import"><FileUp className="w-4 h-4" /></button>}
           {canEdit && <button onClick={() => setNewName("")} className="p-1 text-slate-400 hover:text-slate-100" aria-label="Novo mapa" data-testid="av-new"><Plus className="w-4 h-4" /></button>}
+          {canEdit && <button onClick={() => (picking ? stopPicking() : setPicking(true))} className={`p-1 ${picking ? "text-red-300" : "text-slate-400 hover:text-slate-100"}`}
+                              aria-label="Selecionar mapas para excluir" title="Selecionar mapas para excluir" aria-pressed={picking} data-testid="av-pick"><Trash2 className="w-4 h-4" /></button>}
         </div>
+        {picking && (
+          <div className="mx-3 mb-2 rounded-md border border-red-500/40 bg-red-500/10 p-2 space-y-1.5 text-xs" data-testid="av-pick-bar">
+            <div className="text-slate-200">{picked.size ? `${picked.size} mapa(s) selecionado(s)` : "Marque os mapas (botões ou lista) que quer excluir"}</div>
+            <label className="flex items-center gap-1.5 text-slate-300"><input type="checkbox" checked={withSubs} onChange={e => setWithSubs(e.target.checked)} /> levar junto os submapas deles</label>
+            <div className="flex gap-1.5">
+              <Button size="sm" onClick={deletePicked} disabled={!picked.size || delBusy} className="h-7 px-2.5 text-xs bg-red-600 hover:bg-red-500 text-white" data-testid="av-pick-delete">
+                {delBusy ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1" />}Excluir</Button>
+              <Button size="sm" variant="ghost" onClick={stopPicking} className="h-7 px-2 text-xs text-slate-300">Cancelar</Button>
+            </div>
+          </div>
+        )}
         {newName !== null && (
           <div className="px-3 pb-2 flex gap-1">
             <Input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && newName.trim()) createMap(); if (e.key === "Escape") setNewName(null); }}

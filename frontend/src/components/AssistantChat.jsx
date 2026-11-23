@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Bot, X, Send, Loader2, RotateCcw, Wrench, AlertTriangle, CheckCircle2, XCircle, Clock, ShieldAlert, Sparkles, Mic } from "lucide-react";
+import { X, Send, Loader2, RotateCcw, Wrench, AlertTriangle, CheckCircle2, XCircle, Clock, ShieldAlert, Sparkles, Mic } from "lucide-react";
 import { VoiceMode } from "@/components/VoiceMode";
 import { STATUS } from "@/lib/netfmt";
+import { SentinelAvatar, SENTINEL_NAME } from "@/components/SentinelAvatar";
 
 const SUGGESTIONS = [
   "Quais interfaces estão down na BORDA?",
@@ -133,18 +134,18 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
   return (
     <>
       {!open && !hideButton && (
-        <button onClick={() => setOpen(true)} className="fixed z-40 right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] w-12 h-12 rounded-full bg-brand hover:bg-brand-strong text-onbrand shadow-lg shadow-black/40 flex items-center justify-center"
-                title="Assistente" aria-label="Abrir assistente" data-testid="assistant-fab">
-          <Bot className="w-6 h-6" />
+        <button onClick={() => setOpen(true)} className="fixed z-40 right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] w-14 h-14 rounded-full shadow-lg shadow-black/40 ring-2 ring-brand/60 hover:ring-brand hover:scale-105 transition-transform flex items-center justify-center"
+                title={`${SENTINEL_NAME} — assistente de IA`} aria-label={`Abrir o ${SENTINEL_NAME}`} data-testid="assistant-fab">
+          <SentinelAvatar size={56} state={conv.busy ? "thinking" : "idle"} />
           {conv.busy && <span className="absolute top-0.5 right-0.5 w-3 h-3 rounded-full bg-amber-400 animate-pulse" />}
         </button>
       )}
       {open && (
         <div className="fixed z-50 inset-0 md:inset-auto md:right-4 md:bottom-4 md:top-4 md:w-[440px] flex flex-col bg-surface md:border border-line2 md:rounded-lg shadow-2xl shadow-black/60 pt-[env(safe-area-inset-top)]" data-testid="assistant-panel">
           <div className="flex items-center gap-2 px-3 h-12 border-b border-line shrink-0">
-            <Bot className="w-5 h-5 text-brand-soft" />
+            <SentinelAvatar size={32} state={conv.busy ? "thinking" : "idle"} />
             <div className="min-w-0">
-              <div className="text-sm font-semibold text-slate-100">Assistente</div>
+              <div className="text-sm font-semibold text-slate-100">{SENTINEL_NAME}</div>
               <div className="text-[10px] font-mono text-slate-500 truncate">{enabled ? `${status.provider} · ${status.model}` : "não configurado"}</div>
             </div>
             {enabled && (
@@ -158,7 +159,7 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
 
           {!enabled ? (
             <div className="p-4 text-sm text-slate-300 space-y-2" data-testid="assistant-setup">
-              <div className="flex items-center gap-2 text-amber-300"><AlertTriangle className="w-4 h-4" /> Assistente ainda não configurado</div>
+              <div className="flex items-center gap-2 text-amber-300"><AlertTriangle className="w-4 h-4" /> {SENTINEL_NAME} ainda não configurado</div>
               <div className="text-slate-400">{status.reason ? `Motivo: ${status.reason}.` : ""}</div>
               {isAdmin ? <div>Vá em <a href="/settings?tab=automacao" className="text-brand-soft underline">Configurações → Automação e alertas → Assistente IA</a>, escolha um provedor grátis (Groq ou Gemini) ou o Ollama no servidor, cole a chave e salve.</div>
                        : <div>Peça ao administrador para ligar o assistente.</div>}
@@ -168,6 +169,10 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
               <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2.5" data-testid="assistant-messages">
                 {conv.items.length === 0 && (
                   <div className="text-sm text-slate-400 space-y-3">
+                    <div className="flex flex-col items-center gap-2 pt-2 pb-1 text-center">
+                      <SentinelAvatar size={96} />
+                      <div className="text-slate-100 font-semibold">Oi, eu sou o {SENTINEL_NAME}.</div>
+                    </div>
                     <div>Pergunte sobre os seus equipamentos: interfaces, BGP, sinal óptico, flow — ou peça uma alteração, que eu mostro os comandos e só executo depois do seu clique.</div>
                     <div className="flex flex-col gap-1.5">
                       {SUGGESTIONS.map(s => (
@@ -184,7 +189,7 @@ export function AssistantChat({ hideButton = false, isAdmin = false }) {
                   if (it.kind === "wait") return <div key={it.id} className="flex items-center gap-1.5 text-[11px] font-mono text-amber-300/80 pl-1" data-testid="msg-wait"><Clock className="w-3 h-3 shrink-0" /><span className="truncate" title={it.text}>{it.text}</span></div>;
                   if (it.kind === "proposal") return <Proposal key={it.id} it={it} onDecide={decide} busy={conv.busy} />;
                   if (it.kind === "error") return <div key={it.id} className="text-xs text-amber-300 border border-amber-400/30 bg-amber-400/5 rounded px-2.5 py-2 flex gap-1.5" data-testid="msg-error"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" /><span className="whitespace-pre-wrap">{it.text.replace(/^⚠️\s*/, "")}</span></div>;
-                  return <div key={it.id} className="max-w-[95%] text-sm text-slate-200 bg-surface border border-line rounded-lg rounded-bl-sm px-3 py-2" data-testid="msg-assistant"><RichText text={it.text} /></div>;
+                  return <div key={it.id} className="flex items-end gap-1.5"><SentinelAvatar size={24} className="shrink-0 mb-0.5" /><div className="max-w-[90%] text-sm text-slate-200 bg-surface border border-line rounded-lg rounded-bl-sm px-3 py-2" data-testid="msg-assistant"><RichText text={it.text} /></div></div>;
                 })}
                 {conv.busy && <div className="flex items-center gap-2 text-xs text-slate-400 pl-1" data-testid="assistant-busy"><Loader2 className="w-3.5 h-3.5 animate-spin" /> trabalhando…</div>}
               </div>

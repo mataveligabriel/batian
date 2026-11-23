@@ -296,7 +296,7 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
 
   return (
-    <div className="fixed inset-0 z-[70] bg-canvas flex flex-col pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]" role="dialog" aria-label="Conversa por voz com o assistente" data-testid="voice-mode">
+    <div className="fixed inset-0 z-[70] bg-canvas flex flex-col pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]" role="dialog" aria-label="Conversa por voz com o Sentinela" data-testid="voice-mode">
       <div className="flex items-center gap-3 px-4 h-14 shrink-0">
         <Wordmark className="text-lg" />
         <span className="text-xs text-slate-500 truncate">voz · {status?.provider} {status?.model}</span>
@@ -321,7 +321,7 @@ export function VoiceMode({ conv, send, status, onClose, onShowChat }) {
             <input type="range" min="1" max="6" step="0.5" value={prefs.pause} onChange={e => setPrefs({ ...prefs, pause: Number(e.target.value) })} data-testid="voice-pause" />
             <span className="text-slate-400 tabular-nums w-24">{prefs.pause.toFixed(1)} s de silêncio</span>
           </label>
-          <button onClick={() => speak("Esta é a voz do assistente do BastiON.")} className="text-brand-soft hover:underline">testar</button>
+          <button onClick={() => speak("Oi, eu sou o Sentinela, o assistente do BastiON.")} className="text-brand-soft hover:underline">testar</button>
         </div>
       )}
 

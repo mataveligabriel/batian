@@ -123,3 +123,15 @@ def test_ignored():
         assert False
     except A.MapError:
         pass
+
+
+def test_delete_set_and_folder():
+    maps = {"F": {"nodes": [{"kind": "submap", "map_id": "A"}, {"kind": "submap", "map_id": "B"}]},
+            "A": {"nodes": [{"kind": "submap", "map_id": "B"}, {"kind": "submap", "map_id": "C"}]},
+            "B": {"nodes": [{"kind": "submap", "map_id": "A"}]},
+            "C": {"nodes": []}, "X": {"nodes": [{"kind": "submap", "map_id": "C"}]}}
+    assert A.delete_set(["F"], maps) == {"F"}
+    assert A.delete_set(["F"], maps, True) == {"F", "A", "B"}          # C também está no X, que fica
+    assert A.delete_set(["F", "X", "nada"], maps, True) == {"F", "A", "B", "C", "X"}
+    nodes = A.folder_nodes(["a", "b", "c"], cols=2)
+    assert [(n["map_id"], n["x"], n["y"]) for n in nodes] == [("a", 0, 0), ("b", 220, 0), ("c", 0, 200)]

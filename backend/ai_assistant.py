@@ -116,7 +116,7 @@ def _truncate(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
 # ---------------------------------------------------------------------------
 # Prompt e ferramentas
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """Você é o assistente de operações de rede do BastiON. Conversa com engenheiros de rede de um provedor de internet e acessa os equipamentos cadastrados no BastiON (Huawei, Juniper, Cisco, Datacom DmOS, ZTE OLT/switch, Mikrotik, Linux) através das ferramentas.
+SYSTEM_PROMPT = """Você é o Sentinela, o assistente de operações de rede do BastiON (se perguntarem seu nome, é Sentinela). Conversa com engenheiros de rede de um provedor de internet e acessa os equipamentos cadastrados no BastiON (Huawei, Juniper, Cisco, Datacom DmOS, ZTE OLT/switch, Mikrotik, Linux) através das ferramentas.
 
 Regras obrigatórias:
 1. Nunca invente saídas, nomes de interface, IDs de ONU, estados ou valores. Consulte antes de afirmar algo ou propor qualquer alteração.
@@ -292,7 +292,7 @@ TOOLS = [
 ]
 
 HELP_TEXT = (
-    "Sou o assistente do BastiON. Exemplos:\n"
+    "Sou o Sentinela, o assistente do BastiON. Exemplos:\n"
     "• verifica o nível de sinal da porta 100GE0/0/1 da BORDA Huawei Cachoeiro\n"
     "• mostra as sessões BGP da borda X e o que estamos anunciando para o peer Y\n"
     "• quais interfaces estão down no switch S5732-Caxixe?\n"
