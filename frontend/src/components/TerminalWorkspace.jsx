@@ -402,9 +402,25 @@ function TerminalPane({ device, active, visible, registerWs, registerPane, onCon
     };
     const ro = new ResizeObserver(refit);
     ro.observe(el);
+    // trocar de monitor muda a escala (devicePixelRatio) sem mudar o tamanho do quadro: o ResizeObserver não
+    // percebe e o terminal ficava com linhas a mais, escondidas embaixo. Escuta a escala e a janela também.
+    window.addEventListener("resize", refit);
+    let mq = null;
+    const onDpr = () => { refit(); watchDpr(); };
+    const watchDpr = () => {
+      mq?.removeEventListener?.("change", onDpr);
+      mq = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`) || null;
+      mq?.addEventListener?.("change", onDpr);
+    };
+    watchDpr();
+    const onVis = () => { if (!document.hidden) refit(); };
+    document.addEventListener("visibilitychange", onVis);
 
     return () => {
       ro.disconnect();
+      window.removeEventListener("resize", refit);
+      mq?.removeEventListener?.("change", onDpr);
+      document.removeEventListener("visibilitychange", onVis);
       el.removeEventListener("mouseup", onMouseUp);
       el.removeEventListener("contextmenu", onContext);
       el.removeEventListener("paste", onPaste, true);
@@ -553,6 +569,7 @@ export function TerminalWorkspace({ visible }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pq, setPq] = useState("");
   const [quick, setQuick] = useState([]);
+  const [quickOpen, setQuickOpen] = useState(false);
   const [menu, setMenu] = useState(null);
   const [pasteDlg, setPasteDlg] = useState(null);
   const [isFs, toggleFs] = useFullscreen();
@@ -641,8 +658,34 @@ export function TerminalWorkspace({ visible }) {
             </div>
           ))}
         </div>
+        {tabs.length > 0 && (
+          <div className="relative shrink-0">
+            <button className={`${iconBtn} h-8 md:h-7 ${quickOpen ? "border-amber-500/50 text-amber-300" : ""}`} data-testid="quick-commands-btn"
+                    onClick={() => { setPickerOpen(false); setQuickOpen(v => !v); }} title="Scripts favoritos" aria-label="Scripts favoritos">
+              <Zap className="w-3.5 h-3.5 text-amber-400" /><span className="hidden md:inline">Favoritos</span>
+            </button>
+            {quickOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setQuickOpen(false)} />
+                <div className="absolute top-full mt-1 right-0 z-40 w-72 max-w-[calc(100vw-16px)] bg-surface border border-line rounded-md shadow-xl max-h-[min(20rem,60dvh)] overflow-y-auto" data-testid="quick-commands-menu">
+                  {quick.length === 0 && (
+                    <div className="p-3 text-xs text-slate-500">Nenhum favorito. Marque scripts como favoritos em &quot;Execução em Lote&quot;.</div>
+                  )}
+                  {quick.map(s => (
+                    <button key={s.id} type="button" title={s.content} data-testid={`quick-cmd-${s.id}`}
+                            onClick={() => { sendQuick(s); setQuickOpen(false); if (active) panes.current[active]?.focus?.(); }}
+                            className="w-full text-left px-3 py-2 border-b border-line last:border-b-0 hover:bg-slate-800">
+                      <div className="text-sm font-mono text-slate-100 truncate">{s.name}</div>
+                      <div className="text-[11px] font-mono text-slate-500 truncate">{s.content.split(/\r?\n/)[0]}</div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
         <div className="relative shrink-0">
-          <Button size="sm" variant="ghost" onClick={() => setPickerOpen(v => !v)} data-testid="add-tab-btn" className="text-slate-300 hover:bg-slate-800 h-8">
+          <Button size="sm" variant="ghost" onClick={() => { setQuickOpen(false); setPickerOpen(v => !v); }} data-testid="add-tab-btn" className="text-slate-300 hover:bg-slate-800 h-8">
             <Plus className="w-4 h-4 md:mr-1" /><span className="hidden md:inline">Nova aba</span>
           </Button>
           {pickerOpen && (
@@ -710,20 +753,6 @@ export function TerminalWorkspace({ visible }) {
                   title={`Ajustar a fonte para caberem ${MOBILE_COLS} colunas na tela`}><Minimize2 className="w-4 h-4" /> {MOBILE_COLS}</button>
         </div>
       )}
-      {tabs.length > 0 && !focus && (
-        <div className="relative z-30 flex items-center gap-2 px-3 py-2 border-t border-line bg-panel overflow-x-auto" data-testid="quick-commands-bar">
-          <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span className="text-[10px] text-slate-500 shrink-0">Favoritos</span>
-          {quick.length === 0 && <span className="text-xs text-slate-600 font-mono">Marque scripts como favoritos em "Execução em Lote" para aparecerem aqui.</span>}
-          {quick.map(s => (
-            <button key={s.id} onClick={() => sendQuick(s)} title={s.content} data-testid={`quick-cmd-${s.id}`}
-                    className="shrink-0 text-xs font-mono px-2.5 py-1 rounded border border-line bg-surface text-slate-200 hover:border-amber-500/50 hover:text-amber-300 transition-colors">
-              {s.name}
-            </button>
-          ))}
-        </div>
-      )}
-
       {menu && menuPane && (
         <ContextMenu menu={menu} onClose={closeMenu} actions={{
           copy: () => menuPane.copySelection(),

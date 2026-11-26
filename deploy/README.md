@@ -1691,3 +1691,7 @@ Em **Configurações → Automação e alertas → Grupos de alerta do Telegram*
 - Se ele usou ferramentas e não escreveu nada, recebe um aviso para escrever o relatório final.
 - Antes de cada chamada, o histórico é conferido: chamada de ferramenta sem resultado ganha um resultado "interrompido". Assim, uma conversa já quebrada (erro `tool_use ids were found without tool_result`) volta a funcionar na próxima mensagem, sem precisar limpar.
 - Limite de saída por chamada subiu de 4096 para 8192 tokens.
+
+## 91. Terminal: favoritos no topo e reajuste ao trocar de monitor
+- A barra "Favoritos" embaixo do terminal saiu. Os scripts favoritos agora ficam no botão **Favoritos** (raio amarelo), na barra das abas ao lado de "Nova aba". Ele abre uma lista; clicar envia o script para a aba ativa.
+- O terminal se reajusta quando a janela vai para outro monitor (escala diferente), quando a janela muda de tamanho e quando a aba do navegador volta a ficar visível, então as últimas linhas não ficam mais escondidas embaixo.
