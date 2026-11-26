@@ -270,3 +270,75 @@ def delete_set(ids, maps: Dict[str, dict], with_submaps: bool = False) -> Set[st
     outside = set(maps) - sel - below
     kept = reach(outside, sel)                    # o que os mapas que ficam ainda alcançam (sem passar pelos que saem)
     return sel | (below - kept)
+
+
+def place_submaps(nodes: List[dict], child_ids: List[str], cols: int = 6, dx: float = 220, dy: float = 200) -> List[dict]:
+    """Nós de submapa novos em grade, logo abaixo do que já existe no mapa de destino."""
+    xs = [n.get("x", 0) for n in nodes] or [0]
+    ys = [n.get("y", 0) + (n.get("h") or 0) for n in nodes]
+    x0, y0 = min(xs), (max(ys) + dy) if ys else 0
+    return [{"id": new_id(), "kind": "submap", "map_id": cid, "label": "",
+             "x": round(x0 + (i % cols) * dx, 1), "y": round(y0 + (i // cols) * dy, 1)} for i, cid in enumerate(child_ids)]
+
+
+def link_targets(ids, target_id: str, maps: Dict[str, dict]):
+    """Quais mapas podem entrar como submapa do destino. Devolve (ok, motivos): pula o próprio destino, o que já está
+    lá e o que faria o destino ficar dentro de si mesmo (mapa que contém o destino)."""
+    have = {n.get("map_id") for n in maps.get(target_id, {}).get("nodes", []) if n.get("kind") == "submap"}
+    ok, skip = [], {}
+    for i in dict.fromkeys(ids):
+        if i not in maps:
+            continue
+        if i == target_id:
+            skip[i] = "é o próprio destino"
+        elif i in have:
+            skip[i] = "já está no destino"
+        elif target_id in descendants(i, maps):
+            skip[i] = "o destino está dentro dele"
+        else:
+            ok.append(i)
+    return ok, skip
+
+
+def _unique_name(name: str, taken: Set[str]) -> str:
+    if name.lower() not in taken:
+        return name
+    k = 1
+    while True:
+        cand = f"{name} (cópia)" if k == 1 else f"{name} (cópia {k})"
+        if cand.lower() not in taken:
+            return cand
+        k += 1
+
+
+def copy_maps(ids, maps: Dict[str, dict], with_submaps: bool, taken_names: Set[str]):
+    """Cópias independentes dos mapas (e, com with_submaps, de tudo abaixo deles). Os equipamentos são os mesmos
+    (mesmos hosts); submapas fora da cópia continuam apontando para o original. Devolve (docs novos, {antigo: novo})."""
+    sel = [i for i in dict.fromkeys(ids) if i in maps]
+    todo = set(sel)
+    if with_submaps:
+        for i in sel:
+            todo |= descendants(i, maps)
+    order = sel + sorted(todo - set(sel), key=lambda x: maps[x].get("name", "").lower())
+    idmap = {old: new_id() for old in order}
+    taken = {n.lower() for n in taken_names}
+    out = []
+    for old in order:
+        m = maps[old]
+        nmap = {n["id"]: new_id() for n in m.get("nodes", [])}
+        nodes = []
+        for n in m.get("nodes", []):
+            nn = {**n, "id": nmap[n["id"]]}
+            if n.get("kind") == "submap":
+                nn["map_id"] = idmap.get(n.get("map_id"), n.get("map_id"))
+            nodes.append(nn)
+        links = [{**ln, "id": new_id(), "from": nmap[ln["from"]], "to": nmap[ln["to"]]}
+                 for ln in m.get("links", []) if ln.get("from") in nmap and ln.get("to") in nmap]
+        name = _unique_name(m.get("name") or "Mapa", taken)
+        taken.add(name.lower())
+        doc = {"id": idmap[old], "name": name, "description": m.get("description", ""), "nodes": nodes, "links": links,
+               "bg": m.get("bg", "grid")}
+        if m.get("style"):
+            doc["style"] = dict(m["style"])
+        out.append(doc)
+    return out, idmap

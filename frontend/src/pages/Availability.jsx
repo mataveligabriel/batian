@@ -11,7 +11,7 @@ import { toast } from "sonner";
 import { DeviceSelect } from "@/components/TagSelect";
 import {
   ChevronDown, ChevronRight, Hexagon, Link2, Loader2, Maximize2, MousePointer2, Pencil, Plus, RotateCcw, Save, Search, Settings2,
-  Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap, FileDown, FileUp, Send,
+  Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap, FileDown, FileUp, Send, Copy, ListChecks,
 } from "lucide-react";
 import { ImportMapDialog, downloadMap } from "@/components/MapTransfer";
 
@@ -939,6 +939,91 @@ function StyleDlg({ style, onChange, onClose, toSubs, onToSubs, isSub, own, onOw
 }
 
 // ------------------------------------------------------------------ importar do The Dude
+// Leva mapas selecionados para dentro de outro (ex.: POPs da NETDRP para a HELP)
+const TRANSFER_MODES = [
+  ["link", "Mesmo mapa nos dois", "O submapa passa a aparecer também no destino. Editar em um muda no outro."],
+  ["copy", "Cópia independente", "Cria cópias com os mesmos equipamentos. Mexer na cópia não muda o original."],
+  ["move", "Mover", "Entra no destino e sai dos mapas onde estava."],
+];
+function TransferDialog({ ids, maps, byId, onClose, onDone }) {
+  const [q, setQ] = useState("");
+  const [target, setTarget] = useState("");
+  const [mode, setMode] = useState("link");
+  const [subs, setSubs] = useState(true);
+  const [pv, setPv] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const sel = new Set(ids);
+  const path = (m) => (m.parents || []).slice(0, 2).map(p => byId[p]?.name).filter(Boolean).join(", ");
+  const qt = q.trim().toLowerCase();
+  const options = maps.filter(m => !sel.has(m.id) && (!qt || `${m.name} ${path(m)}`.toLowerCase().includes(qt)))
+    .sort((a, b) => (a.parents.length ? 1 : 0) - (b.parents.length ? 1 : 0) || a.name.localeCompare(b.name)).slice(0, 200);
+  const body = { ids, target_id: target, mode, with_submaps: subs };
+  useEffect(() => { setPv(null); }, [target, mode, subs]);
+  const preview = async () => {
+    setBusy(true);
+    try { setPv((await api.post("/avail/maps/transfer", { ...body, dry_run: true })).data); }
+    catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
+  };
+  const run = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/avail/maps/transfer", body);
+      toast.success(mode === "copy" ? `${data.copies} mapa(s) copiado(s) para ${data.target}`
+        : `${data.added} mapa(s) ${mode === "move" ? "movido(s)" : "colocado(s)"} em ${data.target}`);
+      onDone(target);
+    } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
+  };
+  return (
+    <Modal title={`Levar ${ids.length} mapa(s) para outro mapa`} onClose={onClose} wide>
+      <div className="space-y-3" data-testid="av-transfer">
+        <div className="text-xs text-slate-400 truncate">{ids.map(i => byId[i]?.name).filter(Boolean).join(", ")}</div>
+        <div className="space-y-1">
+          <div className="text-sm text-slate-300">Para dentro de:</div>
+          <Input value={q} onChange={e => setQ(e.target.value)} placeholder="buscar mapa (ex.: HELP)" className="h-8 bg-sunken border-line text-sm" data-testid="av-transfer-search" />
+          <div className="max-h-48 overflow-y-auto rounded-md border border-line divide-y divide-line">
+            {options.map(m => (
+              <button key={m.id} type="button" onClick={() => setTarget(m.id)} data-testid={`av-transfer-target-${m.id}`}
+                      className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[13px] ${target === m.id ? "bg-brand/20 text-slate-100" : "text-slate-300 hover:bg-white/5"}`}>
+                <Hexagon className="w-3 h-3 shrink-0" style={{ color: C[m.summary.state] || C.empty }} />
+                <span className="truncate">{m.name}</span>
+                {path(m) && <span className="ml-auto text-[11px] text-slate-500 truncate">em {path(m)}</span>}
+              </button>
+            ))}
+            {!options.length && <div className="px-2 py-3 text-xs text-slate-500">Nenhum mapa com essa busca</div>}
+          </div>
+        </div>
+        <div className="space-y-1.5" role="radiogroup" aria-label="Como levar">
+          {TRANSFER_MODES.map(([k, t, d]) => (
+            <label key={k} className={`flex gap-2 rounded-md border p-2 cursor-pointer ${mode === k ? "border-brand bg-brand/10" : "border-line"}`}>
+              <input type="radio" name="av-mode" checked={mode === k} onChange={() => setMode(k)} className="mt-0.5 accent-brand" data-testid={`av-transfer-mode-${k}`} />
+              <span><span className="text-sm text-slate-100">{t}</span><span className="block text-xs text-slate-400">{d}</span></span>
+            </label>
+          ))}
+          {mode === "copy" && <label className="flex items-center gap-1.5 text-xs text-slate-300 pl-1"><input type="checkbox" checked={subs} onChange={e => setSubs(e.target.checked)} /> copiar também os submapas de dentro deles</label>}
+        </div>
+        {pv && (
+          <div className="rounded-md border border-line p-2 text-xs space-y-1" data-testid="av-transfer-preview">
+            <div className="text-slate-200">
+              {pv.mode === "copy" ? `${pv.copies} mapa(s) novo(s) serão criados; ${pv.count} entram em ${pv.target}.`
+                : `${pv.count} mapa(s) entram em ${pv.target}.`}
+            </div>
+            {pv.names.length > 0 && <div className="text-slate-400">{pv.names.join(", ")}</div>}
+            {pv.mode === "move" && pv.from?.length > 0 && <div className="text-amber-300">Saem de: {pv.from.join(", ")}</div>}
+            {pv.skipped.length > 0 && <div className="text-slate-500">Ficam de fora: {pv.skipped.join("; ")}</div>}
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} className="h-8 text-slate-300">Cancelar</Button>
+          {!pv ? <Button onClick={preview} disabled={!target || busy} className="h-8 bg-brand hover:bg-brand-strong" data-testid="av-transfer-preview-btn">
+                   {busy && <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />}Ver o que vai mudar</Button>
+               : <Button onClick={run} disabled={busy || (!pv.count && !pv.copies)} className="h-8 bg-brand hover:bg-brand-strong" data-testid="av-transfer-run">
+                   {busy && <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />}{mode === "copy" ? "Copiar" : mode === "move" ? "Mover" : "Colocar no mapa"}</Button>}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function DudeImport({ onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const [pct, setPct] = useState(0);
@@ -1385,8 +1470,8 @@ export default function Availability() {
   };
   const GroupChip = ({ id, name, st, down }) => (
     <button onClick={() => (picking && id ? togglePick(id) : setGroup(id))} data-testid={`av-group-${id || "all"}`}
-      className={`max-w-full inline-flex items-center gap-1.5 h-7 px-2 rounded-full border text-[12px] ${picking && id ? (picked.has(id) ? "border-red-400 bg-red-500/20 text-slate-100" : "border-line text-slate-400 hover:text-slate-100") : (id ? groupOk && group === id : !groupOk) ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400 hover:text-slate-100"}`}>
-      {picking && id && <span className={`w-3 h-3 rounded-sm border shrink-0 ${picked.has(id) ? "bg-red-400 border-red-400" : "border-slate-500"}`} />}
+      className={`max-w-full inline-flex items-center gap-1.5 h-7 px-2 rounded-full border text-[12px] ${picking && id ? (picked.has(id) ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400 hover:text-slate-100") : (id ? groupOk && group === id : !groupOk) ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-400 hover:text-slate-100"}`}>
+      {picking && id && <span className={`w-3 h-3 rounded-sm border shrink-0 ${picked.has(id) ? "bg-brand border-brand" : "border-slate-500"}`} />}
       {st && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: C[st] || C.empty }} />}
       <span className="truncate">{name}</span>
       {down > 0 && <span className="font-mono text-[10px]" style={{ color: C.down }}>{down}</span>}
@@ -1402,18 +1487,20 @@ export default function Availability() {
           {canEdit && <button onClick={() => setDlg("dude")} className="ml-auto p-1 text-slate-400 hover:text-slate-100" aria-label="Importar do The Dude" title="Importar do The Dude" data-testid="av-dude"><Upload className="w-4 h-4" /></button>}
           {canEdit && <button onClick={() => setDlg("import")} className="p-1 text-slate-400 hover:text-slate-100" aria-label="Importar mapa de outro BastiON" title="Importar mapa de outro BastiON (.json)" data-testid="av-import"><FileUp className="w-4 h-4" /></button>}
           {canEdit && <button onClick={() => setNewName("")} className="p-1 text-slate-400 hover:text-slate-100" aria-label="Novo mapa" data-testid="av-new"><Plus className="w-4 h-4" /></button>}
-          {canEdit && <button onClick={() => (picking ? stopPicking() : setPicking(true))} className={`p-1 ${picking ? "text-red-300" : "text-slate-400 hover:text-slate-100"}`}
-                              aria-label="Selecionar mapas para excluir" title="Selecionar mapas para excluir" aria-pressed={picking} data-testid="av-pick"><Trash2 className="w-4 h-4" /></button>}
+          {canEdit && <button onClick={() => (picking ? stopPicking() : setPicking(true))} className={`p-1 ${picking ? "text-brand-soft" : "text-slate-400 hover:text-slate-100"}`}
+                              aria-label="Selecionar mapas" title="Selecionar mapas para levar a outro mapa ou excluir" aria-pressed={picking} data-testid="av-pick"><ListChecks className="w-4 h-4" /></button>}
         </div>
         {picking && (
-          <div className="mx-3 mb-2 rounded-md border border-red-500/40 bg-red-500/10 p-2 space-y-1.5 text-xs" data-testid="av-pick-bar">
-            <div className="text-slate-200">{picked.size ? `${picked.size} mapa(s) selecionado(s)` : "Marque os mapas (botões ou lista) que quer excluir"}</div>
-            <label className="flex items-center gap-1.5 text-slate-300"><input type="checkbox" checked={withSubs} onChange={e => setWithSubs(e.target.checked)} /> levar junto os submapas deles</label>
-            <div className="flex gap-1.5">
+          <div className="mx-3 mb-2 rounded-md border border-line bg-white/5 p-2 space-y-1.5 text-xs" data-testid="av-pick-bar">
+            <div className="text-slate-200">{picked.size ? `${picked.size} mapa(s) selecionado(s)` : "Marque os mapas (botões ou lista)"}</div>
+            <div className="flex flex-wrap gap-1.5">
+              <Button size="sm" onClick={() => setDlg("transfer")} disabled={!picked.size} className="h-7 px-2.5 text-xs bg-brand hover:bg-brand-strong" data-testid="av-pick-transfer">
+                <Copy className="w-3.5 h-3.5 mr-1" />Levar para…</Button>
               <Button size="sm" onClick={deletePicked} disabled={!picked.size || delBusy} className="h-7 px-2.5 text-xs bg-red-600 hover:bg-red-500 text-white" data-testid="av-pick-delete">
                 {delBusy ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1" />}Excluir</Button>
               <Button size="sm" variant="ghost" onClick={stopPicking} className="h-7 px-2 text-xs text-slate-300">Cancelar</Button>
             </div>
+            <label className="flex items-center gap-1.5 text-slate-400"><input type="checkbox" checked={withSubs} onChange={e => setWithSubs(e.target.checked)} /> ao excluir, levar junto os submapas deles</label>
           </div>
         )}
         {newName !== null && (
@@ -1578,6 +1665,8 @@ export default function Availability() {
         toSubs={draft.style_to_subs ?? true} onToSubs={(v) => setDraft(d => ({ ...d, style_to_subs: v }))} onClose={() => setDlg(null)} />}
       {dlg === "import" && <ImportMapDialog kind="availability" parents={list?.maps || []} onClose={() => setDlg(null)}
         onDone={async (openId) => { setDlg(null); await loadList(); api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {}); if (openId) { setTrail([]); setMapId(openId); } }} />}
+      {dlg === "transfer" && picked.size > 0 && <TransferDialog ids={[...picked]} maps={list?.maps || []} byId={byId} onClose={() => setDlg(null)}
+        onDone={async (tid) => { setDlg(null); stopPicking(); await loadList(); setTrail([]); setMapId(tid); }} />}
       {dlg === "dude" && <DudeImport onClose={() => setDlg(null)} onDone={async (openId) => { setDlg(null); await loadList(); api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {}); if (openId) { setTrail([]); setMapId(openId); } }} />}
       {dlg === "settings" && <SettingsDlg init={list.settings} onClose={() => setDlg(null)} onSaved={(s) => { setList(l => ({ ...l, settings: s })); setDlg(null); }} />}
     </div>

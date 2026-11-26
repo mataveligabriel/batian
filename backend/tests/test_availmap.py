@@ -135,3 +135,32 @@ def test_delete_set_and_folder():
     assert A.delete_set(["F", "X", "nada"], maps, True) == {"F", "A", "B", "C", "X"}
     nodes = A.folder_nodes(["a", "b", "c"], cols=2)
     assert [(n["map_id"], n["x"], n["y"]) for n in nodes] == [("a", 0, 0), ("b", 220, 0), ("c", 0, 200)]
+
+
+def test_transfer_link_and_copy():
+    from availmap import link_targets, copy_maps, place_submaps
+    maps = {
+        "help": {"id": "help", "name": "HELP", "nodes": [{"id": "h1", "kind": "submap", "map_id": "a", "x": 0, "y": 0}], "links": []},
+        "net": {"id": "net", "name": "NETDRP", "nodes": [{"id": "n1", "kind": "submap", "map_id": "b", "x": 0, "y": 0},
+                                                       {"id": "n2", "kind": "submap", "map_id": "c", "x": 200, "y": 0}],
+                "links": [{"id": "l1", "from": "n1", "to": "n2"}]},
+        "a": {"id": "a", "name": "POP-A", "nodes": [], "links": []},
+        "b": {"id": "b", "name": "POP-B", "nodes": [{"id": "d1", "kind": "device", "device_id": "dev1", "x": 0, "y": 0},
+                                                   {"id": "s1", "kind": "submap", "map_id": "c", "x": 50, "y": 0}],
+              "links": [{"id": "x", "from": "d1", "to": "s1"}]},
+        "c": {"id": "c", "name": "POP-C", "nodes": [], "links": []},
+    }
+    ok, skip = link_targets(["b", "a", "help", "net"], "help", maps)
+    assert ok == ["b", "net"] and set(skip) == {"a", "help"}
+    ok, skip = link_targets(["net"], "b", maps)          # b está dentro de net: net não pode entrar em b
+    assert ok == [] and "net" in skip
+    docs, idmap = copy_maps(["b"], maps, True, {"HELP", "NETDRP", "POP-A", "POP-B", "POP-C"})
+    assert {d["name"] for d in docs} == {"POP-B (cópia)", "POP-C (cópia)"}
+    nb = next(d for d in docs if d["id"] == idmap["b"])
+    assert nb["nodes"][0]["device_id"] == "dev1"
+    assert nb["nodes"][1]["map_id"] == idmap["c"]
+    assert nb["links"][0]["from"] == nb["nodes"][0]["id"] and nb["links"][0]["to"] == nb["nodes"][1]["id"]
+    docs, idmap = copy_maps(["b"], maps, False, set())
+    assert len(docs) == 1 and docs[0]["nodes"][1]["map_id"] == "c" and docs[0]["name"] == "POP-B"
+    new = place_submaps(maps["help"]["nodes"], ["x", "y"])
+    assert len(new) == 2 and new[0]["y"] > 0 and new[1]["x"] > new[0]["x"]

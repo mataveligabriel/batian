@@ -1701,3 +1701,12 @@ Em **Configurações → Automação e alertas → Grupos de alerta do Telegram*
 - Trocar a janela de monitor, mudar resolução ou escala, ou conectar/desconectar monitor reencaixa a janela sozinho.
 - Menu Exibir → **Ajustar janela à tela** (Ctrl+Shift+F) faz o mesmo na hora. O menu aparece com a tecla Alt.
 - Precisa gerar o .exe novo (Actions → App Windows) e reinstalar; o resto do BastiON atualiza pelo servidor como sempre.
+
+## 93. Levar submapas de um mapa para outro (ex.: NETDRP → HELP)
+- Na Disponibilidade, o botão de seleção (ícone de lista com checks, no topo do menu) agora serve para **levar para outro mapa** e para excluir.
+- Marque os submapas (botões ou lista) → **Levar para…** → escolha o mapa de destino e como:
+  - **Mesmo mapa nos dois:** o submapa aparece também no destino; editar em um muda no outro.
+  - **Cópia independente:** cria cópias com os mesmos equipamentos (opcional: copiar também os submapas de dentro). Nome repetido ganha "(cópia)".
+  - **Mover:** entra no destino e sai dos mapas onde estava.
+- **Ver o que vai mudar** mostra antes o que entra, de onde sai (mover) e o que fica de fora (já está no destino, ou o destino está dentro dele).
+- Os submapas entram em grade abaixo do que já existe no destino; depois é só arrumar as posições no Editar.

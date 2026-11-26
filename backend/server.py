@@ -5682,6 +5682,61 @@ async def avail_delete_many(body: dict, user: dict = Depends(get_current_user)):
     return {"deleted": n}
 
 
+@api.post("/avail/maps/transfer")
+async def avail_transfer(body: dict, user: dict = Depends(get_current_user)):
+    """Leva mapas selecionados para dentro de outro mapa (ex.: POPs da NETDRP para a HELP).
+    mode: link = o mesmo mapa aparece nos dois (editar em um muda no outro); copy = cópia independente
+    (mesmos equipamentos); move = entra no destino e sai dos mapas onde estava."""
+    _no_viewer(user)
+    mode = body.get("mode") if body.get("mode") in ("link", "copy", "move") else "link"
+    target = str(body.get("target_id") or "")
+    ids = [str(i) for i in (body.get("ids") or [])][:2000]
+    maps = await _avail_all_maps()
+    if target not in maps:
+        raise HTTPException(status_code=404, detail="Mapa de destino não encontrado")
+    if not any(i in maps for i in ids):
+        raise HTTPException(status_code=400, detail="Nenhum mapa selecionado")
+    now = datetime.now(timezone.utc).isoformat()
+    skipped, new_docs = {}, []
+    if mode == "copy":
+        new_docs, idmap = availmap.copy_maps(ids, maps, bool(body.get("with_submaps", True)), {m["name"] for m in maps.values()})
+        add = [idmap[i] for i in dict.fromkeys(ids) if i in idmap]
+    else:
+        add, skipped = availmap.link_targets(ids, target, maps)
+        if mode == "move":      # o que já estava no destino também sai dos outros lugares
+            add_move = add + [i for i, why in skipped.items() if why == "já está no destino"]
+    if body.get("dry_run"):
+        out = {"mode": mode, "target": maps[target]["name"], "count": len(add),
+               "names": [maps[i]["name"] for i in add if i in maps][:50] if mode != "copy" else [d["name"] for d in new_docs[:50]],
+               "skipped": [f"{maps[i]['name']}: {why}" for i, why in skipped.items()]}
+        if mode == "copy":
+            out["copies"] = len(new_docs)
+        if mode == "move":
+            par = availmap.parents(maps)
+            out["from"] = sorted({maps[p]["name"] for i in add_move for p in par.get(i, []) if p != target and p in maps})
+        return out
+    if new_docs:
+        await db.avail_maps.insert_many([{**d, "created_at": now, "updated_at": now, "created_by": user.get("email")} for d in new_docs])
+    if add:
+        nodes = availmap.place_submaps(maps[target].get("nodes", []), add)
+        await db.avail_maps.update_one({"id": target}, {"$push": {"nodes": {"$each": nodes}}, "$set": {"updated_at": now}})
+    removed = 0
+    if mode == "move":
+        moving = set(add_move)
+        for r in maps.values():
+            if r["id"] == target or r["id"] in moving:
+                continue
+            gone = {n["id"] for n in r.get("nodes", []) if n.get("kind") == "submap" and n.get("map_id") in moving}
+            if gone:
+                removed += 1
+                await db.avail_maps.update_one({"id": r["id"]}, {"$set": {
+                    "nodes": [n for n in r["nodes"] if n["id"] not in gone],
+                    "links": [l for l in r.get("links", []) if l["from"] not in gone and l["to"] not in gone], "updated_at": now}})
+    _avail_kick.set()
+    return {"added": len(add), "copies": len(new_docs), "removed_from": removed, "target": maps[target]["name"],
+            "skipped": [f"{maps[i]['name']}: {why}" for i, why in skipped.items()]}
+
+
 @api.post("/avail/trash/{map_id}/restore")
 async def avail_restore(map_id: str, user: dict = Depends(get_current_user)):
     _no_viewer(user)
