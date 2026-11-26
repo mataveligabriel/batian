@@ -1695,3 +1695,9 @@ Em **Configurações → Automação e alertas → Grupos de alerta do Telegram*
 ## 91. Terminal: favoritos no topo e reajuste ao trocar de monitor
 - A barra "Favoritos" embaixo do terminal saiu. Os scripts favoritos agora ficam no botão **Favoritos** (raio amarelo), na barra das abas ao lado de "Nova aba". Ele abre uma lista; clicar envia o script para a aba ativa.
 - O terminal se reajusta quando a janela vai para outro monitor (escala diferente), quando a janela muda de tamanho e quando a aba do navegador volta a ficar visível, então as últimas linhas não ficam mais escondidas embaixo.
+
+## 92. App Windows 1.0.1: janela encaixada na tela
+- Ao abrir, o tamanho e a posição salvos são encaixados na área útil do monitor (sem a barra de tarefas). Antes, a janela podia abrir maior que a tela depois de usada num monitor maior.
+- Trocar a janela de monitor, mudar resolução ou escala, ou conectar/desconectar monitor reencaixa a janela sozinho.
+- Menu Exibir → **Ajustar janela à tela** (Ctrl+Shift+F) faz o mesmo na hora. O menu aparece com a tecla Alt.
+- Precisa gerar o .exe novo (Actions → App Windows) e reinstalar; o resto do BastiON atualiza pelo servidor como sempre.

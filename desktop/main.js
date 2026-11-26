@@ -1,7 +1,7 @@
 // Bastion SSH — app desktop (Electron).
 // Não roda nada localmente: abre o servidor Bastion (Linux) numa janela própria.
 // O cache HTTP é limpo a cada abertura, então o app sempre mostra a versão que está no servidor.
-const { app, BrowserWindow, Menu, shell, session, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, Menu, shell, session, ipcMain, dialog, screen } = require("electron");
 const path = require("path");
 const fs = require("fs");
 
@@ -48,10 +48,31 @@ function loadServer() {
   win.loadURL(url);
 }
 
+// Encaixa um retângulo na área útil (sem a barra de tarefas) do monitor onde ele mais aparece.
+// Evita a janela abrir maior que a tela ou meio fora dela ao trocar de monitor / desconectar um monitor.
+function fitToScreen(b) {
+  const wa = screen.getDisplayMatching({ x: b.x ?? 0, y: b.y ?? 0, width: b.width || 1, height: b.height || 1 }).workArea;
+  const width = Math.min(b.width || 1440, wa.width), height = Math.min(b.height || 900, wa.height);
+  let x = b.x ?? wa.x + Math.round((wa.width - width) / 2), y = b.y ?? wa.y + Math.round((wa.height - height) / 2);
+  x = Math.min(Math.max(x, wa.x), wa.x + wa.width - width);
+  y = Math.min(Math.max(y, wa.y), wa.y + wa.height - height);
+  return { x, y, width, height };
+}
+
+// Reajusta a janela ao monitor atual: maximizada volta a ocupar só a área útil; normal é encaixada na tela.
+function refitWindow() {
+  if (!win || win.isDestroyed() || win.isFullScreen() || win.isMinimized()) return;
+  if (win.isMaximized()) { win.unmaximize(); win.maximize(); }
+  else {
+    const cur = win.getBounds(), f = fitToScreen(cur);
+    if (f.x !== cur.x || f.y !== cur.y || f.width !== cur.width || f.height !== cur.height) win.setBounds(f);
+  }
+}
+
 function createWindow() {
-  const b = config.bounds || {};
+  const b = fitToScreen(config.bounds || {});
   win = new BrowserWindow({
-    width: b.width || 1440, height: b.height || 900, x: b.x, y: b.y,
+    width: b.width, height: b.height, x: b.x, y: b.y,
     minWidth: 900, minHeight: 600,
     title: "Bastion SSH", icon: ICON, backgroundColor: "#05070A", autoHideMenuBar: true, show: false,
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, spellcheck: false },
@@ -64,6 +85,23 @@ function createWindow() {
     config = writeConfig({ bounds: win.isMaximized() ? config.bounds : win.getBounds(), maximized: win.isMaximized() });
   };
   win.on("resize", saveBounds); win.on("move", saveBounds); win.on("close", saveBounds);
+
+  // trocou de monitor, mudou resolução/escala, conectou ou tirou monitor: reencaixa a janela
+  let lastDisplay = screen.getDisplayMatching(win.getBounds()).id;
+  let t = null;
+  const later = () => { clearTimeout(t); t = setTimeout(refitWindow, 250); };
+  screen.on("display-metrics-changed", later);
+  screen.on("display-added", later);
+  screen.on("display-removed", later);
+  win.on("moved", () => {              // fim do arrasto (Windows)
+    const d = screen.getDisplayMatching(win.getBounds()).id;
+    if (d !== lastDisplay) { lastDisplay = d; later(); }
+  });
+  win.on("closed", () => {
+    screen.removeListener("display-metrics-changed", later);
+    screen.removeListener("display-added", later);
+    screen.removeListener("display-removed", later);
+  });
 
   // links para fora do servidor abrem no navegador padrão
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -115,6 +153,7 @@ function buildMenu() {
         { role: "resetZoom", label: "Zoom normal" },
         { type: "separator" },
         { role: "togglefullscreen", label: "Tela cheia", accelerator: "F11" },
+        { label: "Ajustar janela à tela", accelerator: "CmdOrCtrl+Shift+F", click: refitWindow },
         { role: "toggleDevTools", label: "Ferramentas de desenvolvedor", accelerator: "CmdOrCtrl+Shift+I" },
       ],
     },
