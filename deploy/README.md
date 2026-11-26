@@ -1685,3 +1685,9 @@ Em **Configurações → Automação e alertas → Grupos de alerta do Telegram*
 - **Excluir em lote** (Disponibilidade): ícone de lixeira no topo do menu → marque os mapas (nos botões dos mapas principais ou na lista) → **Excluir**. Com *levar junto os submapas deles*, saem também os submapas que só eles usavam (um POP que também está em outro mapa que fica é mantido). Antes de excluir aparece a lista do que vai sair; tudo vai para a Lixeira e dá para restaurar.
 - **Importação do Dude numa pasta**: quando o arquivo tem mais de um mapa de cima, tudo entra dentro de um mapa-pasta (nome sugerido "Dude <arquivo>", editável na prévia). No menu aparece um botão só para aquela importação. A importação de mapa de outro BastiON já entra num mapa só (o exportado).
 
+
+## 90. Sentinela: respostas cortadas e erro 400 no histórico
+- Se a resposta do modelo parar no limite de tamanho com chamadas de ferramenta pela metade, o Sentinela pede para refazer em vez de encerrar com "Pronto.".
+- Se ele usou ferramentas e não escreveu nada, recebe um aviso para escrever o relatório final.
+- Antes de cada chamada, o histórico é conferido: chamada de ferramenta sem resultado ganha um resultado "interrompido". Assim, uma conversa já quebrada (erro `tool_use ids were found without tool_result`) volta a funcionar na próxima mensagem, sem precisar limpar.
+- Limite de saída por chamada subiu de 4096 para 8192 tokens.

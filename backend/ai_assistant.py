@@ -36,6 +36,7 @@ AI_DEFAULTS = {
 }
 
 MAX_STEPS = 16              # chamadas ao Claude por mensagem do usuário
+AGENT_MAX_TOKENS = 8192     # saída máxima por chamada (relatórios longos não cortam no meio)
 MAX_TOOL_OUTPUT = 15000     # caracteres devolvidos ao Claude por ferramenta
 PENDING_TTL_MIN = 15        # validade de uma proposta de alteração
 CONV_TTL_HOURS = 3          # conversa "esquece" depois de 3h parada
@@ -240,7 +241,7 @@ TOOLS = [
     },
     {
         "name": "get_config_backup",
-        "description": "Lê o último backup de configuração salvo pelo BastiON (sem acessar o equipamento). Bom para analisar configuração de BGP, interfaces etc. Pode estar desatualizado — a data vem no resultado.",
+        "description": "Lê o último backup de configuração salvo pelo BastiON (sem acessar o equipamento). Bom para analisar configuração de BGP, interfaces etc. Pode estar desatualizado — a data vem no resultado. Em config grande use filter (ex.: '^vsi |vlanif|l2 binding') numa chamada só, em vez de ler o backup inteiro várias vezes.",
         "input_schema": {
             "type": "object",
             "properties": {"device": _DEV, "filter": {"type": "string", "description": "Regex opcional para devolver só as linhas que casam."}},
@@ -398,8 +399,50 @@ def _append_user(messages: list, text: str):
         messages.append({"role": "user", "content": [{"type": "text", "text": text}]})
 
 
+def repair_history(messages: list) -> list:
+    """Garante o par tool_use -> tool_result exigido pela API.
+
+    Uma resposta cortada (limite de tokens, erro, reinício do serviço) podia deixar no histórico uma chamada de
+    ferramenta sem resultado, e toda mensagem seguinte voltava HTTP 400. Aqui o resultado que falta vira um aviso
+    de "interrompido" e resultados sem chamada correspondente são descartados."""
+    out = []
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        c = m.get("content")
+        if m.get("role") == "user" and isinstance(c, list) and _has_tool_result(m):
+            prev = out[-1] if out else None
+            ids = {b.get("id") for b in (prev or {}).get("content") or [] if isinstance(b, dict) and b.get("type") == "tool_use"} \
+                if prev and prev.get("role") == "assistant" and isinstance(prev.get("content"), list) else set()
+            keep = [b for b in c if not (isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") not in ids)]
+            if not keep:
+                i += 1
+                continue
+            m = {**m, "content": keep}
+        out.append(m)
+        if m.get("role") == "assistant" and isinstance(c, list):
+            ids = [b["id"] for b in c if isinstance(b, dict) and b.get("type") == "tool_use"]
+            if ids:
+                nxt = messages[i + 1] if i + 1 < len(messages) else None
+                have = set()
+                if nxt and nxt.get("role") == "user" and isinstance(nxt.get("content"), list):
+                    have = {b.get("tool_use_id") for b in nxt["content"] if isinstance(b, dict) and b.get("type") == "tool_result"}
+                missing = [{"type": "tool_result", "tool_use_id": t, "is_error": True,
+                            "content": "[interrompido: esta chamada não chegou a rodar]"} for t in ids if t not in have]
+                if missing:
+                    if nxt and nxt.get("role") == "user":
+                        nc = nxt["content"] if isinstance(nxt["content"], list) else [{"type": "text", "text": nxt["content"]}]
+                        res = [b for b in nc if isinstance(b, dict) and b.get("type") == "tool_result"]
+                        rest = [b for b in nc if not (isinstance(b, dict) and b.get("type") == "tool_result")]
+                        messages = messages[:i + 1] + [{**nxt, "content": res + missing + rest}] + messages[i + 2:]
+                    else:
+                        messages = messages[:i + 1] + [{"role": "user", "content": missing}] + messages[i + 1:]
+        i += 1
+    return out
+
+
 def compact_history(messages: list) -> list:
-    msgs = list(messages)
+    msgs = repair_history(list(messages))
     # encurta resultados de ferramentas antigos
     for m in msgs[:-8]:
         if isinstance(m.get("content"), list):
@@ -505,27 +548,50 @@ class AgentCore:
         cfg = llm_cfg(s)
         ctx["out_limit"] = llm.tool_output_limit(cfg["provider"])
         try:
+            messages[:] = repair_history(messages)
+            nudged = cont = 0
             for _ in range(MAX_STEPS):
-                resp = await llm.call(cfg, messages, self._system(ctx["user"], s, bool(ctx.get("voice"))), TOOLS, http=self.http,
+                resp = await llm.call(cfg, messages, self._system(ctx["user"], s, bool(ctx.get("voice"))), TOOLS,
+                                      max_tokens=AGENT_MAX_TOKENS, http=self.http,
                                       on_wait=lambda txt: self.out_wait(ctx, txt))
                 await self._track_usage(resp.get("usage") or {}, cfg["provider"])
                 content = _clean_assistant_content(resp.get("content"))
+                stop = resp.get("stop_reason")
+                text = "\n".join(b["text"] for b in content if b["type"] == "text").strip()
+                tool_uses = [b for b in content if b["type"] == "tool_use"]
                 if not content:
                     content = [{"type": "text", "text": "(sem resposta)"}]
                 messages.append({"role": "assistant", "content": content})
-                text = "\n".join(b["text"] for b in content if b["type"] == "text").strip()
-                tool_uses = [b for b in content if b["type"] == "tool_use"]
-                if resp.get("stop_reason") != "tool_use" or not tool_uses:
-                    await self.out_text(ctx, text or "Pronto.", True)
-                    break
-                if text:
-                    await self.out_text(ctx, text, False)  # "vou verificar..." — retorno enquanto trabalha
-                for tu in tool_uses:
-                    await self.out_activity(ctx, tu["name"], tu.get("input") or {})
-                results = await asyncio.gather(*[self._exec_tool(tu, ctx) for tu in tool_uses])
-                messages.append({"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": tu["id"], "content": out, **({"is_error": True} if err else {})}
-                    for tu, (out, err) in zip(tool_uses, results)]})
+                if tool_uses:
+                    # executa sempre que houver chamada, mesmo se a parada não veio como "tool_use";
+                    # se a resposta foi cortada no limite, a chamada pode estar incompleta: pede para refazer.
+                    if text:
+                        await self.out_text(ctx, text, False)  # "vou verificar..." — retorno enquanto trabalha
+                    if stop == "max_tokens":
+                        results = [("Resposta cortada no limite de tamanho antes desta chamada terminar. "
+                                    "Refaça a chamada, se ainda precisar, e seja mais curto no texto.", True)] * len(tool_uses)
+                    else:
+                        for tu in tool_uses:
+                            await self.out_activity(ctx, tu["name"], tu.get("input") or {})
+                        results = await asyncio.gather(*[self._exec_tool(tu, ctx) for tu in tool_uses])
+                    messages.append({"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": tu["id"], "content": out, **({"is_error": True} if err else {})}
+                        for tu, (out, err) in zip(tool_uses, results)]})
+                    continue
+                if stop == "max_tokens" and cont < 2:
+                    cont += 1
+                    if text:
+                        await self.out_text(ctx, text, False)
+                    _append_user(messages, "[Sistema] Sua resposta foi cortada no limite de tamanho. Continue exatamente de onde parou, sem repetir.")
+                    continue
+                if not text and nudged < 1:
+                    # trabalhou com ferramentas mas não escreveu nada: pede a resposta final em vez de soltar "Pronto."
+                    nudged += 1
+                    _append_user(messages, "[Sistema] Você não escreveu nenhuma resposta ao usuário. Escreva agora a resposta "
+                                           "final com o que encontrou (relatório/lista pedida), sem chamar mais ferramentas.")
+                    continue
+                await self.out_text(ctx, text or "Não consegui montar uma resposta. Pode repetir o pedido?", True)
+                break
             else:
                 await self.out_text(ctx, "Parei aqui: atingi o limite de passos para um único pedido. Me diga como seguir.", True)
                 _append_user(messages, "[Sistema] Limite de passos atingido; aguarde nova instrução do usuário.")
@@ -533,11 +599,11 @@ class AgentCore:
             await self.save_conv(ctx, messages)
         except (AIError, llm.LLMError) as e:
             await self.out_text(ctx, f"⚠️ {e}", True)
-            await self.save_conv(ctx, snapshot)  # termina com a msg do usuário: a próxima é mesclada nela
+            await self.save_conv(ctx, repair_history(snapshot))  # termina com a msg do usuário: a próxima é mesclada nela
         except Exception as e:
             logger.exception("falha no agente")
             await self.out_text(ctx, f"⚠️ Erro interno: {e}", True)
-            await self.save_conv(ctx, snapshot)
+            await self.save_conv(ctx, repair_history(snapshot))
 
     async def _track_usage(self, usage: dict, provider: str = ""):
         month = datetime.now(timezone.utc).strftime("%Y-%m")
