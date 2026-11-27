@@ -1720,3 +1720,13 @@ Em **Configurações → Automação e alertas → Grupos de alerta do Telegram*
 - No **Copiar**, agora dá para marcar equipamentos (e textos/caixas) além de submapas. Eles vão para o destino na mesma disposição, com as linhas entre os marcados (porta SNMP incluída).
 - Equipamento que já está no mapa de destino não é duplicado: a linha liga no que já existe.
 - **Recortar** tira os equipamentos marcados do mapa de origem ao colar.
+
+## 96. Página com erro não deixa mais a tela branca
+- Se uma página quebrar, aparece "Esta página teve um erro" com a mensagem e um botão **Recarregar**; o menu e o resto do BastiON continuam funcionando.
+- Corrigido: depois de **Copiar** no mapa de disponibilidade, a página ficava branca (o botão "Colar aqui" contava os itens pelo formato antigo).
+
+## 97. VPN que conecta sozinha
+- No cadastro da VPN (Agentes → VPNs → editar), marque **Conectar sozinha**. Ela sobe quando o servidor/serviço de VPN inicia e reconecta se cair, esperando 20 s, 40 s, 80 s… até 5 min entre tentativas.
+- Clicar **Desconectar** desliga o automático até você clicar **Conectar** de novo.
+- Pausa sozinha (e avisa no cartão da VPN) quando o gateway pede token (FortiGate com 2FA) ou recusa usuário/senha, para não bloquear o usuário. Conectar na mão volta o automático.
+- O cartão mostra "automática", "automático desligado até conectar" ou "automático pausado".

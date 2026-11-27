@@ -564,6 +564,7 @@ class VpnDaemon:
         self.alert = alert
         self.tunnels: dict = {}
         self.tasks: set = set()
+        self.auto_try: dict = {}        # perfil -> (tentativas seguidas, próxima tentativa em time.time())
 
     async def sh(self, *args, timeout: float = 30):
         try:
@@ -668,7 +669,8 @@ class VpnDaemon:
             return
         try:
             await self.alert(self.db, f"🔌 VPN {prof['name']} caiu",
-                             "Os jumps que dependem dela ficaram sem acesso. Abra o BastiON e " + ("informe o token para reconectar." if (prof.get("type") or "fortinet") == "fortinet" else "clique em Conectar de novo."),
+                             "Os jumps que dependem dela ficaram sem acesso. " + ("Está marcada para conectar sozinha: o BastiON vai tentar de novo." if prof.get("auto_connect")
+                                 else "Abra o BastiON e " + ("informe o token para reconectar." if (prof.get("type") or "fortinet") == "fortinet" else "clique em Conectar de novo.")),
                              push_url=f"/agents?vpn={prof['id']}", push_tag=f"vpn-{prof['id']}")
         except Exception as e:
             log.warning(f"alerta: {e}")
@@ -722,6 +724,43 @@ class VpnDaemon:
                 self.tunnels.pop(pid, None)
                 await self.db.vpn_status.delete_one({"_id": pid})
 
+    async def auto_tick(self):
+        """VPNs marcadas "conectar sozinha": sobe ao iniciar o serviço e reconecta se cair, com espera crescente
+        (20 s, 40 s, 80 s… até 5 min). Para quando alguém clica Desconectar, ou quando o gateway pede token
+        (aí precisa de alguém digitar) — volta ao clicar Conectar."""
+        now = time.time()
+        async for prof in self.db.vpn_profiles.find({"auto_connect": True}, {"_id": 0}):
+            pid = prof["id"]
+            st = await self.db.vpn_status.find_one({"_id": pid}) or {}
+            t = self.tunnels.get(pid)
+            state = (t.state if t else None) or st.get("state") or "disconnected"
+            if state == "up":
+                self.auto_try.pop(pid, None)
+                continue
+            if st.get("manual_off") or st.get("auto_paused") or state in ("connecting", "disconnecting", "need_otp"):
+                if state == "need_otp" and not st.get("auto_paused") and pid in self.auto_try:
+                    await self.db.vpn_status.update_one({"_id": pid}, {"$set": {"auto_paused": "o gateway pediu token: conecte na mão"}})
+                continue
+            if t and t.proc and t.proc.returncode is None:
+                continue
+            err = (t.error if t else None) or st.get("error") or ""
+            if state == "error" and "senha" in err.lower():       # não fica errando a senha (pode bloquear o usuário)
+                await self.db.vpn_status.update_one({"_id": pid}, {"$set": {"auto_paused": "usuário ou senha recusados: corrija e conecte na mão"}})
+                continue
+            n, nxt = self.auto_try.get(pid, (0, 0))
+            if now < nxt:
+                continue
+            wait = min(300, 20 * (2 ** n))
+            self.auto_try[pid] = (n + 1, now + wait)
+            log.info(f"VPN {prof.get('name')}: conectando sozinha (tentativa {n + 1})")
+            await self.db.vpn_status.update_one({"_id": pid}, {"$set": {"state": "connecting", "error": None, "prompt": None,
+                                                                        "since": _now(), "auto_next": None}}, upsert=True)
+            if t and t.proc and t.proc.returncode is None:
+                await t.stop()
+            t = Tunnel(self, prof, "")
+            self.tunnels[pid] = t
+            self._spawn(t.run())
+
     async def refresh_routes(self):
         for t in self.tunnels.values():
             if t.state == "up" and not t.iface:
@@ -743,6 +782,8 @@ class VpnDaemon:
                 await self.db.vpn_status.replace_one({"_id": "_daemon"}, {"_id": "_daemon", "at": _now(), "bin": OFV, "caps": capabilities()}, upsert=True)
                 await self.tick()
                 n += 1
+                if n % 5 == 1:
+                    await self.auto_tick()
                 if n % 15 == 0:
                     await self.refresh_routes()
             except Exception as e:

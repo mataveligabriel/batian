@@ -990,7 +990,7 @@ function PasteDialog({ clip, target, onClose, onDone }) {
   return (
     <Modal title={`Colar ${nItems} item(ns) em ${target.name}`} onClose={onClose}>
       <div className="space-y-3" data-testid="av-paste">
-        <div className="text-xs text-slate-400">{clip.names.join(", ")}</div>
+        <div className="text-xs text-slate-400">{(clip.names || []).join(", ")}</div>
         {opts.length > 1 && hasSubs && <div className="space-y-1.5" role="radiogroup" aria-label="Como colar (submapas)">
           <div className="text-xs text-slate-400">Submapas:</div>
           {opts.map(([k, t, d]) => (
@@ -1444,7 +1444,12 @@ export default function Availability() {
   const toggleC = (id) => setCpick(o => { const n = new Set(o); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const stopCopying = () => { setCopying(false); setCpick(new Set()); };
   const nodeName = (n) => (n.kind === "submap" ? n.label || byId[n.map_id]?.name : n.kind === "device" ? n.label || names[n.device_id] : n.label || n.text) || "item";
-  const [clip, setClipRaw] = useState(() => ls.get("bastion_avail_clip", null));
+  // o que foi copiado fica no navegador; formato inválido/antigo é descartado (não pode derrubar a página)
+  const [clip, setClipRaw] = useState(() => {
+    const c = ls.get("bastion_avail_clip", null);
+    return c && typeof c === "object" && (Array.isArray(c.node_ids) || Array.isArray(c.ids)) ? c : null;
+  });
+  const clipCount = clip ? (clip.node_ids || clip.ids || []).length : 0;
   const setClip = (c) => { setClipRaw(c); ls.set("bastion_avail_clip", c); };
   const takeClip = (cut) => {
     const nodes = (map?.nodes || []).filter(n => cpick.has(n.id));
@@ -1598,7 +1603,7 @@ export default function Availability() {
                               title="Marcar submapas e equipamentos para copiar, recortar ou mover juntos"><Copy className="w-3.5 h-3.5 mr-1" />Copiar</Button>}
               {canEdit && map && clip && <span className="inline-flex">
                 <Button size="sm" onClick={() => setDlg("paste")} className="h-8 rounded-r-none bg-sky-600 hover:bg-sky-500 text-white text-xs" data-testid="av-paste-btn"
-                        title={`${clip.cut ? "Recortados" : "Copiados"}: ${clip.names.join(", ")}`}><ClipboardPaste className="w-3.5 h-3.5 mr-1" />Colar aqui ({clip.ids.length})</Button>
+                        title={`${clip.cut ? "Recortados" : "Copiados"}: ${(clip.names || []).join(", ")}`}><ClipboardPaste className="w-3.5 h-3.5 mr-1" />Colar aqui ({clipCount})</Button>
                 <Button size="sm" onClick={() => setClip(null)} className="h-8 px-1.5 rounded-l-none border-l border-sky-800 bg-sky-600 hover:bg-sky-500 text-white" aria-label="Esquecer o que foi copiado" title="Esquecer o que foi copiado"><X className="w-3.5 h-3.5" /></Button>
               </span>}
               {map && <Button size="sm" variant="outline" onClick={() => downloadMap(`/avail/maps/${map.id}/export`, map.name)} className={`${tb} hidden md:inline-flex`} data-testid="av-export"

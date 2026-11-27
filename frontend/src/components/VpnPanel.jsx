@@ -170,7 +170,7 @@ export function VpnConnectDialog({ vpn, onClose, reload, daemon = true }) {
   );
 }
 
-const emptyVpn = { type: "fortinet", name: "", host: "", port: "", username: "", password: "", realm: "", routes: "", ovpn_config: "", psk: "", mppe: true };
+const emptyVpn = { type: "fortinet", name: "", host: "", port: "", username: "", password: "", realm: "", routes: "", ovpn_config: "", psk: "", mppe: true, auto_connect: false };
 
 function VpnForm({ initial, caps = {}, onClose, onSaved }) {
   const [f, setF] = useState(initial ? { ...emptyVpn, ...initial, type: kindOf(initial), password: "", psk: "", ovpn_config: "", routes: (initial.routes || []).join("\n") } : emptyVpn);
@@ -183,7 +183,7 @@ function VpnForm({ initial, caps = {}, onClose, onSaved }) {
     setBusy(true);
     const body = { type: k, name: f.name, host: f.host, port: f.port ? Number(f.port) : null, username: f.username, password: f.password || null, realm: f.realm,
                    routes: f.routes.split(/[\s,;]+/).filter(Boolean), trusted_certs: initial?.trusted_certs || [],
-                   ovpn_config: k === "openvpn" ? (f.ovpn_config || null) : null, mppe: !!f.mppe,
+                   ovpn_config: k === "openvpn" ? (f.ovpn_config || null) : null, mppe: !!f.mppe, auto_connect: !!f.auto_connect,
                    psk: k !== "l2tp" ? null : f.psk ? f.psk : (editing && !f.clearPsk ? null : "") };
     try {
       if (editing) await api.put(`/vpns/${initial.id}`, body); else await api.post("/vpns", body);
@@ -247,6 +247,11 @@ function VpnForm({ initial, caps = {}, onClose, onSaved }) {
           {k === "pptp" && (
             <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer"><input type="checkbox" checked={!!f.mppe} onChange={e => setF({ ...f, mppe: e.target.checked })} data-testid="vpn-mppe" /> Exigir criptografia (MPPE-128, MS-CHAPv2)</label>
           )}
+          <label className="flex items-start gap-2 text-xs text-slate-300 cursor-pointer">
+            <input type="checkbox" checked={!!f.auto_connect} onChange={e => setF({ ...f, auto_connect: e.target.checked })} className="mt-0.5" data-testid="vpn-auto" />
+            <span>Conectar sozinha: sobe quando o servidor liga e reconecta se cair. Para quando você clicar Desconectar.
+              {k === "fortinet" && <span className="block text-slate-500">FortiGate: só funciona se a VPN não pedir token. Se pedir, ela para e espera você conectar na mão.</span>}</span>
+          </label>
           <div>
             <Label>Redes pela VPN{k === "fortinet" ? " (opcional)" : ""}</Label>
             <Textarea value={f.routes} onChange={e => setF({ ...f, routes: e.target.value })} rows={2} placeholder={"ex.: x.x.x.x/x"} className={`${inputCls} text-xs`} data-testid="vpn-routes" />
@@ -296,6 +301,9 @@ export function VpnSection({ vpns, daemon, caps = {}, reload, openId, onOpened }
                 <div className="text-slate-100 font-semibold">{v.name}</div>
                 <span className="text-[10px] font-mono text-slate-400 border border-line rounded px-1" data-testid={`vpn-kind-${v.id}`}>{VPN_TYPES[kindOf(v)]}</span>
                 <VpnState state={v.status.state} />
+                {v.auto_connect && <span className={`text-[10px] rounded px-1 border ${v.status.manual_off || v.status.auto_paused ? "border-line text-slate-500" : "border-emerald-500/40 text-emerald-300"}`}
+                      title={v.status.auto_paused || (v.status.manual_off ? "Desconectada na mão: volta a conectar sozinha depois que você clicar Conectar" : "Conecta sozinha e reconecta se cair")}>
+                  {v.status.auto_paused ? "automático pausado" : v.status.manual_off ? "automático desligado até conectar" : "automática"}</span>}
                 <div className="ml-auto flex gap-1">
                   <button onClick={() => setForm(v)} className="text-slate-500 hover:text-slate-200 p-1" title="Editar"><Pencil className="w-3.5 h-3.5" /></button>
                   <button onClick={() => del(v)} className="text-slate-500 hover:text-red-400 p-1" title="Apagar"><Trash2 className="w-3.5 h-3.5" /></button>

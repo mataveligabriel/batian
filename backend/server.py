@@ -12917,6 +12917,7 @@ class VpnProfileIn(BaseModel):
     ovpn_config: Optional[str] = None    # OpenVPN: conteúdo do .ovpn (write-only; vazio mantém)
     psk: Optional[str] = None            # L2TP/IPsec: chave pré-compartilhada (write-only; None mantém, "" apaga)
     mppe: bool = True                    # PPTP: exigir criptografia MPPE-128
+    auto_connect: bool = False           # conecta sozinha (servidor ligou, caiu) até alguém clicar Desconectar
 
 
 class VpnConnectIn(BaseModel):
@@ -12930,7 +12931,8 @@ def _vpn_public(p: dict, st: Optional[dict]) -> dict:
     out["has_psk"] = bool(p.get("psk"))
     out["has_config"] = bool(p.get("ovpn_config"))
     st = st or {}
-    out["status"] = {k: st.get(k) for k in ("state", "since", "iface", "ip", "routes", "error", "pending_cert", "prompt", "log", "updated", "diag", "diag_at")}
+    out["status"] = {k: st.get(k) for k in ("state", "since", "iface", "ip", "routes", "error", "pending_cert", "prompt", "log", "updated", "diag", "diag_at",
+                                          "manual_off", "auto_next", "auto_paused")}
     out["status"]["state"] = st.get("state") or "disconnected"
     return out
 
@@ -13007,7 +13009,8 @@ def _vpn_clean(body: VpnProfileIn, cur: Optional[dict] = None) -> dict:
             routes.append(str(n))
     certs = [c.strip().lower() for c in body.trusted_certs if re.fullmatch(r"[0-9a-fA-F]{64}", c.strip())]
     return {"name": body.name.strip()[:60], "host": host, "port": int(body.port), "username": body.username.strip(),
-            "realm": body.realm.strip()[:60], "routes": list(dict.fromkeys(routes)), "trusted_certs": list(dict.fromkeys(certs)), **extra}
+            "realm": body.realm.strip()[:60], "routes": list(dict.fromkeys(routes)), "trusted_certs": list(dict.fromkeys(certs)),
+            "auto_connect": bool(body.auto_connect), **extra}
 
 
 @api.get("/vpns")
@@ -13086,6 +13089,7 @@ async def connect_vpn(vid: str, body: VpnConnectIn, user: dict = Depends(get_cur
     if len(otp) > 64:
         raise HTTPException(400, "Token inválido")
     await db.vpn_status.update_one({"_id": vid}, {"$set": {"state": "connecting", "error": None, "pending_cert": None, "prompt": None,
+                                                           "manual_off": False, "auto_paused": None,
                                                            "since": datetime.now(timezone.utc).isoformat()}}, upsert=True)
     await _vpn_cmd(vid, "connect", otp)
     return _vpn_public(p, await db.vpn_status.find_one({"_id": vid}))
@@ -13122,6 +13126,7 @@ async def vpn_diag(vid: str, user: dict = Depends(get_current_user)):
 async def disconnect_vpn(vid: str, user: dict = Depends(get_current_user)):
     _no_viewer(user)
     p = await _get_vpn_for(user, vid)
+    await db.vpn_status.update_one({"_id": vid}, {"$set": {"manual_off": True}}, upsert=True)
     await db.vpn_status.update_one({"_id": vid, "state": {"$in": ["up", "connecting", "need_otp"]}}, {"$set": {"state": "disconnecting"}})
     await _vpn_cmd(vid, "disconnect")
     return _vpn_public(p, await db.vpn_status.find_one({"_id": vid}))

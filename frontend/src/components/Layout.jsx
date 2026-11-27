@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { NavLink, Navigate, Outlet, useLocation } from "react-router-dom";
+import PageErrorBoundary from "@/components/PageErrorBoundary";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import { Toaster } from "@/components/ui/sonner";
@@ -266,7 +267,7 @@ export default function Layout() {
       <main className="flex-1 min-w-0 min-h-0 flex flex-col relative pb-[env(safe-area-inset-bottom)] md:pb-0">
         {!onTerminal && <InstallHint />}
         <div className={`flex-1 min-h-0 flex flex-col ${onTerminal ? "hidden" : ""}`}>
-          <Outlet />
+          <PageErrorBoundary resetKey={pathname}><Outlet /></PageErrorBoundary>
         </div>
         {!isViewer && canUse(user, "terminal") && <TerminalWorkspace visible={onTerminal} />}
       </main>
