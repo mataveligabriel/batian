@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MapCanvasAvail, AlarmPanel, MobileAlarms, C as C0, effectiveStyle, paletteOf, ignoredTxt } from "@/pages/Availability";
-import { useVoiceAlerts, effectiveVoice, audioUnlocked, stopAlerts } from "@/lib/voiceAlert";
+import { useVoiceAlerts, effectiveVoice, stopAlerts, primeAudio, useAutoUnlock } from "@/lib/voiceAlert";
 
 // Link sem login do mapa de disponibilidade: /disp/<token>. Só lê /api/public/avail da própria origem.
 const get = async (path) => {
@@ -37,15 +37,19 @@ export default function AvailPublic({ token }) {
   const voiceCfg = useMemo(() => (info ? effectiveVoice(mapId, (id) => info.maps?.[id]?.voice || null, trail) : null), [info, mapId, trail]);
   const voiceOn = !!voiceCfg?.enabled;
   const [mute, setMute] = useState(() => { try { return localStorage.getItem("bastion_tv_voice_mute") === "1"; } catch { return false; } });
-  const [unlocked, setUnlocked] = useState(audioUnlocked());
-  useEffect(() => {
-    if (unlocked) return undefined;
-    const on = () => setUnlocked(true);
-    window.addEventListener("pointerdown", on, { once: true }); window.addEventListener("keydown", on, { once: true });
-    return () => { window.removeEventListener("pointerdown", on); window.removeEventListener("keydown", on); };
-  }, [unlocked]);
-  useVoiceAlerts(live, voiceCfg, voiceOn && !mute, mapId);
-  const toggleMute = () => { const m = !mute; setMute(m); try { localStorage.setItem("bastion_tv_voice_mute", m ? "1" : "0"); } catch { /* ok */ } if (m) stopAlerts(); };
+  // celular/TV: o som só libera com um toque que já fala alguma coisa (cada vez que a página abre)
+  const [unlocked, setUnlocked] = useState(false);
+  const [noVoice, setNoVoice] = useState(false);
+  const unlock = () => {
+    primeAudio(voiceCfg).then(r => { setUnlocked(true); setNoVoice(r === "sem-voz"); });
+  };
+  useAutoUnlock(voiceOn && !mute && !unlocked, voiceCfg, () => setUnlocked(true));
+  useVoiceAlerts(live, voiceCfg, voiceOn && !mute && unlocked, mapId);
+  const toggleMute = () => {
+    const m = !mute; setMute(m);
+    try { localStorage.setItem("bastion_tv_voice_mute", m ? "1" : "0"); } catch { /* ok */ }
+    if (m) stopAlerts(); else if (!unlocked) unlock();
+  };
 
   useEffect(() => {
     if (!mapId) return;
@@ -122,8 +126,12 @@ export default function AvailPublic({ token }) {
       <div className="flex-1 min-w-0 relative">
         <MapCanvasAvail map={map} live={live} names={names} editing={false} tool="move" selected={sel} onSelect={setSel} onMove={() => {}} onConnect={() => {}} onEnter={enter} fitSignal={fit} />
         {voiceOn && !mute && !unlocked && (
-          <button onClick={() => setUnlocked(true)} className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-2 rounded-md text-sm font-semibold shadow-xl"
-                  style={{ background: C.warn, color: C.bg0 }}>🔊 Clique aqui para liberar o alerta por voz nesta tela</button>
+          <button onClick={unlock} className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-4 py-3 rounded-md text-base font-semibold shadow-xl"
+                  style={{ background: C.warn, color: C.bg0 }} data-testid="tv-voice-unlock">🔊 Toque na tela para ativar o alerta por voz</button>
+        )}
+        {voiceOn && unlocked && noVoice && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-3 py-2 rounded-md text-xs shadow-xl" style={{ background: C.panel, color: C.warn, border: `1px solid ${C.line}` }}>
+            Este aparelho não tem voz de leitura: vai tocar só os bipes de alerta.</div>
         )}
         {(sl || sLink) && (
           <div className="absolute top-3 right-3 w-64 rounded-lg p-3 text-sm space-y-1 shadow-2xl" style={{ background: `${C.panel}f2`, border: `1px solid ${C.line}` }}>

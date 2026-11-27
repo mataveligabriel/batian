@@ -14,7 +14,7 @@ import {
   Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap, FileDown, FileUp, Send, Copy, ClipboardPaste, Megaphone, Play, Square,
 } from "lucide-react";
 import { ImportMapDialog, downloadMap } from "@/components/MapTransfer";
-import { VOICE_DEFAULT, VOICE_PRESETS, INTROS, listVoices, guessGender, speakAlert, stopAlerts, alertText, ttsSupported, useVoiceAlerts, effectiveVoice } from "@/lib/voiceAlert";
+import { VOICE_DEFAULT, VOICE_PRESETS, INTROS, listVoices, guessGender, speakAlert, stopAlerts, alertText, ttsSupported, useVoiceAlerts, effectiveVoice, primeAudio, useAutoUnlock } from "@/lib/voiceAlert";
 
 // Paleta própria do mapa (independe do tema do app: o mapa é sempre "sala escura")
 export const C = { bg0: "#06111d", bg1: "#0b2034", grid: "rgba(96,165,250,0.07)", ink: "#e3eef8", dim: "#7f9bb3", panel: "#0d1d2e",
@@ -1390,7 +1390,11 @@ export default function Availability() {
   const voiceOn = !!voiceCfg?.enabled;
   voiceOnRef.current = voiceOn;
   const [voiceMute, setVoiceMute] = useState(() => ls.get("bastion_avail_voice_mute", false));   // mudo só neste navegador
-  useVoiceAlerts(live, voiceCfg, voiceOn && !voiceMute, mapId);
+  // celular/tablet: o som só libera com um toque que já fala algo (no PC o navegador libera sozinho)
+  const touchOnly = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+  const [primed, setPrimed] = useState(!touchOnly);
+  useAutoUnlock(voiceOn && !voiceMute && !primed, voiceCfg, () => setPrimed(true));
+  useVoiceAlerts(live, voiceCfg, voiceOn && !voiceMute && primed, mapId);
   useEffect(() => {
     if (!mapId) return;
     let alive = true;
@@ -1524,7 +1528,11 @@ export default function Availability() {
   };
   const full = () => { try { document.fullscreenElement ? document.exitFullscreen() : shell.current?.requestFullscreen(); } catch { /* ok */ } };
   const toggleSound = () => {
-    if (voiceOn) { const m = !voiceMute; setVoiceMute(m); ls.set("bastion_avail_voice_mute", m); if (m) stopAlerts(); else toast.info("Alerta por voz ligado neste navegador"); return; }
+    if (voiceOn) {
+      const m = !voiceMute; setVoiceMute(m); ls.set("bastion_avail_voice_mute", m);
+      if (m) stopAlerts(); else { primeAudio(voiceCfg).then(() => setPrimed(true)); toast.info("Alerta por voz ligado neste navegador"); }
+      return;
+    }
     const v = !sound; setSound(v); ls.set("bastion_avail_sound", v); if (v) beep();
   };
   const soundOn = voiceOn ? !voiceMute : sound;
@@ -1797,6 +1805,11 @@ export default function Availability() {
                   title="Este submapa também está em outro mapa. Separar: este mapa fica com uma cópia própria e o outro não muda."><Copy className="w-3.5 h-3.5 mr-1" />Tornar independente</Button>}
               </>}
             </div>
+          )}
+          {voiceOn && !voiceMute && !primed && !editing && (
+            <button onClick={() => primeAudio(voiceCfg).then(() => setPrimed(true))} data-testid="av-voice-unlock"
+                    className="absolute top-2 left-1/2 -translate-x-1/2 z-20 px-4 py-3 rounded-md text-sm font-semibold shadow-xl bg-amber-500 text-black">
+              🔊 Toque na tela para ativar o alerta por voz</button>
           )}
           {copying && !editing && (
             <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 max-w-[calc(100%-16px)] flex flex-wrap items-center gap-2 rounded-lg border border-sky-500/50 bg-panel/95 px-3 py-2 shadow-xl text-xs" data-testid="av-copy-bar">

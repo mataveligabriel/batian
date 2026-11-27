@@ -75,7 +75,8 @@ function createWindow() {
     width: b.width, height: b.height, x: b.x, y: b.y,
     minWidth: 900, minHeight: 600,
     title: "Bastion SSH", icon: ICON, backgroundColor: "#05070A", autoHideMenuBar: true, show: false,
-    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, spellcheck: false },
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, spellcheck: false,
+                      autoplayPolicy: "no-user-gesture-required" },     // alerta por voz do mapa toca sem precisar clicar
   });
   if (config.maximized !== false) win.maximize();
   win.once("ready-to-show", () => win.show());

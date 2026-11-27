@@ -120,6 +120,64 @@ export function speakAlert(cfg, text) {
   return queue;
 }
 
+/**
+ * Celular/TV: o navegador só deixa tocar som e falar depois que a PRIMEIRA fala acontece dentro de um toque.
+ * Chame isto no clique do botão "Ativar alerta por voz": acorda o áudio, toca o bipe e fala uma frase curta.
+ * Devolve "ok", "sem-voz" (aparelho sem síntese de voz: só os bipes) ou "falhou".
+ */
+export function primeAudio(cfg, quiet = false) {
+  const c = { ...VOICE_DEFAULT, ...(cfg || {}) };
+  const ctx = audioCtx();
+  try {          // bipe curto dentro do toque (iOS/Android liberam o AudioContext aqui)
+    if (ctx && !quiet) {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = 1175; g.gain.value = 0.15 * (c.volume ?? 1);
+      o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.12);
+    }
+  } catch { /* ok */ }
+  if (!TTS) return Promise.resolve(ctx ? "sem-voz" : "falhou");
+  try { TTS.cancel(); TTS.resume?.(); } catch { /* ok */ }
+  const u = new SpeechSynthesisUtterance(quiet ? " " : "Alerta por voz ativado.");
+  const v = pickVoice(c.voice);
+  if (v) { u.voice = v; u.lang = v.lang; } else u.lang = "pt-BR";
+  u.pitch = Number(c.pitch ?? 0.4); u.rate = Number(c.rate ?? 0.92); u.volume = quiet ? 0 : Number(c.volume ?? 1);
+  return new Promise(resolve => {
+    let started = false;
+    u.onstart = () => { started = true; };
+    u.onend = () => resolve("ok");
+    u.onerror = () => resolve(started ? "ok" : "falhou");
+    setTimeout(() => resolve(started ? "ok" : listVoices().length ? "falhou" : "sem-voz"), 4000);
+    TTS.speak(u);              // tem que ser chamado direto no clique, sem await antes
+  });
+}
+
+/** O navegador já deixa tocar som sem toque? (TV/quiosque com som liberado, app do Windows, site com "Som: permitir") */
+export function autoplayAllowed() {
+  try {
+    const p = navigator.getAutoplayPolicy?.("audiocontext");
+    if (p) return p === "allowed";
+  } catch { /* ok */ }
+  const ctx = audioCtx();
+  return !!ctx && ctx.state === "running";
+}
+
+/** Libera o som no primeiro toque/tecla em QUALQUER lugar da página (arrastar o mapa, zoom...), sem botão. */
+export function useAutoUnlock(enabled, cfg, onUnlocked) {
+  const cfgRef = useRef(cfg); cfgRef.current = cfg;
+  useEffect(() => {
+    if (!enabled) return undefined;
+    if (autoplayAllowed()) { onUnlocked(); return undefined; }
+    const on = () => { cleanup(); primeAudio(cfgRef.current, true).then(onUnlocked); };
+    const evs = ["pointerdown", "touchstart", "keydown"];
+    const cleanup = () => evs.forEach(e => window.removeEventListener(e, on, true));
+    evs.forEach(e => window.addEventListener(e, on, { capture: true, passive: true }));
+    return cleanup;
+  }, [enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+// Android/Chrome às vezes "pausa" a síntese sozinha depois de um tempo parada
+if (TTS && typeof window !== "undefined") setInterval(() => { try { if (TTS.paused) TTS.resume(); } catch { /* ok */ } }, 10000);
+
 export function stopAlerts() { try { TTS?.cancel(); } catch { /* ok */ } }
 
 export function alertText(cfg, a) {

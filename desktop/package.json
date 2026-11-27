@@ -1,7 +1,7 @@
 {
   "name": "bastion-desktop",
   "productName": "Bastion SSH",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "App desktop do Bastion SSH Central — abre o servidor Bastion (Linux) numa janela própria, sempre na versão mais nova.",
   "main": "main.js",
   "private": true,
