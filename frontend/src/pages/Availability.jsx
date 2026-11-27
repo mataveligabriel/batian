@@ -11,9 +11,10 @@ import { toast } from "sonner";
 import { DeviceSelect } from "@/components/TagSelect";
 import {
   ChevronDown, ChevronRight, Hexagon, Link2, Loader2, Maximize2, MousePointer2, Pencil, Plus, RotateCcw, Save, Search, Settings2,
-  Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap, FileDown, FileUp, Send, Copy, ClipboardPaste,
+  Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap, FileDown, FileUp, Send, Copy, ClipboardPaste, Megaphone, Play, Square,
 } from "lucide-react";
 import { ImportMapDialog, downloadMap } from "@/components/MapTransfer";
+import { VOICE_DEFAULT, VOICE_PRESETS, INTROS, listVoices, guessGender, speakAlert, stopAlerts, alertText, ttsSupported, useVoiceAlerts, effectiveVoice } from "@/lib/voiceAlert";
 
 // Paleta própria do mapa (independe do tema do app: o mapa é sempre "sala escura")
 export const C = { bg0: "#06111d", bg1: "#0b2034", grid: "rgba(96,165,250,0.07)", ink: "#e3eef8", dim: "#7f9bb3", panel: "#0d1d2e",
@@ -1020,6 +1021,101 @@ function PasteDialog({ clip, target, onClose, onDone }) {
   );
 }
 
+// Alerta falado do mapa: liga, escolhe voz/tom/som e testa na hora (a voz é a do computador que está tocando)
+function VoiceDialog({ map, inherited, onClose, onSaved }) {
+  const [f, setF] = useState(() => ({ ...VOICE_DEFAULT, ...(map.voice || inherited || {}), enabled: map.voice ? map.voice.enabled : true }));
+  const [voices, setVoices] = useState(() => listVoices());
+  const [allLangs, setAllLangs] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!ttsSupported) return undefined;
+    const on = () => setVoices(listVoices());
+    window.speechSynthesis.addEventListener?.("voiceschanged", on);
+    const t = setTimeout(on, 400);
+    return () => { clearTimeout(t); window.speechSynthesis.removeEventListener?.("voiceschanged", on); };
+  }, []);
+  useEffect(() => () => stopAlerts(), []);
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const shown = voices.filter(v => allLangs || /^pt/i.test(v.lang));
+  const test = (kind) => { stopAlerts(); speakAlert(f, alertText(f, kind === "link"
+    ? { kind: "link", name: "Enlace Alvorada Caiana" } : { kind: "device", name: "SW-Link_NET_Divino" })); };
+  const save = async () => {
+    setBusy(true);
+    try { const { data } = await api.put(`/avail/maps/${map.id}/voice`, f); toast.success(data.enabled ? "Alerta por voz ligado" : "Alerta por voz desligado"); onSaved(data); }
+    catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
+  };
+  const slider = (k, label, min, max, step, fmt) => (
+    <label className="block text-xs text-slate-300">
+      <span className="flex justify-between"><span>{label}</span><span className="font-mono text-slate-400">{fmt ? fmt(f[k]) : f[k]}</span></span>
+      <input type="range" min={min} max={max} step={step} value={f[k]} onChange={e => set(k, Number(e.target.value))} className="w-full accent-brand" data-testid={`voice-${k}`} />
+    </label>
+  );
+  return (
+    <Modal title={`Alerta por voz · ${map.name}`} onClose={onClose} wide>
+      <div className="space-y-3 text-sm" data-testid="voice-dialog">
+        {!ttsSupported && <div className="text-amber-300 text-xs">Este navegador não tem síntese de voz. Use Chrome, Edge ou o app do Windows.</div>}
+        <label className="flex items-center gap-2 text-slate-100">
+          <input type="checkbox" checked={!!f.enabled} onChange={e => set("enabled", e.target.checked)} className="accent-brand w-4 h-4" data-testid="voice-enabled" />
+          Falar quando cair algo neste mapa (e nos submapas abertos a partir dele)
+        </label>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <label className="block text-xs text-slate-300 space-y-1"><span>Equipamento caiu</span>
+            <Input value={f.msg_device} onChange={e => set("msg_device", e.target.value)} maxLength={200} className="h-8 bg-sunken border-line text-sm" data-testid="voice-msg-device" /></label>
+          <label className="block text-xs text-slate-300 space-y-1"><span>Fibra/enlace caiu (porta SNMP da linha)</span>
+            <Input value={f.msg_link} onChange={e => set("msg_link", e.target.value)} maxLength={200} className="h-8 bg-sunken border-line text-sm" data-testid="voice-msg-link" /></label>
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-300">
+          <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!f.say_name} onChange={e => set("say_name", e.target.checked)} /> falar o nome do equipamento/enlace depois</label>
+          <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!f.warn} onChange={e => set("warn", e.target.checked)} /> avisar também equipamento instável</label>
+        </div>
+        <div className="rounded-md border border-line p-3 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400">Som antes da fala:</span>
+            {INTROS.map(i => (
+              <button key={i.key} type="button" onClick={() => set("intro", i.key)} className={`h-7 px-2 rounded border text-xs ${f.intro === i.key ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-300"}`}>{i.label}</button>
+            ))}
+          </div>
+          <label className="block text-xs text-slate-300 space-y-1">
+            <span className="flex justify-between"><span>Voz (deste computador)</span>
+              <span className="flex items-center gap-1 text-slate-400"><input type="checkbox" checked={allLangs} onChange={e => setAllLangs(e.target.checked)} /> mostrar todas as línguas</span></span>
+            <select value={f.voice} onChange={e => set("voice", e.target.value)} className="w-full h-8 rounded-md bg-sunken border border-line text-sm text-slate-100 px-2" data-testid="voice-select">
+              <option value="">Automática (masculina em português, se houver)</option>
+              {shown.map(v => <option key={v.name} value={v.name}>{guessGender(v) === "m" ? "♂ " : guessGender(v) === "f" ? "♀ " : ""}{v.name} · {v.lang}</option>)}
+            </select>
+            <span className="block text-[11px] text-slate-500">Mais natural: no Edge, "Microsoft Antonio Online (Natural)". No Windows/app: "Microsoft Daniel". Na TV do NOC vale a voz que existir lá; se a escolhida não existir, usa a masculina mais parecida.</span>
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400">Jeito de falar:</span>
+            {VOICE_PRESETS.map(p => (
+              <button key={p.key} type="button" onClick={() => setF(x => ({ ...x, pitch: p.pitch, rate: p.rate }))} data-testid={`voice-preset-${p.key}`}
+                      className={`h-7 px-2 rounded border text-xs ${f.pitch === p.pitch && f.rate === p.rate ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-300"}`}>{p.label}</button>
+            ))}
+          </div>
+          <div className="grid sm:grid-cols-3 gap-3">
+            {slider("pitch", "Tom (mais grave ←)", 0, 2, 0.05)}
+            {slider("rate", "Velocidade", 0.5, 1.6, 0.02)}
+            {slider("volume", "Volume", 0, 1, 0.05, v => `${Math.round(v * 100)}%`)}
+          </div>
+          <label className="flex items-center gap-2 text-xs text-slate-300">Repetir a fala
+            <select value={f.repeat} onChange={e => set("repeat", Number(e.target.value))} className="h-7 rounded bg-sunken border border-line text-slate-100 px-1">
+              {[1, 2, 3].map(n => <option key={n} value={n}>{n}x</option>)}</select>
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => test("device")} className="h-8 bg-red-600 hover:bg-red-500 text-white text-xs" data-testid="voice-test-device"><Play className="w-3.5 h-3.5 mr-1" />Testar: equipamento caiu</Button>
+            <Button size="sm" onClick={() => test("link")} className="h-8 bg-amber-600 hover:bg-amber-500 text-white text-xs" data-testid="voice-test-link"><Play className="w-3.5 h-3.5 mr-1" />Testar: rompimento</Button>
+            <Button size="sm" variant="ghost" onClick={stopAlerts} className="h-8 text-xs text-slate-300"><Square className="w-3.5 h-3.5 mr-1" />Parar</Button>
+          </div>
+        </div>
+        <div className="text-[11px] text-slate-500">Fala no computador que estiver com este mapa aberto (BastiON ou link do mapa na TV). O navegador só libera som depois de um clique na página. O botão de alto-falante no topo silencia só o seu navegador.</div>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} className="h-8 text-slate-300">Cancelar</Button>
+          <Button onClick={save} disabled={busy} className="h-8 bg-brand hover:bg-brand-strong" data-testid="voice-save">{busy && <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />}Salvar</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function DudeImport({ onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const [pct, setPct] = useState(0);
@@ -1258,6 +1354,8 @@ export default function Availability() {
   const pendingSel = useRef(null);         // item para selecionar depois de abrir o submapa (clique no incidente)
   const shell = useRef(null);
   const lastDown = useRef(null);
+  const byIdRef = useRef({});
+  const voiceOnRef = useRef(false);
   const editing = !!draft;
   const cur = draft || map;
 
@@ -1287,6 +1385,12 @@ export default function Availability() {
   }, [mapId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (list && mapId && !trail.includes(mapId)) setTrail(pathTo(mapId, list.maps)); }, [list, mapId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const voiceCfg = useMemo(() => effectiveVoice(mapId, (id) => (id === map?.id && map?.voice) || byIdRef.current[id]?.voice || null, trail),
+    [mapId, map, list, trail]); // eslint-disable-line react-hooks/exhaustive-deps
+  const voiceOn = !!voiceCfg?.enabled;
+  voiceOnRef.current = voiceOn;
+  const [voiceMute, setVoiceMute] = useState(() => ls.get("bastion_avail_voice_mute", false));   // mudo só neste navegador
+  useVoiceAlerts(live, voiceCfg, voiceOn && !voiceMute, mapId);
   useEffect(() => {
     if (!mapId) return;
     let alive = true;
@@ -1294,7 +1398,7 @@ export default function Availability() {
       if (!alive) return;
       setLive(r.data);
       const d = r.data.summary.down;
-      if (sound && lastDown.current != null && d > lastDown.current) beep();
+      if (sound && !voiceOnRef.current && lastDown.current != null && d > lastDown.current) beep();
       lastDown.current = d;
     }).catch(() => {});
     go(); const t = setInterval(go, 5000);
@@ -1319,6 +1423,7 @@ export default function Availability() {
   };
   const open = (id, push) => { if (editing && !window.confirm("Sair sem salvar as alterações?")) return; setTrail(t => (push ? [...t.slice(0, t.indexOf(mapId) + 1), id] : pathTo(id, list?.maps))); setMapId(id); };
   const byId = useMemo(() => Object.fromEntries((list?.maps || []).map(m => [m.id, m])), [list]);
+  byIdRef.current = byId;
   const names = useMemo(() => ({ ...Object.fromEntries(devices.map(d => [d.id, d.name])), ...Object.fromEntries((list?.maps || []).map(m => [m.id, m.name])) }), [devices, list]);
   const canEdit = !!list?.can_edit;
   const { user } = useAuth();
@@ -1344,11 +1449,11 @@ export default function Availability() {
   // submapas compartilhados com outro mapa (colados como "o mesmo mapa"): viram cópias só aqui; o outro mapa não muda
   const sharedSel = () => {
     const ids = multi.size ? multi : new Set(selected?.id ? [selected.id] : []);
-    return (draft?.nodes || []).filter(n => ids.has(n.id) && n.kind === "submap" && (byId[n.map_id]?.parents || []).length > 1);
+    return (draft?.nodes || []).filter(n => ids.has(n.id) && n.kind === "submap");
   };
   const detach = async () => {
     const nodes = sharedSel();
-    if (!nodes.length) return toast.error("Selecione submapas que também estão em outro mapa");
+    if (!nodes.length) return toast.error("Selecione os submapas");
     try {
       const { data: saved } = await api.put(`/avail/maps/${draft.id}`, draft);        // salva o que já foi mexido
       setMap(saved);
@@ -1418,7 +1523,11 @@ export default function Availability() {
     catch (e) { toast.error(formatApiError(e)); }
   };
   const full = () => { try { document.fullscreenElement ? document.exitFullscreen() : shell.current?.requestFullscreen(); } catch { /* ok */ } };
-  const toggleSound = () => { const v = !sound; setSound(v); ls.set("bastion_avail_sound", v); if (v) beep(); };
+  const toggleSound = () => {
+    if (voiceOn) { const m = !voiceMute; setVoiceMute(m); ls.set("bastion_avail_voice_mute", m); if (m) stopAlerts(); else toast.info("Alerta por voz ligado neste navegador"); return; }
+    const v = !sound; setSound(v); ls.set("bastion_avail_sound", v); if (v) beep();
+  };
+  const soundOn = voiceOn ? !voiceMute : sound;
 
   const sel = selected?.id && cur?.nodes.find(n => n.id === selected.id);
   const selLive = sel && live?.nodes?.[sel.id];
@@ -1614,8 +1723,12 @@ export default function Availability() {
             {!editing && <>
               {!alarmsOpen && <Button size="sm" variant="outline" onClick={toggleAlarms} className={`${tb} hidden md:inline-flex`} data-testid="av-alarms-open">
                 Incidentes{live?.alarms?.length ? <span className="ml-1.5 px-1.5 rounded-full text-[10px] font-bold text-white" style={{ background: live.summary?.down || live.summary?.links_down ? C.down : C.warn }}>{live.alarms.length}</span> : null}</Button>}
-              <Button size="sm" variant="outline" onClick={toggleSound} className={tb} title={sound ? "Som ligado: apita quando algo para de responder" : "Ligar som de alarme"} aria-label="Som">
-                {sound ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}</Button>
+              <Button size="sm" variant="outline" onClick={toggleSound} className={tb} aria-label="Som"
+                      title={voiceOn ? (voiceMute ? "Alerta por voz silenciado neste navegador — clique para ligar" : "Alerta por voz ligado — clique para silenciar só neste navegador")
+                        : sound ? "Som ligado: apita quando algo para de responder" : "Ligar som de alarme"}>
+                {soundOn ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}</Button>
+              {canEdit && map && <Button size="sm" variant="outline" onClick={() => setDlg("voice")} className={`${tb} ${voiceOn ? "border-emerald-500/50 text-emerald-300" : ""}`} data-testid="av-voice"
+                              title="Alerta falado quando cair equipamento ou fibra neste mapa"><Megaphone className="w-3.5 h-3.5 mr-1" />Alerta por voz{voiceOn ? (voiceMute ? " (mudo aqui)" : " ✓") : ""}</Button>}
               <Button size="sm" variant="outline" onClick={() => api.post("/avail/ping-now").then(() => toast.info("Pingando agora"))} className={tb}><Zap className="w-3.5 h-3.5 mr-1" />Pingar agora</Button>
               <Button size="sm" variant="outline" onClick={full} className={tb} aria-label="Tela cheia"><Maximize2 className="w-3.5 h-3.5" /></Button>
               {canEdit && map && <Button size="sm" variant="outline" onClick={() => setDlg("share")} className={tb} data-testid="av-share"><Link2 className="w-3.5 h-3.5 mr-1" />Link do mapa</Button>}
@@ -1755,6 +1868,8 @@ export default function Availability() {
         onDone={async (openId) => { setDlg(null); await loadList(); api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {}); if (openId) { setTrail([]); setMapId(openId); } }} />}
       {dlg === "paste" && clip && cur && <PasteDialog clip={clip} target={cur} onClose={() => setDlg(null)}
         onDone={async () => { setDlg(null); setClip(null); await loadList(); api.get(`/avail/maps/${mapId}`).then(r => { setMap(r.data); setFitSig(x => x + 1); }).catch(() => {}); }} />}
+      {dlg === "voice" && map && <VoiceDialog map={map} inherited={voiceCfg} onClose={() => setDlg(null)}
+        onSaved={async (v) => { setDlg(null); setMap(m => ({ ...m, voice: v })); await loadList(); }} />}
       {dlg === "dude" && <DudeImport onClose={() => setDlg(null)} onDone={async (openId) => { setDlg(null); await loadList(); api.get("/devices").then(r => setDevices(r.data || [])).catch(() => {}); if (openId) { setTrail([]); setMapId(openId); } }} />}
       {dlg === "settings" && <SettingsDlg init={list.settings} onClose={() => setDlg(null)} onSaved={(s) => { setList(l => ({ ...l, settings: s })); setDlg(null); }} />}
     </div>

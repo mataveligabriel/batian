@@ -5547,7 +5547,7 @@ def _avail_summary_row(m: dict, maps: dict, status: dict, par: dict, ifst: dict)
     return {"id": m["id"], "name": m["name"], "description": m.get("description", ""), "updated_at": m.get("updated_at"),
             "parents": par.get(m["id"], []), "children": [n["map_id"] for n in m.get("nodes", []) if n["kind"] == "submap"],
             "child_labels": {n["map_id"]: n["label"] for n in m.get("nodes", []) if n["kind"] == "submap" and n.get("label")},
-            "style": m.get("style") or {"bg": m.get("bg", "grid")},
+            "style": m.get("style") or {"bg": m.get("bg", "grid")}, "voice": m.get("voice"),
             "summary": availmap.summarize(availmap.devices_of(m["id"], maps), status, availmap.links_of(m["id"], maps), ifst)}
 
 
@@ -5613,6 +5613,16 @@ async def avail_update(map_id: str, body: dict, user: dict = Depends(get_current
     await db.avail_maps.update_one({"id": map_id}, {"$set": doc})
     _avail_kick.set()                 # equipamento novo no mapa: pinga já
     return await _avail_map(map_id)
+
+
+@api.put("/avail/maps/{map_id}/voice")
+async def avail_voice(map_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """Liga/ajusta o alerta falado deste mapa (vale também para os submapas abertos a partir dele)."""
+    _no_viewer(user)
+    await _avail_map(map_id)
+    v = availmap.clean_voice(body)
+    await db.avail_maps.update_one({"id": map_id}, {"$set": {"voice": v, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return v
 
 
 @api.post("/avail/maps/{map_id}/add-devices")
@@ -5780,7 +5790,8 @@ async def avail_detach(map_id: str, body: dict, user: dict = Depends(get_current
     nodes = [n for n in m.get("nodes", []) if n["id"] in want and n.get("kind") == "submap" and n.get("map_id") in maps]
     shared = [n for n in nodes if any(p != map_id for p in par.get(n["map_id"], []))]
     if not shared:
-        raise HTTPException(status_code=400, detail="Nenhum dos selecionados está compartilhado com outro mapa")
+        raise HTTPException(status_code=400, detail="Esses submapas só estão neste mapa: já são independentes, não há o que separar. "
+                                                    "(Se foram colados como \"o mesmo mapa\" em outro lugar, abra o mapa de onde copiou e confira se eles estão lá.)")
     ids = list(dict.fromkeys(n["map_id"] for n in shared))
     if body.get("dry_run"):
         return {"count": len(ids), "names": [maps[i]["name"] for i in ids],
@@ -6129,7 +6140,7 @@ async def avs_public(token: str, request: Request):
     out = {}
     for mid in allowed:
         m = maps[mid]
-        out[mid] = {"id": mid, "name": m["name"], "bg": m.get("bg", "grid"), "style": m.get("style") or {}, "nodes": m["nodes"],
+        out[mid] = {"id": mid, "name": m["name"], "bg": m.get("bg", "grid"), "style": m.get("style") or {}, "nodes": m["nodes"], "voice": m.get("voice"),
                     "links": [{**l, "snmp": {"if_name": l["snmp"].get("if_name")} if l.get("snmp") else None} for l in m.get("links", [])]}
     return {"name": d["name"], "root": d["map_id"], "maps": out}
 

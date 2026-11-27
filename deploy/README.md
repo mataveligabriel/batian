@@ -1735,3 +1735,11 @@ Em **Configurações → Automação e alertas → Grupos de alerta do Telegram*
 - No mapa, **Editar** e selecione os submapas (Ctrl+clique ou Shift+arrastar). Se algum também estiver em outro mapa, aparece **Tornar independente** na faixa de cima.
 - Este mapa passa a ter cópias próprias deles (com tudo que tem dentro, mesma posição e linhas). O outro mapa continua com os originais, sem mudar nada. As cópias ficam com o mesmo nome.
 - Serve para separar depois de ter colado como "mesmo mapa" sem querer, mexendo só no mapa original.
+
+## 99. Alerta por voz no mapa de disponibilidade
+- No mapa, botão **Alerta por voz** (barra de cima): liga o aviso falado daquele mapa (vale também para os submapas abertos a partir dele).
+- Quando cai um equipamento: bipes de aviso + "Alerta de falha. Equipamento indisponível." + nome. Quando cai a porta SNMP de uma linha (fibra/enlace): "Alerta de falha. Possível rompimento." + nome da linha. Queda de mais de 3 equipamentos de uma vez vira uma frase só com a quantidade.
+- Dá para trocar as frases, o som antes da fala (bipes, sirene, alarme de dois tons, radar ou nenhum), a voz, o jeito de falar (Grave, Muito grave, Locutor, Robô lento, Urgente), tom, velocidade, volume e repetição. **Testar** fala na hora, antes de salvar.
+- A voz é a do computador que está com o mapa aberto (síntese de voz do navegador/Windows). A mais natural em português masculina: Edge com "Microsoft Antonio Online (Natural)"; no Windows/app, "Microsoft Daniel".
+- Também fala no **link do mapa** (TV do NOC). O navegador só libera som depois de um clique na página: a tela mostra um aviso para clicar. O alto-falante no topo silencia só aquele navegador/tela.
+- Só fala o que caiu depois que o mapa abriu (o que já estava fora não é anunciado de novo).

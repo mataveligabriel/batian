@@ -409,3 +409,20 @@ def paste_layout(target: dict, source: Optional[dict], pairs: List[tuple], extra
                           "points": [{"x": round(p["x"] + off[0], 1), "y": round(p["y"] + off[1], 1)} for p in (l.get("points") or [])]})
     n_dev = sum(1 for n in new_nodes if n.get("kind") == "device")
     return new_nodes, new_links, n_dev
+
+
+VOICE_INTROS = ("beeps", "siren", "klaxon", "radar", "none")
+
+
+def clean_voice(b: dict) -> dict:
+    """Alerta falado do mapa (o navegador que está com o mapa aberto fala)."""
+    b = b or {}
+    txt = lambda k, d: (str(b.get(k) or "").strip()[:200] or d)
+    return {"enabled": bool(b.get("enabled")), "voice": str(b.get("voice") or "")[:120],
+            "pitch": round(_num(b.get("pitch"), 0, 2, 0.4), 2), "rate": round(_num(b.get("rate"), 0.5, 1.6, 0.92), 2),
+            "volume": round(_num(b.get("volume"), 0, 1, 1), 2), "repeat": int(_num(b.get("repeat"), 1, 3, 1)),
+            "intro": b.get("intro") if b.get("intro") in VOICE_INTROS else "beeps",
+            "say_name": bool(b.get("say_name", True)), "warn": bool(b.get("warn")),
+            "msg_device": txt("msg_device", "Alerta de falha. Equipamento indisponível."),
+            "msg_link": txt("msg_link", "Alerta de falha. Possível rompimento."),
+            "msg_many": txt("msg_many", "Alerta de falha. {n} equipamentos indisponíveis.")}

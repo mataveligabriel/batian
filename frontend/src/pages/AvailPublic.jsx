@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MapCanvasAvail, AlarmPanel, MobileAlarms, C as C0, effectiveStyle, paletteOf, ignoredTxt } from "@/pages/Availability";
+import { useVoiceAlerts, effectiveVoice, audioUnlocked, stopAlerts } from "@/lib/voiceAlert";
 
 // Link sem login do mapa de disponibilidade: /disp/<token>. Só lê /api/public/avail da própria origem.
 const get = async (path) => {
@@ -32,6 +33,19 @@ export default function AvailPublic({ token }) {
   const raw = info?.maps?.[mapId];
   const map = useMemo(() => (raw ? { ...raw, style: effectiveStyle(mapId, info.maps, trail) } : raw), [raw, info, mapId, trail]);
   const C = useMemo(() => (map ? paletteOf(map.style) : C0), [map]);     // topo da tela com as cores do mapa
+  // alerta falado (ligado no mapa pelo BastiON); mudo só nesta tela
+  const voiceCfg = useMemo(() => (info ? effectiveVoice(mapId, (id) => info.maps?.[id]?.voice || null, trail) : null), [info, mapId, trail]);
+  const voiceOn = !!voiceCfg?.enabled;
+  const [mute, setMute] = useState(() => { try { return localStorage.getItem("bastion_tv_voice_mute") === "1"; } catch { return false; } });
+  const [unlocked, setUnlocked] = useState(audioUnlocked());
+  useEffect(() => {
+    if (unlocked) return undefined;
+    const on = () => setUnlocked(true);
+    window.addEventListener("pointerdown", on, { once: true }); window.addEventListener("keydown", on, { once: true });
+    return () => { window.removeEventListener("pointerdown", on); window.removeEventListener("keydown", on); };
+  }, [unlocked]);
+  useVoiceAlerts(live, voiceCfg, voiceOn && !mute, mapId);
+  const toggleMute = () => { const m = !mute; setMute(m); try { localStorage.setItem("bastion_tv_voice_mute", m ? "1" : "0"); } catch { /* ok */ } if (m) stopAlerts(); };
 
   useEffect(() => {
     if (!mapId) return;
@@ -100,11 +114,17 @@ export default function AvailPublic({ token }) {
           <div className="text-2xl font-mono tabular-nums leading-none">{now.toLocaleTimeString("pt-BR")}</div>
           <div className="text-[10px] font-mono" style={{ color: offline ? C.down : C.dim }}>{offline ? "sem conexão — mostrando a última leitura" : `atualizado ${lastOk ? lastOk.toLocaleTimeString("pt-BR") : "—"}`}</div>
         </div>
+        {voiceOn && <button onClick={toggleMute} className="w-8 h-8 rounded-md text-sm" style={{ border: `1px solid ${C.line}`, color: mute ? C.dim : C.up }}
+                            title={mute ? "Alerta por voz silenciado nesta tela — clique para ligar" : "Alerta por voz ligado — clique para silenciar nesta tela"} aria-label="Alerta por voz">{mute ? "🔇" : "🔊"}</button>}
         <button onClick={full} className="w-8 h-8 rounded-md text-sm" style={{ border: `1px solid ${C.line}`, color: C.dim }} title="Tela cheia" aria-label="Tela cheia">⛶</button>
       </div>
       <div className="flex-1 min-h-0 flex">
       <div className="flex-1 min-w-0 relative">
         <MapCanvasAvail map={map} live={live} names={names} editing={false} tool="move" selected={sel} onSelect={setSel} onMove={() => {}} onConnect={() => {}} onEnter={enter} fitSignal={fit} />
+        {voiceOn && !mute && !unlocked && (
+          <button onClick={() => setUnlocked(true)} className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-2 rounded-md text-sm font-semibold shadow-xl"
+                  style={{ background: C.warn, color: C.bg0 }}>🔊 Clique aqui para liberar o alerta por voz nesta tela</button>
+        )}
         {(sl || sLink) && (
           <div className="absolute top-3 right-3 w-64 rounded-lg p-3 text-sm space-y-1 shadow-2xl" style={{ background: `${C.panel}f2`, border: `1px solid ${C.line}` }}>
             <button onClick={() => setSel(null)} className="float-right" style={{ color: C.dim }} aria-label="Fechar">×</button>
