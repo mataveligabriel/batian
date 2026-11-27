@@ -144,7 +144,7 @@ function Ring({ s, r, C }) {
   })}</g>;
 }
 
-export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected, onSelect, onMove, onConnect, onEnter, onLinkPoints, onPatchNode, fitSignal, marks }) {
+export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected, onSelect, onMove, onConnect, onEnter, onLinkPoints, onPatchNode, fitSignal, marks, group, onGroupToggle, onGroupBox, onGroupMove }) {
   const wrap = useRef(null), svg = useRef(null);
   const sty = map.style || {};
   const C = useMemo(() => paletteOf(map.style), [map.style]);   // paleta deste mapa (sobrepõe a padrão)
@@ -188,6 +188,8 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
   const down = (e, n) => {
     e.stopPropagation();
     if (e.button !== 0) return;
+    if (editing && tool !== "link" && (e.ctrlKey || e.metaKey || e.shiftKey) && n && onGroupToggle) { onGroupToggle(n.id); return; }
+    if (editing && tool !== "link" && e.shiftKey && !n && onGroupBox) { const w = world(e); setDrag({ kind: "box", x0: w.x, y0: w.y, x1: w.x, y1: w.y }); return; }
     if (editing && tool === "link" && n) {
       if (n.kind === "note" || n.kind === "shape" || n.kind === "label") return;
       if (!pending) setPending(n.id); else if (pending !== n.id) { onConnect(pending, n.id); setPending(null); }
@@ -199,6 +201,7 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
   const move = (e) => {
     if (!drag) return;
     if (drag.kind === "pinch") return;
+    if (drag.kind === "box") { const w = world(e); setDrag(d => ({ ...d, x1: w.x, y1: w.y })); return; }
     if (drag.kind === "pan") {
       setView(v => ({ ...v, tx: drag.tx + e.clientX - drag.sx, ty: drag.ty + e.clientY - drag.sy }));
       if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true;
@@ -213,7 +216,11 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
       onLinkPoints?.(drag.id, next);
     } else if (editing) {
       const w = world(e); drag.moved = true;
-      onMove(drag.id, Math.round((w.x - drag.ox) / 10) * 10, Math.round((w.y - drag.oy) / 10) * 10);
+      const nx = Math.round((w.x - drag.ox) / 10) * 10, ny = Math.round((w.y - drag.oy) / 10) * 10;
+      if (group?.has(drag.id) && group.size > 1 && onGroupMove) {   // arrasta um, move todos os selecionados
+        const last = drag.last || { x: byId[drag.id].x, y: byId[drag.id].y };
+        if (nx !== last.x || ny !== last.y) { onGroupMove(nx - last.x, ny - last.y); drag.last = { x: nx, y: ny }; }
+      } else onMove(drag.id, nx, ny);
     } else if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) drag.moved = true;
   };
   const lastClick = useRef({ id: null, t: 0 });
@@ -257,6 +264,12 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
     setDrag({ kind: "vertex", id: l.id, idx, insert, base: (l.points || []).map(p => ({ ...p })), moved: false });
   };
   const up = () => {
+    if (drag?.kind === "box") {
+      const [ax, bx] = [Math.min(drag.x0, drag.x1), Math.max(drag.x0, drag.x1)], [ay, by] = [Math.min(drag.y0, drag.y1), Math.max(drag.y0, drag.y1)];
+      const cx = (n) => n.x + (n.w ? n.w / 2 : 0), cy = (n) => n.y + (n.h ? n.h / 2 : 0);
+      onGroupBox?.(map.nodes.filter(n => cx(n) >= ax && cx(n) <= bx && cy(n) >= ay && cy(n) <= by).map(n => n.id));
+      setDrag(null); return;
+    }
     if (drag?.kind === "resize") { setDrag(null); return; }
     if (drag?.kind === "vertex") {
       if (!drag.moved) onSelect({ link: drag.id });
@@ -478,7 +491,6 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
               return (
                 <g key={n.id} transform={`translate(${n.x},${n.y}) scale(${K})`} onPointerDown={(e) => down(e, n)}
                    style={{ cursor }} data-testid={`av-node-${n.id}`}>
-                  {marks?.has(n.map_id) && <circle r={R + 20} fill="#38bdf8" fillOpacity=".18" stroke="#38bdf8" strokeWidth="3" />}
                   {state === "down" && <circle r={R + 14} fill={C.down} opacity=".18" filter="url(#av-glow)" />}
                   {state === "down" && !reduced && <circle className="av-shock" r={R} fill="none" stroke={C.down} strokeWidth="2" />}
                   <Ring s={s} r={(subShape === "diamond" ? R * 1.25 : R) + 7} C={C} />
@@ -527,6 +539,16 @@ export function MapCanvasAvail({ map, live, names = {}, editing, tool, selected,
               </g>
             );
           })}
+          {marks?.size > 0 && map.nodes.filter(n => marks.has(n.id)).map(n => (n.w || n.kind === "label"
+            ? <rect key={`m-${n.id}`} x={n.w ? n.x - 8 : n.x - 95} y={n.h ? n.y - 8 : n.y - 20} width={n.w ? n.w + 16 : 190} height={n.h ? n.h + 16 : 34} rx="6"
+                    fill="#38bdf8" fillOpacity=".15" stroke="#38bdf8" strokeWidth="3" pointerEvents="none" />
+            : <circle key={`m-${n.id}`} cx={n.x} cy={n.y} r={radius(n) + 12} fill="#38bdf8" fillOpacity=".18" stroke="#38bdf8" strokeWidth="3" pointerEvents="none" />))}
+          {group?.size > 0 && map.nodes.filter(n => group.has(n.id)).map(n => (n.w || n.kind === "label"
+            ? <rect key={`g-${n.id}`} x={n.w ? n.x - 8 : n.x - 95} y={n.h ? n.y - 8 : n.y - 20} width={n.w ? n.w + 16 : 190} height={n.h ? n.h + 16 : 34} rx="6"
+                    fill="#38bdf8" fillOpacity=".08" stroke="#38bdf8" strokeWidth="2" strokeDasharray="6 4" pointerEvents="none" />
+            : <circle key={`g-${n.id}`} cx={n.x} cy={n.y} r={radius(n) + 14} fill="#38bdf8" fillOpacity=".1" stroke="#38bdf8" strokeWidth="2.5" strokeDasharray="6 4" pointerEvents="none" />))}
+          {drag?.kind === "box" && <rect x={Math.min(drag.x0, drag.x1)} y={Math.min(drag.y0, drag.y1)} width={Math.abs(drag.x1 - drag.x0)} height={Math.abs(drag.y1 - drag.y0)}
+                                        fill="#38bdf8" fillOpacity=".08" stroke="#38bdf8" strokeDasharray="5 4" pointerEvents="none" />}
         </g>
       </svg>
       {editing && tool === "link" && (
@@ -943,10 +965,11 @@ function StyleDlg({ style, onChange, onClose, toSubs, onToSubs, isSub, own, onOw
 // Colar submapas copiados/recortados de outro mapa (ex.: POPs da NETDRP na HELP)
 function PasteDialog({ clip, target, onClose, onDone }) {
   const [mode, setMode] = useState(clip.cut ? "move" : "link");
+  const nItems = (clip.node_ids || clip.ids || []).length, hasSubs = clip.node_ids ? clip.subs > 0 : true;
   const [subs, setSubs] = useState(true);
   const [pv, setPv] = useState(null);
   const [busy, setBusy] = useState(false);
-  const body = { ids: clip.ids, target_id: target.id, mode, with_submaps: subs, source_id: clip.from || "" };
+  const body = { ids: clip.node_ids ? [] : clip.ids, node_ids: clip.node_ids || [], target_id: target.id, mode, with_submaps: subs, source_id: clip.from || "" };
   useEffect(() => {
     let off = false;
     setPv(null);
@@ -957,7 +980,7 @@ function PasteDialog({ clip, target, onClose, onDone }) {
     setBusy(true);
     try {
       const { data } = await api.post("/avail/maps/transfer", body);
-      toast.success((mode === "copy" ? `${data.copies} mapa(s) copiado(s) em ${data.target}` : `${data.added} mapa(s) ${mode === "move" ? "movido(s) para" : "colado(s) em"} ${data.target}`) + (data.links ? ` com ${data.links} linha(s)` : ""));
+      toast.success((mode === "copy" ? `${data.copies} mapa(s) copiado(s) em ${data.target}` : `${data.added + (data.devices || 0)} item(ns) ${mode === "move" ? "movido(s) para" : "colado(s) em"} ${data.target}`) + (data.links ? ` com ${data.links} linha(s)` : ""));
       onDone();
     } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
   };
@@ -965,10 +988,11 @@ function PasteDialog({ clip, target, onClose, onDone }) {
     : [["link", "Colar o mesmo mapa", "Fica nos dois lugares. Editar em um muda no outro."],
        ["copy", "Colar uma cópia", "Cria mapas novos com os mesmos equipamentos. Mexer na cópia não muda o original."]];
   return (
-    <Modal title={`Colar ${clip.ids.length} submapa(s) em ${target.name}`} onClose={onClose}>
+    <Modal title={`Colar ${nItems} item(ns) em ${target.name}`} onClose={onClose}>
       <div className="space-y-3" data-testid="av-paste">
         <div className="text-xs text-slate-400">{clip.names.join(", ")}</div>
-        {opts.length > 1 && <div className="space-y-1.5" role="radiogroup" aria-label="Como colar">
+        {opts.length > 1 && hasSubs && <div className="space-y-1.5" role="radiogroup" aria-label="Como colar (submapas)">
+          <div className="text-xs text-slate-400">Submapas:</div>
           {opts.map(([k, t, d]) => (
             <label key={k} className={`flex gap-2 rounded-md border p-2 cursor-pointer ${mode === k ? "border-brand bg-brand/10" : "border-line"}`}>
               <input type="radio" name="av-paste-mode" checked={mode === k} onChange={() => setMode(k)} className="mt-0.5 accent-brand" data-testid={`av-paste-${k}`} />
@@ -979,7 +1003,8 @@ function PasteDialog({ clip, target, onClose, onDone }) {
         </div>}
         <div className="rounded-md border border-line p-2 text-xs space-y-1 min-h-[2.5rem]">
           {!pv ? <Loader2 className="w-4 h-4 animate-spin text-slate-500" /> : <>
-            <div className="text-slate-200">{pv.mode === "copy" ? `Cria ${pv.copies} mapa(s) novo(s); ${pv.count} aparecem aqui.` : `${pv.count} submapa(s) entram aqui.`}
+            <div className="text-slate-200">{pv.mode === "copy" ? (pv.copies ? `Cria ${pv.copies} mapa(s) novo(s); ${pv.count} aparecem aqui.` : "") : pv.count ? `${pv.count} submapa(s) entram aqui.` : ""}
+              {pv.devices_marked > 0 ? ` ${pv.devices} equipamento(s) entram aqui${pv.devices_marked > pv.devices ? ` (${pv.devices_marked - pv.devices} já estavam)` : ""}.` : ""}
               {pv.links > 0 ? ` Vêm junto ${pv.links} linha(s) entre eles, com as portas.` : ""}</div>
             {pv.mode === "move" && pv.from?.length > 0 && <div className="text-amber-300">Saem de: {pv.from.join(", ")}</div>}
             {pv.skipped.length > 0 && <div className="text-slate-500">Não entram: {pv.skipped.join("; ")}</div>}
@@ -987,7 +1012,7 @@ function PasteDialog({ clip, target, onClose, onDone }) {
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose} className="h-8 text-slate-300">Cancelar</Button>
-          <Button onClick={run} disabled={busy || !pv || (!pv.count && !pv.copies)} className="h-8 bg-brand hover:bg-brand-strong" data-testid="av-paste-run">
+          <Button onClick={run} disabled={busy || !pv || (!pv.count && !pv.copies && !pv.devices && !pv.links)} className="h-8 bg-brand hover:bg-brand-strong" data-testid="av-paste-run">
             {busy && <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />}{mode === "move" ? "Mover para cá" : "Colar aqui"}</Button>
         </div>
       </div>
@@ -1302,7 +1327,25 @@ export default function Availability() {
 
   // ---- edição
   const patch = (fn) => setDraft(d => fn(JSON.parse(JSON.stringify(d))));
-  const startEdit = () => { setDraft(JSON.parse(JSON.stringify(map))); setTool("move"); };
+  const startEdit = () => { setDraft(JSON.parse(JSON.stringify(map))); setTool("move"); setMulti(new Set()); };
+  // vários itens selecionados no Editar: arrastar um move todos
+  const [multi, setMulti] = useState(() => new Set());
+  const toggleGroup = (id) => setMulti(g => { const n = new Set(g); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const moveGroup = (dx, dy) => setDraft(d => {
+    if (!d) return d;
+    const ids = multi;
+    return { ...d, nodes: d.nodes.map(n => (ids.has(n.id) ? { ...n, x: n.x + dx, y: n.y + dy } : n)),
+             links: d.links.map(l => (ids.has(l.from) && ids.has(l.to) && l.points?.length ? { ...l, points: l.points.map(p => ({ x: p.x + dx, y: p.y + dy })) } : l)) };
+  });
+  const delGroup = () => {
+    patch(d => { d.nodes = d.nodes.filter(n => !multi.has(n.id)); d.links = d.links.filter(l => !multi.has(l.from) && !multi.has(l.to)); return d; });
+    setMulti(new Set()); setSelected(null);
+  };
+  const moveMarked = () => {           // da faixa de marcar: entra no Editar com os marcados já selecionados
+    const ids = new Set(cpick);
+    stopCopying();
+    setDraft(JSON.parse(JSON.stringify(map))); setTool("move"); setMulti(ids); setSelected(null);
+  };
   const save = async () => {
     setSaving(true);
     try { const { data } = await api.put(`/avail/maps/${map.id}`, draft); setMap(data); setDraft(null); toast.success("Mapa salvo"); loadList(); }
@@ -1395,15 +1438,21 @@ export default function Availability() {
   const [delBusy, setDelBusy] = useState(false);
   const togglePick = (id) => setPicked(o => { const n = new Set(o); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const stopPicking = () => { setPicking(false); setPicked(new Set()); };
-  // copiar / recortar submapas para colar em outro mapa
+  // copiar / recortar itens do mapa (submapas e equipamentos) para colar em outro mapa
+  const [copying, setCopying] = useState(false);
+  const [cpick, setCpick] = useState(() => new Set());
+  const toggleC = (id) => setCpick(o => { const n = new Set(o); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const stopCopying = () => { setCopying(false); setCpick(new Set()); };
+  const nodeName = (n) => (n.kind === "submap" ? n.label || byId[n.map_id]?.name : n.kind === "device" ? n.label || names[n.device_id] : n.label || n.text) || "item";
   const [clip, setClipRaw] = useState(() => ls.get("bastion_avail_clip", null));
   const setClip = (c) => { setClipRaw(c); ls.set("bastion_avail_clip", c); };
   const takeClip = (cut) => {
-    const ids = [...picked].filter(i => byId[i]);
-    if (!ids.length) return toast.error("Marque pelo menos um submapa");
-    setClip({ ids, cut, names: ids.map(i => byId[i].name), from: mapId });
-    stopPicking();
-    toast.success(`${ids.length} submapa(s) ${cut ? "recortado(s)" : "copiado(s)"}. Abra o mapa de destino e clique em "Colar aqui".`);
+    const nodes = (map?.nodes || []).filter(n => cpick.has(n.id));
+    if (!nodes.length) return toast.error("Marque pelo menos um item");
+    setClip({ node_ids: nodes.map(n => n.id), cut, names: nodes.map(nodeName), from: mapId,
+              subs: nodes.filter(n => n.kind === "submap").length, devs: nodes.filter(n => n.kind === "device").length });
+    stopCopying();
+    toast.success(`${nodes.length} item(ns) ${cut ? "recortado(s)" : "copiado(s)"}. Abra o mapa de destino e clique em "Colar aqui".`);
   };
   const deletePicked = async () => {
     const ids = [...picked];
@@ -1545,8 +1594,8 @@ export default function Availability() {
               {canEdit && map && <Button size="sm" variant="outline" onClick={() => setDlg("share")} className={tb} data-testid="av-share"><Link2 className="w-3.5 h-3.5 mr-1" />Link do mapa</Button>}
               {isAdmin && map && <Button size="sm" variant="outline" onClick={() => nav(`/settings?tab=automacao&grupo_mapa=${map.id}`)} className={`${tb} hidden md:inline-flex`} data-testid="av-telegram"
                               title="Criar um grupo do Telegram que recebe só os alarmes deste mapa (e dos submapas)"><Send className="w-3.5 h-3.5 mr-1" />Telegram</Button>}
-              {canEdit && map && !picking && <Button size="sm" variant="outline" onClick={() => { setPicked(new Set()); setPicking(true); }} className={tb} data-testid="av-copy"
-                              title="Marcar submapas para copiar ou recortar e colar em outro mapa"><Copy className="w-3.5 h-3.5 mr-1" />Copiar</Button>}
+              {canEdit && map && !copying && <Button size="sm" variant="outline" onClick={() => { stopPicking(); setCpick(new Set()); setCopying(true); }} className={tb} data-testid="av-copy"
+                              title="Marcar submapas e equipamentos para copiar, recortar ou mover juntos"><Copy className="w-3.5 h-3.5 mr-1" />Copiar</Button>}
               {canEdit && map && clip && <span className="inline-flex">
                 <Button size="sm" onClick={() => setDlg("paste")} className="h-8 rounded-r-none bg-sky-600 hover:bg-sky-500 text-white text-xs" data-testid="av-paste-btn"
                         title={`${clip.cut ? "Recortados" : "Copiados"}: ${clip.names.join(", ")}`}><ClipboardPaste className="w-3.5 h-3.5 mr-1" />Colar aqui ({clip.ids.length})</Button>
@@ -1580,9 +1629,11 @@ export default function Availability() {
           <div className="flex-1 min-w-0 relative">
             {cur ? (
               <MapCanvasAvail map={viewMap} live={live} names={names} editing={editing} tool={tool} fitSignal={fitSig}
-                              selected={picking ? null : selected} marks={picking ? picked : null}
-                              onSelect={picking ? (x) => { const n = x?.id && cur.nodes.find(k => k.id === x.id); if (n?.kind === "submap") togglePick(n.map_id); } : setSelected}
-                              onEnter={picking ? () => {} : enterSub}
+                              selected={copying ? null : selected} marks={copying ? cpick : null}
+                              group={editing ? multi : null} onGroupToggle={toggleGroup} onGroupMove={moveGroup}
+                              onGroupBox={(ids) => setMulti(g => new Set([...g, ...ids]))}
+                              onSelect={copying ? (x) => { if (x?.id) toggleC(x.id); } : setSelected}
+                              onEnter={copying ? () => {} : enterSub}
                               onPatchNode={patchNode}
                               onLinkPoints={(id, pts) => setDraft(d => ({ ...d, links: d.links.map(l => (l.id === id ? { ...l, points: pts || [] } : l)) }))}
                               onMove={(id, x, y) => setDraft(d => ({ ...d, nodes: d.nodes.map(n => (n.id === id ? { ...n, x, y } : n)) }))}
@@ -1592,15 +1643,26 @@ export default function Availability() {
                 {list ? (canEdit ? "Crie o primeiro mapa no + da lista." : "Nenhum mapa ainda.") : <Loader2 className="w-5 h-5 animate-spin" />}
               </div>
             )}
-          {picking && !editing && (
-            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 max-w-[calc(100%-16px)] flex flex-wrap items-center gap-2 rounded-lg border border-sky-500/50 bg-panel/95 px-3 py-2 shadow-xl text-xs" data-testid="av-copy-bar">
-              <span className="text-slate-200">{picked.size ? `${picked.size} submapa(s) marcado(s)` : "Clique nos submapas para marcar"}</span>
-              <Button size="sm" onClick={() => takeClip(false)} disabled={!picked.size} className="h-7 px-2.5 text-xs bg-sky-600 hover:bg-sky-500 text-white" data-testid="av-copy-take"><Copy className="w-3.5 h-3.5 mr-1" />Copiar</Button>
-              <Button size="sm" onClick={() => takeClip(true)} disabled={!picked.size} className="h-7 px-2.5 text-xs bg-amber-600 hover:bg-amber-500 text-white" data-testid="av-cut-take">Recortar</Button>
-              <Button size="sm" variant="ghost" onClick={stopPicking} className="h-7 px-2 text-xs text-slate-300">Cancelar</Button>
+          {editing && tool === "move" && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 max-w-[calc(100%-16px)] flex flex-wrap items-center gap-2 rounded-lg border border-sky-500/50 bg-panel/95 px-3 py-1.5 shadow-xl text-xs" data-testid="av-multi-bar">
+              {multi.size > 0 ? <>
+                <span className="text-slate-200">{multi.size} selecionado(s): arraste qualquer um para mover todos</span>
+                <Button size="sm" variant="ghost" onClick={delGroup} className="h-7 px-2 text-xs text-red-300"><Trash2 className="w-3.5 h-3.5 mr-1" />Tirar</Button>
+                <Button size="sm" variant="ghost" onClick={() => setMulti(new Set())} className="h-7 px-2 text-xs text-slate-300">Limpar seleção</Button>
+              </> : <span className="text-slate-400">Para mover vários: Ctrl+clique nos itens, ou Shift+arrastar no vazio para pegar uma área</span>}
             </div>
           )}
-          {!picking && ((sel && (editing || (sel.kind !== "note" && sel.kind !== "shape"))) || selected?.link) && (
+          {copying && !editing && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 max-w-[calc(100%-16px)] flex flex-wrap items-center gap-2 rounded-lg border border-sky-500/50 bg-panel/95 px-3 py-2 shadow-xl text-xs" data-testid="av-copy-bar">
+              <span className="text-slate-200">{cpick.size ? `${cpick.size} item(ns) marcado(s)` : "Clique nos submapas e equipamentos para marcar"}</span>
+              <Button size="sm" onClick={() => takeClip(false)} disabled={!cpick.size} className="h-7 px-2.5 text-xs bg-sky-600 hover:bg-sky-500 text-white" data-testid="av-copy-take"><Copy className="w-3.5 h-3.5 mr-1" />Copiar</Button>
+              <Button size="sm" onClick={() => takeClip(true)} disabled={!cpick.size} className="h-7 px-2.5 text-xs bg-amber-600 hover:bg-amber-500 text-white" data-testid="av-cut-take">Recortar</Button>
+              <Button size="sm" onClick={moveMarked} disabled={!cpick.size} className="h-7 px-2.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white" data-testid="av-move-take"
+                      title="Arrastar os marcados juntos neste mapa"><MousePointer2 className="w-3.5 h-3.5 mr-1" />Mover juntos</Button>
+              <Button size="sm" variant="ghost" onClick={stopCopying} className="h-7 px-2 text-xs text-slate-300">Cancelar</Button>
+            </div>
+          )}
+          {!copying && ((sel && (editing || (sel.kind !== "note" && sel.kind !== "shape"))) || selected?.link) && (
             <aside className="absolute top-3 right-3 w-72 max-h-[calc(100%-4.5rem)] rounded-lg border p-4 space-y-3 overflow-y-auto hidden md:block shadow-2xl" style={{ background: `${C.panel}f2`, borderColor: C.line }} data-testid="av-inspector">
               <button onClick={() => setSelected(null)} className="float-right text-slate-500 hover:text-slate-200" aria-label="Fechar"><X className="w-4 h-4" /></button>
               {selected?.link && cur.links.find(l => l.id === selected.link) && (

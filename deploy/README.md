@@ -1711,3 +1711,12 @@ Em **Configurações → Automação e alertas → Grupos de alerta do Telegram*
 - Os submapas entram abaixo do que já existe no destino, na mesma disposição que tinham no mapa de origem.
 - Marcando dois ou mais submapas ligados entre si, as linhas entre eles vêm junto (porta SNMP, rótulo, cor e traçado). Um submapa sozinho vem sem linha. Se o outro ponta já estiver no destino, a linha liga nele.
 - A lixeira do menu lateral continua servindo para excluir vários mapas de uma vez.
+
+## 94. Mover vários itens de uma vez no mapa
+- Na faixa do **Copiar** (marcar submapas), o botão **Mover juntos** entra no Editar com os marcados já selecionados: arraste qualquer um e todos andam juntos (as curvas das linhas entre eles também). Depois clique **Salvar**.
+- Dentro do **Editar**, dá para selecionar qualquer item (equipamento, submapa, texto, caixa): **Ctrl+clique** adiciona/remove, **Shift+arrastar** no vazio pega uma área. A faixa em cima mostra quantos estão selecionados, com **Tirar** e **Limpar seleção**.
+
+## 95. Copiar/recortar equipamentos também
+- No **Copiar**, agora dá para marcar equipamentos (e textos/caixas) além de submapas. Eles vão para o destino na mesma disposição, com as linhas entre os marcados (porta SNMP incluída).
+- Equipamento que já está no mapa de destino não é duplicado: a linha liga no que já existe.
+- **Recortar** tira os equipamentos marcados do mapa de origem ao colar.
