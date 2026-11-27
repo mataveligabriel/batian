@@ -5766,6 +5766,37 @@ async def avail_transfer(body: dict, user: dict = Depends(get_current_user)):
             "skipped": [f"{maps[i]['name']}: {why}" for i, why in skipped.items()]}
 
 
+@api.post("/avail/maps/{map_id}/detach")
+async def avail_detach(map_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """Submapas compartilhados com outro mapa viram cópias próprias SÓ neste mapa (mesma posição e linhas);
+    o outro mapa continua com os originais, sem mexer. with_submaps: copia também o que está dentro deles."""
+    _no_viewer(user)
+    maps = await _avail_all_maps()
+    m = maps.get(map_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Mapa não encontrado")
+    par = availmap.parents(maps)
+    want = {str(i) for i in (body.get("node_ids") or [])}
+    nodes = [n for n in m.get("nodes", []) if n["id"] in want and n.get("kind") == "submap" and n.get("map_id") in maps]
+    shared = [n for n in nodes if any(p != map_id for p in par.get(n["map_id"], []))]
+    if not shared:
+        raise HTTPException(status_code=400, detail="Nenhum dos selecionados está compartilhado com outro mapa")
+    ids = list(dict.fromkeys(n["map_id"] for n in shared))
+    if body.get("dry_run"):
+        return {"count": len(ids), "names": [maps[i]["name"] for i in ids],
+                "also_in": sorted({maps[p]["name"] for i in ids for p in par.get(i, []) if p != map_id and p in maps})}
+    # mesmo nome: cada um fica na sua árvore (a cópia aqui, o original no outro mapa)
+    docs, idmap = availmap.copy_maps(ids, maps, bool(body.get("with_submaps", True)), set())
+    now = datetime.now(timezone.utc).isoformat()
+    if docs:
+        await db.avail_maps.insert_many([{**d, "created_at": now, "updated_at": now, "created_by": user.get("email")} for d in docs])
+    sid = {n["id"] for n in shared}
+    new_nodes = [{**n, "map_id": idmap[n["map_id"]]} if n["id"] in sid else n for n in m["nodes"]]
+    await db.avail_maps.update_one({"id": map_id}, {"$set": {"nodes": new_nodes, "updated_at": now}})
+    _avail_kick.set()
+    return {"detached": len(ids), "copies": len(docs)}
+
+
 @api.post("/avail/trash/{map_id}/restore")
 async def avail_restore(map_id: str, user: dict = Depends(get_current_user)):
     _no_viewer(user)

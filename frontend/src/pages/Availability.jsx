@@ -1341,6 +1341,28 @@ export default function Availability() {
     patch(d => { d.nodes = d.nodes.filter(n => !multi.has(n.id)); d.links = d.links.filter(l => !multi.has(l.from) && !multi.has(l.to)); return d; });
     setMulti(new Set()); setSelected(null);
   };
+  // submapas compartilhados com outro mapa (colados como "o mesmo mapa"): viram cópias só aqui; o outro mapa não muda
+  const sharedSel = () => {
+    const ids = multi.size ? multi : new Set(selected?.id ? [selected.id] : []);
+    return (draft?.nodes || []).filter(n => ids.has(n.id) && n.kind === "submap" && (byId[n.map_id]?.parents || []).length > 1);
+  };
+  const detach = async () => {
+    const nodes = sharedSel();
+    if (!nodes.length) return toast.error("Selecione submapas que também estão em outro mapa");
+    try {
+      const { data: saved } = await api.put(`/avail/maps/${draft.id}`, draft);        // salva o que já foi mexido
+      setMap(saved);
+      const body = { node_ids: nodes.map(n => n.id), with_submaps: true };
+      const { data: pv } = await api.post(`/avail/maps/${draft.id}/detach`, { ...body, dry_run: true });
+      if (!window.confirm(`Separar ${pv.count} submapa(s) deste mapa?\n\n• ${pv.names.slice(0, 12).join("\n• ")}\n\n`
+        + `Este mapa passa a ter cópias próprias (com o que tem dentro). ${pv.also_in.join(", ")} continua com os originais, sem mudar nada.`)) return;
+      const { data } = await api.post(`/avail/maps/${draft.id}/detach`, body);
+      toast.success(`${data.detached} submapa(s) separado(s): agora editar aqui não muda o outro mapa`);
+      setDraft(null); setMulti(new Set()); setSelected(null);
+      await loadList();
+      const r = await api.get(`/avail/maps/${map.id}`); setMap(r.data);
+    } catch (e) { toast.error(formatApiError(e)); }
+  };
   const moveMarked = () => {           // da faixa de marcar: entra no Editar com os marcados já selecionados
     const ids = new Set(cpick);
     stopCopying();
@@ -1653,8 +1675,14 @@ export default function Availability() {
               {multi.size > 0 ? <>
                 <span className="text-slate-200">{multi.size} selecionado(s): arraste qualquer um para mover todos</span>
                 <Button size="sm" variant="ghost" onClick={delGroup} className="h-7 px-2 text-xs text-red-300"><Trash2 className="w-3.5 h-3.5 mr-1" />Tirar</Button>
+                {sharedSel().length > 0 && <Button size="sm" variant="ghost" onClick={detach} className="h-7 px-2 text-xs text-sky-300" data-testid="av-detach"
+                  title="Estes submapas também estão em outro mapa. Separar: este mapa fica com cópias próprias e o outro não muda."><Copy className="w-3.5 h-3.5 mr-1" />Tornar independente ({sharedSel().length})</Button>}
                 <Button size="sm" variant="ghost" onClick={() => setMulti(new Set())} className="h-7 px-2 text-xs text-slate-300">Limpar seleção</Button>
-              </> : <span className="text-slate-400">Para mover vários: Ctrl+clique nos itens, ou Shift+arrastar no vazio para pegar uma área</span>}
+              </> : <>
+                <span className="text-slate-400">Para mover vários: Ctrl+clique nos itens, ou Shift+arrastar no vazio para pegar uma área</span>
+                {sharedSel().length > 0 && <Button size="sm" variant="ghost" onClick={detach} className="h-7 px-2 text-xs text-sky-300" data-testid="av-detach-one"
+                  title="Este submapa também está em outro mapa. Separar: este mapa fica com uma cópia própria e o outro não muda."><Copy className="w-3.5 h-3.5 mr-1" />Tornar independente</Button>}
+              </>}
             </div>
           )}
           {copying && !editing && (

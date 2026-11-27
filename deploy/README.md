@@ -1730,3 +1730,8 @@ Em **Configurações → Automação e alertas → Grupos de alerta do Telegram*
 - Clicar **Desconectar** desliga o automático até você clicar **Conectar** de novo.
 - Pausa sozinha (e avisa no cartão da VPN) quando o gateway pede token (FortiGate com 2FA) ou recusa usuário/senha, para não bloquear o usuário. Conectar na mão volta o automático.
 - O cartão mostra "automática", "automático desligado até conectar" ou "automático pausado".
+
+## 98. Tornar independente (desfazer "colar o mesmo mapa" pelo original)
+- No mapa, **Editar** e selecione os submapas (Ctrl+clique ou Shift+arrastar). Se algum também estiver em outro mapa, aparece **Tornar independente** na faixa de cima.
+- Este mapa passa a ter cópias próprias deles (com tudo que tem dentro, mesma posição e linhas). O outro mapa continua com os originais, sem mudar nada. As cópias ficam com o mesmo nome.
+- Serve para separar depois de ter colado como "mesmo mapa" sem querer, mexendo só no mapa original.
