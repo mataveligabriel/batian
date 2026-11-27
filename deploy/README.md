@@ -1708,5 +1708,6 @@ Em **Configurações → Automação e alertas → Grupos de alerta do Telegram*
 3. Na faixa que aparece sobre o mapa, clique **Copiar** (fica nos dois lugares) ou **Recortar** (vai sair daqui).
 4. Abra o mapa de destino (ex.: HELP) e clique **Colar aqui** na barra de cima. O que foi copiado fica guardado até colar ou clicar no X ao lado.
 5. Ao colar uma cópia, escolha: **Colar o mesmo mapa** (editar em um muda no outro) ou **Colar uma cópia** (mapas novos, mesmos equipamentos). O aviso mostra antes o que entra e o que fica de fora.
-- Os submapas entram em grade abaixo do que já existe; depois é só arrumar no Editar.
+- Os submapas entram abaixo do que já existe no destino, na mesma disposição que tinham no mapa de origem.
+- Marcando dois ou mais submapas ligados entre si, as linhas entre eles vêm junto (porta SNMP, rótulo, cor e traçado). Um submapa sozinho vem sem linha. Se o outro ponta já estiver no destino, a linha liga nele.
 - A lixeira do menu lateral continua servindo para excluir vários mapas de uma vez.

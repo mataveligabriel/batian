@@ -164,3 +164,26 @@ def test_transfer_link_and_copy():
     assert len(docs) == 1 and docs[0]["nodes"][1]["map_id"] == "c" and docs[0]["name"] == "POP-B"
     new = place_submaps(maps["help"]["nodes"], ["x", "y"])
     assert len(new) == 2 and new[0]["y"] > 0 and new[1]["x"] > new[0]["x"]
+
+
+def test_paste_layout_brings_links():
+    from availmap import paste_layout
+    src = {"nodes": [{"id": "s1", "kind": "submap", "map_id": "A", "x": 500, "y": 300},
+                     {"id": "s2", "kind": "submap", "map_id": "B", "x": 700, "y": 400},
+                     {"id": "s3", "kind": "submap", "map_id": "C", "x": 900, "y": 100}],
+           "links": [{"id": "l1", "from": "s1", "to": "s2", "label": "10G", "snmp": {"device_id": "d", "if_index": 5, "if_name": "xe-0"},
+                      "points": [{"x": 600, "y": 350}]},
+                     {"id": "l2", "from": "s2", "to": "s3", "label": "", "snmp": None, "points": []}]}
+    tgt = {"nodes": [{"id": "t1", "kind": "submap", "map_id": "Z", "x": 0, "y": 0}], "links": []}
+    nodes, links = paste_layout(tgt, src, [("A", "A", True), ("B", "B", True)])
+    assert len(nodes) == 2 and len(links) == 1                     # só a linha entre os dois colados
+    a, b = nodes
+    assert (b["x"] - a["x"], b["y"] - a["y"]) == (200, 100)        # mantém a disposição
+    assert links[0]["snmp"]["if_index"] == 5 and links[0]["label"] == "10G"
+    assert {links[0]["from"], links[0]["to"]} == {a["id"], b["id"]}
+    assert links[0]["points"][0]["x"] == 600 - 500 + a["x"]
+    nodes, links = paste_layout(tgt, src, [("A", "A", True)])     # sozinho: sem linha
+    assert len(nodes) == 1 and links == []
+    tgt2 = {"nodes": [{"id": "tb", "kind": "submap", "map_id": "B", "x": 0, "y": 0}], "links": []}
+    nodes, links = paste_layout(tgt2, src, [("A", "A2", True), ("B", "B", False)])   # B já estava: liga no existente
+    assert len(nodes) == 1 and nodes[0]["map_id"] == "A2" and links[0]["to"] == "tb"

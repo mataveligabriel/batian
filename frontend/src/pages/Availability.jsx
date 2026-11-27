@@ -946,7 +946,7 @@ function PasteDialog({ clip, target, onClose, onDone }) {
   const [subs, setSubs] = useState(true);
   const [pv, setPv] = useState(null);
   const [busy, setBusy] = useState(false);
-  const body = { ids: clip.ids, target_id: target.id, mode, with_submaps: subs };
+  const body = { ids: clip.ids, target_id: target.id, mode, with_submaps: subs, source_id: clip.from || "" };
   useEffect(() => {
     let off = false;
     setPv(null);
@@ -957,7 +957,7 @@ function PasteDialog({ clip, target, onClose, onDone }) {
     setBusy(true);
     try {
       const { data } = await api.post("/avail/maps/transfer", body);
-      toast.success(mode === "copy" ? `${data.copies} mapa(s) copiado(s) em ${data.target}` : `${data.added} mapa(s) ${mode === "move" ? "movido(s) para" : "colado(s) em"} ${data.target}`);
+      toast.success((mode === "copy" ? `${data.copies} mapa(s) copiado(s) em ${data.target}` : `${data.added} mapa(s) ${mode === "move" ? "movido(s) para" : "colado(s) em"} ${data.target}`) + (data.links ? ` com ${data.links} linha(s)` : ""));
       onDone();
     } catch (e) { toast.error(formatApiError(e)); } finally { setBusy(false); }
   };
@@ -979,7 +979,8 @@ function PasteDialog({ clip, target, onClose, onDone }) {
         </div>}
         <div className="rounded-md border border-line p-2 text-xs space-y-1 min-h-[2.5rem]">
           {!pv ? <Loader2 className="w-4 h-4 animate-spin text-slate-500" /> : <>
-            <div className="text-slate-200">{pv.mode === "copy" ? `Cria ${pv.copies} mapa(s) novo(s); ${pv.count} aparecem aqui.` : `${pv.count} submapa(s) entram aqui.`}</div>
+            <div className="text-slate-200">{pv.mode === "copy" ? `Cria ${pv.copies} mapa(s) novo(s); ${pv.count} aparecem aqui.` : `${pv.count} submapa(s) entram aqui.`}
+              {pv.links > 0 ? ` Vêm junto ${pv.links} linha(s) entre eles, com as portas.` : ""}</div>
             {pv.mode === "move" && pv.from?.length > 0 && <div className="text-amber-300">Saem de: {pv.from.join(", ")}</div>}
             {pv.skipped.length > 0 && <div className="text-slate-500">Não entram: {pv.skipped.join("; ")}</div>}
           </>}
@@ -1400,7 +1401,7 @@ export default function Availability() {
   const takeClip = (cut) => {
     const ids = [...picked].filter(i => byId[i]);
     if (!ids.length) return toast.error("Marque pelo menos um submapa");
-    setClip({ ids, cut, names: ids.map(i => byId[i].name) });
+    setClip({ ids, cut, names: ids.map(i => byId[i].name), from: mapId });
     stopPicking();
     toast.success(`${ids.length} submapa(s) ${cut ? "recortado(s)" : "copiado(s)"}. Abra o mapa de destino e clique em "Colar aqui".`);
   };

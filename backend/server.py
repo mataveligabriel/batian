@@ -5705,10 +5705,18 @@ async def avail_transfer(body: dict, user: dict = Depends(get_current_user)):
         add, skipped = availmap.link_targets(ids, target, maps)
         if mode == "move":      # o que já estava no destino também sai dos outros lugares
             add_move = add + [i for i, why in skipped.items() if why == "já está no destino"]
+    # mapa de onde foi copiado: mantém a disposição e traz as linhas entre os submapas colados
+    source = maps.get(str(body.get("source_id") or ""))
+    if mode == "copy":
+        pairs = [(i, idmap[i], True) for i in dict.fromkeys(ids) if i in idmap]
+    else:
+        pairs = [(i, i, True) for i in add] + [(i, i, False) for i, why in skipped.items() if why == "já está no destino"]
+    new_nodes, new_links = availmap.paste_layout(maps[target], source, pairs)
     if body.get("dry_run"):
         out = {"mode": mode, "target": maps[target]["name"], "count": len(add),
                "names": [maps[i]["name"] for i in add if i in maps][:50] if mode != "copy" else [d["name"] for d in new_docs[:50]],
                "skipped": [f"{maps[i]['name']}: {why}" for i, why in skipped.items()]}
+        out["links"] = len(new_links)
         if mode == "copy":
             out["copies"] = len(new_docs)
         if mode == "move":
@@ -5717,9 +5725,9 @@ async def avail_transfer(body: dict, user: dict = Depends(get_current_user)):
         return out
     if new_docs:
         await db.avail_maps.insert_many([{**d, "created_at": now, "updated_at": now, "created_by": user.get("email")} for d in new_docs])
-    if add:
-        nodes = availmap.place_submaps(maps[target].get("nodes", []), add)
-        await db.avail_maps.update_one({"id": target}, {"$push": {"nodes": {"$each": nodes}}, "$set": {"updated_at": now}})
+    if new_nodes or new_links:
+        await db.avail_maps.update_one({"id": target}, {"$push": {"nodes": {"$each": new_nodes}, "links": {"$each": new_links}},
+                                                        "$set": {"updated_at": now}})
     removed = 0
     if mode == "move":
         moving = set(add_move)
@@ -5733,7 +5741,7 @@ async def avail_transfer(body: dict, user: dict = Depends(get_current_user)):
                     "nodes": [n for n in r["nodes"] if n["id"] not in gone],
                     "links": [l for l in r.get("links", []) if l["from"] not in gone and l["to"] not in gone], "updated_at": now}})
     _avail_kick.set()
-    return {"added": len(add), "copies": len(new_docs), "removed_from": removed, "target": maps[target]["name"],
+    return {"added": len(add), "copies": len(new_docs), "links": len(new_links), "removed_from": removed, "target": maps[target]["name"],
             "skipped": [f"{maps[i]['name']}: {why}" for i, why in skipped.items()]}
 
 
