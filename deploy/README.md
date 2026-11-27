@@ -1702,11 +1702,11 @@ Em **Configurações → Automação e alertas → Grupos de alerta do Telegram*
 - Menu Exibir → **Ajustar janela à tela** (Ctrl+Shift+F) faz o mesmo na hora. O menu aparece com a tecla Alt.
 - Precisa gerar o .exe novo (Actions → App Windows) e reinstalar; o resto do BastiON atualiza pelo servidor como sempre.
 
-## 93. Levar submapas de um mapa para outro (ex.: NETDRP → HELP)
-- Na Disponibilidade, o botão de seleção (ícone de lista com checks, no topo do menu) agora serve para **levar para outro mapa** e para excluir.
-- Marque os submapas (botões ou lista) → **Levar para…** → escolha o mapa de destino e como:
-  - **Mesmo mapa nos dois:** o submapa aparece também no destino; editar em um muda no outro.
-  - **Cópia independente:** cria cópias com os mesmos equipamentos (opcional: copiar também os submapas de dentro). Nome repetido ganha "(cópia)".
-  - **Mover:** entra no destino e sai dos mapas onde estava.
-- **Ver o que vai mudar** mostra antes o que entra, de onde sai (mover) e o que fica de fora (já está no destino, ou o destino está dentro dele).
-- Os submapas entram em grade abaixo do que já existe no destino; depois é só arrumar as posições no Editar.
+## 93. Copiar e colar submapas entre mapas (ex.: NETDRP → HELP)
+1. Abra o mapa de origem (ex.: NETDRP) e clique em **Copiar** na barra de cima.
+2. Clique nos submapas (bolinhas) que quer levar; os marcados ganham um anel azul. Também dá para marcar na lista do menu lateral.
+3. Na faixa que aparece sobre o mapa, clique **Copiar** (fica nos dois lugares) ou **Recortar** (vai sair daqui).
+4. Abra o mapa de destino (ex.: HELP) e clique **Colar aqui** na barra de cima. O que foi copiado fica guardado até colar ou clicar no X ao lado.
+5. Ao colar uma cópia, escolha: **Colar o mesmo mapa** (editar em um muda no outro) ou **Colar uma cópia** (mapas novos, mesmos equipamentos). O aviso mostra antes o que entra e o que fica de fora.
+- Os submapas entram em grade abaixo do que já existe; depois é só arrumar no Editar.
+- A lixeira do menu lateral continua servindo para excluir vários mapas de uma vez.
