@@ -7,7 +7,17 @@ export const VOICE_DEFAULT = {
   msg_device: "Alerta de falha. Equipamento indisponível.",
   msg_link: "Alerta de falha. Possível rompimento.",
   msg_many: "Alerta de falha. {n} equipamentos indisponíveis.",
+  say_up: true, msg_device_up: "Equipamento restabelecido.", msg_link_up: "Enlace normalizado.",
+  engine: "browser", server_voice: "faber",     // server = voz gerada no BastiON (igual em PC, celular e TV)
 };
+
+export const SERVER_VOICES = [
+  { key: "faber", label: "Faber (masculina)" }, { key: "cadu", label: "Cadu (masculina)" }, { key: "jeff", label: "Jeff (masculina)" },
+];
+
+// quem busca o áudio da voz do servidor (a página logada usa a API com login; o link público usa o token)
+let ttsSource = null;
+export function setTtsSource(fn) { ttsSource = fn; }
 
 // "várias formas" de voz grave: só muda tom e velocidade da voz escolhida
 export const VOICE_PRESETS = [
@@ -42,10 +52,42 @@ export function listVoices() {
   return [...TTS.getVoices()].sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name));
 }
 
+// voz que falhou neste aparelho (ex.: voz online do Edge sem internet): não tenta de novo nesta sessão
+const failed = new Set();
+const resolved = new Map();     // nome pedido -> voz usada (mesma voz sempre, nesta página)
+
+/** Sempre a mesma voz: a escolhida; se não existir aqui, a masculina pt-BR local (do próprio Windows/aparelho). */
 export function pickVoice(name) {
-  const all = listVoices();
-  return all.find(v => v.name === name) || all.find(v => /^pt/i.test(v.lang) && guessGender(v) === "m") || all.find(v => /^pt/i.test(v.lang)) || all[0] || null;
+  const all = listVoices().filter(v => !failed.has(v.name));
+  if (!all.length) return null;
+  const keep = resolved.get(name || "");
+  if (keep && all.includes(keep)) return keep;
+  const low = String(name || "").toLowerCase();
+  const pt = all.filter(v => /^pt/i.test(v.lang));
+  const br = pt.filter(v => /^pt-br/i.test(v.lang.replace("_", "-")));
+  const male = (l) => l.filter(v => guessGender(v) === "m");
+  const v = (name && (all.find(x => x.name === name) || all.find(x => x.name.toLowerCase() === low)))
+    || male(br).find(x => x.localService) || male(br)[0] || male(pt).find(x => x.localService) || male(pt)[0]
+    || br.find(x => x.localService) || br[0] || pt[0] || null;
+  if (v) resolved.set(name || "", v);
+  return v;
 }
+
+let voicesReady = null;
+/** Espera a lista de vozes carregar (no Chrome ela chega depois): sem isso a primeira fala sai com a voz padrão. */
+export function waitVoices() {
+  if (!TTS) return Promise.resolve([]);
+  if (TTS.getVoices().length) return Promise.resolve(TTS.getVoices());
+  voicesReady = voicesReady || new Promise(resolve => {
+    const done = () => { if (TTS.getVoices().length) { TTS.removeEventListener?.("voiceschanged", done); resolve(TTS.getVoices()); } };
+    TTS.addEventListener?.("voiceschanged", done);
+    setTimeout(() => resolve(TTS.getVoices()), 3000);
+  }).then(v => { voicesReady = null; return v; });
+  return voicesReady;
+}
+if (TTS) waitVoices();
+
+const live = new Set();         // segura a fala na memória (Chrome às vezes descarta e corta no meio)
 
 let actx = null;
 function audioCtx() {
@@ -74,7 +116,10 @@ export function playIntro(kind, volume = 1) {
     o.start(start); o.stop(start + dur + 0.02);
   };
   let total = 0;
-  if (kind === "beeps") {          // sinal de "vai avisar um evento": 3 bipes subindo, pausa, bipe longo
+  if (kind === "up") {             // resolvido: dois tons subindo, suave
+    tone("sine", 660, 660, t0, 0.16); tone("sine", 988, 988, t0 + 0.18, 0.3);
+    total = 0.55;
+  } else if (kind === "beeps") {          // sinal de "vai avisar um evento": 3 bipes subindo, pausa, bipe longo
     [[880, 0, 0.13], [988, 0.2, 0.13], [1175, 0.4, 0.13], [1175, 0.72, 0.38]].forEach(([f, s, d]) => tone("sine", f, f, t0 + s, d));
     total = 1.15;
   } else if (kind === "siren") {          // sobe e desce, 3 vezes
@@ -90,32 +135,71 @@ export function playIntro(kind, volume = 1) {
   return new Promise(r => setTimeout(r, total * 1000 + 150));
 }
 
-function sayOnce(text, cfg) {
-  return new Promise(resolve => {
-    if (!TTS || !text) return resolve();
+async function sayOnce(text, cfg, retry = true) {
+  if (!TTS || !text) return;
+  await waitVoices();
+  const v = pickVoice(cfg.voice);
+  const ok = await new Promise(resolve => {
     const u = new SpeechSynthesisUtterance(text);
-    const v = pickVoice(cfg.voice);
+    live.add(u);
     if (v) { u.voice = v; u.lang = v.lang; } else u.lang = "pt-BR";
     u.pitch = Math.max(0, Math.min(2, Number(cfg.pitch ?? 0.4)));
     u.rate = Math.max(0.5, Math.min(1.6, Number(cfg.rate ?? 0.92)));
     u.volume = Math.max(0, Math.min(1, Number(cfg.volume ?? 1)));
-    const done = () => { clearTimeout(guard); resolve(); };
-    const guard = setTimeout(done, 20000);          // alguns navegadores não disparam onend
-    u.onend = done; u.onerror = done;
+    let started = false;
+    const done = (res) => { clearTimeout(guard); live.delete(u); resolve(res); };
+    const guard = setTimeout(() => done(true), 20000);          // alguns navegadores não disparam onend
+    u.onstart = () => { started = true; };
+    u.onend = () => done(true);
+    u.onerror = (e) => done(started || e?.error === "interrupted" || e?.error === "canceled");
     TTS.speak(u);
   });
+  // a voz escolhida falhou (ex.: voz online sem internet): marca e fala com a masculina local, sempre a mesma daí pra frente
+  if (!ok && retry && v) { failed.add(v.name); resolved.clear(); await sayOnce(text, cfg, false); }
 }
 
 // nomes como "SW-Link_NET_Divino" falados direito
 export const spoken = (s) => String(s || "").replace(/[_]+/g, " ").replace(/(\w)-(\w)/g, "$1 $2").replace(/\s+/g, " ").trim();
 
+// voz do servidor: o tom "mais grave" é feito tocando o áudio um pouco mais devagar
+const pitchToPlayback = (p) => Math.max(0.7, Math.min(1.25, 1 - (1 - Number(p ?? 0.4)) * 0.25));
+const bufCache = new Map();
+async function sayServer(text, cfg) {
+  const ctx = audioCtx();
+  if (!ttsSource || !ctx) throw new Error("sem fonte");
+  const key = `${cfg.server_voice}|${cfg.rate}|${text}`;
+  let buf = bufCache.get(key);
+  if (!buf) {
+    const raw = await ttsSource(text, cfg);
+    buf = await ctx.decodeAudioData(raw);
+    if (bufCache.size > 60) bufCache.delete(bufCache.keys().next().value);
+    bufCache.set(key, buf);
+  }
+  await new Promise(resolve => {
+    const src = ctx.createBufferSource(), g = ctx.createGain();
+    src.buffer = buf; src.playbackRate.value = pitchToPlayback(cfg.pitch);
+    g.gain.value = Math.max(0, Math.min(1, Number(cfg.volume ?? 1)));
+    src.connect(g).connect(ctx.destination);
+    src.onended = resolve;
+    src.start();
+    setTimeout(resolve, (buf.duration / src.playbackRate.value) * 1000 + 1500);
+  });
+}
+
+async function say(text, cfg) {
+  if (cfg.engine === "server") {
+    try { await sayServer(text, cfg); return; } catch { /* servidor sem voz: usa a do aparelho */ }
+  }
+  await sayOnce(text, cfg);
+}
+
 let queue = Promise.resolve();
 /** Enfileira um alerta (não fala por cima do anterior). */
-export function speakAlert(cfg, text) {
+export function speakAlert(cfg, text, up = false) {
   queue = queue.then(async () => {
-    await playIntro(cfg.intro, cfg.volume);
-    const n = Math.max(1, Math.min(3, Number(cfg.repeat) || 1));
-    for (let i = 0; i < n; i++) await sayOnce(text, cfg);
+    await playIntro(up ? "up" : cfg.intro, cfg.volume);
+    const n = up ? 1 : Math.max(1, Math.min(3, Number(cfg.repeat) || 1));
+    for (let i = 0; i < n; i++) await say(text, cfg);
   }).catch(() => {});
   return queue;
 }
@@ -180,9 +264,9 @@ if (TTS && typeof window !== "undefined") setInterval(() => { try { if (TTS.paus
 
 export function stopAlerts() { try { TTS?.cancel(); } catch { /* ok */ } }
 
-export function alertText(cfg, a) {
+export function alertText(cfg, a, up = false) {
   const c = { ...VOICE_DEFAULT, ...cfg };
-  const base = a.kind === "link" ? c.msg_link : c.msg_device;
+  const base = up ? (a.kind === "link" ? c.msg_link_up : c.msg_device_up) : a.kind === "link" ? c.msg_link : c.msg_device;
   if (!c.say_name) return base;
   const who = spoken(a.kind === "link" ? a.name || a.device_name : a.name);
   return `${base} ${who}.`;
@@ -206,15 +290,23 @@ export function useVoiceAlerts(live, cfg, active, scopeKey) {
       else if (a.state === "down" || (cfg?.warn && a.state === "warn" && !a.loss_only)) cur.set(`d|${a.map_id}|${a.node_id || a.name}`, a);
     });
     const prev = seen.current;
-    seen.current = new Set(cur.keys());
+    seen.current = cur;
     if (!prev || !active || !cfg?.enabled) return;
-    const fresh = [...cur.entries()].filter(([k]) => !prev.has(k)).map(([, a]) => a);
-    if (!fresh.length) return;
-    const links = fresh.filter(a => a.kind === "link"), devs = fresh.filter(a => a.kind !== "link");
     const c = { ...VOICE_DEFAULT, ...cfg };
+    const fresh = [...cur.entries()].filter(([k]) => !prev.has(k)).map(([, a]) => a);
+    const links = fresh.filter(a => a.kind === "link"), devs = fresh.filter(a => a.kind !== "link");
     links.slice(0, 3).forEach(a => speakAlert(c, alertText(c, a)));
     if (devs.length > 3) speakAlert(c, c.msg_many.replace("{n}", devs.length));     // queda em massa: uma frase só
     else devs.forEach(a => speakAlert(c, alertText(c, a)));
+    if (!c.say_up) return;
+    // resolvido: o que estava caído e saiu da lista de incidentes
+    // (quem foi colocado em "ignorar" também sai da lista, mas não voltou: não fala)
+    const ign = new Set((live.ignored || []).map(x => `d|${x.map_id}|${x.node_id || x.name}`));
+    const gone = [...prev.entries()].filter(([k]) => !cur.has(k) && !ign.has(k)).map(([, a]) => a);
+    const upL = gone.filter(a => a.kind === "link"), upD = gone.filter(a => a.kind !== "link");
+    upL.slice(0, 3).forEach(a => speakAlert(c, alertText(c, a, true), true));
+    if (upD.length > 3) speakAlert(c, `${upD.length} equipamentos restabelecidos.`, true);
+    else upD.forEach(a => speakAlert(c, alertText(c, a, true), true));
   }, [live]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 

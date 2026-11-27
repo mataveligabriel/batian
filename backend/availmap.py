@@ -425,4 +425,9 @@ def clean_voice(b: dict) -> dict:
             "say_name": bool(b.get("say_name", True)), "warn": bool(b.get("warn")),
             "msg_device": txt("msg_device", "Alerta de falha. Equipamento indisponível."),
             "msg_link": txt("msg_link", "Alerta de falha. Possível rompimento."),
-            "msg_many": txt("msg_many", "Alerta de falha. {n} equipamentos indisponíveis.")}
+            "msg_many": txt("msg_many", "Alerta de falha. {n} equipamentos indisponíveis."),
+            "say_up": bool(b.get("say_up", True)),
+            "msg_device_up": txt("msg_device_up", "Equipamento restabelecido."),
+            "msg_link_up": txt("msg_link_up", "Enlace normalizado."),
+            "engine": "server" if b.get("engine") == "server" else "browser",
+            "server_voice": str(b.get("server_voice") or "faber")[:20]}

@@ -10,6 +10,8 @@ RUN apt-get update && for p in openvpn pptp-linux xl2tpd strongswan strongswan-s
       apt-get install -y --no-install-recommends "$p" || echo "!! pacote $p indisponível nesta imagem"; done; rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# voz do servidor para os alertas dos mapas (opcional: se falhar, o mapa usa a voz do navegador)
+RUN pip install --no-cache-dir piper-tts || echo "!! piper-tts indisponível nesta imagem"
 COPY . .
 EXPOSE 8001
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips", "*"]

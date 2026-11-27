@@ -14,7 +14,7 @@ import {
   Palette, Shapes, StickyNote, Trash2, Type, Upload, Volume2, VolumeX, X, Zap, FileDown, FileUp, Send, Copy, ClipboardPaste, Megaphone, Play, Square,
 } from "lucide-react";
 import { ImportMapDialog, downloadMap } from "@/components/MapTransfer";
-import { VOICE_DEFAULT, VOICE_PRESETS, INTROS, listVoices, guessGender, speakAlert, stopAlerts, alertText, ttsSupported, useVoiceAlerts, effectiveVoice, primeAudio, useAutoUnlock } from "@/lib/voiceAlert";
+import { VOICE_DEFAULT, VOICE_PRESETS, INTROS, listVoices, guessGender, speakAlert, stopAlerts, alertText, ttsSupported, useVoiceAlerts, effectiveVoice, primeAudio, useAutoUnlock, SERVER_VOICES, setTtsSource } from "@/lib/voiceAlert";
 
 // Paleta própria do mapa (independe do tema do app: o mapa é sempre "sala escura")
 export const C = { bg0: "#06111d", bg1: "#0b2034", grid: "rgba(96,165,250,0.07)", ink: "#e3eef8", dim: "#7f9bb3", panel: "#0d1d2e",
@@ -1021,6 +1021,8 @@ function PasteDialog({ clip, target, onClose, onDone }) {
   );
 }
 
+setTtsSource(async (text, cfg) => (await api.get("/avail/tts", { params: { text, voice: cfg.server_voice, rate: cfg.rate }, responseType: "arraybuffer" })).data);
+
 // Alerta falado do mapa: liga, escolhe voz/tom/som e testa na hora (a voz é a do computador que está tocando)
 function VoiceDialog({ map, inherited, onClose, onSaved }) {
   const [f, setF] = useState(() => ({ ...VOICE_DEFAULT, ...(map.voice || inherited || {}), enabled: map.voice ? map.voice.enabled : true }));
@@ -1037,8 +1039,15 @@ function VoiceDialog({ map, inherited, onClose, onSaved }) {
   useEffect(() => () => stopAlerts(), []);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
   const shown = voices.filter(v => allLangs || /^pt/i.test(v.lang));
-  const test = (kind) => { stopAlerts(); speakAlert(f, alertText(f, kind === "link"
-    ? { kind: "link", name: "Enlace Alvorada Caiana" } : { kind: "device", name: "SW-Link_NET_Divino" })); };
+  const [srv, setSrv] = useState(null);
+  useEffect(() => { api.get("/avail/tts/voices").then(r => setSrv(r.data)).catch(() => setSrv({ available: false })); }, []);
+  const test = (kind, up = false) => {
+    stopAlerts();
+    const a = kind === "link" ? { kind: "link", name: "Enlace Alvorada Caiana" } : { kind: "device", name: "SW-Link_NET_Divino" };
+    if (f.engine === "server" && srv && !srv.available) toast.error("O servidor ainda não tem a voz instalada (rode o update.sh). Testando com a voz deste aparelho.");
+    else if (f.engine === "server") toast.info("Gerando a voz no servidor… (a primeira vez baixa a voz, pode levar um minuto)");
+    speakAlert(f, alertText(f, a, up), up);
+  };
   const save = async () => {
     setBusy(true);
     try { const { data } = await api.put(`/avail/maps/${map.id}/voice`, f); toast.success(data.enabled ? "Alerta por voz ligado" : "Alerta por voz desligado"); onSaved(data); }
@@ -1067,7 +1076,14 @@ function VoiceDialog({ map, inherited, onClose, onSaved }) {
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-300">
           <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!f.say_name} onChange={e => set("say_name", e.target.checked)} /> falar o nome do equipamento/enlace depois</label>
           <label className="flex items-center gap-1.5"><input type="checkbox" checked={!!f.warn} onChange={e => set("warn", e.target.checked)} /> avisar também equipamento instável</label>
+          <label className="flex items-center gap-1.5"><input type="checkbox" checked={f.say_up !== false} onChange={e => set("say_up", e.target.checked)} data-testid="voice-say-up" /> avisar quando voltar</label>
         </div>
+        {f.say_up !== false && <div className="grid sm:grid-cols-2 gap-3">
+          <label className="block text-xs text-slate-300 space-y-1"><span>Equipamento voltou</span>
+            <Input value={f.msg_device_up} onChange={e => set("msg_device_up", e.target.value)} maxLength={200} className="h-8 bg-sunken border-line text-sm" /></label>
+          <label className="block text-xs text-slate-300 space-y-1"><span>Fibra/enlace voltou</span>
+            <Input value={f.msg_link_up} onChange={e => set("msg_link_up", e.target.value)} maxLength={200} className="h-8 bg-sunken border-line text-sm" /></label>
+        </div>}
         <div className="rounded-md border border-line p-3 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-slate-400">Som antes da fala:</span>
@@ -1075,15 +1091,31 @@ function VoiceDialog({ map, inherited, onClose, onSaved }) {
               <button key={i.key} type="button" onClick={() => set("intro", i.key)} className={`h-7 px-2 rounded border text-xs ${f.intro === i.key ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-300"}`}>{i.label}</button>
             ))}
           </div>
-          <label className="block text-xs text-slate-300 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400">De onde vem a voz:</span>
+            <button type="button" onClick={() => set("engine", "server")} data-testid="voice-engine-server"
+                    className={`h-7 px-2 rounded border text-xs ${f.engine === "server" ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-300"}`}>Servidor do BastiON (igual em PC, celular e TV)</button>
+            <button type="button" onClick={() => set("engine", "browser")} data-testid="voice-engine-browser"
+                    className={`h-7 px-2 rounded border text-xs ${f.engine !== "server" ? "border-brand bg-brand/20 text-slate-100" : "border-line text-slate-300"}`}>Do próprio aparelho</button>
+          </div>
+          {f.engine === "server" && (
+            <label className="block text-xs text-slate-300 space-y-1">
+              <span>Voz do servidor</span>
+              <select value={f.server_voice} onChange={e => set("server_voice", e.target.value)} className="w-full h-8 rounded-md bg-sunken border border-line text-sm text-slate-100 px-2" data-testid="voice-server-select">
+                {SERVER_VOICES.map(v => <option key={v.key} value={v.key}>{v.label}</option>)}
+              </select>
+              {srv && !srv.available && <span className="block text-[11px] text-amber-300">A voz do servidor ainda não está instalada: rode o update.sh. Até lá, toca a voz do aparelho.</span>}
+            </label>
+          )}
+          {f.engine !== "server" && <label className="block text-xs text-slate-300 space-y-1">
             <span className="flex justify-between"><span>Voz (deste computador)</span>
               <span className="flex items-center gap-1 text-slate-400"><input type="checkbox" checked={allLangs} onChange={e => setAllLangs(e.target.checked)} /> mostrar todas as línguas</span></span>
             <select value={f.voice} onChange={e => set("voice", e.target.value)} className="w-full h-8 rounded-md bg-sunken border border-line text-sm text-slate-100 px-2" data-testid="voice-select">
               <option value="">Automática (masculina em português, se houver)</option>
               {shown.map(v => <option key={v.name} value={v.name}>{guessGender(v) === "m" ? "♂ " : guessGender(v) === "f" ? "♀ " : ""}{v.name} · {v.lang}</option>)}
             </select>
-            <span className="block text-[11px] text-slate-500">Mais natural: no Edge, "Microsoft Antonio Online (Natural)". No Windows/app: "Microsoft Daniel". Na TV do NOC vale a voz que existir lá; se a escolhida não existir, usa a masculina mais parecida.</span>
-          </label>
+            <span className="block text-[11px] text-slate-500">Cada aparelho tem as suas vozes: celular e TV não têm as do Windows e usam a masculina mais parecida. Para ser igual em todos, use "Servidor do BastiON".</span>
+          </label>}
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-slate-400">Jeito de falar:</span>
             {VOICE_PRESETS.map(p => (
@@ -1103,6 +1135,7 @@ function VoiceDialog({ map, inherited, onClose, onSaved }) {
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={() => test("device")} className="h-8 bg-red-600 hover:bg-red-500 text-white text-xs" data-testid="voice-test-device"><Play className="w-3.5 h-3.5 mr-1" />Testar: equipamento caiu</Button>
             <Button size="sm" onClick={() => test("link")} className="h-8 bg-amber-600 hover:bg-amber-500 text-white text-xs" data-testid="voice-test-link"><Play className="w-3.5 h-3.5 mr-1" />Testar: rompimento</Button>
+            <Button size="sm" onClick={() => test("device", true)} className="h-8 bg-emerald-600 hover:bg-emerald-500 text-white text-xs" data-testid="voice-test-up"><Play className="w-3.5 h-3.5 mr-1" />Testar: voltou</Button>
             <Button size="sm" variant="ghost" onClick={stopAlerts} className="h-8 text-xs text-slate-300"><Square className="w-3.5 h-3.5 mr-1" />Parar</Button>
           </div>
         </div>
@@ -1385,8 +1418,9 @@ export default function Availability() {
   }, [mapId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (list && mapId && !trail.includes(mapId)) setTrail(pathTo(mapId, list.maps)); }, [list, mapId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const voiceCfg = useMemo(() => effectiveVoice(mapId, (id) => (id === map?.id && map?.voice) || byIdRef.current[id]?.voice || null, trail),
-    [mapId, map, list, trail]); // eslint-disable-line react-hooks/exhaustive-deps
+  const voiceCfg = useMemo(() => effectiveVoice(mapId, (id) => (live?.voices ? live.voices[id] || null
+    : (id === map?.id && map?.voice) || byIdRef.current[id]?.voice || null), trail),
+    [mapId, map, list, trail, live?.voices && JSON.stringify(live.voices)]); // eslint-disable-line react-hooks/exhaustive-deps
   const voiceOn = !!voiceCfg?.enabled;
   voiceOnRef.current = voiceOn;
   const [voiceMute, setVoiceMute] = useState(() => ls.get("bastion_avail_voice_mute", false));   // mudo só neste navegador

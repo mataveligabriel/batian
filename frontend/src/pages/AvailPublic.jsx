@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MapCanvasAvail, AlarmPanel, MobileAlarms, C as C0, effectiveStyle, paletteOf, ignoredTxt } from "@/pages/Availability";
-import { useVoiceAlerts, effectiveVoice, stopAlerts, primeAudio, useAutoUnlock } from "@/lib/voiceAlert";
+import { useVoiceAlerts, effectiveVoice, stopAlerts, primeAudio, useAutoUnlock, setTtsSource } from "@/lib/voiceAlert";
 
 // Link sem login do mapa de disponibilidade: /disp/<token>. Só lê /api/public/avail da própria origem.
 const get = async (path) => {
@@ -34,7 +34,15 @@ export default function AvailPublic({ token }) {
   const map = useMemo(() => (raw ? { ...raw, style: effectiveStyle(mapId, info.maps, trail) } : raw), [raw, info, mapId, trail]);
   const C = useMemo(() => (map ? paletteOf(map.style) : C0), [map]);     // topo da tela com as cores do mapa
   // alerta falado (ligado no mapa pelo BastiON); mudo só nesta tela
-  const voiceCfg = useMemo(() => (info ? effectiveVoice(mapId, (id) => info.maps?.[id]?.voice || null, trail) : null), [info, mapId, trail]);
+  const voiceCfg = useMemo(() => (info ? effectiveVoice(mapId, (id) => (live?.voices ? live.voices[id] || null : info.maps?.[id]?.voice || null), trail) : null),
+    [info, mapId, trail, live?.voices && JSON.stringify(live.voices)]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setTtsSource(async (text, cfg) => {
+      const r = await fetch(`/api/public/avail/${token}/tts?${new URLSearchParams({ text, voice: cfg.server_voice || "faber", rate: cfg.rate || 1 })}`);
+      if (!r.ok) throw new Error("tts");
+      return r.arrayBuffer();
+    });
+  }, [token]);
   const voiceOn = !!voiceCfg?.enabled;
   const [mute, setMute] = useState(() => { try { return localStorage.getItem("bastion_tv_voice_mute") === "1"; } catch { return false; } });
   // celular/TV: o som só libera com um toque que já fala alguma coisa (cada vez que a página abre)

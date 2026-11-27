@@ -5615,6 +5615,30 @@ async def avail_update(map_id: str, body: dict, user: dict = Depends(get_current
     return await _avail_map(map_id)
 
 
+async def _tts_response(text: str, voice: str, rate: float):
+    import tts
+    try:
+        data = await tts.speak(text, voice, rate)
+    except tts.TTSError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("tts")
+        raise HTTPException(status_code=503, detail=f"Falha ao gerar a voz: {e}")
+    return Response(content=data, media_type="audio/wav", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@api.get("/avail/tts/voices")
+async def avail_tts_voices(user: dict = Depends(get_current_user)):
+    import tts
+    return {"available": tts.available(), "voices": [{"key": k, "label": v["label"]} for k, v in tts.VOICES.items()]}
+
+
+@api.get("/avail/tts")
+async def avail_tts(text: str, voice: str = "faber", rate: float = 1.0, user: dict = Depends(get_current_user)):
+    """Frase do alerta falada pelo servidor (mesma voz em PC, celular e TV)."""
+    return await _tts_response(text, voice, rate)
+
+
 @api.put("/avail/maps/{map_id}/voice")
 async def avail_voice(map_id: str, body: dict, user: dict = Depends(get_current_user)):
     """Liga/ajusta o alerta falado deste mapa (vale também para os submapas abertos a partir dele)."""
@@ -5915,7 +5939,9 @@ async def avail_live(map_id: str, user: dict = Depends(get_current_user)):
     maps = await _avail_all_maps()
     if map_id not in maps:
         raise HTTPException(status_code=404, detail="Mapa não encontrado")
-    return await _avail_live_data(map_id, maps)
+    out = await _avail_live_data(map_id, maps)
+    out["voices"] = {mid: m["voice"] for mid, m in maps.items() if m.get("voice")}     # config do alerta sempre atual
+    return out
 
 
 @api.post("/avail/ignore")
@@ -6145,12 +6171,20 @@ async def avs_public(token: str, request: Request):
     return {"name": d["name"], "root": d["map_id"], "maps": out}
 
 
+@api.get("/public/avail/{token}/tts")
+async def avs_public_tts(token: str, text: str, request: Request, voice: str = "faber", rate: float = 1.0):
+    await _avs_share(token, request)
+    return await _tts_response(text[:240], voice, rate)
+
+
 @api.get("/public/avail/{token}/live/{map_id}")
 async def avs_public_live(token: str, map_id: str, request: Request):
     d, maps, allowed = await _avs_share(token, request)
     if map_id not in allowed:
         raise HTTPException(status_code=404, detail="Mapa não faz parte deste link")
-    return await _avail_live_data(map_id, maps, show_hosts=bool(d.get("show_hosts")))
+    out = await _avail_live_data(map_id, maps, show_hosts=bool(d.get("show_hosts")))
+    out["voices"] = {mid: maps[mid]["voice"] for mid in allowed if maps[mid].get("voice")}
+    return out
 
 
 @api.put("/avail/settings")
