@@ -5694,8 +5694,22 @@ async def avail_transfer(body: dict, user: dict = Depends(get_current_user)):
     maps = await _avail_all_maps()
     if target not in maps:
         raise HTTPException(status_code=404, detail="Mapa de destino não encontrado")
-    if not any(i in maps for i in ids):
-        raise HTTPException(status_code=400, detail="Nenhum mapa selecionado")
+    # itens marcados no mapa de origem (submapas e equipamentos)
+    source = maps.get(str(body.get("source_id") or ""))
+    extra = []
+    if source and body.get("node_ids"):
+        want = {str(i) for i in body["node_ids"]}
+        for n in source.get("nodes", []):
+            if n["id"] in want:
+                if n.get("kind") == "submap":
+                    ids.append(n["map_id"])
+                else:
+                    extra.append(n["id"])
+        ids = list(dict.fromkeys(ids))
+    if source and source["id"] == target and mode != "copy":
+        raise HTTPException(status_code=400, detail="Abra outro mapa para colar (este é o mapa de onde copiou)")
+    if not any(i in maps for i in ids) and not extra:
+        raise HTTPException(status_code=400, detail="Nada selecionado")
     now = datetime.now(timezone.utc).isoformat()
     skipped, new_docs = {}, []
     if mode == "copy":
@@ -5705,18 +5719,18 @@ async def avail_transfer(body: dict, user: dict = Depends(get_current_user)):
         add, skipped = availmap.link_targets(ids, target, maps)
         if mode == "move":      # o que já estava no destino também sai dos outros lugares
             add_move = add + [i for i, why in skipped.items() if why == "já está no destino"]
-    # mapa de onde foi copiado: mantém a disposição e traz as linhas entre os submapas colados
-    source = maps.get(str(body.get("source_id") or ""))
     if mode == "copy":
         pairs = [(i, idmap[i], True) for i in dict.fromkeys(ids) if i in idmap]
     else:
         pairs = [(i, i, True) for i in add] + [(i, i, False) for i, why in skipped.items() if why == "já está no destino"]
-    new_nodes, new_links = availmap.paste_layout(maps[target], source, pairs)
+    new_nodes, new_links, n_dev = availmap.paste_layout(maps[target], source, pairs, extra)
     if body.get("dry_run"):
         out = {"mode": mode, "target": maps[target]["name"], "count": len(add),
                "names": [maps[i]["name"] for i in add if i in maps][:50] if mode != "copy" else [d["name"] for d in new_docs[:50]],
                "skipped": [f"{maps[i]['name']}: {why}" for i, why in skipped.items()]}
         out["links"] = len(new_links)
+        out["devices"] = n_dev
+        out["devices_marked"] = len(extra)
         if mode == "copy":
             out["copies"] = len(new_docs)
         if mode == "move":
@@ -5740,8 +5754,15 @@ async def avail_transfer(body: dict, user: dict = Depends(get_current_user)):
                 await db.avail_maps.update_one({"id": r["id"]}, {"$set": {
                     "nodes": [n for n in r["nodes"] if n["id"] not in gone],
                     "links": [l for l in r.get("links", []) if l["from"] not in gone and l["to"] not in gone], "updated_at": now}})
+    # depois dos submapas: lê de novo para não desfazer o que o passo de cima gravou
+    if mode == "move" and extra and source:      # equipamentos recortados saem do mapa de origem
+        gone = set(extra)
+        src = await db.avail_maps.find_one({"id": source["id"]}, {"_id": 0, "nodes": 1, "links": 1}) or {}
+        await db.avail_maps.update_one({"id": source["id"]}, {"$set": {
+            "nodes": [n for n in src.get("nodes", []) if n["id"] not in gone],
+            "links": [l for l in src.get("links", []) if l["from"] not in gone and l["to"] not in gone], "updated_at": now}})
     _avail_kick.set()
-    return {"added": len(add), "copies": len(new_docs), "links": len(new_links), "removed_from": removed, "target": maps[target]["name"],
+    return {"added": len(add), "copies": len(new_docs), "links": len(new_links), "devices": n_dev, "removed_from": removed, "target": maps[target]["name"],
             "skipped": [f"{maps[i]['name']}: {why}" for i, why in skipped.items()]}
 
 

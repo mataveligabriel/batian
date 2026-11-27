@@ -344,55 +344,68 @@ def copy_maps(ids, maps: Dict[str, dict], with_submaps: bool, taken_names: Set[s
     return out, idmap
 
 
-def paste_layout(target: dict, source: Optional[dict], pairs: List[tuple], dx: float = 220, dy: float = 200):
-    """Coloca no destino os submapas colados mantendo a disposição que tinham no mapa de origem, e traz junto as
+def paste_layout(target: dict, source: Optional[dict], pairs: List[tuple], extra=(), dx: float = 220, dy: float = 200):
+    """Coloca no destino os itens colados mantendo a disposição que tinham no mapa de origem, e traz junto as
     ligações (porta SNMP, rótulo, traçado) entre os que foram colados — ou entre eles e o que já estava no destino.
-    pairs = [(map_id na origem, map_id no destino, criar_nó)]. Devolve (nós novos, ligações novas)."""
+    pairs = [(map_id na origem, map_id no destino, criar_nó)] para submapas; extra = ids de nós da origem que não são
+    submapa (equipamento, texto, caixa, forma), copiados como estão. Equipamento que já está no destino não duplica:
+    as linhas ligam no que já existe. Devolve (nós novos, ligações novas, quantos equipamentos novos)."""
     tnodes = target.get("nodes", [])
-    src_nodes = {}
-    for n in (source or {}).get("nodes", []):
-        if n.get("kind") == "submap" and n.get("map_id") not in src_nodes:
-            src_nodes[n["map_id"]] = n
+    snodes = (source or {}).get("nodes", [])
+    src_sub, src_by_id = {}, {n["id"]: n for n in snodes}
+    for n in snodes:
+        if n.get("kind") == "submap" and n.get("map_id") not in src_sub:
+            src_sub[n["map_id"]] = n
+    ex_sub, ex_dev = {}, {}
+    for n in tnodes:
+        if n.get("kind") == "submap":
+            ex_sub.setdefault(n.get("map_id"), n["id"])
+        elif n.get("kind") == "device":
+            ex_dev.setdefault(n.get("device_id"), n["id"])
+    by_src = {}                         # id do nó na origem -> id do nó no destino
+    todo = []                           # (nó da origem, nó novo sem posição)
+    for om, nm, create in pairs:
+        sn = src_sub.get(om)
+        if create:
+            todo.append((sn, {"id": new_id(), "kind": "submap", "map_id": nm, "label": ""}))
+        elif sn and nm in ex_sub:
+            by_src[sn["id"]] = ex_sub[nm]
+    for nid in dict.fromkeys(extra):
+        sn = src_by_id.get(nid)
+        if not sn or sn.get("kind") == "submap":
+            continue
+        if sn.get("kind") == "device" and sn.get("device_id") in ex_dev:
+            by_src[sn["id"]] = ex_dev[sn["device_id"]]
+            continue
+        todo.append((sn, {k: v for k, v in sn.items() if k not in ("x", "y")} | {"id": new_id()}))
     xs = [n.get("x", 0) for n in tnodes] or [0]
     ys = [n.get("y", 0) + (n.get("h") or 0) for n in tnodes]
     x0, y0 = min(xs), (max(ys) + dy) if ys else 0
-    placed = [p for p in pairs if p[2] and p[0] in src_nodes]
-    loose = [p for p in pairs if p[2] and p[0] not in src_nodes]
+    placed = [(sn, nn) for sn, nn in todo if sn]
+    loose = [nn for sn, nn in todo if not sn]
     off = (0.0, 0.0)
+    y_loose = y0
     if placed:
-        sx = min(src_nodes[p[0]]["x"] for p in placed)
-        sy = min(src_nodes[p[0]]["y"] for p in placed)
-        off = (x0 - sx, y0 - sy)
-        y_loose = max(src_nodes[p[0]]["y"] for p in placed) + off[1] + dy
-    else:
-        y_loose = y0
-    new_nodes, by_src = [], {}          # id do nó na origem -> id do nó no destino
-    for om, nm, _ in placed:
-        sn = src_nodes[om]
-        nid = new_id()
-        new_nodes.append({"id": nid, "kind": "submap", "map_id": nm, "label": "",
-                          "x": round(sn["x"] + off[0], 1), "y": round(sn["y"] + off[1], 1)})
-        by_src[sn["id"]] = nid
-    for i, (om, nm, _) in enumerate(loose):
-        new_nodes.append({"id": new_id(), "kind": "submap", "map_id": nm, "label": "",
-                          "x": round(x0 + (i % 6) * dx, 1), "y": round(y_loose + (i // 6) * dy, 1)})
-    existing = {}
-    for n in tnodes:
-        if n.get("kind") == "submap" and n.get("map_id") not in existing:
-            existing[n["map_id"]] = n["id"]
-    for om, nm, create in pairs:        # já estava no destino: as linhas ligam no nó que já existe
-        if not create and om in src_nodes and nm in existing:
-            by_src[src_nodes[om]["id"]] = existing[nm]
+        off = (x0 - min(sn["x"] for sn, _ in placed), y0 - min(sn["y"] for sn, _ in placed))
+        y_loose = max(sn["y"] + (sn.get("h") or 0) for sn, _ in placed) + off[1] + dy
+    new_nodes = []
+    for sn, nn in placed:
+        nn.update(x=round(sn["x"] + off[0], 1), y=round(sn["y"] + off[1], 1))
+        by_src[sn["id"]] = nn["id"]
+        new_nodes.append(nn)
+    for i, nn in enumerate(loose):
+        nn.update(x=round(x0 + (i % 6) * dx, 1), y=round(y_loose + (i // 6) * dy, 1))
+        new_nodes.append(nn)
+    old_ids = {n["id"] for n in tnodes}
     have = {(l.get("from"), l.get("to")) for l in target.get("links", [])}
     new_links = []
     for l in (source or {}).get("links", []):
         a, z = by_src.get(l.get("from")), by_src.get(l.get("to"))
-        if not a or not z or a == z:
+        if not a or not z or a == z or (a in old_ids and z in old_ids):
             continue
-        both_old = a in existing.values() and z in existing.values()
-        if both_old or ((a, z) in have and not l.get("snmp")):
+        if (a, z) in have and not l.get("snmp"):
             continue
-        nl = {**l, "id": new_id(), "from": a, "to": z,
-              "points": [{"x": round(p["x"] + off[0], 1), "y": round(p["y"] + off[1], 1)} for p in (l.get("points") or [])]}
-        new_links.append(nl)
-    return new_nodes, new_links
+        new_links.append({**l, "id": new_id(), "from": a, "to": z,
+                          "points": [{"x": round(p["x"] + off[0], 1), "y": round(p["y"] + off[1], 1)} for p in (l.get("points") or [])]})
+    n_dev = sum(1 for n in new_nodes if n.get("kind") == "device")
+    return new_nodes, new_links, n_dev

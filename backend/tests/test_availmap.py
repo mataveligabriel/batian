@@ -175,15 +175,33 @@ def test_paste_layout_brings_links():
                       "points": [{"x": 600, "y": 350}]},
                      {"id": "l2", "from": "s2", "to": "s3", "label": "", "snmp": None, "points": []}]}
     tgt = {"nodes": [{"id": "t1", "kind": "submap", "map_id": "Z", "x": 0, "y": 0}], "links": []}
-    nodes, links = paste_layout(tgt, src, [("A", "A", True), ("B", "B", True)])
+    nodes, links, _ = paste_layout(tgt, src, [("A", "A", True), ("B", "B", True)])
     assert len(nodes) == 2 and len(links) == 1                     # só a linha entre os dois colados
     a, b = nodes
     assert (b["x"] - a["x"], b["y"] - a["y"]) == (200, 100)        # mantém a disposição
     assert links[0]["snmp"]["if_index"] == 5 and links[0]["label"] == "10G"
     assert {links[0]["from"], links[0]["to"]} == {a["id"], b["id"]}
     assert links[0]["points"][0]["x"] == 600 - 500 + a["x"]
-    nodes, links = paste_layout(tgt, src, [("A", "A", True)])     # sozinho: sem linha
+    nodes, links, _ = paste_layout(tgt, src, [("A", "A", True)])     # sozinho: sem linha
     assert len(nodes) == 1 and links == []
     tgt2 = {"nodes": [{"id": "tb", "kind": "submap", "map_id": "B", "x": 0, "y": 0}], "links": []}
-    nodes, links = paste_layout(tgt2, src, [("A", "A2", True), ("B", "B", False)])   # B já estava: liga no existente
+    nodes, links, _ = paste_layout(tgt2, src, [("A", "A2", True), ("B", "B", False)])   # B já estava: liga no existente
     assert len(nodes) == 1 and nodes[0]["map_id"] == "A2" and links[0]["to"] == "tb"
+
+
+def test_paste_layout_devices():
+    from availmap import paste_layout
+    src = {"nodes": [{"id": "s1", "kind": "submap", "map_id": "A", "x": 0, "y": 0},
+                     {"id": "d1", "kind": "device", "device_id": "dev1", "label": "", "x": 100, "y": 50},
+                     {"id": "d2", "kind": "device", "device_id": "dev2", "label": "", "x": 300, "y": 50}],
+           "links": [{"id": "l1", "from": "s1", "to": "d1", "snmp": {"device_id": "dev1", "if_index": 3, "if_name": "x"}, "points": []},
+                     {"id": "l2", "from": "d1", "to": "d2", "snmp": None, "points": []}]}
+    tgt = {"nodes": [{"id": "t2", "kind": "device", "device_id": "dev2", "x": 0, "y": 0}], "links": []}
+    nodes, links, nd = paste_layout(tgt, src, [("A", "A", True)], ["d1", "d2"])
+    assert nd == 1 and len(nodes) == 2                       # dev2 já estava: não duplica
+    dev = next(n for n in nodes if n["kind"] == "device")
+    assert dev["device_id"] == "dev1" and dev["id"] != "d1"
+    assert len(links) == 2 and any(l["to"] == "t2" for l in links)
+    assert next(l for l in links if l["snmp"])["snmp"]["if_index"] == 3
+    nodes, links, nd = paste_layout(tgt, src, [], ["d1"])    # equipamento sozinho: sem linha
+    assert nd == 1 and links == []
